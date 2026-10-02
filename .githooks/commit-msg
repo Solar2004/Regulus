@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# commit-msg — valida el mensaje y avisa de la rama.
+# Toda la lógica está en scripts/commit-lint.sh para poder correrla a mano.
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=../scripts/lib/conventions.sh
+. "$ROOT/scripts/lib/conventions.sh"
+timer_start
+
+status=0
+
+"$ROOT/scripts/commit-lint.sh" "$1" || status=1
+
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+if [ -n "$branch" ]; then
+  protected="$(cfg_list protected_branches)"
+  if in_list "$branch" "$protected"; then
+    case "$(cfg on_protected_commit warn)" in
+      block)
+        err "commit directo sobre «$branch» bloqueado (on_protected_commit = block)"
+        hint "git switch -c feat/lo-que-sea  →  commitea ahí  →  merge a $branch"
+        status=1 ;;
+      warn)
+        warn "commiteando directo sobre «$branch». Lo normal es una rama corta: feat/…, fix/…" ;;
+    esac
+  else
+    pattern="$(cfg branch_pattern '')"
+    policy="$(cfg on_bad_branch_name warn)"
+    if [ -n "$pattern" ] && [ "$policy" != "off" ] && ! [[ "$branch" =~ $pattern ]]; then
+      case "$policy" in
+        block) err "nombre de rama inválido: «$branch»"; hint "patrón: $pattern"; status=1 ;;
+        warn)  warn "nombre de rama fuera de patrón: «$branch» (esperado: tipo/descripcion-corta)" ;;
+      esac
+    fi
+  fi
+fi
+
+timer_check commit-msg
+exit "$status"

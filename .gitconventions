@@ -1,0 +1,86 @@
+# Regulus — convenciones de git, en configuración
+#
+# Este fichero es la única fuente de verdad de las reglas que aplican los hooks de
+# `.githooks/`. Los hooks no llevan ni un literal: todo lo que se puede querer cambiar
+# está aquí (principio 1, Flexible — `docs/00-principles.md`).
+#
+# Formato: `clave = valor`. Las listas van separadas por espacios. `#` inicia comentario.
+# Cambiar algo aquí tiene efecto en el commit siguiente, sin reinstalar nada.
+#
+# La documentación humana de estas reglas está en `docs/09-git.md`.
+
+# --- Mensaje de commit ------------------------------------------------------------
+
+# Tipos permitidos (Conventional Commits).
+types = feat fix docs refactor perf test build ci chore revert style
+
+# Scopes permitidos. Añadir uno nuevo es editar esta línea en el mismo commit que lo usa.
+# Siguen el workspace de `docs/02-architecture.md` más las áreas que ya existen.
+scopes = core proto cli gui modules store bus terminal acp mcp docs assets design repo ci deps hooks
+
+# ¿Es obligatorio el scope? Si es `false`, `feat: ...` vale y `feat(core): ...` también,
+# pero un scope que no esté en la lista de arriba se rechaza.
+scope_required = false
+
+# Longitud del asunto (la primera línea, sin contar `tipo(scope):`).
+subject_min = 10
+subject_max = 72
+
+# Ancho máximo de las líneas del cuerpo. No aplica a URLs ni a bloques de código.
+body_line_max = 100
+
+# Asuntos que se rechazan tal cual: no dicen nada.
+forbidden_subjects = wip tmp temp update updates arreglos cambios varios asdf test prueba stuff misc
+
+# Arranques de asunto que se avisan (no bloquean): el asunto va en imperativo presente
+# —"add", no "added"— porque describe qué hace el commit al aplicarse.
+discouraged_prefixes = añadido añadida agregado agregada arreglado arreglada creado creada
+discouraged_prefixes = cambiado actualizado implementado added fixed updated changed
+# Los commits van en inglés (decisión #20): arrancar el asunto en español avisa.
+discouraged_prefixes = añade agrega crea cambia actualiza implementa corrige elimina quita
+discouraged_prefixes = evita mejora permite mueve separa extrae define documenta renombra
+
+# Un cambio incompatible necesita `!` en la cabecera Y un footer `BREAKING CHANGE:` que
+# explique la migración. Crítico para `regulus-proto` (`docs/06-stack.md` §5).
+require_breaking_footer = true
+
+# --- Ramas y push -----------------------------------------------------------------
+
+# Ramas que reciben trato especial.
+protected_branches = master main
+
+# Qué hacer al commitear o pushear directamente sobre una rama protegida: warn | block
+on_protected_commit = warn
+on_protected_push = warn
+
+# Reescribir historia ya publicada de una rama protegida: warn | block
+on_protected_rewrite = block
+
+# Nombres de rama válidos. El prefijo es el mismo vocabulario que los tipos, más `spike`.
+branch_pattern = ^(feat|fix|docs|refactor|perf|test|build|ci|chore|revert|style|spike)/[a-z0-9][a-z0-9._-]*$
+
+# Qué hacer si la rama no encaja en el patrón: warn | block | off
+on_bad_branch_name = warn
+
+# Commits que no deben salir del portátil nunca.
+forbidden_push_prefixes = fixup! squash! WIP wip!
+
+# --- Comprobaciones de código -----------------------------------------------------
+#
+# `auto` = se ejecuta solo si el proyecto ya tiene ese stack (hoy no hay código: no corre
+# nada y los hooks son instantáneos). `always` = exige la herramienta. `never` = nunca.
+
+# Tamaño máximo de un fichero nuevo, en KiB. Los binarios grandes no se versionan:
+# `assets/` guarda fuentes editables, no exportaciones de 40 MB.
+max_file_kb = 2048
+
+run_rust_fmt = auto
+run_rust_clippy = auto
+run_rust_tests_on_push = auto
+run_js_checks = auto
+run_secrets_scan = always
+
+# Presupuesto de tiempo de los hooks, en segundos. Si se supera, el hook avisa: un hook
+# lento se acaba saltando con --no-verify, y un hook que se salta no existe
+# (principio 3, Rápido).
+hook_time_budget = 10

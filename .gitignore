@@ -1,0 +1,44 @@
+# --- Rust ---
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# --- Node / UI ---
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+
+# --- Tauri ---
+src-tauri/target/
+src-tauri/gen/
+
+# --- Secretos y entorno ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.toml
+
+# --- Datos locales ---
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# --- Editor y SO ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- Agentes ---
+.claude/settings.local.json
+.opencode/

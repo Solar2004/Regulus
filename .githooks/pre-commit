@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# pre-commit — lo que debe ser verdad antes de crear el commit.
+#
+# Las comprobaciones de código son condicionales (`auto` en .gitconventions): mientras el
+# repo sea solo documentación no se ejecuta ningún compilador y el hook es instantáneo.
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=../scripts/lib/conventions.sh
+. "$ROOT/scripts/lib/conventions.sh"
+timer_start
+
+status=0
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+if [ -z "$staged" ]; then
+  err "no hay nada en el índice. Usa «git add» antes de commitear."
+  exit 1
+fi
+
+# --- Conflictos a medio resolver -------------------------------------------------
+if git diff --cached -U0 | grep -qE '^\+(<<<<<<<|>>>>>>>|=======$)'; then
+  err "hay marcadores de conflicto en lo que vas a commitear"
+  git diff --cached -U0 --name-only | while IFS= read -r f; do
+    grep -nE '^(<<<<<<<|>>>>>>>)' "$f" 2>/dev/null | head -3 | sed "s|^|  $f:|" >&2
+  done
+  status=1
+fi
+
+# --- Secretos ---------------------------------------------------------------------
+if [ "$(cfg run_secrets_scan always)" != "never" ]; then
+  "$ROOT/scripts/secrets-scan.sh" || status=1
+fi
+
+# --- Ficheros demasiado grandes ---------------------------------------------------
+max_kb="$(cfg max_file_kb 2048)"
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  size_kb=$(( ( $(wc -c < "$f") + 1023 ) / 1024 ))
+  if [ "$size_kb" -gt "$max_kb" ]; then
+    err "$f pesa ${size_kb} KiB (máximo ${max_kb} KiB)"
+    hint "si de verdad tiene que entrar, sube max_file_kb en .gitconventions y di por qué en el commit"
+    status=1
+  fi
+done <<< "$staged"
+
+# --- Rust -------------------------------------------------------------------------
+has_rust=0
+[ -f "$ROOT/Cargo.toml" ] && printf '%s\n' "$staged" | grep -q '\.rs$' && has_rust=1
+
+run_check() { # <política> <¿aplica?> → 0 = ejecutar
+  local policy="$1" applies="$2"
+  case "$policy" in
+    never) return 1 ;;
+    always) return 0 ;;
+    auto) [ "$applies" -eq 1 ] && return 0 || return 1 ;;
+  esac
+  return 1
+}
+
+if run_check "$(cfg run_rust_fmt auto)" "$has_rust"; then
+  if command -v cargo >/dev/null; then
+    if ! cargo fmt --all --check >/dev/null 2>&1; then
+      err "cargo fmt: hay código sin formatear"
+      hint "cargo fmt --all   y vuelve a añadir los ficheros"
+      status=1
+    fi
+  fi
+fi
+
+if run_check "$(cfg run_rust_clippy auto)" "$has_rust"; then
+  if command -v cargo >/dev/null; then
+    if ! clippy_out="$(cargo clippy --all-targets --all-features -- -D warnings 2>&1)"; then
+      err "cargo clippy: hay avisos tratados como error"
+      printf '%s\n' "$clippy_out" | tail -20 >&2
+      status=1
+    fi
+  fi
+fi
+
+# --- JS / TS ----------------------------------------------------------------------
+has_js=0
+[ -f "$ROOT/package.json" ] && printf '%s\n' "$staged" | grep -qE '\.(ts|tsx|js|jsx|svelte|vue)$' && has_js=1
+
+if run_check "$(cfg run_js_checks auto)" "$has_js"; then
+  pm=""
+  for candidate in pnpm bun npm; do
+    command -v "$candidate" >/dev/null && { pm="$candidate"; break; }
+  done
+  if [ -n "$pm" ]; then
+    for script in typecheck lint; do
+      if grep -q "\"$script\"" "$ROOT/package.json"; then
+        if ! "$pm" run "$script" >/dev/null 2>&1; then
+          err "$pm run $script falló"
+          hint "corre «$pm run $script» para ver el detalle"
+          status=1
+        fi
+      fi
+    done
+  fi
+fi
+
+timer_check pre-commit
+[ "$status" -eq 0 ] || head2 "pre-commit falló. Nada se ha commiteado."
+exit "$status"

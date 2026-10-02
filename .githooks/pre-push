@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# pre-push — la última puerta antes de que algo salga del portátil.
+#
+# Revalida los mensajes de todo el rango que se empuja: es lo que pilla los commits
+# hechos con --no-verify. Un commit mal escrito se arregla con rebase mientras es local;
+# una vez publicado, ya no.
+#
+# git pasa por stdin una línea por ref:  <ref local> <sha local> <ref remoto> <sha remoto>
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=../scripts/lib/conventions.sh
+. "$ROOT/scripts/lib/conventions.sh"
+timer_start
+
+ZERO='0000000000000000000000000000000000000000'
+status=0
+protected="$(cfg_list protected_branches)"
+forbidden_prefixes="$(cfg_list forbidden_push_prefixes)"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_ref:-}" ] && continue
+
+  branch="${local_ref#refs/heads/}"
+  remote_branch="${remote_ref#refs/heads/}"
+
+  # Borrado de rama: solo se vigila que no sea una protegida.
+  if [ "$local_sha" = "$ZERO" ]; then
+    if in_list "$remote_branch" "$protected"; then
+      err "estás borrando la rama protegida «$remote_branch» en el remoto"
+      status=1
+    fi
+    continue
+  fi
+
+  # --- Rama protegida -------------------------------------------------------------
+  if in_list "$remote_branch" "$protected"; then
+    case "$(cfg on_protected_push warn)" in
+      block)
+        err "push directo a «$remote_branch» bloqueado (on_protected_push = block)"
+        hint "empuja tu rama y haz el merge: git push -u origin $branch"
+        status=1 ;;
+      warn)
+        warn "push directo a «$remote_branch»" ;;
+    esac
+
+    # Reescritura de historia ya publicada.
+    if [ "$remote_sha" != "$ZERO" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      case "$(cfg on_protected_rewrite block)" in
+        block)
+          err "este push reescribe historia ya publicada de «$remote_branch»"
+          hint "el remoto está en $remote_sha y no es ancestro de lo que empujas"
+          hint "si es intencionado: REGULUS_ALLOW_REWRITE=1 git push --force-with-lease"
+          [ "${REGULUS_ALLOW_REWRITE:-0}" = "1" ] || status=1 ;;
+        warn)
+          warn "este push reescribe historia publicada de «$remote_branch»" ;;
+      esac
+    fi
+  fi
+
+  # --- Rango a inspeccionar -------------------------------------------------------
+  if [ "$remote_sha" = "$ZERO" ]; then
+    # Rama nueva en el remoto: solo los commits que no estén ya en otra rama remota.
+    mapfile -t shas < <(git rev-list --no-merges "$local_sha" --not --remotes 2>/dev/null)
+  else
+    mapfile -t shas < <(git rev-list --no-merges "$remote_sha..$local_sha" 2>/dev/null)
+  fi
+
+  [ "${#shas[@]}" -eq 0 ] && continue
+
+  # --- Commits temporales ---------------------------------------------------------
+  for sha in "${shas[@]}"; do
+    subject="$(git log -1 --format=%s "$sha")"
+    for prefix in $forbidden_prefixes; do
+      case "$subject" in
+        "$prefix"*)
+          err "commit temporal sin limpiar: $(git log -1 --format='%h %s' "$sha")"
+          hint "aplástalo antes de empujar: git rebase -i --autosquash HEAD~${#shas[@]}"
+          status=1 ;;
+      esac
+    done
+  done
+
+  # --- Mensajes -------------------------------------------------------------------
+  for sha in "${shas[@]}"; do
+    if ! lint_out="$(git log -1 --format=%B "$sha" | "$ROOT/scripts/commit-lint.sh" - 2>&1)"; then
+      err "mensaje inválido en $(git log -1 --format='%h %s' "$sha")"
+      printf '%s\n' "$lint_out" >&2
+      status=1
+    fi
+  done
+
+  # --- Tests ----------------------------------------------------------------------
+  if [ -f "$ROOT/Cargo.toml" ] && [ "$(cfg run_rust_tests_on_push auto)" != "never" ] && command -v cargo >/dev/null; then
+    if ! test_out="$(cd "$ROOT" && cargo test --all 2>&1 </dev/null)"; then
+      err "cargo test falló: no se empuja código roto"
+      printf '%s\n' "$test_out" | tail -25 >&2
+      status=1
+    fi
+  fi
+done
+
+timer_check pre-push
+if [ "$status" -ne 0 ]; then
+  head2 "pre-push falló. Nada se ha empujado."
+  hint "saltarlo es una decisión consciente: git push --no-verify"
+fi
+exit "$status"

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es" data-theme="regulus-dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Regulus — paleta y lenguaje visual</title>
+  <link rel="icon" href="../branding/regulus-app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="centaury-recipes.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--rg-color-canvas); color: var(--rg-color-text); font: 14px/1.6 var(--rg-font-ui); }
+    main { max-width: 1140px; margin: auto; padding: 48px 36px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding-bottom: 32px; border-bottom: 1px solid var(--rg-color-border); }
+    .wordmark { width: 190px; height: auto; }
+    .icon { width: 108px; height: 108px; }
+    h1 { font: 600 clamp(28px, 4vw, 44px)/1.2 var(--rg-font-display); letter-spacing: -.045em; margin: 28px 0 12px; }
+    h2 { font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+    p { margin: 0; color: var(--rg-color-text-secondary); }
+    .eyebrow { color: var(--rg-color-text-muted); font: 11px/1.5 var(--rg-font-mono); letter-spacing: .12em; text-transform: uppercase; }
+    .intro { max-width: 630px; }
+    section { margin-top: 36px; }
+    .swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 18px; }
+    .swatch { padding: 0; overflow: hidden; text-align: left; border: 1px solid var(--rg-color-border); background: var(--rg-color-surface); border-radius: var(--rg-radius-control); color: var(--rg-color-text); cursor: pointer; }
+    .swatch-color { display: block; height: 70px; background: var(--sample); border-bottom: 1px solid var(--rg-color-border); }
+    .swatch-label { display: block; padding: 10px 12px; font-size: 12px; }
+    .swatch code { display: block; margin-top: 2px; font: 11px var(--rg-font-mono); color: var(--rg-color-text-muted); }
+    .grid { display: grid; grid-template-columns: 1.08fr 1fr; gap: 20px; }
+    .panel { border: 1px solid var(--rg-color-border); border-radius: var(--rg-radius-band); background: var(--rg-gradient-band-linear); box-shadow: var(--rg-shadow-rim); overflow: hidden; }
+    .panel-heading { padding: 22px 24px 18px; border-bottom: 1px solid var(--rg-color-border); }
+    .panel-body { padding: 22px 24px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--rg-color-border); }
+    .row:last-child { border: 0; }
+    .row strong { display: block; font-size: 13px; font-weight: 500; }
+    .row small { color: var(--rg-color-text-muted); }
+    .badge { white-space: nowrap; border-radius: var(--rg-radius-small); font-size: 11px; padding: 4px 9px; background: var(--rg-color-raised); color: var(--rg-color-text-secondary); }
+    .success { color: var(--rg-color-success); background: var(--rg-color-success-bg); }
+    .warning { color: var(--rg-color-warning); background: var(--rg-color-warning-bg); }
+    .danger { color: var(--rg-color-danger); background: var(--rg-color-danger-bg); }
+    .control-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 24px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 8px 14px; border-radius: var(--rg-radius-control); border: 1px solid var(--rg-color-control-border); font: 500 13px var(--rg-font-ui); text-decoration: none; cursor: pointer; color: var(--rg-color-text); background: var(--rg-color-raised); transition: background var(--rg-duration-fast) var(--rg-ease-standard); }
+    .button:hover { background: var(--rg-color-hover); }
+    .button.primary { color: var(--rg-color-on-accent); background: var(--rg-color-accent); border-color: transparent; }
+    .button.primary:hover { background: var(--rg-color-accent-hover); }
+    .button:disabled { cursor: not-allowed; color: var(--rg-color-text-muted); background: var(--rg-color-raised); border-color: var(--rg-color-border); }
+    label { display: block; font-size: 12px; margin-bottom: 8px; color: var(--rg-color-text-secondary); }
+    input { width: 100%; min-height: 40px; padding: 8px 12px; border-radius: var(--rg-radius-control); border: 1px solid var(--rg-color-control-border); background: var(--rg-color-canvas); color: var(--rg-color-text); font: 13px var(--rg-font-ui); }
+    input::placeholder { color: var(--rg-color-text-muted); }
+    :focus-visible { outline: 2px solid var(--rg-color-focus); outline-offset: 3px; }
+    ::selection { background: var(--rg-color-selected); color: var(--rg-color-text); }
+    .hint { font-size: 12px; color: var(--rg-color-text-muted); margin-top: 10px; }
+    .type-sample { font: 600 24px/1.3 var(--rg-font-display); letter-spacing: -.025em; margin: 16px 0 8px; }
+    .mono { font: 12px/1.7 var(--rg-font-mono); color: var(--rg-color-text-secondary); }
+    footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--rg-color-border); color: var(--rg-color-text-muted); font-size: 12px; }
+    footer a { color: var(--rg-color-accent); }
+    #feedback { min-height: 24px; padding-top: 8px; font-size: 12px; color: var(--rg-color-accent); }
+    @media (max-width: 760px) { main { padding: 28px 20px; } .swatches { grid-template-columns: repeat(3, 1fr); } .grid { grid-template-columns: 1fr; } }
+    @media (max-width: 400px) { .swatches { grid-template-columns: repeat(2, 1fr); } .wordmark { width: 160px; } .icon { width: 72px; height: 72px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><img class="wordmark" src="../branding/regulus-logo.svg" alt="Regulus"><p class="eyebrow" style="margin-top: 14px">Sistema visual · Midnight</p></div>
+      <img class="icon" src="../branding/regulus-app-icon.svg" alt="Icono azul noche de Regulus">
+    </header>
+    <div class="intro">
+      <h1 class="rg-ink-dark">Pizarra. Tinta. Profundidad.</h1>
+      <p>El lenguaje real de Centaury: bandas pizarra iluminadas, títulos con tinta degradada y gráficos monocromos. Trasladado desde su código a Regulus.</p>
+    </div>
+    <section aria-labelledby="palette-title">
+      <h2 id="palette-title">Paleta de Regulus</h2>
+      <p>Selecciona un color para copiar su código hexadecimal.</p>
+      <div class="swatches" id="swatches"></div>
+      <p id="feedback" role="status" aria-live="polite"></p>
+    </section>
+    <div class="grid">
+      <section class="panel rg-spotlight" aria-labelledby="states-title">
+        <div class="panel-heading"><p class="eyebrow">Muestra de estados · datos de ejemplo</p><h2 id="states-title">Módulos</h2></div>
+        <div class="panel-body">
+          <label for="filter">Filtrar la muestra</label>
+          <input id="filter" type="search" placeholder="Nombre del módulo…" autocomplete="off">
+          <div id="modules">
+            <div class="row" data-name="hcom"><div><strong>hcom</strong><small>Comunicación entre agentes</small></div><span class="badge success">● Activo</span></div>
+            <div class="row" data-name="roles"><div><strong>Roles</strong><small>Instalado, nunca utilizado</small></div><span class="badge warning">◇ Sin usar</span></div>
+            <div class="row" data-name="memoria"><div><strong>Memoria</strong><small>Disponible al instalar el módulo</small></div><span class="badge">○ No instalado</span></div>
+            <div class="row" data-name="mcp"><div><strong>MCP</strong><small>Falta una capacidad requerida</small></div><span class="badge danger">! Deshabilitado</span></div>
+          </div>
+          <p class="hint" id="filter-status" role="status" aria-live="polite">4 módulos de ejemplo.</p>
+        </div>
+      </section>
+      <section class="panel rg-spotlight" aria-labelledby="controls-title">
+        <div class="panel-heading"><p class="eyebrow">Forma y jerarquía</p><h2 id="controls-title">Controles y tipografía</h2></div>
+        <div class="panel-body">
+          <p>Acento pizarra de Centaury y contenedores con el gradiente de sus bandas oscuras.</p>
+          <div class="control-row">
+            <button class="button primary" id="copy-accent" type="button">Copiar acento</button>
+            <a class="button" href="palette.json" download>Descargar paleta</a>
+            <button class="button" disabled>Desactivado</button>
+          </div>
+          <p class="eyebrow">Encabezado · 24 / 600</p>
+          <div class="type-sample rg-ink-dark">Todo en su sitio.</div>
+          <p>Texto de interfaz claro, con espacio para trabajar durante horas.</p>
+          <p class="mono" style="margin-top: 18px">regulus / module.list<br>capability → resolved</p>
+          <p class="hint">Epilogue y Sora si están instaladas; fuentes del sistema como alternativa. Esta muestra funciona sin red.</p>
+        </div>
+      </section>
+    </div>
+    <section class="rg-band rg-spotlight" style="padding: var(--rg-space-8)">
+      <p class="eyebrow">Materiales de Centaury</p>
+      <h2 class="rg-ink-dark" style="font-size: 28px">Una misma tinta, distintos niveles.</h2>
+      <p>Banda radial · brillo localizado en el borde · decoración ASCII.</p>
+      <pre class="rg-ascii" aria-hidden="true">@───@───@
+│   │   │
+└───@───┘</pre>
+    </section>
+    <div class="grid">
+      <section class="rg-chart-panel" aria-labelledby="bars-title">
+        <h2 class="rg-ink" id="bars-title">Actividad · barras de tres capas</h2>
+        <p>Datos de ejemplo. Selecciona una barra.</p>
+        <div class="rg-bars" id="bar-demo" role="group" aria-label="Eventos diarios de ejemplo"></div>
+        <div class="rg-chart-labels" id="bar-labels" aria-hidden="true"></div>
+        <p class="hint" id="chart-status" role="status">Capuchón pizarra, franja blanca y cuerpo degradado.</p>
+      </section>
+      <section class="rg-chart-panel" aria-labelledby="stacks-title">
+        <h2 class="rg-ink" id="stacks-title">Uso · escala monocroma</h2>
+        <p>Datos de ejemplo. Segmentos con el tono más oscuro en la base.</p>
+        <div class="rg-stacks" id="stack-demo"></div>
+        <div class="rg-chart-labels" id="stack-labels"></div>
+        <ul class="rg-legend" id="stack-legend"></ul>
+      </section>
+    </div>
+    <footer>
+      <span>Muestra de estilo independiente · no es la aplicación ni componentes shadcn instalados.</span>
+      <a href="../../docs/08-design-system.md">Leer la guía de diseño</a>
+    </footer>
+  </main>
+  <script>
+    const styles = getComputedStyle(document.documentElement);
+    const color = name => styles.getPropertyValue(`--rg-color-${name}`).trim();
+    async function copyColor(name) {
+      const value = color(name);
+      try {
+        await navigator.clipboard.writeText(value);
+        document.querySelector('#feedback').textContent = `${value} copiado.`;
+      } catch {
+        document.querySelector('#feedback').textContent = `Color: ${value}. Puedes seleccionarlo y copiarlo manualmente.`;
+      }
+    }
+    const samples = [['canvas', 'Base de banda'], ['surface', 'Pizarra'], ['raised', 'Banda iluminada'], ['border', 'Borde pizarra'], ['steel', 'Acento visual'], ['accent', 'Primario Centaury'], ['text', 'Texto'], ['text-secondary', 'Texto secundario'], ['text-muted', 'Texto auxiliar'], ['chart-2', 'Chart claro'], ['chart-3', 'Chart oscuro'], ['chart-4', 'Chart tenue']];
+    for (const [name, label] of samples) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'swatch';
+      button.style.setProperty('--sample', color(name));
+      button.setAttribute('aria-label', `Copiar ${label}: ${color(name)}`);
+      const sample = document.createElement('span'); sample.className = 'swatch-color';
+      const caption = document.createElement('span'); caption.className = 'swatch-label'; caption.textContent = label;
+      const code = document.createElement('code'); code.textContent = color(name);
+      caption.append(code); button.append(sample, caption);
+      button.addEventListener('click', () => copyColor(name));
+      document.querySelector('#swatches').append(button);
+    }
+    document.querySelector('#copy-accent').addEventListener('click', () => copyColor('accent'));
+    document.querySelector('#filter').addEventListener('input', event => {
+      let count = 0;
+      for (const row of document.querySelectorAll('[data-name]')) {
+        const visible = row.dataset.name.includes(event.target.value.trim().toLowerCase());
+        row.style.display = visible ? '' : 'none';
+        if (visible) count++;
+      }
+      document.querySelector('#filter-status').textContent = count ? `${count} módulos de ejemplo.` : 'Ningún módulo coincide con el filtro.';
+    });
+  </script>
+  <script src="chart-demo.js"></script>
+</body>
+</html>
