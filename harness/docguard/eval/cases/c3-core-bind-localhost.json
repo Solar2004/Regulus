@@ -1,0 +1,7 @@
+{
+ "note": "Bind correcto a 127.0.0.1 con puerto de configuración.",
+ "file": "crates/regulus-core/src/server.rs",
+ "before": "let addr = todo!();\n",
+ "after": "let addr = SocketAddr::from(([127, 0, 0, 1], cfg.port));\n",
+ "expect": []
+}

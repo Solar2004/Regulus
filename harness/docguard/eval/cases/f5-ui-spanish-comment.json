@@ -1,0 +1,7 @@
+{
+ "note": "Comentario en español en un componente de la app (decisión #20).",
+ "file": "ui/src/components/AgentRow.tsx",
+ "before": "",
+ "after": "import { t } from \"@/i18n\";\n\n// Muestra el estado del agente cuando está conectado\nexport function AgentRow({ state }: { state: string }) {\n  return <span>{t(`agent.state.${state}`)}</span>;\n}\n",
+ "expect": ["LANG-comment"]
+}

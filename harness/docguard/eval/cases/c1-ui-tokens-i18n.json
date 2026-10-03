@@ -1,0 +1,7 @@
+{
+ "note": "Componente que usa tokens y traducciones.",
+ "file": "ui/src/components/ModuleRow.tsx",
+ "before": "",
+ "after": "import { t } from \"@/i18n\";\n\nexport function ModuleRow({ name, state }: { name: string; state: string }) {\n  return (\n    <div className=\"rg-row\">\n      <span>{name}</span>\n      <span className=\"rg-state\">{t(`module.state.${state}`)}</span>\n    </div>\n  );\n}\n",
+ "expect": []
+}

@@ -34,6 +34,12 @@
     .row strong { display: block; font-size: 13px; font-weight: 500; }
     .row small { color: var(--rg-color-text-muted); }
     .badge { white-space: nowrap; border-radius: var(--rg-radius-small); font-size: 11px; padding: 4px 9px; background: var(--rg-color-raised); color: var(--rg-color-text-secondary); }
+    .status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 11px; font-weight: 500; }
+    .status svg { width: 14px; height: 14px; flex-shrink: 0; background: none; border: 0; border-radius: 0; }
+    .status.success { color: var(--rg-color-success); background: none; }
+    .status.warning { color: var(--rg-color-warning); background: none; }
+    .status.danger { color: var(--rg-color-danger); background: none; }
+    .status.muted { color: var(--rg-color-text-muted); background: none; }
     .success { color: var(--rg-color-success); background: var(--rg-color-success-bg); }
     .warning { color: var(--rg-color-warning); background: var(--rg-color-warning-bg); }
     .danger { color: var(--rg-color-danger); background: var(--rg-color-danger-bg); }
@@ -65,8 +71,8 @@
       <img class="icon" src="../branding/regulus-app-icon.svg" alt="Icono azul noche de Regulus">
     </header>
     <div class="intro">
-      <h1 class="rg-ink-dark">Pizarra. Tinta. Profundidad.</h1>
-      <p>El lenguaje real de Centaury: bandas pizarra iluminadas, títulos con tinta degradada y gráficos monocromos. Trasladado desde su código a Regulus.</p>
+      <h1 class="rg-ink-dark">Azul noche. Tinta. Profundidad.</h1>
+      <p>Las recetas reales de Centaury —bandas iluminadas, tinta degradada y gráficos monocromos— reencuadradas en el azul noche y el azul acero del icono de Regulus.</p>
     </div>
     <section aria-labelledby="palette-title">
       <h2 id="palette-title">Paleta de Regulus</h2>
@@ -81,18 +87,19 @@
           <label for="filter">Filtrar la muestra</label>
           <input id="filter" type="search" placeholder="Nombre del módulo…" autocomplete="off">
           <div id="modules">
-            <div class="row" data-name="hcom"><div><strong>hcom</strong><small>Comunicación entre agentes</small></div><span class="badge success">● Activo</span></div>
-            <div class="row" data-name="roles"><div><strong>Roles</strong><small>Instalado, nunca utilizado</small></div><span class="badge warning">◇ Sin usar</span></div>
-            <div class="row" data-name="memoria"><div><strong>Memoria</strong><small>Disponible al instalar el módulo</small></div><span class="badge">○ No instalado</span></div>
-            <div class="row" data-name="mcp"><div><strong>MCP</strong><small>Falta una capacidad requerida</small></div><span class="badge danger">! Deshabilitado</span></div>
+            <div class="row" data-name="hcom"><div><strong>hcom</strong><small>Comunicación entre agentes</small></div><span class="status success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>Activo</span></div>
+            <div class="row" data-name="roles"><div><strong>Roles</strong><small>Instalado, nunca utilizado</small></div><span class="status warning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/></svg>Sin usar</span></div>
+            <div class="row" data-name="memoria"><div><strong>Memoria</strong><small>Disponible al instalar el módulo</small></div><span class="status muted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 9.4 7.55 4.24"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>No instalado</span></div>
+            <div class="row" data-name="mcp"><div><strong>MCP</strong><small>Falta una capacidad requerida</small></div><span class="status danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>Deshabilitado</span></div>
+            <div class="row" data-name="agents"><div><strong>Agents</strong><small>Error al iniciar: puerto en uso</small></div><span class="status danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>Roto</span></div>
           </div>
-          <p class="hint" id="filter-status" role="status" aria-live="polite">4 módulos de ejemplo.</p>
+          <p class="hint" id="filter-status" role="status" aria-live="polite">5 módulos de ejemplo.</p>
         </div>
       </section>
       <section class="panel rg-spotlight" aria-labelledby="controls-title">
         <div class="panel-heading"><p class="eyebrow">Forma y jerarquía</p><h2 id="controls-title">Controles y tipografía</h2></div>
         <div class="panel-body">
-          <p>Acento pizarra de Centaury y contenedores con el gradiente de sus bandas oscuras.</p>
+          <p>Acento azul acero del icono y contenedores con el gradiente de las bandas oscuras de Centaury.</p>
           <div class="control-row">
             <button class="button primary" id="copy-accent" type="button">Copiar acento</button>
             <a class="button" href="palette.json" download>Descargar paleta</a>
@@ -115,12 +122,24 @@
 └───@───┘</pre>
     </section>
     <div class="grid">
+      <section class="rg-chart-panel" aria-labelledby="ink-alt-title">
+        <p class="eyebrow">Tinta alt · text-ink de Centaury</p>
+        <h2 class="rg-ink-alt" id="ink-alt-title" style="font-size: 26px">Negra con degradado gris.</h2>
+        <p>La otra tinta de Centaury, para fondos claros: del azul noche al gris. Solo en títulos, nunca en párrafos.</p>
+      </section>
+      <section class="rg-band" aria-labelledby="ink-dark-title" style="padding: var(--rg-space-6)">
+        <p class="eyebrow">Tinta clara · text-ink-dark</p>
+        <h2 class="rg-ink-dark" id="ink-dark-title" style="font-size: 26px">Blanco a azul hielo.</h2>
+        <p>La tinta de los títulos sobre las bandas oscuras, ahora terminada en el azul del icono.</p>
+      </section>
+    </div>
+    <div class="grid">
       <section class="rg-chart-panel" aria-labelledby="bars-title">
         <h2 class="rg-ink" id="bars-title">Actividad · barras de tres capas</h2>
         <p>Datos de ejemplo. Selecciona una barra.</p>
         <div class="rg-bars" id="bar-demo" role="group" aria-label="Eventos diarios de ejemplo"></div>
         <div class="rg-chart-labels" id="bar-labels" aria-hidden="true"></div>
-        <p class="hint" id="chart-status" role="status">Capuchón pizarra, franja blanca y cuerpo degradado.</p>
+        <p class="hint" id="chart-status" role="status">Capuchón azul noche, franja blanca y cuerpo degradado.</p>
       </section>
       <section class="rg-chart-panel" aria-labelledby="stacks-title">
         <h2 class="rg-ink" id="stacks-title">Uso · escala monocroma</h2>
@@ -147,7 +166,7 @@
         document.querySelector('#feedback').textContent = `Color: ${value}. Puedes seleccionarlo y copiarlo manualmente.`;
       }
     }
-    const samples = [['canvas', 'Base de banda'], ['surface', 'Pizarra'], ['raised', 'Banda iluminada'], ['border', 'Borde pizarra'], ['steel', 'Acento visual'], ['accent', 'Primario Centaury'], ['text', 'Texto'], ['text-secondary', 'Texto secundario'], ['text-muted', 'Texto auxiliar'], ['chart-2', 'Chart claro'], ['chart-3', 'Chart oscuro'], ['chart-4', 'Chart tenue']];
+    const samples = [['canvas', 'Azul noche'], ['surface', 'Superficie'], ['raised', 'Banda iluminada'], ['border', 'Borde'], ['steel', 'Azul acero'], ['accent', 'Acento Regulus'], ['text', 'Texto'], ['text-secondary', 'Texto secundario'], ['text-muted', 'Texto auxiliar'], ['chart-2', 'Chart hielo'], ['chart-3', 'Chart profundo'], ['chart-4', 'Chart tenue']];
     for (const [name, label] of samples) {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'swatch';

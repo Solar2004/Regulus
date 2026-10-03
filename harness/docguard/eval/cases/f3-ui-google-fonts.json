@@ -1,0 +1,9 @@
+{
+ "note": "Fuentes de Google en ejecución.",
+ "file": "ui/src/styles/fonts.css",
+ "before": "",
+ "after": "@import url(\"https://fonts.googleapis.com/css2?family=Inter&display=swap\");\n",
+ "expect": [
+  "08-11ab49"
+ ]
+}

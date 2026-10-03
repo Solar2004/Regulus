@@ -1,11 +1,12 @@
 /* Source recipes and intentional adaptations: docs/centaury-recipes.md.
    Load after tokens.css. No framework or network dependency. */
-.rg-ink, .rg-ink-dark {
+.rg-ink, .rg-ink-alt, .rg-ink-dark {
   background-image: var(--rg-gradient-ink);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
+.rg-ink-alt { background-image: var(--rg-gradient-ink); }
 .rg-ink-dark { background-image: var(--rg-gradient-ink-dark); }
 .rg-band { background: var(--rg-gradient-band-radial); border-radius: var(--rg-radius-band); }
 .rg-band-linear { background: var(--rg-gradient-band-linear); border-radius: var(--rg-radius-band); }
@@ -41,4 +42,4 @@
 .rg-legend { display: flex; flex-wrap: wrap; gap: var(--rg-space-3); list-style: none; padding: 0; font-size: 11px; color: var(--rg-color-paper-muted); }
 .rg-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 3px; margin-right: 5px; background: var(--shade); }
 @media (prefers-reduced-motion: reduce) { .rg-spotlight::before, .rg-spotlight::after { transition: none; } }
-@media (forced-colors: active) { .rg-ink, .rg-ink-dark { background: none; color: CanvasText; } }
+@media (forced-colors: active) { .rg-ink, .rg-ink-alt, .rg-ink-dark { background: none; color: CanvasText; } }

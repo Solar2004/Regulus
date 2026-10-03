@@ -57,8 +57,10 @@ construir todas las habitaciones hoy.**
 | **`docs/07-ecosystem.md`** | ~2.2k | **ACP**: ~45 agentes ya lo hablan. `rmcp` para MCP. Candidatos de registro de módulos. Implementaciones de referencia. **Lo que NO se va a usar y por qué.** | #12 ACP (abierta) |
 | **`docs/08-design-system.md`** | ~1.8k | UI kit recomendado, lenguaje visual Regulus Midnight, paleta y tokens en `assets/design/`, integración futura y muestra HTML. | Kit propuesto, aún no instalado |
 | **`docs/09-git.md`** | ~1.8k | **Cómo se commitea y se empuja aquí.** Formato de mensaje, tipos y scopes, qué entra en un commit, política de ramas y push, releases. **Las 7 reglas para agentes.** Lo aplican los hooks de `.githooks/`; la configuración viva está en `.gitconventions`. | #19 harness de git |
+| **`docs/10-docguard.md`** | ~1.4k | **El harness que revisa a los agentes.** Al terminar un turno contrasta lo que hiciste con las reglas de los docs (`harness/docguard/rules.json`) y te para si algo no cumple. Capas, por qué así (research), CLI, límites. | docguard (🔶) |
 | **`docs/research.md`** | ~1.3k | Datos medidos, no opiniones. Orca (es Electron/TS, no Rust). hcom (es Rust, binario sin `[lib]`). El workflow real de Alexander con cifras. | — |
 | **`docs/ideas/boxes.md`** | ~1.4k | El sistema de cajas: **sin definir**. Tres lecturas posibles, 5 preguntas sin responder. Bloquea `Isolation`. | #11 cajas (abierta) |
+| **`docs/ideas/harness-optimization.md`** | ~3k | **Handoff de investigación**: qué mejorar en el harness para que los agentes rindan al máximo. Qué existe, medir antes de optimizar, líneas de research, candidatos. | — (abierto) |
 | **`README.md`** | ~1.0k | Cara humana: branding, assets, índice de lectura. | — |
 
 ---
@@ -76,6 +78,7 @@ construir todas las habitaciones hoy.**
 | **Elegir una dependencia** | `07-ecosystem.md` §5 (lo descartado) → `06-stack.md` | ~1.5k |
 | **Verificar un dato sobre Orca o hcom** | `research.md` | ~1.3k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |
+| **Cambiar un doc con reglas, o docguard te bloqueó** | `10-docguard.md` §2, §5 | ~0.6k |
 | **Trabajar en un brief** | `05-roadmap.md` §5 → lo que tu brief indique | variable |
 
 ---
@@ -117,7 +120,14 @@ Las versiones de dependencias viven **solo** en `06-stack.md`. Los datos medidos
 **solo** en `research.md`. Si duplicas, se desincroniza. Si encuentras una duplicación,
 bórrala y deja un enlace.
 
-### 6. Cómo se commitea
+### 6. El código va en inglés
+
+Todo lo que forma parte de la app (`ui/`, `crates/`, `src-tauri/`) se escribe en
+**inglés**: comentarios, identificadores, logs, mensajes de error y commits. Los textos
+visibles van en los ficheros de traducción (`04-client.md` §10). **Solo los docs van en
+español.** Decisión #20 (`05-roadmap.md`). docguard lo vigila.
+
+### 7. Cómo se commitea
 
 El repo tiene hooks: un mensaje mal formado **no entra**. Lo mínimo que necesitas saber
 antes de tu primer commit — el resto está en [`docs/09-git.md`](docs/09-git.md):

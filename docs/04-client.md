@@ -16,8 +16,8 @@ El core es un servidor de socket. Por tanto el cliente se puede construir contra
 especificación del core**.
 
 ```
-   ui/  ──JSON-RPC──▶  mock-server (JSON enlatado)   ← fase 1: hoy
-   ui/  ──JSON-RPC──▶  regulus-core (real)           ← fase 2: mismo cliente, sin cambios
+   frontend/  ──JSON-RPC──▶  mock-server (JSON enlatado)   ← fase 1: hoy
+   frontend/  ──JSON-RPC──▶  regulus-core (real)           ← fase 2: mismo cliente, sin cambios
 ```
 
 El trabajo de UI produce la spec del core como **subproducto**, no como desecho. Dibujar

@@ -1,0 +1,10 @@
+{
+ "note": "El core guarda el proyecto actual. 04-a386e6 duplica a 02-d15a37 (dedupe pendiente).",
+ "file": "crates/regulus-core/src/state.rs",
+ "before": "pub struct Core {\n    pub bus: Bus,\n}\n",
+ "after": "pub struct Core {\n    pub bus: Bus,\n    pub current_project: Option<ProjectId>,\n}\n",
+ "expect": [
+  "02-d15a37",
+  "04-a386e6"
+ ]
+}

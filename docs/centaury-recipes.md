@@ -13,12 +13,22 @@ Regulus utiliza esas bandas en sus paneles oscuros y conserva el contexto claro
 original en las muestras de gráficos. Esta distribución es una adaptación para
 Regulus, no un supuesto modo oscuro existente en Centaury.
 
+## Corrección 2 (2026-10-02): un escalón más oscuro, en el azul del logo
+
+A petición de Alexander, la paleta abandona el pizarra neutro de Centaury y se
+reancla en el **azul noche `#0A1424`, azul acero `#587BA7` y blanco frío `#F3F8FF`**
+del icono de Regulus (README §Identidad visual). El canvas pasa de `#1F2130` a
+`#0A1424`; toda la escala de superficies, gradientes, gráficos y estados se recalcula
+en esa familia. **Corrección 3 (mismo día):** saturación −15% en toda la escala y un
+paso más oscuro; el generador sigue verificando los 32 pares. Las recetas de Centaury
+(bandas, tinta, bordes, barras) se conservan; solo cambia el color.
+
 ## Qué se ha trasladado
 
 | Receta | Fuente real | Implementación en Regulus |
 |---|---|---|
 | Paleta activa y familia navbar/footer | `src/app/globals.css`, `:root` | `palette.json`, `colors` |
-| Texto con tinta degradada | `globals.css`, `.text-ink` / `.text-ink-dark` | `.rg-ink` / `.rg-ink-dark` |
+| Texto con tinta degradada | `globals.css`, `.text-ink` / `.text-ink-dark` | `.rg-ink` / `.rg-ink-alt` / `.rg-ink-dark` |
 | Banda radial | `src/app/client/page.tsx`, tarjeta inferior lateral | `gradient.band-radial`, `.rg-band` |
 | Banda lineal | `docs/design-system.md`, receta Principles | `gradient.band-linear`, `.rg-band-linear` |
 | Botón oscuro del login | `src/app/login/page.tsx` | `gradient.cta`, `.rg-cta` |
@@ -41,10 +51,15 @@ Archivos listos para reutilizar:
 
 ## Tinta, degradados y superficies
 
-Los títulos claros emplean el gradiente original de `foreground` hasta `primary`,
-con paradas 45% y 140%. En oscuro, blanco hasta el pizarra claro de la marca, 40% y
-135%. Ambas recetas recortan el fondo al texto; nunca se aplican a párrafos, tablas
-ni logs. En colores forzados se recupera texto sólido legible.
+Centaury define **dos tintas** (`globals.css`). La variante *alt* es `text-ink`:
+negra con degradado gris (de `foreground` a `primary`, paradas 45% y 140%), para
+fondos claros. La otra es `text-ink-dark`: blanca con degradado frío, para fondos
+oscuros (blanco 40% → `#959fbf` 135% en el original). Regulus expone ambas: `.rg-ink`
+—con el alias explícito `.rg-ink-alt`— para fondos claros, y `.rg-ink-dark` para las
+bandas oscuras. Los extremos se reanclan en la paleta Regulus: azul noche `#142338`
+→ gris `#5B6F91` en la oscura; blanco → azul hielo `#A8CFFF` del icono en la clara.
+Nunca se aplican a párrafos, tablas ni logs. En colores forzados se recupera texto
+sólido legible.
 
 La banda radial ilumina el centro superior y termina en el tono profundo de la
 rampa; la lineal ilumina el borde superior. No sustituirlas por una tarjeta plana

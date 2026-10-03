@@ -1,0 +1,9 @@
+{
+ "note": "Bind a todas las interfaces.",
+ "file": "crates/regulus-core/src/server.rs",
+ "before": "let addr = cfg.listen_addr();\n",
+ "after": "let addr = \"0.0.0.0:7777\";\n",
+ "expect": [
+  "06-8f5e4e"
+ ]
+}

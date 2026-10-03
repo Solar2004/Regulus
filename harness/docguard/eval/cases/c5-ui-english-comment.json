@@ -1,0 +1,7 @@
+{
+ "note": "Comentario en inglés; el texto visible pasa por i18n.",
+ "file": "ui/src/components/AgentRow.tsx",
+ "before": "",
+ "after": "import { t } from \"@/i18n\";\n\n// Shows the agent state while it is connected\nexport function AgentRow({ state }: { state: string }) {\n  return <span>{t(`agent.state.${state}`)}</span>;\n}\n",
+ "expect": []
+}

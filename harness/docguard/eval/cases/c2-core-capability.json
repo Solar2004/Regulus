@@ -1,0 +1,7 @@
+{
+ "note": "El core resuelve por capacidad, sin nombres.",
+ "file": "crates/regulus-core/src/registry.rs",
+ "before": "pub fn resolve(&self, cap: &Capability) -> Option<&ModuleRef> {\n    None\n}\n",
+ "after": "pub fn resolve(&self, cap: &Capability) -> Option<&ModuleRef> {\n    self.providers.get(cap).and_then(|v| v.first())\n}\n",
+ "expect": []
+}

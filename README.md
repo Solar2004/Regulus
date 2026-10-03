@@ -43,8 +43,8 @@ python3 assets/branding/build_assets.py
 
 ### Paleta y UI kit
 
-La dirección visual es **Regulus Midnight**: superficies grafito del tema oscuro de
-Centaury y acentos azules del icono de Regulus. La recomendación
+La dirección visual es **Regulus Midnight**: azul noche y azul acero del icono de
+Regulus, con las recetas de bandas, tinta y bordes de Centaury. La recomendación
 es **shadcn/ui + Base UI**, con componentes personalizados para Regulus.
 
 - [Guía de diseño y comparación de kits](docs/08-design-system.md).

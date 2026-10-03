@@ -1,0 +1,16 @@
+# Regulus — workspace raíz (docs/02-architecture.md §3).
+# De momento solo el shell Tauri; crates/regulus-core, regulus-proto,
+# regulus-cli y modules/* se añaden a `members` al llegar las fases D-F.
+[workspace]
+members = ["crates/regulus-tauri/src-tauri"]
+resolver = "2"
+
+# Perfil release del shell (antes en crates/regulus-tauri/Cargo.toml:
+# en un workspace solo la raíz define profiles).
+# Ver https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

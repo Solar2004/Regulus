@@ -12,8 +12,8 @@ dist-ssr/
 *.tsbuildinfo
 
 # --- Tauri ---
-src-tauri/target/
-src-tauri/gen/
+crates/*/target/
+crates/*/gen/
 
 # --- Secretos y entorno ---
 .env
@@ -41,4 +41,6 @@ secrets.toml
 
 # --- Agentes ---
 .claude/settings.local.json
-.opencode/
+# opencode: se versionan los plugins del proyecto (docguard); el resto no.
+.opencode/*
+!.opencode/plugins/

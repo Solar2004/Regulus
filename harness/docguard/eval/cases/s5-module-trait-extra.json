@@ -1,0 +1,10 @@
+{
+ "note": "Quinto método en el trait Module, y además mete UI (Html) en el core.",
+ "file": "crates/regulus-core/src/module.rs",
+ "before": "pub trait Module {\n    fn manifest(&self) -> Manifest;\n    fn init(&mut self, ctx: ModuleCtx) -> Result<()>;\n    fn call(&mut self, m: &str, p: Value) -> Result<Value>;\n    fn shutdown(&mut self);\n}\n",
+ "after": "pub trait Module {\n    fn manifest(&self) -> Manifest;\n    fn init(&mut self, ctx: ModuleCtx) -> Result<()>;\n    fn call(&mut self, m: &str, p: Value) -> Result<Value>;\n    fn render_panel(&self) -> Html;\n    fn shutdown(&mut self);\n}\n",
+ "expect": [
+  "03-726d76",
+  "02-74c783"
+ ]
+}

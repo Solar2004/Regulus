@@ -1,0 +1,10 @@
+{
+ "note": "Color hex pegado: rompe la regla de tokens y la de colores por variables CSS.",
+ "file": "ui/src/components/StatusBadge.tsx",
+ "before": "export function StatusBadge({ label }: { label: string }) {\n  return <span className=\"rg-badge\">{label}</span>\n}\n",
+ "after": "export function StatusBadge({ label }: { label: string }) {\n  return <span style={{ color: \"#7c5cff\", background: \"#0b0d17\" }}>{label}</span>\n}\n",
+ "expect": [
+  "08-252188",
+  "04-383e6e"
+ ]
+}

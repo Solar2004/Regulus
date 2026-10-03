@@ -43,9 +43,9 @@ avisos de licencia. [Licencia](https://github.com/shadcn-ui/ui/blob/main/LICENSE
 
 ## Lenguaje visual
 
-**Regulus Midnight:** superficies grafito del tema oscuro de Centaury, con reflejos de
-acero en el borde superior y azul frío en las acciones seleccionadas. El icono es la
-referencia de material, no una textura que haya que repetir por toda la pantalla.
+**Regulus Midnight:** azul noche y azul acero del icono de Regulus sobre las recetas
+de Centaury (bandas iluminadas, tinta degradada, bordes con luz localizada). El icono
+es la referencia de material, no una textura que haya que repetir por toda la pantalla.
 
 - Superficies opacas por niveles: fondo → panel → menú flotante.
 - Un borde superior iluminado, muy tenue, da continuidad con el icono.
@@ -53,35 +53,71 @@ referencia de material, no una textura que haya que repetir por toda la pantalla
 - Azul hielo para acciones y foco; verde, ámbar y rojo solo para estados.
 - Evitar fondos de galaxias, partículas, neón, brillos animados y desenfoque detrás
   de cada panel. La información operativa tiene prioridad.
-- Estados siempre con texto y, cuando ayude, símbolo; nunca solo con color.
+- Estados: siempre icono SVG + texto; nunca glifos de texto (`●◇○!`), nunca solo color.
 
-### Referencia de color: Centaury
+### Estados: icono SVG + texto (reglas)
 
-Actualizado por petición de Alexander: tomar los colores de su web
-[Centaury](https://centaury.ai) y [login](https://centaury.ai/login).
-La página pública de acceso se observó en modo claro. Para responder a la petición
-de tarjetas más oscuras, se usan las variables **`.dark` de su CSS**, no las tarjetas
-blancas que muestra esa ruta por defecto.
+1. Todo estado es `icono + etiqueta`. La etiqueta es obligatoria; el color solo no
+   identifica nada.
+2. Iconos solo de **Lucide** (`lucide-react` en la app, SVG inline en `preview.html`),
+   14 px en líneas de estado, trazo 1.75. La estrella se reserva para la marca.
+3. El símbolo va **al desnudo**: sin fondo, sin borde, sin `border-radius`.
+   El componente es `ModuleStatus` (`frontend/src/components/ui/status.tsx`).
+4. Correspondencia cerrada:
 
-Correspondencia con el CSS inspeccionado:
+   | Estado (`04-client.md` §4) | Icono | Color de texto |
+   |---|---|---|
+   | `active` | `CircleCheck` | `success` |
+   | `idle` (instalado, nunca usado) | `CircleDashed` | `warning` (tiene que molestar un poco) |
+   | `not-installed` | `PackageOpen` | `text-muted` |
+   | `disabled` (falta capacidad requerida) | `OctagonX` | `danger` |
+   | `broken` | `TriangleAlert` | `danger` |
 
-| Token de Regulus | Variable de Centaury |
+5. `Badge` (píldora `rounded-full`) es para etiquetas y conteos, no para estados
+   de módulo. No meter un estado dentro de un `Badge`.
+6. Radios: `small` 6 px etiquetas, `control` 10–12 px botones/inputs/items de menú,
+   `panel` 16 px paneles y popovers de menú, `dialog` 28 px diálogos. El `Button`
+   e `Input` usan `rounded-md`; el `DialogContent`, `rounded-[var(--rg-radius-dialog)]`.
+
+### Referencia de color: Centaury + icono de Regulus
+
+**Corrección (2026-10-02).** El bloque `.dark` de Centaury está declarado para el
+futuro y **no está activo**: `#181818`, `#10101a` y el verde de ese bloque no
+describen su web visible. La primera extracción los usó por error. Lo trasladado son
+las recetas activas —bandas, tinta, bordes y gráficos—, verificadas contra el código
+en [`centaury-recipes.md`](centaury-recipes.md).
+
+**Corrección 2 (2026-10-02).** A petición de Alexander, la paleta se reancla en la
+identidad del logo y baja un escalón de luminosidad: **azul noche `#0A1424`, azul
+acero `#587BA7`, blanco frío `#F3F8FF`** (README §Identidad visual). El icono de la
+app es la fuente de los extremos de gradiente.
+
+| Token de Regulus | Origen |
 |---|---|
-| `canvas` | `.dark --background` |
-| `surface`, `sidebar` | `.dark --card`, `--sidebar` |
-| `raised` | `.dark --secondary` |
-| `hover`, `selected` | `.dark --navbar-accent` |
-| `border` | `.dark --border` |
-| `text` | `.dark --foreground` |
-| `text-secondary` | `.dark --chart-1` (gris claro) |
-| `text-muted` | `.dark --navbar-muted-foreground` |
-| `control-border` | `.dark --sidebar-ring` |
+| `canvas` | Azul noche del logo, un paso más oscuro |
+| `sidebar`, `surface` | Escala del icono, un paso sobre el canvas |
+| `raised`, `hover`, `selected` | Escala del icono |
+| `border` | Azul grisáceo derivado del icono |
+| `steel` / `accent` | Azul acero del logo (`#587BA7`), oscurecido en `accent` para texto blanco |
+| `focus` | Azul hielo del icono (`#A8CFFF`) |
+| `text` | Blanco frío del logo (`#F3F8FF`) |
+| `text-secondary`, `text-muted` | Adaptaciones legibles dentro de la familia |
+| `control-border` | Adaptación para contraste de campos (≥3:1) |
+| Estados | Pares semánticos legibles; nunca solo color |
 
-Los dos últimos son adaptaciones de uso para mantener legibles los textos auxiliares
-y los contornos de campos. Se conserva el azul Regulus para `accent`, `focus` y los
-estados; no se adopta el verde de `--primary` de Centaury. El logo y el icono conservan
-sus colores. La referencia CSS y los valores efectivos están en
+Las recetas de Centaury se mantienen; solo cambia el color. El logo y el icono
+conservan sus colores. La referencia CSS y los valores efectivos están en
 [`palette.json`](../assets/design/palette.json), con fecha y alcance de la extracción.
+
+### Tinta (dos variantes)
+
+Centaury define dos utilidades de tinta recortada al texto. La variante *alt*
+(`.text-ink`) es negra con degradado gris, para fondos claros; la otra
+(`.text-ink-dark`) es blanca con degradado frío, para fondos oscuros. Regulus expone
+`.rg-ink` / `.rg-ink-alt` y `.rg-ink-dark` en
+[`centaury-recipes.css`](../assets/design/centaury-recipes.css). Extremos reanclados
+a la paleta: azul noche → gris en la oscura; blanco → azul hielo `#A8CFFF` del icono
+en la clara. Solo títulos; nunca párrafos, tablas ni logs.
 
 ### Fuente de verdad de la paleta
 
@@ -109,23 +145,27 @@ seleccionada; el azul hielo de marca corresponde a `--primary`.
 
 ## Tipografía, densidad y movimiento
 
-- **Títulos:** Manrope 600, 20–28 px, espaciado ligeramente cerrado.
-- **Interfaz:** fuente del sistema, 13–14 px, altura de línea 1.5; botones 500.
-- **Datos, puertos y logs:** JetBrains Mono, 12–13 px; alternativa monoespaciada local.
+- **Títulos:** Epilogue 600, 20–28 px, espaciado ligeramente cerrado.
+- **Interfaz:** Sora, 13–14 px, altura de línea 1.5; botones 500.
+- **Datos, puertos y logs:** monoespaciada del sistema (JetBrains Mono si se
+  empaqueta), 12–13 px.
 - Las fuentes nombradas son una dirección tipográfica, **no archivos incluidos**.
   La muestra usa alternativas locales; al incorporarlas a la app se empaquetarán
   localmente con sus licencias, sin depender de Google Fonts en ejecución.
 - Filas 36–40 px; controles 36–40 px. En interfaces táctiles, objetivos de 44 px.
 - Espaciado sobre una escala de 4 px. Paneles 16–24 px de padding.
-- Radios: 6 px en etiquetas, 10 px en controles, 16 px en paneles, 22 px en diálogos.
+- Radios: `small` 6 px etiquetas, `control` 10–12 px controles, `panel` 16 px
+  paneles, `dialog` 28 px diálogos (valores en `palette.json`).
 - Transiciones de 120–180 ms para fondo, borde y opacidad. No animar cambios de layout
   en logs ni estados críticos. Respetar `prefers-reduced-motion`.
 
 ## Componentes que conviene incorporar
 
 Empezar solo por `Button`, `Input`, `Badge`, `Separator`, `Tooltip`, `Tabs`,
-`DropdownMenu`, `ContextMenu` y `Dialog`. Añadir otros al necesitarlos. El layout de
-paneles y los estados de módulo serán propios; evitar copiar un dashboard completo.
+`DropdownMenu`, `ContextMenu` y `Dialog` (los 9 ya están en `frontend/src/components/ui/`).
+Añadir otros al necesitarlos. Los estados de módulo son propios (`ui/status.tsx`,
+icono SVG + texto, §Lenguaje visual); el layout de paneles también. Evitar copiar
+un dashboard completo.
 
 Los gráficos de topología conservan lo decidido en [`06-stack.md`](06-stack.md):
 no añadir otra librería de grafo por el kit. Tampoco adelantar paneles de agentes ni
@@ -134,20 +174,28 @@ funciones que estén fuera de la primera versión.
 ## Integración futura
 
 La guía oficial de Vite enlazada arriba es la referencia de instalación. Inicializar
-el kit dentro de `ui/` cuando toque implementar el cliente; seleccionar Base UI,
+el kit dentro de `crates/regulus-tauri/frontend/` cuando toque implementar el cliente; seleccionar Base UI,
 componentes sin React Server Components y variables CSS. Registrar las versiones
 resueltas exclusivamente en [`06-stack.md`](06-stack.md) y el lockfile.
+
+Comandos previstos (no ejecutados; el kit no está instalado):
+
+```sh
+cd crates/regulus-tauri/frontend
+pnpm dlx shadcn@latest init
+pnpm dlx shadcn@latest add button input badge separator tooltip tabs dropdown-menu context-menu dialog
+```
 
 En la hoja principal de estilos, **antes de cualquier regla CSS normal**:
 
 ```css
 @import "tailwindcss";
 /* Mantener aquí los imports adicionales que genere el kit. */
-@import "../../assets/design/tokens.css";
-@import "../../assets/design/shadcn-theme.css";
+@import "../../../../assets/design/tokens.css";
+@import "../../../../assets/design/shadcn-theme.css";
 ```
 
-Las rutas del ejemplo asumen `ui/src/index.css`. Sustituir los bloques `:root`,
+Las rutas del ejemplo asumen `crates/regulus-tauri/frontend/src/index.css`. Sustituir los bloques `:root`,
 `.dark` y mapeos de tema iniciales del kit por el adaptador; no conservar un tema
 predeterminado posterior que los sobrescriba. El adaptador contiene `@theme inline`
 y necesita el procesador Tailwind. `tokens.css` también funciona sin Tailwind.

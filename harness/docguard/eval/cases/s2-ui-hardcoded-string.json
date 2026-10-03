@@ -1,0 +1,9 @@
+{
+ "note": "Texto visible sin fichero de traducción.",
+ "file": "ui/src/views/Operate.tsx",
+ "before": "import { t } from \"@/i18n\";\nexport const Empty = () => <p>{t(\"operate.empty\")}</p>;\n",
+ "after": "import { t } from \"@/i18n\";\nexport const Empty = () => <p>{t(\"operate.empty\")}</p>;\nexport const Error = () => <p>Something went wrong, please restart the agent</p>;\n",
+ "expect": [
+  "04-f8f163"
+ ]
+}

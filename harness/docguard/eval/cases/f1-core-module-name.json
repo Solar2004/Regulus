@@ -1,0 +1,9 @@
+{
+ "note": "El core decide por nombre de módulo (invariante 2).",
+ "file": "crates/regulus-core/src/registry.rs",
+ "before": "pub fn route(m: &Manifest) -> Route {\n    Route::Default\n}\n",
+ "after": "pub fn route(m: &Manifest) -> Route {\n    if m.id == \"agents\" {\n        return Route::Agents;\n    }\n    Route::Default\n}\n",
+ "expect": [
+  "INV-module-name"
+ ]
+}

@@ -1,0 +1,7 @@
+{
+ "note": "Módulo que solo usa ModuleCtx y se desactiva si falta algo requerido.",
+ "file": "crates/modules/agents/src/lib.rs",
+ "before": "",
+ "after": "impl Module for Agents {\n    fn init(&mut self, ctx: ModuleCtx) -> Result<()> {\n        let Some(pty) = ctx.resolve(&Capability::new(\"terminal.pty\")) else {\n            return Err(Error::Disabled { missing: vec![\"terminal.pty\".into()] });\n        };\n        self.pty = Some(pty);\n        Ok(())\n    }\n}\n",
+ "expect": []
+}

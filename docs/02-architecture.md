@@ -93,6 +93,8 @@ Regulus/
 │  ├─ regulus-proto/      # tipos del contrato (core ↔ clientes ↔ módulos)
 │  ├─ regulus-cli/        # regulus serve · module ls · agent ls
 │  ├─ regulus-tauri/      # app de escritorio: un cliente más
+│  │  ├─ frontend/        # React+Vite: lo que se ve (compila a frontend/dist)
+│  │  └─ src-tauri/       # Cargo, tauri.conf.json, ventana nativa
 │  └─ modules/
 │     ├─ hello/           # módulo trivial de prueba
 │     ├─ agents/          # (futuro) de hcom, en honor a aannoo
@@ -100,7 +102,6 @@ Regulus/
 │     ├─ families/
 │     ├─ memory/
 │     └─ mcp/
-├─ ui/                    # frontend web del shell
 ├─ docs/
 ├─ README.md
 └─ Cargo.toml             # workspace

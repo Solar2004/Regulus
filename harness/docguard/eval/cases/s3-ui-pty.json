@@ -1,0 +1,9 @@
+{
+ "note": "El PTY se crea en la UI en vez de en el core.",
+ "file": "ui/src-tauri/src/terminal.rs",
+ "before": "",
+ "after": "use portable_pty::{native_pty_system, PtySize};\n\npub fn open() {\n    let pty = native_pty_system();\n    let pair = pty.openpty(PtySize::default()).unwrap();\n    let _ = pair;\n}\n",
+ "expect": [
+  "02-d860bc"
+ ]
+}

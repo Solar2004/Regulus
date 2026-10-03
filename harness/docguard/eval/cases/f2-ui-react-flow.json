@@ -1,0 +1,9 @@
+{
+ "note": "React Flow está descartado para la topología.",
+ "file": "ui/src/views/Topology.tsx",
+ "before": "import { useStore } from \"@/store\";\n",
+ "after": "import { useStore } from \"@/store\";\nimport { ReactFlow } from \"@xyflow/react\";\n",
+ "expect": [
+  "06-a67ce2"
+ ]
+}
