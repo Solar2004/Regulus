@@ -98,9 +98,9 @@
       "origin": "manual"
     },
     {
-      "id": "AGENTS-01db86",
+      "id": "AGENTS-076c29",
       "kind": "semantic",
-      "text": "Las versiones de dependencias viven solo en `06-stack.md`: no las dupliques en otro sitio.",
+      "text": "Escribe cada commit como tipo(scope): asunto en imperativo, minúscula, sin punto y ≤72 caracteres, con el por qué en el cuerpo más Refs y Co-Authored-By, usando solo tipos y scopes de .gitconventions y añadiendo el scope nuevo ahí en el mismo commit.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -109,9 +109,20 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-5679b2",
+      "id": "AGENTS-444635",
       "kind": "semantic",
-      "text": "Los datos medidos viven solo en `research.md`: no los dupliques en otro sitio; si encuentras una duplicación, bórrala y deja un enlace.",
+      "text": "Quitar cualquier módulo debe dejar el resto funcionando y verificarse con la matriz de ablación de docs/03-modules.md §4.",
+      "source": "AGENTS.md §Reglas duras",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "AGENTS.md#Reglas duras"
+    },
+    {
+      "id": "AGENTS-49837d",
+      "kind": "semantic",
+      "text": "Mantén las versiones de dependencias solo en docs/06-stack.md: no las dupliques en otro fichero, enlaza y elimina la duplicación que encuentres.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -120,9 +131,20 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-92b5af",
+      "id": "AGENTS-4a3b62",
       "kind": "semantic",
-      "text": "No implementes `Isolation`: espera a la decisión #11 (cajas).",
+      "text": "No construyas ninguna pieza de la base que no pida un módulo de docs/plan.md §2.",
+      "source": "AGENTS.md §Reglas duras",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "AGENTS.md#Reglas duras"
+    },
+    {
+      "id": "AGENTS-54642b",
+      "kind": "semantic",
+      "text": "No empieces el orden de los módulos ni el primer módulo: espera la respuesta de Alexander definida en docs/plan.md §2.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -131,9 +153,9 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-bd0e63",
+      "id": "AGENTS-6a5d57",
       "kind": "semantic",
-      "text": "No implementes los paneles de ACP (plan, tool calls, permisos): esperan a v2.",
+      "text": "Comprueba los hooks con scripts/install-hooks.sh --check, haz un commit por incremento verificado y toca solo lo pedido.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -142,21 +164,9 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-de0fd9",
+      "id": "AGENTS-d5e95d",
       "kind": "semantic",
-      "text": "Toda capacidad del core debe estar justificada por un caso de uso de `01-vision.md` §4: si ningún UC la pide, no se construye.",
-      "source": "AGENTS.md §Reglas duras",
-      "paths": [
-        "**/*.rs",
-        "crates/regulus-core/**"
-      ],
-      "origin": "compiled",
-      "section_key": "AGENTS.md#Reglas duras"
-    },
-    {
-      "id": "AGENTS-dfe7b0",
-      "kind": "semantic",
-      "text": "Quitar cualquier módulo debe dejar el resto funcionando, verificable con la matriz de ablación (`03-modules.md` §4).",
+      "text": "No implementes aislamiento de ejecución: queda fuera de v1.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -225,13 +235,23 @@
       "section_key": "docs/02-architecture.md#1. Los dos límites"
     },
     {
-      "id": "02-7976dd",
+      "id": "02-d8aea7",
       "kind": "semantic",
-      "text": "Todo módulo debe ser un crate Rust in-process que implementa el trait Module; no añadas módulos como procesos externos, con IPC y serialización, ni con runtime WASM.",
+      "text": "Implementa cada módulo como crate Rust in-process, sin IPC ni WASM: los casos de uso exigen PTYs, procesos hijos y sockets arbitrarios.",
       "source": "docs/02-architecture.md §2. Por qué los módulos son in-process",
       "paths": [
-        "crates/modules/**",
-        "crates/regulus-core/**"
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/02-architecture.md#2. Por qué los módulos son in-process"
+    },
+    {
+      "id": "02-f60647",
+      "kind": "semantic",
+      "text": "Envuelve el borde de Module::call con catch_unwind para que el panic de un módulo no tumbe el host.",
+      "source": "docs/02-architecture.md §2. Por qué los módulos son in-process",
+      "paths": [
+        "crates/**"
       ],
       "origin": "compiled",
       "section_key": "docs/02-architecture.md#2. Por qué los módulos son in-process"
@@ -259,21 +279,9 @@
       "section_key": "docs/02-architecture.md#3. Forma del repositorio"
     },
     {
-      "id": "02-0059d1",
+      "id": "02-29387b",
       "kind": "semantic",
-      "text": "Los secretos en la configuración de un nodo van solo como «secret:<nombre>», nunca en claro.",
-      "source": "docs/02-architecture.md §4. Las abstracciones del core",
-      "paths": [
-        "crates/regulus-core/**",
-        "crates/modules/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
-    },
-    {
-      "id": "02-4fe3b1",
-      "kind": "semantic",
-      "text": "Los cables cumplen las reglas de composición: Uses une el mismo tipo y versión y respeta la cardinalidad (One un cable, Many varios), Then corre sobre el bus con corte por profundidad configurable y reporte de bucles, y la autocononexión solo ocurre con exactamente una salida compatible.",
+      "text": "Mantén el core limitado a nodos, puertos, cables, workflows, perfiles, ejecuciones y proyectos: Agent es un nodo del módulo agente, Isolation son los límites de un grupo de nodos, y procesos y PTY son el módulo procesos.",
       "source": "docs/02-architecture.md §4. Las abstracciones del core",
       "paths": [
         "crates/regulus-core/**"
@@ -282,9 +290,20 @@
       "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
     },
     {
-      "id": "02-9b632d",
+      "id": "02-601bcb",
       "kind": "semantic",
-      "text": "El core solo conoce piezas genéricas (nodos, puertos, cables, workflows, perfiles, ejecuciones, proyectos): Agent es un nodo del módulo agente, Isolation son los límites de un grupo de nodos y procesos/PTY son el módulo procesos, ninguno vive en el core.",
+      "text": "Incluye project_id en todo lo que tenga estado —perfiles, ejecuciones, eventos del bus y store— y no guardes el proyecto actual ni en el core ni en ningún módulo: es estado del cliente.",
+      "source": "docs/02-architecture.md §4. Las abstracciones del core",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
+    },
+    {
+      "id": "02-87f724",
+      "kind": "semantic",
+      "text": "Declara Port.required por defecto false y Port.cardinality por defecto One, y guarda los secretos de Node.config solo como secret:<nombre>.",
       "source": "docs/02-architecture.md §4. Las abstracciones del core",
       "paths": [
         "crates/regulus-core/**"
@@ -293,9 +312,9 @@
       "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
     },
     {
-      "id": "02-c0522a",
+      "id": "02-ab9489",
       "kind": "semantic",
-      "text": "Las posiciones y el layout del canvas viajan con el workflow pero el core no los interpreta.",
+      "text": "Conecta por Uses solo puertos del mismo tipo y versión respetando One/Many, trata Then como suscripción al bus cortando al superar la profundidad configurable y reportándolo, y autoconecta la entrada cuando haya exactamente una salida compatible.",
       "source": "docs/02-architecture.md §4. Las abstracciones del core",
       "paths": [
         "crates/regulus-core/**"
@@ -304,21 +323,33 @@
       "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
     },
     {
-      "id": "02-d9c1c3",
+      "id": "02-042a00",
       "kind": "semantic",
-      "text": "Todo lo que tenga estado lleva project_id (perfiles, ejecuciones, eventos del bus, store) y ni el core ni ningún módulo guarda el proyecto actual, que es estado del cliente.",
-      "source": "docs/02-architecture.md §4. Las abstracciones del core",
+      "text": "Mantén la GUI en Tauri 2 y no exijas navegador embebido.",
+      "source": "docs/02-architecture.md §5. Stack",
       "paths": [
-        "crates/regulus-core/**",
-        "crates/modules/**"
+        "src-tauri/**",
+        "frontend/**",
+        "ui/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
+      "section_key": "docs/02-architecture.md#5. Stack"
     },
     {
-      "id": "02-babdd6",
+      "id": "02-cde183",
       "kind": "semantic",
-      "text": "El límite externo usa JSON-RPC 2.0 sobre WebSocket con jsonrpsee y token en ~/.regulus/token, el PTY usa portable-pty en el proceso del core (módulo procesos), el store usa rusqlite y las versiones verificadas viven solo en docs/06-stack.md.",
+      "text": "Expón el límite externo por JSON-RPC 2.0 sobre WebSocket en 127.0.0.1 con token en ~/.regulus/token.",
+      "source": "docs/02-architecture.md §5. Stack",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/02-architecture.md#5. Stack"
+    },
+    {
+      "id": "02-da5549",
+      "kind": "semantic",
+      "text": "Usa jsonrpsee para el RPC, portable-pty en el proceso del core (módulo procesos), agent-client-protocol para la integración con agentes, rmcp para MCP y rusqlite para el store, y no declares versiones en arquitectura: viven solo en docs/06-stack.md.",
       "source": "docs/02-architecture.md §5. Stack",
       "paths": [
         "crates/**"
@@ -375,9 +406,9 @@
       "hint": "Justifica required=true o usa required=false."
     },
     {
-      "id": "03-41bff1",
+      "id": "03-3aede3",
       "kind": "semantic",
-      "text": "No amplíes `ModuleCtx` con un `pub` nuevo: si un módulo necesita algo que `ModuleCtx` no da, es una conversación de diseño.",
+      "text": "Envuelve toda invocación a `module.call` en `catch_unwind` y, ante un pánico, marca el módulo como `Broken` sin tumbar el host.",
       "source": "docs/03-modules.md §2. El contrato",
       "paths": [
         "crates/regulus-core/**"
@@ -386,42 +417,9 @@
       "section_key": "docs/03-modules.md#2. El contrato"
     },
     {
-      "id": "03-73ecad",
+      "id": "03-6a2db6",
       "kind": "semantic",
-      "text": "Implementa `Module` con sus cuatro métodos (`manifest`, `init`, `call`, `shutdown`) y nada más.",
-      "source": "docs/03-modules.md §2. El contrato",
-      "paths": [
-        "crates/modules/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/03-modules.md#2. El contrato"
-    },
-    {
-      "id": "03-9b4b7e",
-      "kind": "semantic",
-      "text": "Contén el pánico de cada módulo en el borde con `catch_unwind`: el módulo pasa a `Broken` y el host sigue.",
-      "source": "docs/03-modules.md §2. El contrato",
-      "paths": [
-        "crates/regulus-core/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/03-modules.md#2. El contrato"
-    },
-    {
-      "id": "03-c07f89",
-      "kind": "semantic",
-      "text": "Representa el estado de cada módulo solo con `Active`, `Idle`, `Disabled { missing }` y `Broken { reason }`; usa `Disabled` cuando falte una capacidad requerida y `Broken` ante pánico o fallo de `init`.",
-      "source": "docs/03-modules.md §3. Estados de un módulo",
-      "paths": [
-        "crates/regulus-core/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/03-modules.md#3. Estados de un módulo"
-    },
-    {
-      "id": "03-10b22a",
-      "kind": "semantic",
-      "text": "Declara `required` en toda entrada: si falta una requerida, el módulo se autodesactiva y lo reporta sin romper el host.",
+      "text": "Declara `required` en toda entrada y, si falta una requerida, autodesactiva el módulo y repórtalo sin reventar el host.",
       "source": "docs/03-modules.md §4. La matriz de ablación",
       "paths": [
         "crates/modules/**"
@@ -430,9 +428,9 @@
       "section_key": "docs/03-modules.md#4. La matriz de ablación"
     },
     {
-      "id": "03-82b751",
+      "id": "03-88f153",
       "kind": "semantic",
-      "text": "Muestra «no instalado» (no un error) en la UI de un módulo ausente.",
+      "text": "Muestra «no instalado» en la UI de un módulo ausente, nunca un error.",
       "source": "docs/03-modules.md §4. La matriz de ablación",
       "paths": [
         "ui/src/**"
@@ -441,9 +439,9 @@
       "section_key": "docs/03-modules.md#4. La matriz de ablación"
     },
     {
-      "id": "03-df8b64",
+      "id": "03-9370fc",
       "kind": "semantic",
-      "text": "No asumas en ningún módulo el orden de carga de otro.",
+      "text": "No asumas en ningún módulo el orden de carga de otro módulo.",
       "source": "docs/03-modules.md §4. La matriz de ablación",
       "paths": [
         "crates/modules/**"
@@ -452,212 +450,251 @@
       "section_key": "docs/03-modules.md#4. La matriz de ablación"
     },
     {
-      "id": "03-753759",
+      "id": "03-388440",
       "kind": "semantic",
-      "text": "No toques `regulus-core` para escribir un módulo: si hacerlo lo exige, el contrato está mal.",
+      "text": "Implementa cada módulo sin modificar `regulus-core`; si hay que tocarlo, el contrato está mal.",
       "source": "docs/03-modules.md §5. Escribir un módulo",
       "paths": [
-        "crates/regulus-core/**"
+        "crates/modules/**"
       ],
       "origin": "compiled",
       "section_key": "docs/03-modules.md#5. Escribir un módulo"
     },
     {
-      "id": "04-568a7b",
+      "id": "03-52d533",
       "kind": "semantic",
-      "text": "No añadas al mock métodos cómodos para la UI: cada método del mock tiene que ser algo que el core pueda servir de verdad, con datos que un módulo realmente tenga.",
-      "source": "docs/04-client.md §1. Por qué el cliente va primero",
+      "text": "Crea cada módulo como su propio crate en `crates/modules/<id>` con sus nodos, puertos y campos en `regulus-module.toml`.",
+      "source": "docs/03-modules.md §5. Escribir un módulo",
       "paths": [
-        "frontend/**",
-        "**/*mock*/**"
+        "crates/modules/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#1. Por qué el cliente va primero"
+      "section_key": "docs/03-modules.md#5. Escribir un módulo"
     },
     {
-      "id": "04-dabacc",
+      "id": "04-7323b8",
       "kind": "semantic",
-      "text": "Los métodos del mock devuelven estado del sistema, no objetos preformados para un componente concreto de la pantalla; la UI compone.",
-      "source": "docs/04-client.md §1. Por qué el cliente va primero",
+      "text": "El mock no debe inventar métodos cómodos para la UI: cada método devuelve algo que el core puede servir de verdad, con datos que un módulo realmente tiene.",
+      "source": "docs/04-client.md §1. El mock es la spec del core",
       "paths": [
-        "frontend/**",
-        "**/*mock*/**"
+        "ui/src/**",
+        "frontend/src/**",
+        "crates/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#1. Por qué el cliente va primero"
+      "section_key": "docs/04-client.md#1. El mock es la spec del core"
     },
     {
-      "id": "04-f8f163",
+      "id": "04-a1e9a6",
       "kind": "semantic",
-      "text": "La UI debe ir en inglés con todos los strings visibles en ficheros de traducción desde el día 1; está prohibido escribir strings visibles directamente en un componente .tsx.",
-      "source": "docs/04-client.md §10. Idioma e internacionalización",
+      "text": "Haz que los métodos devuelvan estado del sistema, no objetos preformados para un componente: la UI compone.",
+      "source": "docs/04-client.md §1. El mock es la spec del core",
       "paths": [
-        "ui/**"
+        "ui/src/**",
+        "frontend/src/**",
+        "crates/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#10. Idioma e internacionalización"
+      "section_key": "docs/04-client.md#1. El mock es la spec del core"
     },
     {
-      "id": "04-383e6e",
+      "id": "04-ad5dee",
       "kind": "semantic",
-      "text": "Solo el tema oscuro debe ser visible pero todos los colores deben pasar por variables CSS; está prohibido hardcodear colores fuera de los tokens de 08-design-system.",
-      "source": "docs/04-client.md §11. Tema",
-      "paths": [
-        "ui/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/04-client.md#11. Tema"
-    },
-    {
-      "id": "04-6b15e1",
-      "kind": "semantic",
-      "text": "El grafo de topología debe distinguir visualmente los tres estados de arista: resuelta, ausente opcional (required=false) y ausente requerida (required=true, consumidor Disabled).",
+      "text": "Mantén Canvas (diseñar: nodos, cables y workflows) y Operar (lo que corre: ejecuciones, terminales, logs, errores) como dos proyecciones sobre un solo modelo de estado, sin mezclar estado de ejecución con diseño más allá de marcar en el canvas qué nodos están vivos.",
       "source": "docs/04-client.md §2. Las dos vistas",
       "paths": [
-        "ui/**"
+        "ui/src/**",
+        "frontend/src/**"
       ],
       "origin": "compiled",
       "section_key": "docs/04-client.md#2. Las dos vistas"
     },
     {
-      "id": "04-ed8748",
+      "id": "04-91a6e7",
       "kind": "semantic",
-      "text": "La UI debe tener exactamente dos vistas, OPERAR (por defecto, estado: qué corre) y TOPOLOGÍA (cómo se enlazan), como dos proyecciones sobre un solo modelo de estado, no como dos aplicaciones.",
-      "source": "docs/04-client.md §2. Las dos vistas",
+      "text": "Muestra el módulo ausente como No instalado, nunca como error, y el módulo desactivado indicando qué entrada required le falta.",
+      "source": "docs/04-client.md §3. Estados de primer nivel",
       "paths": [
-        "ui/**"
+        "ui/src/**",
+        "frontend/src/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#2. Las dos vistas"
+      "section_key": "docs/04-client.md#3. Estados de primer nivel"
     },
     {
-      "id": "04-fa8005",
+      "id": "04-d9e322",
       "kind": "semantic",
-      "text": "Las aristas de la vista TOPOLOGÍA deben derivarse de los manifests (capacidades resueltas, capability.graph); está prohibido conectar a mano o arrastrar para conectar.",
-      "source": "docs/04-client.md §2. Las dos vistas",
+      "text": "Muestra el módulo roto con su razón y opción de recargar, y el módulo sin usar como Idle con last_used vacío y visible.",
+      "source": "docs/04-client.md §3. Estados de primer nivel",
       "paths": [
-        "ui/**"
+        "ui/src/**",
+        "frontend/src/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#2. Las dos vistas"
+      "section_key": "docs/04-client.md#3. Estados de primer nivel"
     },
     {
-      "id": "04-ea90a3",
+      "id": "04-2a51a9",
       "kind": "semantic",
-      "text": "Un módulo ausente debe mostrarse como «no instalado», nunca como error, y los cuatro estados (no instalado, Disabled con capacidad required faltante, Broken con razón y recarga, Idle con last_used null marcado visiblemente) deben existir como estados de primera clase.",
-      "source": "docs/04-client.md §4. Estados vacíos",
+      "text": "Trata el mismo major de protocolo como compatible, con el core soportando N y N-1, y con major distinto no arranques ni te degrades en silencio sino que dices qué versión se necesita.",
+      "source": "docs/04-client.md §4. Conexión con el core",
       "paths": [
-        "ui/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/04-client.md#4. Estados vacíos"
-    },
-    {
-      "id": "04-b7aedc",
-      "kind": "semantic",
-      "text": "El transporte cliente-core debe ser JSON-RPC 2.0 sobre WebSocket en 127.0.0.1 con token en ~/.regulus/token.",
-      "source": "docs/04-client.md §5. Orden de trabajo",
-      "paths": [
-        "ui/**",
+        "ui/src/**",
+        "frontend/src/**",
+        "src-tauri/**",
         "crates/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#5. Orden de trabajo"
+      "section_key": "docs/04-client.md#4. Conexión con el core"
     },
     {
-      "id": "04-d215de",
+      "id": "04-3ce8d8",
       "kind": "semantic",
-      "text": "Los paneles de agente deben ser agnósticos al agente (misma forma para tool calls, planes, permisos y slash commands vía ACP); está prohibido diseñar un panel por agente.",
-      "source": "docs/04-client.md §7. Agentes: Regulus es un ACP Client",
+      "text": "Conecta por JSON-RPC 2 sobre WebSocket en 127.0.0.1 con el token de ~/.regulus/token y envía hello primero siempre, también contra el mock.",
+      "source": "docs/04-client.md §4. Conexión con el core",
       "paths": [
-        "ui/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/04-client.md#7. Agentes: Regulus es un ACP Client"
-    },
-    {
-      "id": "04-a9fb6b",
-      "kind": "semantic",
-      "text": "Todo lo que tenga estado (agentes, mensajes, memoria, sesiones, terminales) y todo evento del bus debe llevar project_id; los métodos de lectura deben aceptar project_id opcional (ausente = todos los proyectos).",
-      "source": "docs/04-client.md §8. Multi-proyecto",
-      "paths": [
-        "ui/**",
+        "ui/src/**",
+        "frontend/src/**",
+        "src-tauri/**",
         "crates/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#8. Multi-proyecto"
+      "section_key": "docs/04-client.md#4. Conexión con el core"
     },
     {
-      "id": "04-337411",
+      "id": "04-a2af92",
       "kind": "semantic",
-      "text": "La app nunca debe lanzar un segundo core si el puerto responde a hello; el core auto-lanzado debe desprenderse (cerrar la ventana no lo mata), el auto-lanzado debe ser configurable con autostart=false, y sin core ni auto-lanzado la app debe mostrar el comando exacto a ejecutar.",
-      "source": "docs/04-client.md §9. Arranque del core",
+      "text": "No lances un segundo core si el puerto responde a hello, deja que el core auto-lanzado se desprenda al cerrar la ventana, respeta autostart igual a false para desactivarlo y sin core muestra el comando exacto a ejecutar.",
+      "source": "docs/04-client.md §4. Conexión con el core",
       "paths": [
-        "ui/**",
-        "crates/**"
+        "ui/src/**",
+        "frontend/src/**",
+        "src-tauri/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/04-client.md#9. Arranque del core"
+      "section_key": "docs/04-client.md#4. Conexión con el core"
     },
     {
-      "id": "06-e81c54",
+      "id": "04-742edd",
+      "kind": "semantic",
+      "text": "Guarda el proyecto activo como estado del cliente y acepta project_id opcional en los métodos de lectura, donde ausente significa todos los proyectos.",
+      "source": "docs/04-client.md §5. Multi-proyecto",
+      "paths": [
+        "crates/**",
+        "ui/src/**",
+        "frontend/src/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/04-client.md#5. Multi-proyecto"
+    },
+    {
+      "id": "04-202466",
+      "kind": "semantic",
+      "text": "Escribe todos los textos visibles en ficheros de traducción en frontend/src/locales desde el día 1, nunca directamente en un tsx.",
+      "source": "docs/04-client.md §6. Idioma y tema",
+      "paths": [
+        "frontend/src/**",
+        "ui/src/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/04-client.md#6. Idioma y tema"
+    },
+    {
+      "id": "04-b85839",
+      "kind": "semantic",
+      "text": "Muestra solo el tema oscuro.",
+      "source": "docs/04-client.md §6. Idioma y tema",
+      "paths": [
+        "ui/src/**",
+        "frontend/src/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/04-client.md#6. Idioma y tema"
+    },
+    {
+      "id": "04-da4ace",
       "kind": "forbid",
-      "text": "No usar egui_term ni iced_term como terminal; la terminal decidida es xterm.js en Tauri.",
+      "text": "Pasa todos los colores por variables CSS de 08-design-system sin hardcodear ningún color.",
+      "source": "docs/04-client.md §6. Idioma y tema",
+      "paths": [
+        "crates/regulus-tauri/frontend/src/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/04-client.md#6. Idioma y tema",
+      "pattern": "#[0-9a-fA-F]{3,8}\\b|rgba?\\s*\\(|hsla?\\s*\\(",
+      "hint": "Usa una variable CSS del design system en lugar del color literal."
+    },
+    {
+      "id": "06-8fec46",
+      "kind": "semantic",
+      "text": "Mantén Tauri 2 como shell de escritorio; no cambies de framework de UI en v1.",
       "source": "docs/06-stack.md §1. Decisión #7 cerrada: Tauri 2",
       "paths": [
-        "**/Cargo.toml",
-        "**/Cargo.lock",
-        "**/package.json"
+        "src-tauri/**",
+        "ui/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2",
-      "pattern": "egui_term|iced_term",
-      "hint": "Usar xterm.js 6 + addon-webgl en el webview de Tauri en lugar de un renderizador VTE propio."
+      "section_key": "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2"
     },
     {
-      "id": "06-5239e2",
+      "id": "06-aa3570",
       "kind": "semantic",
-      "text": "En el canvas A'/B' permite solo seleccionar, inspeccionar, mover la cámara y hacer zoom sin crear, mover ni conectar nodos, y renderiza los nodos de forma genérica desde los datos del servidor.",
+      "text": "Mantén Core, CLI y módulos en Rust y la UI en TypeScript; no mezcles esas capas de lenguaje.",
+      "source": "docs/06-stack.md §1. Decisión #7 cerrada: Tauri 2",
+      "paths": [
+        "crates/**",
+        "ui/**",
+        "src-tauri/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2"
+    },
+    {
+      "id": "06-097073",
+      "kind": "semantic",
+      "text": "Renderiza los nodos de forma genérica desde los datos del servidor, con posiciones en el perfil de ejemplo y colores en los tokens de diseño, y sirve el estado del mock por JSON-RPC sin importar React Flow.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
-        "crates/regulus-tauri/frontend/**"
+        "ui/src/**"
       ],
       "origin": "compiled",
       "section_key": "docs/06-stack.md#2. El stack completo"
     },
     {
-      "id": "06-5b313c",
+      "id": "06-42f2b5",
       "kind": "semantic",
-      "text": "Usa en el cliente de escritorio tauri 2.12.1, React 19, Vite, Tailwind 4, zustand, @xterm/xterm más addon-webgl 6.0.0 estable y @xyflow/react 12.12.0.",
+      "text": "En el incremento A'/B' del canvas, permite solo seleccionar, inspeccionar, mover la cámara y hacer zoom; no actives crear, mover ni conectar nodos.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
-        "crates/regulus-tauri/frontend/**"
+        "ui/src/**"
       ],
       "origin": "compiled",
       "section_key": "docs/06-stack.md#2. El stack completo"
     },
     {
-      "id": "06-f09e9e",
+      "id": "06-62c282",
       "kind": "semantic",
-      "text": "Mantén las posiciones de los nodos en el perfil de ejemplo y los colores en los tokens de diseño, sirve el estado del mock por JSON-RPC sin importar React Flow y sin incluir ws en el cliente de producción.",
+      "text": "Usa @xterm/xterm + addon-webgl para la terminal; no escribas un emulador o renderizador VTE propio.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
-        "crates/regulus-tauri/frontend/**"
+        "ui/**"
       ],
       "origin": "compiled",
       "section_key": "docs/06-stack.md#2. El stack completo"
     },
     {
-      "id": "06-f68af2",
-      "kind": "semantic",
-      "text": "Usa en Rust jsonrpsee 0.26.1, portable-pty 0.9.0, agent-client-protocol 2.2.0, rmcp 3.5.0, rusqlite 0.39 con bundled, tokio 1.x, serde más serde_json 1.x, thiserror 2 en libs con anyhow 1 en bins, y clap 4 con derive.",
+      "id": "06-6b4dfc",
+      "kind": "forbid",
+      "text": "No importes `ws` en el cliente de producción; el mock JSON-RPC por WebSocket solo vive integrado en Vite.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
-        "**/Cargo.toml",
-        "**/Cargo.lock"
+        "ui/src/**",
+        "ui/package.json"
       ],
       "origin": "compiled",
-      "section_key": "docs/06-stack.md#2. El stack completo"
+      "section_key": "docs/06-stack.md#2. El stack completo",
+      "pattern": "['\"]ws['\"]",
+      "hint": "Mueve el uso a la config de Vite o al script de mock de desarrollo."
     },
     {
       "id": "06-83967e",
@@ -711,38 +748,36 @@
       "hint": "Usar 127.0.0.1 como bind del servidor WebSocket."
     },
     {
-      "id": "06-2160b9",
+      "id": "06-03f267",
       "kind": "semantic",
-      "text": "Hacer handshake hello obligatorio antes de cualquier otro método; mismo major de protocolo significa compatible y el core soporta el proto N y el N-1; con major distinto el cliente no debe arrancar ni degradarse en silencio, debe decir exactamente qué versión necesita.",
+      "text": "Sube minor por cada método nuevo y major por quitar o cambiar un método, sin excepciones.",
+      "source": "docs/06-stack.md §5. Sistema de versionado",
+      "paths": [
+        "crates/regulus-proto/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#5. Sistema de versionado"
+    },
+    {
+      "id": "06-3f8610",
+      "kind": "semantic",
+      "text": "Exige handshake `hello` con versión de proto antes de cualquier otro método, acepta solo mismo major con soporte del core para `N` y `N-1`, y si el major difiere no arranques al cliente sin decir exactamente qué versión necesita, sin degradarte en silencio.",
       "source": "docs/06-stack.md §5. Sistema de versionado",
       "paths": [
         "crates/**",
-        "mock-server/**",
-        "src-tauri/**",
-        "ui/**"
+        "ui/src/**"
       ],
       "origin": "compiled",
       "section_key": "docs/06-stack.md#5. Sistema de versionado"
     },
     {
-      "id": "06-c174c8",
+      "id": "06-8c20ad",
       "kind": "semantic",
-      "text": "Declarar cada módulo en regulus-module.toml con version SemVer y requires_proto, validar requires_proto en el registro antes de cargar, y si no encaja no cargarlo y ponerlo en estado Incompatible { requires, have }.",
+      "text": "Valida `requires_proto` en el registro antes de cargar, no cargues el módulo si no encaja y llévalo a `Incompatible { requires, have }`, que la UI pinta como `Disabled` y `Broken`.",
       "source": "docs/06-stack.md §5. Sistema de versionado",
       "paths": [
-        "**/regulus-module.toml",
-        "crates/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/06-stack.md#5. Sistema de versionado"
-    },
-    {
-      "id": "06-d6caf3",
-      "kind": "semantic",
-      "text": "Versionar el protocolo con SemVer estricta: método nuevo implica minor, quitar o cambiar un método implica major, sin excepciones.",
-      "source": "docs/06-stack.md §5. Sistema de versionado",
-      "paths": [
-        "**/regulus-proto/**"
+        "crates/**",
+        "ui/src/**"
       ],
       "origin": "compiled",
       "section_key": "docs/06-stack.md#5. Sistema de versionado"
@@ -783,78 +818,89 @@
       "section_key": "docs/08-design-system.md#Kit recomendado"
     },
     {
-      "id": "08-00a8a6",
+      "id": "08-25c386",
       "kind": "semantic",
-      "text": "Usa solo la correspondencia cerrada de estados: active con CircleCheck y success, idle con CircleDashed y warning, not-installed con PackageOpen y text-muted, disabled con OctagonX y danger, broken con TriangleAlert y danger.",
+      "text": "Usa azul hielo para acciones y foco, reserva verde, ámbar y rojo para estados, y evita fondos de galaxias, partículas, neón, brillos animados y desenfoque detrás de cada panel.",
       "source": "docs/08-design-system.md §Lenguaje visual",
       "paths": [
         "frontend/src/**",
-        "**/preview.html"
+        "preview.html"
       ],
       "origin": "compiled",
       "section_key": "docs/08-design-system.md#Lenguaje visual"
     },
     {
-      "id": "08-68ada3",
+      "id": "08-368c6c",
       "kind": "semantic",
-      "text": "Usa solo iconos Lucide de 14 px con trazo 1.75 para líneas de estado, con el símbolo al desnudo sin fondo ni borde ni border-radius en ModuleStatus, y reserva la estrella para la marca.",
+      "text": "Aplica los radios small 6 px en etiquetas, control 10–12 px en botones, inputs e items de menú, panel 16 px en paneles y popovers de menú y dialog 28 px en diálogos, con Button e Input en rounded-md y DialogContent en rounded-[var(--rg-radius-dialog)].",
       "source": "docs/08-design-system.md §Lenguaje visual",
       "paths": [
         "frontend/src/**",
-        "**/preview.html"
+        "preview.html"
       ],
       "origin": "compiled",
       "section_key": "docs/08-design-system.md#Lenguaje visual"
     },
     {
-      "id": "08-709d29",
+      "id": "08-3ba206",
+      "kind": "semantic",
+      "text": "Implementa cada estado con un icono Lucide (lucide-react en la app y SVG inline en preview.html) de 14 px y trazo 1.75 al desnudo, sin fondo, borde ni border-radius y nunca dentro de un Badge rounded-full, reservando la estrella para la marca.",
+      "source": "docs/08-design-system.md §Lenguaje visual",
+      "paths": [
+        "frontend/src/**",
+        "preview.html"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/08-design-system.md#Lenguaje visual"
+    },
+    {
+      "id": "08-46fa7d",
+      "kind": "semantic",
+      "text": "Aplica las utilidades de tinta recortada (.rg-ink, .rg-ink-alt y .rg-ink-dark) solo en títulos, nunca en párrafos, tablas ni logs.",
+      "source": "docs/08-design-system.md §Lenguaje visual",
+      "paths": [
+        "frontend/src/**",
+        "preview.html"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/08-design-system.md#Lenguaje visual"
+    },
+    {
+      "id": "08-4782c4",
+      "kind": "semantic",
+      "text": "Muestra todo estado como icono SVG más etiqueta de texto, nunca solo con color ni con glifos de texto.",
+      "source": "docs/08-design-system.md §Lenguaje visual",
+      "paths": [
+        "frontend/src/**",
+        "preview.html"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/08-design-system.md#Lenguaje visual"
+    },
+    {
+      "id": "08-d6d376",
+      "kind": "semantic",
+      "text": "Respeta la correspondencia cerrada de estados: active con CircleCheck y success, idle con CircleDashed y warning, not-installed con PackageOpen y text-muted, disabled con OctagonX y danger, y broken con TriangleAlert y danger.",
+      "source": "docs/08-design-system.md §Lenguaje visual",
+      "paths": [
+        "frontend/src/**",
+        "preview.html"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/08-design-system.md#Lenguaje visual"
+    },
+    {
+      "id": "08-f8f120",
       "kind": "forbid",
-      "text": "No copies valores hex en componentes, usa los tokens generados desde assets/design/palette.json.",
+      "text": "No copies valores hex de color en los componentes: usa los tokens de assets/design/palette.json mediante tokens.css.",
       "source": "docs/08-design-system.md §Lenguaje visual",
       "paths": [
-        "frontend/src/**",
-        "ui/src/**"
+        "crates/regulus-tauri/frontend/src/**"
       ],
       "origin": "compiled",
       "section_key": "docs/08-design-system.md#Lenguaje visual",
-      "pattern": "#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3}|[0-9a-fA-F]{8})\\b",
-      "hint": "Mueve el valor a palette.json y usa el token correspondiente."
-    },
-    {
-      "id": "08-7f0012",
-      "kind": "semantic",
-      "text": "Aplica la tinta recortada al texto solo en títulos, nunca en párrafos, tablas ni logs.",
-      "source": "docs/08-design-system.md §Lenguaje visual",
-      "paths": [
-        "frontend/src/**",
-        "ui/src/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/08-design-system.md#Lenguaje visual"
-    },
-    {
-      "id": "08-9eb431",
-      "kind": "semantic",
-      "text": "Todo estado de módulo debe mostrar icono SVG más etiqueta de texto, nunca solo color ni glifos de texto.",
-      "source": "docs/08-design-system.md §Lenguaje visual",
-      "paths": [
-        "frontend/src/**",
-        "**/preview.html"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/08-design-system.md#Lenguaje visual"
-    },
-    {
-      "id": "08-a9a3b4",
-      "kind": "semantic",
-      "text": "No muestres estados de módulo dentro de un Badge, reservado para etiquetas y conteos.",
-      "source": "docs/08-design-system.md §Lenguaje visual",
-      "paths": [
-        "frontend/src/**",
-        "**/preview.html"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/08-design-system.md#Lenguaje visual"
+      "pattern": "#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\\b",
+      "hint": "Lee el color desde el token correspondiente en tokens.css generado desde palette.json."
     },
     {
       "id": "08-5fffcb",
@@ -885,6 +931,50 @@
       "section_key": "docs/08-design-system.md#Tipografía, densidad y movimiento"
     },
     {
+      "id": "09-884913",
+      "kind": "semantic",
+      "text": "Usa en la cabecera un tipo de .gitconventions en minúscula y, si incluyes scope, usa solo un scope de la lista.",
+      "source": "docs/09-git.md §1. Anatomía de un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#1. Anatomía de un commit"
+    },
+    {
+      "id": "09-c79cf1",
+      "kind": "semantic",
+      "text": "Marca todo cambio incompatible con ! en la cabecera y un footer BREAKING CHANGE: que explique la ruptura y la migración.",
+      "source": "docs/09-git.md §1. Anatomía de un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#1. Anatomía de un commit"
+    },
+    {
+      "id": "09-d42ed3",
+      "kind": "semantic",
+      "text": "Separa el cuerpo con una línea en blanco y limita cada línea del cuerpo a 100 caracteres.",
+      "source": "docs/09-git.md §1. Anatomía de un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#1. Anatomía de un commit"
+    },
+    {
+      "id": "09-f82c35",
+      "kind": "semantic",
+      "text": "Escribe el asunto con 10–72 caracteres, minúscula inicial, sin punto final y al menos 2 palabras.",
+      "source": "docs/09-git.md §1. Anatomía de un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#1. Anatomía de un commit"
+    },
+    {
       "id": "09-522a37",
       "kind": "semantic",
       "text": "Si estrenas un scope de commit nuevo, añádelo a .gitconventions en el mismo commit que lo usa, nunca en un commit separado.",
@@ -894,6 +984,54 @@
       ],
       "origin": "compiled",
       "section_key": "docs/09-git.md#2. Tipos y scopes"
+    },
+    {
+      "id": "09-19e925",
+      "kind": "semantic",
+      "text": "Mantén cada commit en torno a 100 líneas, con 300 como techo razonable, y parte todo commit de más de 1000 líneas.",
+      "source": "docs/09-git.md §3. Qué entra en un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#3. Qué entra en un commit"
+    },
+    {
+      "id": "09-3ace6e",
+      "kind": "deny",
+      "text": "No stages ficheros con git add -A a ciegas; revisa git diff --staged e incluye solo ficheros que entiendes.",
+      "source": "docs/09-git.md §3. Qué entra en un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#3. Qué entra en un commit",
+      "pattern": "git\\s+add\\s+(-A|--all)\\b",
+      "tool": "bash",
+      "action": "block",
+      "enabled": false
+    },
+    {
+      "id": "09-fc7869",
+      "kind": "semantic",
+      "text": "Cita en el footer con Refs: <documento> §<n> toda decisión de diseño que el commit implemente.",
+      "source": "docs/09-git.md §3. Qué entra en un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#3. Qué entra en un commit"
+    },
+    {
+      "id": "09-ff81b5",
+      "kind": "semantic",
+      "text": "Incluye una sola cosa por commit, sin mezclar en el mismo commit formato con comportamiento ni refactor con feature.",
+      "source": "docs/09-git.md §3. Qué entra en un commit",
+      "paths": [
+        "**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/09-git.md#3. Qué entra en un commit"
     },
     {
       "id": "09-a4d8d7",
@@ -916,70 +1054,240 @@
       ],
       "origin": "compiled",
       "section_key": "docs/09-git.md#7. Cambiar las reglas"
+    },
+    {
+      "id": "11-7036fa",
+      "kind": "semantic",
+      "text": "Instala cada módulo como crate in-process mediante `regulus module install X` con recompilación automática.",
+      "source": "docs/11-composition.md §10. Instalar módulos y compartir",
+      "paths": [
+        "crates/**",
+        "**/Cargo.toml"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#10. Instalar módulos y compartir"
+    },
+    {
+      "id": "11-72490b",
+      "kind": "semantic",
+      "text": "Declara en cada entrada `uno | varios` (por defecto `uno`) y rota proveedores con un nodo, no con varios cables.",
+      "source": "docs/11-composition.md §12. Respuestas de Alexander (2026-10-05)",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#12. Respuestas de Alexander (2026-10-05)"
+    },
+    {
+      "id": "11-f35cda",
+      "kind": "semantic",
+      "text": "Versiona cada tipo de puerto (`llm.chat@1`) sin decidir su contrato: el formato lo fija el primer módulo que lo use.",
+      "source": "docs/11-composition.md §12. Respuestas de Alexander (2026-10-05)",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#12. Respuestas de Alexander (2026-10-05)"
+    },
+    {
+      "id": "11-4c0cc8",
+      "kind": "semantic",
+      "text": "Mantén `Agent`, `Isolation` y los procesos/PTY fuera del core: viven en módulos.",
+      "source": "docs/11-composition.md §2. La base (core)",
+      "paths": [
+        "crates/regulus-core/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#2. La base (core)"
+    },
+    {
+      "id": "11-30d4c3",
+      "kind": "semantic",
+      "text": "Haz que el módulo de Comunicación hable con participantes, no con agentes, y no dependa del módulo de agentes.",
+      "source": "docs/11-composition.md §3. Módulos y nodos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#3. Módulos y nodos"
+    },
+    {
+      "id": "11-577e3f",
+      "kind": "semantic",
+      "text": "Corta cada cadena de cables «luego» al superar la profundidad configurable y repórtalo.",
+      "source": "docs/11-composition.md §4. Cables: dos tipos",
+      "paths": [
+        "crates/regulus-core/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#4. Cables: dos tipos"
+    },
+    {
+      "id": "11-fa0ecc",
+      "kind": "semantic",
+      "text": "Guarda cada plantilla con huecos `{{...}}` y `requires` versionado, y al aplicarla copia: el proyecto es dueño de su copia.",
+      "source": "docs/11-composition.md §7. Perfiles",
+      "paths": [
+        "**/*.toml"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#7. Perfiles"
+    },
+    {
+      "id": "11-616432",
+      "kind": "semantic",
+      "text": "Guarda en los workflows solo referencias del tipo `secret:nombre` y mantén las claves en `~/.regulus/secrets` o el llavero del sistema.",
+      "source": "docs/11-composition.md §9. Aislamiento y secretos",
+      "paths": [
+        "**/*.toml"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#9. Aislamiento y secretos"
+    },
+    {
+      "id": "PLAN-736265",
+      "kind": "semantic",
+      "text": "Haz que la UI funcione contra el core real solo cambiando `VITE_RPC_URL`, sin cambiar ninguna línea.",
+      "source": "docs/plan.md §3. Orden de trabajo",
+      "paths": [
+        "ui/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#3. Orden de trabajo"
+    },
+    {
+      "id": "PLAN-27ea0d",
+      "kind": "forbid",
+      "text": "No invoques `hcom --flags` por debajo: el código ajeno absorbido se reescribe como módulo propio, no se lanza su binario.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos",
+      "pattern": "hcom\\s+--",
+      "hint": "Reescribe la funcionalidad como módulo propio en su propio crate en vez de llamar al binario externo."
+    },
+    {
+      "id": "PLAN-7a813e",
+      "kind": "semantic",
+      "text": "Mantén cada módulo absorbido en su propio crate.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "PLAN-809832",
+      "kind": "semantic",
+      "text": "No añadas ninguna pieza a la base sin un módulo de §2 que la pida.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/regulus-core/**",
+        "crates/regulus-proto/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "PLAN-e106aa",
+      "kind": "semantic",
+      "text": "Incluye `[module.origin]` con autor, repo, licencia y `honors` en el manifest de todo módulo derivado de código ajeno.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**/Cargo.toml"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "MOD-trait",
+      "kind": "semantic",
+      "paths": [
+        "crates/**"
+      ],
+      "text": "El trait `Module` tiene exactamente cuatro métodos (`manifest`, `init`, `call`, `shutdown`) y `ModuleCtx` no gana métodos `pub` nuevos sin cambiar antes `docs/03-modules.md` §2.",
+      "source": "docs/03-modules.md §2. El contrato",
+      "origin": "manual"
     }
   ],
   "sections": {
-    "AGENTS.md#(inicio)": "f5c29a479387f7b5",
-    "AGENTS.md#Qué es Regulus, en tres líneas": "85193f71436d48f3",
+    "AGENTS.md#(inicio)": "a768c2f7913f0ff8",
+    "AGENTS.md#Qué es Regulus, en tres líneas": "2a35043e451c6897",
     "AGENTS.md#⚠️ Los principios mandan sobre todo lo demás": "76a692c406aebef8",
-    "AGENTS.md#Mapa de documentos": "14254d042c133640",
-    "AGENTS.md#Rutas de lectura según tu tarea": "2d671e6f1951223a",
-    "AGENTS.md#Reglas duras": "62eb1553e348507e",
-    "AGENTS.md#Lo que toca ahora": "8762a5825fc5051a",
-    "AGENTS.md#Contexto del entorno": "61ed08d89c9b2cc9",
+    "AGENTS.md#Mapa de documentos": "20688309326096c6",
+    "AGENTS.md#Rutas de lectura según tu tarea": "50a69482589681b3",
+    "AGENTS.md#Reglas duras": "62ff412fdb3d5a7e",
+    "AGENTS.md#Lo que toca ahora": "0573ba7978f2427d",
+    "AGENTS.md#Contexto del entorno": "1b861ec4d176b491",
     "docs/00-principles.md#(inicio)": "c4628afd1a63ac52",
     "docs/00-principles.md#La regla de oro": "9d1e03c25dfce6f0",
     "docs/00-principles.md#Los cinco principios": "72f0ad029f26251a",
-    "docs/00-principles.md#El guardarraíl: flexibilidad ≠ alcance infinito": "5b856f56252b0601",
+    "docs/00-principles.md#El guardarraíl: flexibilidad ≠ alcance infinito": "2749ab98a43581cf",
     "docs/00-principles.md#Cómo se usa este documento": "36490de2a76c3596",
-    "docs/02-architecture.md#(inicio)": "c8d74cf942c038f5",
+    "docs/02-architecture.md#(inicio)": "276461cae5caf81a",
     "docs/02-architecture.md#1. Los dos límites": "de01079ccb53ed5c",
-    "docs/02-architecture.md#2. Por qué los módulos son in-process": "a714e730588c6097",
+    "docs/02-architecture.md#2. Por qué los módulos son in-process": "46f03fabb408e40d",
     "docs/02-architecture.md#3. Forma del repositorio": "a8658b904032a35d",
-    "docs/02-architecture.md#4. Las abstracciones del core": "16ee0b7e666ecaf9",
-    "docs/02-architecture.md#5. Stack": "72dd387e9927e283",
+    "docs/02-architecture.md#4. Las abstracciones del core": "49201165464b1870",
+    "docs/02-architecture.md#5. Stack": "d9eb199e60eafce9",
     "docs/02-architecture.md#6. Bus de eventos y store": "8eb75dbd4b85b93c",
-    "docs/03-modules.md#(inicio)": "3a88c8b3dc3a571b",
+    "docs/03-modules.md#(inicio)": "3bcb2cf7e4685ae4",
     "docs/03-modules.md#1. Capacidades, no nombres": "f67bc91f4c779db5",
-    "docs/03-modules.md#2. El contrato": "013c717b0db73d5e",
-    "docs/03-modules.md#3. Estados de un módulo": "860579ce4e88e0e6",
-    "docs/03-modules.md#4. La matriz de ablación": "3b37fefcbe1819b2",
-    "docs/03-modules.md#5. Escribir un módulo": "f734fb28ec0bb12e",
-    "docs/04-client.md#(inicio)": "a54a9697f02fa508",
-    "docs/04-client.md#1. Por qué el cliente va primero": "5e51dc611710c7ac",
-    "docs/04-client.md#2. Las dos vistas": "7e5f0a87ae25010e",
-    "docs/04-client.md#3. El protocolo que las vistas implican": "9876184dd7a6d138",
-    "docs/04-client.md#4. Estados vacíos": "5e6a0d411128fe94",
-    "docs/04-client.md#5. Orden de trabajo": "d2fb5a2583b22146",
-    "docs/04-client.md#6. El handshake, antes que cualquier método": "0bc01d24cd552290",
-    "docs/04-client.md#7. Agentes: Regulus es un ACP Client": "9f66104e23f3ac91",
-    "docs/04-client.md#8. Multi-proyecto": "199e59301a90f872",
-    "docs/04-client.md#9. Arranque del core": "c22fd82e7f187772",
-    "docs/04-client.md#10. Idioma e internacionalización": "0a3d988342e5bd8d",
-    "docs/04-client.md#11. Tema": "cf73405002b86238",
-    "docs/04-client.md#12. Payloads concretos — el contrato de la fase A": "781fc9debeae75c4",
+    "docs/03-modules.md#2. El contrato": "8b0c7be4cae5413c",
+    "docs/03-modules.md#3. Estados de un módulo": "a689afc170f2312e",
+    "docs/03-modules.md#4. La matriz de ablación": "de22155be2346796",
+    "docs/03-modules.md#5. Escribir un módulo": "08d3afc3edd9a4b6",
+    "docs/04-client.md#(inicio)": "fa2b617711160800",
+    "docs/04-client.md#1. El mock es la spec del core": "c82d12784a11f410",
+    "docs/04-client.md#2. Las dos vistas": "4cb645289e32713a",
+    "docs/04-client.md#3. Estados de primer nivel": "671a8b9e6f6cb072",
+    "docs/04-client.md#4. Conexión con el core": "434486ade938a6de",
+    "docs/04-client.md#5. Multi-proyecto": "27a20d5b4dec8ed8",
+    "docs/04-client.md#6. Idioma y tema": "1575419287935bb9",
     "docs/06-stack.md#(inicio)": "cb4c472bc194caf2",
-    "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2": "62304bb9f8660eb0",
-    "docs/06-stack.md#2. El stack completo": "08bbbb232d5fde2b",
+    "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2": "aaab36d239711095",
+    "docs/06-stack.md#2. El stack completo": "508f28aa9bd67969",
     "docs/06-stack.md#3. La terminal: cómo se reparte": "e77604d9ffa9a7a2",
     "docs/06-stack.md#4. Decisión #8 cerrada: transporte": "e35b19a8ca7cdf4c",
-    "docs/06-stack.md#5. Sistema de versionado": "151083252431753e",
+    "docs/06-stack.md#5. Sistema de versionado": "2849e21b4afb091b",
     "docs/08-design-system.md#(inicio)": "4f9bb59027bc88a3",
     "docs/08-design-system.md#Kit recomendado": "2f489e71d4847204",
-    "docs/08-design-system.md#Lenguaje visual": "aa3a9a67d1aab31a",
+    "docs/08-design-system.md#Lenguaje visual": "8dd4f749c285e07a",
     "docs/08-design-system.md#Tipografía, densidad y movimiento": "6e4ac78f47fd4e76",
     "docs/08-design-system.md#Componentes que conviene incorporar": "d062396c8529b277",
     "docs/08-design-system.md#Integración futura": "aafce4ab8557c17f",
     "docs/08-design-system.md#Vista previa y comprobación": "2d60bc6ef42fb954",
     "docs/09-git.md#(inicio)": "50bd81175d4d25c2",
     "docs/09-git.md#0. Antes de tu primer commit": "59cf0c8d91c0fb38",
-    "docs/09-git.md#1. Anatomía de un commit": "799ce9be0787b01b",
+    "docs/09-git.md#1. Anatomía de un commit": "0193b068fd0007eb",
     "docs/09-git.md#2. Tipos y scopes": "8c16e209651521f6",
-    "docs/09-git.md#3. Qué entra en un commit": "2d5913d3c3911e37",
+    "docs/09-git.md#3. Qué entra en un commit": "88107b4f92a73fa3",
     "docs/09-git.md#4. Ramas y push": "43c6a278312138e5",
     "docs/09-git.md#5. Reglas para agentes": "9ad480e72c06dc6f",
     "docs/09-git.md#6. Releases": "cd90ed18ed63061f",
     "docs/09-git.md#7. Cambiar las reglas": "e4860c7f536ca69a",
-    "docs/09-git.md#8. Verificación del propio harness": "5df190ce198325bc"
+    "docs/09-git.md#8. Verificación del propio harness": "5df190ce198325bc",
+    "docs/plan.md#(inicio)": "27f41fb5f1b48b84",
+    "docs/plan.md#1. Lo que es Regulus: la base": "1cb276b99c3cde89",
+    "docs/plan.md#2. Lo que son módulos": "a4f444b774e9ce7a",
+    "docs/plan.md#3. Orden de trabajo": "35a1faf786821d69",
+    "docs/plan.md#4. Lo rescatado de los docs antiguos": "72f8268b8c4f5725",
+    "docs/plan.md#5. Cómo trabajar con Alexander": "b15d62d4898b9475",
+    "docs/11-composition.md#(inicio)": "03f12a03f822e2da",
+    "docs/11-composition.md#1. El modelo en un dibujo": "bc8c9941ffb77468",
+    "docs/11-composition.md#2. La base (core)": "1b3019b568af4163",
+    "docs/11-composition.md#3. Módulos y nodos": "cc9b91aaf69ed1dc",
+    "docs/11-composition.md#4. Cables: dos tipos": "348714630f36dbb8",
+    "docs/11-composition.md#5. Workflows": "0093834eb53e88b6",
+    "docs/11-composition.md#6. El workflow de cada módulo": "84c7852445a3c54f",
+    "docs/11-composition.md#7. Perfiles": "9c062cc6f8c84302",
+    "docs/11-composition.md#8. Ejecuciones: el plano y lo que corre": "9bdd1fea13a55260",
+    "docs/11-composition.md#9. Aislamiento y secretos": "65de6d88ea8785d4",
+    "docs/11-composition.md#10. Instalar módulos y compartir": "8fcf86a97a9e685c",
+    "docs/11-composition.md#11. Qué cambió en otros documentos": "11e4f2b5ebee0a38",
+    "docs/11-composition.md#12. Respuestas de Alexander (2026-10-05)": "325b8bc867ba06b9"
   }
 }

@@ -4,6 +4,6 @@
  "before": "",
  "after": "use portable_pty::{native_pty_system, PtySize};\n\npub fn open() {\n    let pty = native_pty_system();\n    let pair = pty.openpty(PtySize::default()).unwrap();\n    let _ = pair;\n}\n",
  "expect": [
-  "02-d860bc"
+  "06-83967e"
  ]
 }

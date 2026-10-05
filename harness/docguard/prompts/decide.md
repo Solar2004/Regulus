@@ -8,6 +8,6 @@ Antes de seguir, pasa cada opción por los cinco principios, una línea por opci
 - **Personalizable**: ¿el usuario lo puede cambiar sin recompilar?
 - **Infraestructura**: ¿tiene un comando de CLI equivalente?
 
-Gana la que deje más opciones abiertas al usuario, no la más fácil de escribir ("como el agua"). Ojo con el guardarraíl: no cerrar puertas no es lo mismo que construir habitaciones que nadie ha pedido (`01-vision.md` §4).
+Gana la que deje más opciones abiertas al usuario, no la más fácil de escribir ("como el agua"). Ojo con el guardarraíl: no cerrar puertas no es lo mismo que construir habitaciones que nadie ha pedido (`plan.md` §4.5).
 
 Si la elección ya está ✅ decidida en los docs o es trivial, dilo en una línea y sigue.

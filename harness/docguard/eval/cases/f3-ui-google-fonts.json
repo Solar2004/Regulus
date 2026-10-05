@@ -4,6 +4,6 @@
  "before": "",
  "after": "@import url(\"https://fonts.googleapis.com/css2?family=Inter&display=swap\");\n",
  "expect": [
-  "08-11ab49"
+  "08-5fffcb"
  ]
 }

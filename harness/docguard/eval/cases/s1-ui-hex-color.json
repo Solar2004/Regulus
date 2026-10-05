@@ -1,10 +1,9 @@
 {
- "note": "Color hex pegado: rompe la regla de tokens y la de colores por variables CSS.",
- "file": "ui/src/components/StatusBadge.tsx",
+ "note": "Color hex pegado: docguard reporta una regla forbid por línea (04-da4ace u 08-f8f120, equivalentes).",
+ "file": "crates/regulus-tauri/frontend/src/components/StatusBadge.tsx",
  "before": "export function StatusBadge({ label }: { label: string }) {\n  return <span className=\"rg-badge\">{label}</span>\n}\n",
  "after": "export function StatusBadge({ label }: { label: string }) {\n  return <span style={{ color: \"#7c5cff\", background: \"#0b0d17\" }}>{label}</span>\n}\n",
  "expect": [
-  "08-252188",
-  "04-383e6e"
+  "04-da4ace"
  ]
 }
