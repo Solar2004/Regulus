@@ -1,19 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-// @ts-expect-error type error without @types/node package
 import path from "node:path";
-// @ts-expect-error type error without @types/node package
 import process from "node:process";
+import { compositionMock } from "./mock/plugin.mjs";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), compositionMock()],
 
   resolve: {
-    // @ts-expect-error type error without @types/node package
-    alias: { "@": path.resolve(__dirname, "src") },
+    alias: { "@": path.resolve(import.meta.dirname, "src") },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

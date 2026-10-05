@@ -1,0 +1,381 @@
+{
+  "modules": [
+    {
+      "id": "regulus/providers@0.1",
+      "name": "Providers",
+      "node_types": [
+        "provider"
+      ],
+      "workflow_id": null
+    },
+    {
+      "id": "regulus/participants@0.1",
+      "name": "Participants",
+      "node_types": [
+        "participant"
+      ],
+      "workflow_id": null
+    },
+    {
+      "id": "regulus/communication@0.1",
+      "name": "Communication",
+      "node_types": [
+        "communication",
+        "receive",
+        "queue",
+        "deliver"
+      ],
+      "workflow_id": "communication"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "example",
+      "name": "Example workspace",
+      "project_id": null,
+      "extends": null,
+      "main_workflow_id": "main",
+      "workflows": [
+        {
+          "id": "main",
+          "name": "Main workflow",
+          "kind": "main",
+          "module_id": null,
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "width": 1060,
+            "height": 650
+          },
+          "nodes": [
+            {
+              "id": "provider",
+              "type": "provider",
+              "name": "AI provider",
+              "module_id": "regulus/providers@0.1",
+              "resource": null,
+              "ports": [
+                {
+                  "id": "chat",
+                  "name": "chat",
+                  "capability": "llm.chat",
+                  "direction": "output",
+                  "kind": "uses",
+                  "required": false
+                }
+              ],
+              "config": {
+                "credential": "secret:provider",
+                "model": "example-model"
+              },
+              "position": {
+                "x": 50,
+                "y": 65
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": []
+            },
+            {
+              "id": "participant",
+              "type": "participant",
+              "name": "Development participant",
+              "module_id": "regulus/participants@0.1",
+              "resource": null,
+              "ports": [
+                {
+                  "id": "model",
+                  "name": "model",
+                  "capability": "llm.chat",
+                  "direction": "input",
+                  "kind": "uses",
+                  "required": true
+                },
+                {
+                  "id": "context",
+                  "name": "context",
+                  "capability": "resource.text",
+                  "direction": "input",
+                  "kind": "uses",
+                  "required": false
+                },
+                {
+                  "id": "messages",
+                  "name": "messages",
+                  "capability": "message.send",
+                  "direction": "input",
+                  "kind": "uses",
+                  "required": false
+                }
+              ],
+              "config": {
+                "role": "development"
+              },
+              "position": {
+                "x": 380,
+                "y": 65
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": []
+            },
+            {
+              "id": "context",
+              "type": "context",
+              "name": "Project context",
+              "module_id": null,
+              "resource": "resources/project-context.md",
+              "ports": [
+                {
+                  "id": "text",
+                  "name": "text",
+                  "capability": "resource.text",
+                  "direction": "output",
+                  "kind": "uses",
+                  "required": false
+                }
+              ],
+              "config": {},
+              "position": {
+                "x": 50,
+                "y": 365
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": []
+            },
+            {
+              "id": "communication",
+              "type": "communication",
+              "name": "Messaging",
+              "module_id": "regulus/communication@0.1",
+              "resource": null,
+              "ports": [
+                {
+                  "id": "send",
+                  "name": "send",
+                  "capability": "message.send",
+                  "direction": "output",
+                  "kind": "uses",
+                  "required": false
+                }
+              ],
+              "config": {
+                "retry_limit": 3
+              },
+              "position": {
+                "x": 700,
+                "y": 65
+              },
+              "internal_workflow_id": "communication",
+              "exposed_parameters": [
+                "retry_limit"
+              ]
+            }
+          ],
+          "wires": [
+            {
+              "id": "model",
+              "kind": "uses",
+              "from": {
+                "node_id": "provider",
+                "port_id": "chat"
+              },
+              "to": {
+                "node_id": "participant",
+                "port_id": "model"
+              }
+            },
+            {
+              "id": "context",
+              "kind": "uses",
+              "from": {
+                "node_id": "context",
+                "port_id": "text"
+              },
+              "to": {
+                "node_id": "participant",
+                "port_id": "context"
+              }
+            },
+            {
+              "id": "messaging",
+              "kind": "uses",
+              "from": {
+                "node_id": "communication",
+                "port_id": "send"
+              },
+              "to": {
+                "node_id": "participant",
+                "port_id": "messages"
+              }
+            }
+          ]
+        },
+        {
+          "id": "communication",
+          "name": "Communication workflow",
+          "kind": "module",
+          "module_id": "regulus/communication@0.1",
+          "layout": {
+            "x": 0,
+            "y": 710,
+            "width": 1060,
+            "height": 430
+          },
+          "nodes": [
+            {
+              "id": "receive",
+              "type": "receive",
+              "name": "Receive message",
+              "module_id": "regulus/communication@0.1",
+              "resource": null,
+              "ports": [
+                {
+                  "id": "received",
+                  "name": "received",
+                  "capability": "message.received",
+                  "direction": "output",
+                  "kind": "then",
+                  "required": false
+                }
+              ],
+              "config": {},
+              "position": {
+                "x": 50,
+                "y": 65
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": []
+            },
+            {
+              "id": "queue",
+              "type": "queue",
+              "name": "Queue message",
+              "module_id": "regulus/communication@0.1",
+              "resource": null,
+              "ports": [
+                {
+                  "id": "incoming",
+                  "name": "incoming",
+                  "capability": "message.received",
+                  "direction": "input",
+                  "kind": "then",
+                  "required": false
+                },
+                {
+                  "id": "ready",
+                  "name": "ready",
+                  "capability": "message.ready",
+                  "direction": "output",
+                  "kind": "then",
+                  "required": false
+                }
+              ],
+              "config": {
+                "retry_limit": 3
+              },
+              "position": {
+                "x": 380,
+                "y": 65
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": [
+                "retry_limit"
+              ]
+            },
+            {
+              "id": "deliver",
+              "type": "deliver",
+              "name": "Deliver message",
+              "module_id": "regulus/communication@0.1",
+              "resource": null,
+              "ports": [
+                {
+                  "id": "ready",
+                  "name": "ready",
+                  "capability": "message.ready",
+                  "direction": "input",
+                  "kind": "then",
+                  "required": false
+                }
+              ],
+              "config": {
+                "delivery": "participant"
+              },
+              "position": {
+                "x": 700,
+                "y": 65
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": []
+            }
+          ],
+          "wires": [
+            {
+              "id": "received",
+              "kind": "then",
+              "from": {
+                "node_id": "receive",
+                "port_id": "received"
+              },
+              "to": {
+                "node_id": "queue",
+                "port_id": "incoming"
+              }
+            },
+            {
+              "id": "ready",
+              "kind": "then",
+              "from": {
+                "node_id": "queue",
+                "port_id": "ready"
+              },
+              "to": {
+                "node_id": "deliver",
+                "port_id": "ready"
+              }
+            }
+          ]
+        },
+        {
+          "id": "review",
+          "name": "Review workspace",
+          "kind": "extra",
+          "module_id": null,
+          "layout": {
+            "x": 0,
+            "y": 1200,
+            "width": 1060,
+            "height": 420
+          },
+          "nodes": [
+            {
+              "id": "notes",
+              "type": "notes",
+              "name": "Review notes",
+              "module_id": null,
+              "resource": "resources/review.md",
+              "ports": [
+                {
+                  "id": "text",
+                  "name": "text",
+                  "capability": "resource.text",
+                  "direction": "output",
+                  "kind": "uses",
+                  "required": false
+                }
+              ],
+              "config": {},
+              "position": {
+                "x": 50,
+                "y": 65
+              },
+              "internal_workflow_id": null,
+              "exposed_parameters": []
+            }
+          ],
+          "wires": []
+        }
+      ]
+    }
+  ],
+  "executions": []
+}

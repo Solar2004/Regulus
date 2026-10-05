@@ -8,12 +8,14 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri:dev": "cd .. && tauri dev",
-    "tauri:build": "cd .. && tauri build"
+    "tauri:build": "cd .. && tauri build",
+    "test:mock": "node --test mock/rpc.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@xyflow/react": "^12.12.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.49.0",
@@ -27,9 +29,11 @@
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^6.0.2",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "ws": "^8.22.0"
   }
 }

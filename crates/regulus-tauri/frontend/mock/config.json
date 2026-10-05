@@ -1,0 +1,6 @@
+{
+  "path": "/mock-rpc",
+  "protocol": "1.0",
+  "server": "regulus-composition-mock",
+  "maxPayload": 1048576
+}
