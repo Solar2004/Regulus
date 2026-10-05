@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-10-02 · total de la documentación: ~21k tokens.
+> Actualizado: 2026-10-05 · documentación vigente: ~17k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -13,8 +13,8 @@ agentes de IA. Absorbe código ajeno y lo hace propio **sin perder la capacidad 
 quitarlo**. El producto no son las features: es poder añadirlas y quitarlas sin que nada
 se rompa.
 
-**Estado:** diseño. No hay código de aplicación todavía. Branding sí
-(`assets/branding/`).
+**Estado:** hay un canvas de solo lectura contra un mock (`crates/regulus-tauri/frontend`).
+**Lo siguiente es la base (core).** Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -44,26 +44,21 @@ construir todas las habitaciones hoy.**
 
 ## Mapa de documentos
 
-| Fichero | Tokens | Qué contiene | Decisiones que viven aquí |
-|---|---|---|---|
-| **`docs/HANDOFF.md`** | ~2.4k | **Si retomas en frío, empieza aquí.** TODO actual en orden con estimaciones. El **razonamiento** detrás de cada decisión grande. Lo descartado y por qué (no lo re-propongas). Cómo trabajar con Alexander. Estado del repo. Las 3 trampas del proyecto. | — |
-| **`docs/concept.md`** | ~1k | **Qué es Regulus en llano**: la idea de Alexander sin tecnicismos. Piezas (módulo, nodo, cable, workflow, perfil, ejecución), cómo funciona, las dos vistas. Más reciente que `01` donde chocan. | — |
-| **`docs/00-principles.md`** | ~1.2k | **Manda sobre todos los demás.** La regla de oro ("como el agua"). Los 5 principios, cada uno con una prueba que se puede fallar. Presupuestos de rendimiento numéricos. El guardarraíl contra el alcance infinito. | Los 5 principios |
-| **`docs/01-vision.md`** | ~2.8k | Por qué existe Regulus. La **doctrina Predator** (qué significa "módulo"). Qué NO es. Los 5 casos de uso canónicos y las 5 capacidades que el core necesita. Requisitos sacados del workflow real. Nombre y marca. Glosario. | Visión, no-objetivos, alcance |
-| **`docs/02-architecture.md`** | ~2.2k | **Los dos límites** (clientes↔core por socket; core↔módulos por trait Rust). Por qué los módulos son in-process. Forma del workspace. Abstracciones del core (`Agent`, `Isolation`, `Project`). Bus y store. | #1 repo, #2 módulo in-process, #3 servidor día 1 |
-| **`docs/03-modules.md`** | ~1.8k | El contrato: trait `Module`, `ModuleCtx`, capacidades vs nombres, manifest, estados de módulo, contención de pánicos. **La matriz de ablación.** Cómo escribir un módulo. | El contrato completo |
-| **`docs/04-client.md`** | ~2.4k | Por qué el cliente va primero (mock server = spec del core). Las **dos vistas** con mockups ASCII. **Los 8 métodos RPC** derivados de ellas. Estados vacíos. Handshake. Regulus como ACP Client. | #4 dos vistas, #9 cliente primero |
-| **`docs/05-roadmap.md`** | ~2.6k | Fases A→F de v1 con definición de terminado y estimaciones. **Tabla de decisiones cerradas y abiertas.** Riesgos. **Los 6 briefs** para agentes. | Índice de todas las decisiones |
-| **`docs/06-stack.md`** | ~2.2k | Dependencias concretas con versiones verificadas. Reparto de la terminal (xterm.js arriba, `portable-pty` en el core). Transporte. **Sistema de versionado de tres ejes.** | #7 Tauri, #8 transporte, #13 versionado, #14 terminal |
-| **`docs/07-ecosystem.md`** | ~2.2k | **ACP**: ~45 agentes ya lo hablan. `rmcp` para MCP. Candidatos de registro de módulos. Implementaciones de referencia. **Lo que NO se va a usar y por qué.** | #12 ACP (abierta) |
-| **`docs/08-design-system.md`** | ~1.8k | UI kit recomendado, lenguaje visual Regulus Midnight, paleta y tokens en `assets/design/`, integración futura y muestra HTML. | Kit propuesto, aún no instalado |
-| **`docs/09-git.md`** | ~1.8k | **Cómo se commitea y se empuja aquí.** Formato de mensaje, tipos y scopes, qué entra en un commit, política de ramas y push, releases. **Las 7 reglas para agentes.** Lo aplican los hooks de `.githooks/`; la configuración viva está en `.gitconventions`. | #19 harness de git |
-| **`docs/10-docguard.md`** | ~1.4k | **El harness que revisa a los agentes.** Al terminar un turno contrasta lo que hiciste con las reglas de los docs (`harness/docguard/rules.json`) y te para si algo no cumple. Capas, por qué así (research), CLI, límites. | docguard (🔶) |
-| **`docs/11-composition.md`** | ~3k | ✅ **El modelo de Regulus.** Base sin funciones, módulos que traen nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, aislamiento y secretos, cierre de las cajas (#11), instalar módulos. Respuestas de Alexander (§12). Qué falta aplicar a los demás docs (§11). | Composición (✅) |
-| **`docs/research.md`** | ~1.3k | Datos medidos, no opiniones. Orca (es Electron/TS, no Rust). hcom (es Rust, binario sin `[lib]`). El workflow real de Alexander con cifras. | — |
-| **`docs/ideas/boxes.md`** | ~1.4k | El sistema de cajas: **sin definir**. Tres lecturas posibles, 5 preguntas sin responder. Bloquea `Isolation`. | #11 cajas (abierta) |
-| **`docs/ideas/harness-optimization.md`** | ~3k | **Handoff de investigación**: qué mejorar en el harness para que los agentes rindan al máximo. Qué existe, medir antes de optimizar, líneas de research, candidatos. | — (abierto) |
-| **`README.md`** | ~1.0k | Cara humana: branding, assets, índice de lectura. | — |
+| Fichero | Tokens | Qué contiene |
+|---|---|---|
+| **`docs/plan.md`** | ~1.8k | **Si retomas en frío, empieza aquí.** Qué es base y qué es módulo, orden de trabajo, la pregunta abierta, lo rescatado de los docs antiguos (doctrina Predator, descartados, trampas) y cómo trabajar con Alexander. |
+| **`docs/concept.md`** | ~1k | Qué es Regulus en llano: piezas (módulo, nodo, cable, workflow, perfil, ejecución) y las dos vistas. |
+| **`docs/00-principles.md`** | ~1.2k | **Manda sobre todos los demás.** "Como el agua", los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
+| **`docs/11-composition.md`** | ~2.6k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). |
+| **`docs/02-architecture.md`** | ~2.5k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
+| **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
+| **`docs/04-client.md`** | ~0.9k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema. |
+| **`docs/composition-preview.md`** | ~0.8k | Contrato actual del mock (métodos JSON-RPC) y límites del canvas A'/B'. |
+| **`docs/06-stack.md`** | ~2.2k | Dependencias con versiones verificadas (único sitio), terminal, transporte, versionado. |
+| **`docs/08-design-system.md`** | ~1.8k | Diseño de la app: Regulus Midnight, paleta y tokens (`assets/design/`), iconos de estado. Recetas en `centaury-recipes.md`. |
+| **`docs/09-git.md`** | ~1.8k | Cómo se commitea: formato, tipos y scopes, ramas, push, **las 7 reglas para agentes**. Config en `.gitconventions`. |
+| **`docs/10-docguard.md`** | ~1.4k | El harness que contrasta lo que haces con las reglas de los docs (`harness/docguard/rules.json`). |
+| **`docs/old/`** | — | **Archivo del modelo anterior. No lo leas salvo que te lo pidan:** contradice lo vigente. |
 
 ---
 
@@ -71,17 +66,14 @@ construir todas las habitaciones hoy.**
 
 | Tu tarea | Lee, en este orden | Coste |
 |---|---|---|
-| **Retomar en frío / no sé qué toca** | `00-principles.md` → `HANDOFF.md` | ~3.6k |
-| **Entender el proyecto** | `concept.md` → `11-composition.md` | ~3.8k |
-| **Escribir un módulo** | `01` §2 (doctrina) → `03-modules.md` completo | ~2.5k |
-| **Tocar el core** | `02-architecture.md` → `03-modules.md` → `06-stack.md` §2.1 | ~4.5k |
-| **Diseñar o implementar UI** | `04-client.md` → `06-stack.md` §1-2 → `08-design-system.md` | ~6k |
-| **Decidir algo / saber qué toca** | `05-roadmap.md` | ~2.6k |
-| **Elegir una dependencia** | `07-ecosystem.md` §5 (lo descartado) → `06-stack.md` | ~1.5k |
-| **Verificar un dato sobre Orca o hcom** | `research.md` | ~1.3k |
+| **Retomar en frío / no sé qué toca** | `00-principles.md` → `plan.md` | ~3k |
+| **Entender el proyecto** | `concept.md` → `11-composition.md` | ~3.6k |
+| **Tocar el core** | `02-architecture.md` → `03-modules.md` → `06-stack.md` §2.1 | ~5k |
+| **Escribir un módulo** | `plan.md` §4.1 → `03-modules.md` | ~2.5k |
+| **Diseñar o implementar UI** | `04-client.md` → `composition-preview.md` → `08-design-system.md` | ~3.5k |
+| **Elegir una dependencia** | `plan.md` §4.3 (lo descartado) → `06-stack.md` | ~2.5k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |
-| **Cambiar un doc con reglas, o docguard te bloqueó** | `10-docguard.md` §2, §5 | ~0.6k |
-| **Trabajar en un brief** | `05-roadmap.md` §5 → lo que tu brief indique | variable |
+| **docguard te bloqueó** | `10-docguard.md` §2, §5 | ~0.6k |
 
 ---
 
@@ -97,11 +89,9 @@ construir todas las habitaciones hoy.**
 
 ### 2. No empieces nada bloqueado
 
-- **Implementar `Isolation`** → espera la decisión #11 (cajas)
-- **Absorber hcom o tocar `~/Projectos/hcom`** → espera v1 completo y la matriz de ablación
-- **Paneles de ACP (plan, tool calls, permisos)** → esperan a v2
-
-**La UI ya NO está bloqueada.** Decisiones #7, #15, #16, #17 y #18 cerradas.
+- **Aislamiento de ejecución** → fuera de v1 (`11-composition.md` §12)
+- **Absorber hcom o tocar `~/Projectos/hcom`** → espera la base y la matriz de ablación
+- **El orden de los módulos** → espera la respuesta de Alexander (`plan.md` §2)
 
 ### 3. Los dos invariantes que no se negocian
 
@@ -112,22 +102,21 @@ construir todas las habitaciones hoy.**
 
 ### 4. La regla de alcance
 
-Toda capacidad del core debe estar justificada por un caso de uso de `01-vision.md` §4.
-**Si ningún UC la pide, no se construye.** El riesgo nº1 del proyecto es construir el
+Toda pieza de la base debe estar justificada por un módulo de `plan.md` §2 que la pida.
+**Si ningún módulo la pide, no se construye.** El riesgo nº1 del proyecto es construir el
 framework y no llegar nunca a las features.
 
 ### 5. Un solo sitio por dato
 
-Las versiones de dependencias viven **solo** en `06-stack.md`. Los datos medidos viven
-**solo** en `research.md`. Si duplicas, se desincroniza. Si encuentras una duplicación,
-bórrala y deja un enlace.
+Las versiones de dependencias viven **solo** en `06-stack.md`. Si duplicas, se
+desincroniza. Si encuentras una duplicación, bórrala y deja un enlace.
 
 ### 6. El código va en inglés
 
 Todo lo que forma parte de la app (`ui/`, `crates/`, `src-tauri/`) se escribe en
 **inglés**: comentarios, identificadores, logs, mensajes de error y commits. Los textos
-visibles van en los ficheros de traducción (`04-client.md` §10). **Solo los docs van en
-español.** Decisión #20 (`05-roadmap.md`). docguard lo vigila.
+visibles van en los ficheros de traducción (`04-client.md` §6). **Solo los docs van en
+español.** Decisión #20. docguard lo vigila.
 
 ### 7. Cómo se commitea
 
@@ -143,7 +132,7 @@ tipo(scope): asunto en imperativo, minúscula, sin punto, ≤72 caracteres
 
 El por qué. El qué está en el diff.
 
-Refs: docs/05-roadmap.md §2
+Refs: docs/plan.md §3
 Co-Authored-By: Tu nombre <email>
 ```
 
@@ -161,11 +150,8 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Fase A**: mock server con los 8 métodos de `04-client.md` §3 + `hello` | nada |
-| 2 | **Fase B**: UI vista OPERAR contra el mock | nada |
-| 3 | **BRIEF-2**: diseño de alta fidelidad de las dos vistas | nada |
-| 4 | **BRIEF-6**: spike de ACP con un agente real (medio día) | nada |
-| 5 | **BRIEF-5**: entrevistar a Alexander sobre las cajas | Alexander |
+| 1 | **La base**: `regulus-proto`, `regulus-core`, `regulus serve` con `hello` y los métodos del mock (`plan.md` §3 paso 3) | nada |
+| 2 | **Primer módulo** + `hello` + matriz de ablación | la pregunta de `plan.md` §2 |
 
 ---
 
@@ -175,4 +161,4 @@ Co-Authored-By: Tu nombre <email>
 - **Responde en español, directo y sin rodeos.**
 - `~/Projectos/hcom` es su fork propio (`Solar2004/hcom`) — modificable, pero **no
   todavía**.
-- El repo es git (`master`), sin commits aún.
+- El repo es git (`master`).

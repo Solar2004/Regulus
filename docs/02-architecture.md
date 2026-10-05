@@ -3,7 +3,7 @@
 > **v0.4** · 2026-10-05 · aplica el modelo de composición
 > ([`11-composition.md`](11-composition.md)): el agente sale del core, todo son nodos y cables.
 > Estructura del core, los dos límites, el workspace y el stack.
-> Lee [`01-vision.md`](01-vision.md) primero.
+> Lee [`plan.md`](plan.md) primero.
 
 ---
 
@@ -60,7 +60,7 @@ razonamiento completo:
 
 IPC, serialización y versionado de protocolo existen para cruzar una **frontera de
 confianza**. En Regulus esa frontera no existe: los módulos son código de Alexander, en
-Rust, reescrito para encajar ([`01-vision.md` §2](01-vision.md)). Pagar el coste de IPC
+Rust, reescrito para encajar ([`plan.md` §4.1](plan.md), doctrina Predator). Pagar el coste de IPC
 sería plumbing sin nada a cambio.
 
 | Argumento a favor de procesos externos | Por qué no aplica aquí |
@@ -213,7 +213,7 @@ abiertos a la vez. Dos consecuencias que son reglas, no sugerencias:
    estado **del cliente**. Así dos clientes (escritorio y móvil) pueden mirar proyectos
    distintos contra el mismo core.
 
-Detalle completo en [`04-client.md` §8](04-client.md).
+Detalle en [`04-client.md` §5](04-client.md).
 
 ❓ **ABIERTO** — Aislamiento **de ejecución** (`11` §9, nivel 2): fuera de v1. No se
 implementa; el modelo no lo impide.
@@ -254,7 +254,7 @@ Resumen de lo que importa saber desde arquitectura:
 |---|---|
 | RPC del límite externo | `jsonrpsee` (JSON-RPC 2.0 sobre WebSocket) |
 | PTY | `portable-pty`, en el proceso del core (módulo procesos) |
-| Integración con agentes | `agent-client-protocol` — ver [`07-ecosystem.md`](07-ecosystem.md) |
+| Integración con agentes | `agent-client-protocol` — ver [`old/07-ecosystem.md`](old/07-ecosystem.md) |
 | MCP | `rmcp` |
 | Store | `rusqlite` |
 

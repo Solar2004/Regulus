@@ -101,7 +101,7 @@ generación. Pero el ahorro grande y **gratis** está en la otra dirección:
    Los umbrales se miden, no se inventan.
 2. **Códec + router = dos funciones puras y una política.** No hay bucle de agente, no
    hay orquestación. Eso es lo que lo mantiene fuera del territorio harness.
-3. **Encaja como módulo de capacidad**, según [`../03-modules.md`](../03-modules.md):
+3. **Encaja como módulo de capacidad**, según [`../03-modules.md`](../../03-modules.md):
    algo como `format.encode` / `format.decode`, opcional (`required = false`). El core
    no lo conoce por nombre. Verificar contra la matriz de ablación cuando exista.
 4. **La matriz de ablación no se ve afectada:** sin el módulo, todo habla JSON. Es el
@@ -132,7 +132,7 @@ externas?**
    [`../01-vision.md` §5](../01-vision.md) pide que el shell siempre diga qué está
    corriendo. ¿Aplica a esto?
 4. **¿Se mide?** El principio "Rápido" exige medir contra presupuesto
-   ([`../00-principles.md`](../00-principles.md)). Sin benchmark propio (payloads reales
+   ([`../00-principles.md`](../../00-principles.md)). Sin benchmark propio (payloads reales
    de Alexander), los números del paper no son evidencia local.
 5. **¿Dónde vive el códec: en `regulus-proto` o en un módulo?** Si los clientes también
    quieren TOON, toca el protocolo del límite externo.

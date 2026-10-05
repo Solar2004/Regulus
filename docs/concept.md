@@ -1,8 +1,8 @@
 # Qué es Regulus — la idea
 
-> **v0.2** · 2026-10-04 · La idea de Alexander, en llano. El diseño técnico está en
-> [`11-composition.md`](11-composition.md) (🔶). Donde choque con
-> [`01-vision.md`](01-vision.md), este es más reciente.
+> **v0.3** · 2026-10-05 · La idea de Alexander, en llano. El diseño técnico está en
+> [`11-composition.md`](11-composition.md) (✅). Qué es base y qué es módulo, y en qué
+> orden se construye: [`plan.md`](plan.md).
 
 ---
 

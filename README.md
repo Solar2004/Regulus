@@ -6,7 +6,7 @@
 > agentes de IA. Absorbe código ajeno y lo hace propio, sin perder la capacidad de
 > quitarlo.
 
-**Estado:** diseño. No hay código de aplicación todavía. Ver [`docs/05-roadmap.md`](docs/05-roadmap.md).
+**Estado:** canvas de solo lectura contra un mock; la base (core) es lo siguiente. Ver [`docs/plan.md`](docs/plan.md).
 
 ## Identidad visual
 
@@ -60,19 +60,17 @@ El kit todavía no está instalado. Los colores y estilos están listos para su 
 
 | Si vas a… | Lee |
 |---|---|
-| Entender por qué existe Regulus | [`docs/01-vision.md`](docs/01-vision.md) |
+| Entender qué es Regulus | [`docs/concept.md`](docs/concept.md) |
+| Saber qué toca ahora y qué está decidido | [`docs/plan.md`](docs/plan.md) |
+| Entender el modelo (nodos, cables, workflows) | [`docs/11-composition.md`](docs/11-composition.md) |
 | Tocar el core, el workspace o el stack | [`docs/02-architecture.md`](docs/02-architecture.md) |
 | Escribir un módulo | [`docs/03-modules.md`](docs/03-modules.md) |
 | Diseñar o implementar la UI | [`docs/04-client.md`](docs/04-client.md) |
-| Saber qué toca ahora y qué está decidido | [`docs/05-roadmap.md`](docs/05-roadmap.md) |
 | Elegir una dependencia o versión | [`docs/06-stack.md`](docs/06-stack.md) |
-| Saber qué herramientas ya existen (ACP, MCP) | [`docs/07-ecosystem.md`](docs/07-ecosystem.md) |
-| Comprobar un dato sobre Orca o hcom | [`docs/research.md`](docs/research.md) |
 | Commitear, ramificar o empujar | [`docs/09-git.md`](docs/09-git.md) |
-| Proponer algo todavía no decidido | [`docs/ideas/`](docs/ideas/) |
+| Consultar el modelo anterior (archivo) | [`docs/old/`](docs/old/README.md) |
 
-**Agentes con tarea delegada:** lee `01-vision.md` completo, luego tu brief en
-`05-roadmap.md` §Briefs. No empieces nada marcado como bloqueado.
+**Agentes:** empieza por [`AGENTS.md`](AGENTS.md) y [`docs/plan.md`](docs/plan.md).
 
 ## Antes de tu primer commit
 
@@ -90,7 +88,7 @@ configuración, editable sin tocar código, en [`.gitconventions`](.gitconventio
 
 1. **Doctrina Predator** — un módulo no es un plugin de terceros. Es código ajeno
    absorbido y reescrito para ser nativo de Regulus. Pero absorbido ≠ fundido: sigue
-   siendo quitable. [`01-vision.md` §2](docs/01-vision.md)
+   siendo quitable. [`plan.md` §4.1](docs/plan.md)
 
 2. **Dos límites, no uno** — clientes ↔ core hablan por **socket**; core ↔ módulos
    hablan por **trait Rust in-process**. Confundirlos es el error a evitar.

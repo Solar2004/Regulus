@@ -65,7 +65,7 @@ es la referencia de material, no una textura que haya que repetir por toda la pa
    El componente es `ModuleStatus` (`frontend/src/components/ui/status.tsx`).
 4. Correspondencia cerrada:
 
-   | Estado (`04-client.md` §4) | Icono | Color de texto |
+   | Estado (`04-client.md` §3) | Icono | Color de texto |
    |---|---|---|
    | `active` | `CircleCheck` | `success` |
    | `idle` (instalado, nunca usado) | `CircleDashed` | `warning` (tiene que molestar un poco) |

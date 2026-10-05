@@ -10,7 +10,7 @@
 > *"Primero haremos lo visual, la app. Con esto sabré cómo hacer los workflows y los
 > nodos."* — Alexander
 
-El modelo cambió ([`11-composition.md`](11-composition.md)): el agente sale del core,
+El modelo cambió ([`11-composition.md`](../11-composition.md)): el agente sale del core,
 todo son nodos, cables y workflows. Las fases de §1 se diseñaron para el modelo anterior
 (`agent.list`, el agente en el centro) y **se rehacen así si se aprueba**. Sigue siendo
 cliente primero (decisión #9):
@@ -31,7 +31,7 @@ Se deja la puerta abierta en el formato, no se construyen.
 conserva el shell, Settings y los componentes UI. Los paneles de agentes del modelo
 anterior se retiraron. A'/B' tienen un mock de lectura por socket y un canvas con perfil
 de ejemplo, detalle de nodos, workflow interno y vista unificada. Contrato y límites en
-[`composition-preview.md`](composition-preview.md). C'–F' siguen pendientes; no se
+[`composition-preview.md`](../composition-preview.md). C'–F' siguen pendientes; no se
 consideran aprobados automáticamente los contratos abiertos de `11`.
 
 ---
@@ -57,7 +57,7 @@ v1 entrega la base, sin features. Y con el cliente primero
 
 Las abstracciones del core (`Agent`, `Isolation`, `Project`) se **definen** en la fase E
 aunque nadie implemente features encima
-([`02-architecture.md` §4](02-architecture.md)).
+([`02-architecture.md` §4](../02-architecture.md)).
 
 ### 1.1 Definición de terminado para v1
 
@@ -86,23 +86,23 @@ prueba que el contrato no se filtró.
 
 | # | Decisión | Resultado | Dónde |
 |---|---|---|---|
-| **1** | Forma del repo | Workspace Rust, core sin UI, GUI como cliente | [`02` §3](02-architecture.md) |
-| **2** | Qué es un módulo | **Crate Rust in-process** tras el trait `Module` | [`02` §2](02-architecture.md), [`03` §2](03-modules.md) |
-| **3** | Alcance de red | **Core como servidor desde el día 1** (socket local) | [`02` §1](02-architecture.md) |
+| **1** | Forma del repo | Workspace Rust, core sin UI, GUI como cliente | [`02` §3](../02-architecture.md) |
+| **2** | Qué es un módulo | **Crate Rust in-process** tras el trait `Module` | [`02` §2](../02-architecture.md), [`03` §2](../03-modules.md) |
+| **3** | Alcance de red | **Core como servidor desde el día 1** (socket local) | [`02` §1](../02-architecture.md) |
 | **4** | Shell visual | **Dos vistas** (operar + topología) sobre un modelo | [`04` §2](04-client.md) |
 | **6** | Alcance de v1 | Solo la base. Nada de hcom. | §1 |
-| **7** | Framework de GUI | **Tauri 2** + React 19 + Vite + Tailwind 4 + zustand. Decisivo: la terminal. | [`06` §1](06-stack.md) |
-| **8** | Transporte | **JSON-RPC 2.0 sobre WebSocket** en `127.0.0.1`, token en `~/.regulus/token` | [`06` §4](06-stack.md) |
+| **7** | Framework de GUI | **Tauri 2** + React 19 + Vite + Tailwind 4 + zustand. Decisivo: la terminal. | [`06` §1](../06-stack.md) |
+| **8** | Transporte | **JSON-RPC 2.0 sobre WebSocket** en `127.0.0.1`, token en `~/.regulus/token` | [`06` §4](../06-stack.md) |
 | **9** | Orden de construcción | **Cliente primero**, contra mock server | [`04` §1](04-client.md) |
-| **13** | Versionado | **Tres ejes**; el del protocolo es el único estricto, con handshake obligatorio | [`06` §5](06-stack.md) |
-| **14** | Terminal | xterm.js 6 en el webview · `portable-pty` **en el core** | [`06` §3](06-stack.md) |
-| **0** | **Los 5 principios** | **Flexible · Modular · Rápido · Personalizable · Infraestructura.** Mandan sobre todo lo demás. | [`00-principles.md`](00-principles.md) |
+| **13** | Versionado | **Tres ejes**; el del protocolo es el único estricto, con handshake obligatorio | [`06` §5](../06-stack.md) |
+| **14** | Terminal | xterm.js 6 en el webview · `portable-pty` **en el core** | [`06` §3](../06-stack.md) |
+| **0** | **Los 5 principios** | **Flexible · Modular · Rápido · Personalizable · Infraestructura.** Mandan sobre todo lo demás. | [`00-principles.md`](../00-principles.md) |
 | **15** | Multi-proyecto | **Varios simultáneos.** `project_id` en todo el modelo desde el día 1. | [`04` §8](04-client.md) |
 | **16** | Arranque del core | **Los tres modos funcionan.** Auto-lanzar por defecto, nunca obligatorio. | [`04` §9](04-client.md) |
 | **17** | Idioma de la UI | **Inglés, con i18n desde el día 1.** Los docs siguen en español. | [`04` §10](04-client.md) |
-| **18** | Tema | **Solo oscuro visible, con todos los colores en variables** desde el principio. | [`08-design-system.md`](08-design-system.md) |
-| **19** | Harness de git | **Conventional Commits aplicado por hooks**, política en `.gitconventions` (no en los hooks). Master avisa, no bloquea; reescribir historia publicada sí bloquea. | [`09-git.md`](09-git.md) |
-| **20** | Idioma del código y los commits | **Inglés** (orden de Alexander). Extiende la #17: código, UI y commits en inglés; docs en español, solo eso. | [`09-git.md`](09-git.md) |
+| **18** | Tema | **Solo oscuro visible, con todos los colores en variables** desde el principio. | [`08-design-system.md`](../08-design-system.md) |
+| **19** | Harness de git | **Conventional Commits aplicado por hooks**, política en `.gitconventions` (no en los hooks). Master avisa, no bloquea; reescribir historia publicada sí bloquea. | [`09-git.md`](../09-git.md) |
+| **20** | Idioma del código y los commits | **Inglés** (orden de Alexander). Extiende la #17: código, UI y commits en inglés; docs en español, solo eso. | [`09-git.md`](../09-git.md) |
 
 ---
 
@@ -137,7 +137,7 @@ estandariza ([`07` §1.4](07-ecosystem.md)).
 | **Absorber mata la modularidad** — el código de hcom se funde con el core | Alta | [`01` §2.1](01-vision.md) + la matriz de ablación, construida **antes** de absorber hcom. |
 | **La UI bonita y el core que nunca llega** — riesgo propio de empezar por el cliente | Alta | El mock server es la spec del core (fase D extrae `regulus-proto` del mock). La fase E no empieza de cero. |
 | **Alcance infinito** — "se adapta a lo que sea" no tiene límite natural | Alta | [`01` §3](01-vision.md) y §1.1. v1 cierra con `hello`, no con hcom. |
-| **Un `panic` en un módulo mata el host** (coste aceptado) | Media | `catch_unwind` en el borde de `Module::call` ([`03` §2.2](03-modules.md)). |
+| **Un `panic` en un módulo mata el host** (coste aceptado) | Media | `catch_unwind` en el borde de `Module::call` ([`03` §2.2](../03-modules.md)). |
 | **WebKitGTK en Linux** si se elige Tauri | Media | Regulus no necesita navegador embebido. Si aparece, proceso aparte. Y la decisión es reversible: la GUI es un cliente. |
 
 ---
@@ -159,10 +159,10 @@ estados vacíos de §4. Incluye la barra permanente de estado.
 **Depende de:** decisión #7. **No implementes UI.**
 
 ### BRIEF-3 — Registro de módulos in-process en Rust
-El trait de [`03-modules.md` §2](03-modules.md) necesita un mecanismo de registro.
+El trait de [`03-modules.md` §2](../03-modules.md) necesita un mecanismo de registro.
 Compara: registro explícito a mano, `inventory`, `linkme`, `abi_stable`. Criterios:
 ergonomía al añadir un módulo, si permite la ablación
-([`03` §4](03-modules.md)), y compatibilidad con `catch_unwind`. Mira cómo lo resuelven
+([`03` §4](../03-modules.md)), y compatibilidad con `catch_unwind`. Mira cómo lo resuelven
 **Zed** (extensiones), **Bevy** (plugins) y **Tower** (layers). Entrega: recomendación
 con código de ejemplo mínimo.
 **Depende de:** nada. Resuelve la decisión #10.

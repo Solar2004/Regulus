@@ -19,7 +19,7 @@ componente más difícil de la app y solo hay una implementación probada en bat
 | iced | `iced_term` | Igual o peor. |
 
 Escribir un emulador de terminal es un proyecto en sí mismo, y no es el proyecto que
-Regulus quiere ser ([`01-vision.md` §3](01-vision.md)).
+Regulus quiere ser ([`plan.md` §4.2](plan.md)).
 
 **Matiz importante:** la terminal **no se construye en v1** (v1 es solo lectura, sin
 hcom). Pero decide el framework ahora, porque cambiarlo después es carísimo.
@@ -40,7 +40,7 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 |---|---|---|---|
 | RPC servidor y cliente | **`jsonrpsee`** | `0.26.1` (upd 2026-09-30) | JSON-RPC 2.0 con WebSocket nativo, servidor **y** cliente. Cubre los dos lados del límite externo. |
 | PTY | **`portable-pty`** | `0.9.0` · 18M descargas | De wezterm. Multiplataforma incluido ConPTY en Windows. |
-| Agentes | **`agent-client-protocol`** | `2.2.0` (upd 2026-09-18) | Ver [`07-ecosystem.md`](07-ecosystem.md). Da 45 agentes sin escribir integraciones. |
+| Agentes | **`agent-client-protocol`** | `2.2.0` (upd 2026-09-18) | Ver [`old/07-ecosystem.md`](old/07-ecosystem.md). Da 45 agentes sin escribir integraciones. |
 | MCP | **`rmcp`** | `3.5.0` (upd 2026-09-28) · 31M descargas | SDK oficial de MCP para Rust. Sirve UC-4 y UC-5. |
 | Store | **`rusqlite`** | `0.39` (bundled) | Lo mismo que ya usa hcom, así el código absorbido encaja. |
 | Async | **`tokio`** | `1.x` | Lo exigen `jsonrpsee` y `rmcp`. |
@@ -69,7 +69,7 @@ la alternativa es `nix` directo, que es lo que hcom hace hoy.
 
 **Actualización 2026-10-04:** Alexander pidió empezar el canvas de nodos y workflows de
 [`11-composition.md`](11-composition.md), siguiendo las fases A' y B' de
-[`05-roadmap.md` §1.0](05-roadmap.md). Se adopta React Flow para este incremento visual.
+[`plan.md` §3](plan.md). Se adopta React Flow para este incremento visual.
 Esto no aprueba por sí solo todos los contratos abiertos de composición.
 
 El descarte anterior dependía de una topología derivada de manifests y siempre de solo
@@ -187,7 +187,7 @@ Incompatible { requires: String, have: String }
 ```
 
 La UI ya sabe pintarlo: es el mismo tratamiento que `Disabled` y `Broken`
-([`04-client.md` §4](04-client.md)). El versionado se enchufa en la máquina de estados
+([`04-client.md` §3](04-client.md)). El versionado se enchufa en la máquina de estados
 que ya existía, no añade un sistema paralelo.
 
 ### 5.3 Releases

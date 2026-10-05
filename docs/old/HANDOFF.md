@@ -4,8 +4,8 @@
 > Para un agente nuevo, o para mí sin memoria de la conversación. Contiene lo que **no
 > está** en los otros documentos: el razonamiento, lo que se descartó, y qué toca ahora.
 >
-> **Lee esto después de [`../AGENTS.md`](../AGENTS.md) y de
-> [`00-principles.md`](00-principles.md).** Con los tres tienes todo el contexto.
+> **Lee esto después de [`../AGENTS.md`](../../AGENTS.md) y de
+> [`00-principles.md`](../00-principles.md).** Con los tres tienes todo el contexto.
 
 ---
 
@@ -76,7 +76,7 @@ Rust (`egui_term`, `iced_term`) obligarían a escribir un renderizador VTE, que 
 proyecto entero.
 
 Y la decisión es **barata de revertir**: por los dos límites
-([`02-architecture.md` §1](02-architecture.md)), la GUI es un cliente. Cambiarla es
+([`02-architecture.md` §1](../02-architecture.md)), la GUI es un cliente. Cambiarla es
 escribir otro cliente, no reescribir Regulus.
 
 ### 3.3 Por qué el cliente va antes del core
@@ -112,7 +112,7 @@ Alexander eligió multi-proyecto por el principio **Flexible**. La consecuencia 
 **ni el core ni ningún módulo guarda "el proyecto actual"** — es estado del cliente. Así
 dos clientes (escritorio y móvil) miran proyectos distintos contra el mismo core.
 
-Es el ejemplo canónico del guardarraíl de [`00-principles.md`](00-principles.md):
+Es el ejemplo canónico del guardarraíl de [`00-principles.md`](../00-principles.md):
 `project_id` en el modelo es barato hoy y carísimo mañana → se hace ahora. Sincronizar 20
 proyectos no lo ha pedido nadie → no se hace.
 

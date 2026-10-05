@@ -42,7 +42,7 @@ Objetivo: un módulo simple, de cero a cargado y visible, en **menos de una hora
 **Quitar cualquier módulo deja el resto del sistema funcionando.**
 
 No es un buen deseo. Es una propiedad verificable: ver la matriz de ablación en
-[`03-modules.md` §4](03-modules.md).
+[`03-modules.md` §4](../03-modules.md).
 
 ---
 

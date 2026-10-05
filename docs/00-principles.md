@@ -97,7 +97,7 @@ principio es la razón de que ese diseño exista, no una consecuencia accidental
 ## El guardarraíl: flexibilidad ≠ alcance infinito
 
 Hay que decir esto explícitamente, porque "máxima flexibilidad" y el riesgo nº1 del
-proyecto ([`05-roadmap.md` §4](05-roadmap.md): *construir el framework y nunca las
+proyecto ([`plan.md` §4.5](plan.md): *construir el framework y nunca las
 features*) empujan en la misma dirección peligrosa.
 
 **La distinción que resuelve el conflicto:**
@@ -110,8 +110,8 @@ features*) empujan en la misma dirección peligrosa.
 | Que el trait `Module` admita un `ProcessModule` futuro | Escribir el `ProcessModule` ahora |
 
 **La prueba:** ¿esto me cierra una puerta? Si sí, haz el trabajo ahora — es barato.
-¿Esto es una habitación que nadie ha pedido? No la construyas — [`01-vision.md`
-§4.1](01-vision.md) manda: toda capacidad del core necesita un caso de uso que la pida.
+¿Esto es una habitación que nadie ha pedido? No la construyas — [`plan.md`
+§2](plan.md) manda: toda pieza de la base necesita un módulo que la pida.
 
 Ser como el agua significa **no endurecerse**. No significa llenar el vaso entero el
 primer día.

@@ -183,7 +183,7 @@ Es decir: UC-5 no necesita que cada agente sepa de Regulus. Habla MCP y ya.
 ## 3. Registro de módulos: candidatos para la decisión #10
 
 Para el mecanismo de registro del trait `Module`
-([`03-modules.md` §2](03-modules.md)):
+([`03-modules.md` §2](../03-modules.md)):
 
 | Crate | Versión / descargas | Qué hace | Valoración inicial |
 |---|---|---|---|
@@ -191,10 +191,10 @@ Para el mecanismo de registro del trait `Module`
 | `inventory` | `0.3.24` · 135M dl | Registro distribuido por tipos; los módulos se auto-registran | Mágico. Dificulta la ablación porque el registro ocurre antes de `main` |
 | `linkme` | `0.3.37` · 33.9M dl | Slices distribuidos en tiempo de enlazado | Mismo problema que `inventory` |
 | `abi_stable` | — | ABI estable para cargar `.so` en caliente | Resuelve un problema que Regulus no tiene (módulos in-process, mismo compilador) |
-| `extism` | `1.30.0` · 728k dl | Runtime de plugins WASM | Descartado: WASM no da PTYs ni sockets ([`02-architecture.md` §2](02-architecture.md)) |
+| `extism` | `1.30.0` · 728k dl | Runtime de plugins WASM | Descartado: WASM no da PTYs ni sockets ([`02-architecture.md` §2](../02-architecture.md)) |
 
 **Observación para BRIEF-3:** la auto-registración de `inventory`/`linkme` pelea
-directamente con la matriz de ablación ([`03-modules.md` §4](03-modules.md)), porque un
+directamente con la matriz de ablación ([`03-modules.md` §4](../03-modules.md)), porque un
 módulo que se registra solo es un módulo que no puedes quitar con un flag. El registro
 explícito parece ganar por eso, no por simplicidad.
 
@@ -223,7 +223,7 @@ Dejado por escrito para que nadie lo reabra sin motivo:
 | **Electron** | Contradice el requisito de Rust; el core es Rust igual |
 | **gpui** (de Zed) | No es lib estable para terceros; docs casi inexistentes; API cambia sin aviso |
 | **WASM / `extism`** | Los casos de uso necesitan PTYs, procesos hijos y sockets |
-| **React Flow para la topología antigua** | El descarte se sustituyó al empezar el canvas de composición; elección actual en [`06-stack.md` §2.3](06-stack.md). |
+| **React Flow para la topología antigua** | El descarte se sustituyó al empezar el canvas de composición; elección actual en [`06-stack.md` §2.3](../06-stack.md). |
 | **`node-pty`** | Es de Node. `portable-pty` hace lo mismo en Rust y deja el PTY del lado del core |
 | **headroom / token-proxy** | Son de la cadena personal de Alexander, no de Regulus. Aclarado explícitamente. |
 

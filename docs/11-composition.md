@@ -140,7 +140,7 @@ su copia.
 | Plano (lo que se diseña) | En marcha (lo que pasa) |
 |---|---|
 | Perfil, workflow, nodo | **Ejecución:** una copia viva de un workflow |
-| Vista canvas (TOPOLOGÍA) | Vista OPERAR (`04-client.md` §2.1) |
+| Vista canvas (TOPOLOGÍA) | Vista OPERAR (`04-client.md` §2) |
 
 - Un mismo workflow puede tener **varias ejecuciones en paralelo** (tres agentes dev con
   el mismo workflow).
@@ -164,7 +164,7 @@ Así compartir una plantilla o un módulo nunca comparte una clave.
 
 ### 9.1 Las cajas (decisión #11) se resuelven aquí
 
-Las tres lecturas de [`ideas/boxes.md`](ideas/boxes.md) caben en este modelo **sin
+Las tres lecturas de [`old/ideas/boxes.md`](old/ideas/boxes.md) caben en este modelo **sin
 mecanismo propio**:
 
 | Lectura | En este modelo |
@@ -197,18 +197,12 @@ ficheros autocontenidos. **No se hace todavía:** índice remoto, descarga, firm
 
 ---
 
-## 11. Qué cambia en otros documentos (al aprobar)
+## 11. Qué cambió en otros documentos
 
-| Doc | Cambio |
-|---|---|
-| `01-vision.md` §4 | UC-1 se parte en Comunicación y Agente. Nuevos UC: Proveedores, Modelos, Recursos |
-| `01-vision.md` §4.1 | "Identidad de agente" sale de las capacidades del core |
-| `01-vision.md` §3 | "No es un marketplace de plugins" → sí de módulos hechos para Regulus |
-| `02-architecture.md` §4 | ✅ Aplicado (v0.4). `Agent` e `Isolation` salen del core; entran cables, perfiles y ejecuciones |
-| `03-modules.md` | ✅ Aplicado (v0.4). Un módulo trae nodos y un workflow interno con parámetros expuestos; ids con autor y versión |
-| `04-client.md` | TOPOLOGÍA = canvas editable; OPERAR = ejecuciones. Los 8 métodos se rehacen (ver `05-roadmap.md` §1.0) |
-| `HANDOFF.md` §4 | React Flow se reabre (cablear con el ratón es ahora el requisito). Un módulo proxy de Regulus no es la cadena personal headroom/token-proxy |
-| `ideas/boxes.md` | Se cierra con §9.1 |
+✅ Aplicado el 2026-10-05: `02-architecture.md` §4 (el core solo conoce piezas
+genéricas), `03-modules.md` (nodos, puertos con versión, campos, workflow interno) y
+`04-client.md` (Canvas + Operar). Los documentos del modelo anterior están en
+[`old/`](old/README.md); lo que seguía sirviendo, en [`plan.md`](plan.md) §4.
 
 ---
 

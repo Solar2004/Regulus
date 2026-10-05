@@ -4,7 +4,7 @@
 > Este documento **no** es un diseño. Es el sitio donde vive la idea mientras se define.
 > **No implementes nada de aquí.**
 
-> 🔶 **2026-10-04:** propuesta de cierre en [`../11-composition.md` §9.1](../11-composition.md):
+> 🔶 **2026-10-04:** propuesta de cierre en [`../11-composition.md` §9.1](../../11-composition.md):
 > las tres lecturas caben en el modelo de nodos sin mecanismo propio (A = nodo proxy en
 > un cable, B = grupo de nodos con límites, C = perfil o plantilla). Pendiente de
 > aprobación de Alexander.
@@ -24,7 +24,7 @@ Puede que sean la misma idea o dos distintas. Eso es parte de lo que hay que res
 
 ## 2. Por qué esto bloquea algo
 
-`Isolation` en [`../02-architecture.md` §4](../02-architecture.md) es un struct fijo:
+`Isolation` en [`../02-architecture.md` §4](../../02-architecture.md) es un struct fijo:
 
 ```rust
 pub struct Isolation {

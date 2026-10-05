@@ -29,7 +29,7 @@ tipo(scope)!: asunto en imperativo, minúscula, sin punto final
 Por qué, no qué. El qué está en el diff. Qué decisión se tomó, qué
 alternativa se descartó, qué documento lo manda.
                                       ← línea en blanco
-Refs: docs/05-roadmap.md §2
+Refs: docs/plan.md §3
 BREAKING CHANGE: qué rompe y cómo se migra
 Co-Authored-By: Nombre del agente <email>
 ```
@@ -90,7 +90,7 @@ terminal acp mcp docs assets design repo ci deps hooks`). **Un scope nuevo se a�
 | **Formato y comportamiento no viajan juntos.** | Un diff de 400 líneas de `rustfmt` esconde el cambio real. |
 | **Refactor y feature, separados.** | Para poder revertir uno sin perder el otro. |
 | **Nada de ficheros que no entiendes.** | `git add -A` a ciegas es cómo se cuela un secreto. Revisa `git diff --staged`. |
-| **Decisión de diseño → cítala.** | `Refs: docs/05-roadmap.md §2`. El historial es documentación. |
+| **Decisión de diseño → cítala.** | `Refs: docs/plan.md §3`. El historial es documentación. |
 
 Mientras el repo sea solo documentación, el commit típico es
 `docs(<área>): …` y la regla de atomicidad se lee como **un documento o una decisión por

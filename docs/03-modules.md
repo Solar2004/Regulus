@@ -2,7 +2,7 @@
 
 > **v0.4** · 2026-10-05 · aplica el modelo de composición
 > ([`11-composition.md`](11-composition.md)): un módulo trae nodos y su workflow interno.
-> El contrato que todo módulo cumple. Lee [`01-vision.md` §2](01-vision.md) (doctrina
+> El contrato que todo módulo cumple. Lee [`plan.md` §4.1](plan.md) (doctrina
 > Predator) y [`02-architecture.md` §1](02-architecture.md) (los dos límites) primero.
 
 ---
@@ -158,15 +158,15 @@ match result {
 ```
 
 Un módulo que entra en pánico pasa a estado `Broken` y la UI lo muestra como tal
-(§5, requisito 2 de [`01-vision.md`](01-vision.md)). El host no cae.
+(§3, y [`04-client.md` §3](04-client.md)). El host no cae.
 
 ❓ **ABIERTO** — **Cómo ejecuta el core un nodo**: instanciarlo por ejecución, entregarle
 los eventos de sus cables "luego". Se concreta al escribir la base (fase E',
-[`05-roadmap.md` §1.0](05-roadmap.md)). Si exige cambiar el trait, se cambia **aquí
+[`plan.md` §3](plan.md)). Si exige cambiar el trait, se cambia **aquí
 primero**.
 
 ❓ **ABIERTO** — Mecanismo de registro de módulos: a mano, `inventory`, `linkme` o
-`abi_stable`. Es BRIEF-3 en [`05-roadmap.md`](05-roadmap.md). Criterios: ergonomía al
+`abi_stable`. Se cierra en el paso 3 de [`plan.md`](plan.md). Criterios: ergonomía al
 añadir un módulo, si permite la ablación de §4, y compatibilidad con `catch_unwind`.
 Instalar es **recompilar automático** (`11` §10): `regulus module install X` añade el
 crate y recompila. Encaja con el registro a mano: la línea la escribe el comando.
@@ -175,7 +175,7 @@ crate y recompila. Encaja con el registro a mano: la línea la escribe el comand
 
 ## 3. Estados de un módulo
 
-✅ **DECIDIDO** — Derivado del requisito 2 de [`01-vision.md` §5](01-vision.md): el
+✅ **DECIDIDO** — El
 registro muestra estado real, no solo "instalado".
 
 ```rust
@@ -195,7 +195,7 @@ nunca usaste.** La UI debe hacerlo visible sin que haya que buscarlo.
 ## 4. La matriz de ablación
 
 ✅ **DECIDIDO** — Esto es lo que convierte el invariante de
-[`01-vision.md` §1.2](01-vision.md) de promesa en hecho verificado.
+*quitar cualquier módulo deja el resto funcionando* de promesa en hecho verificado.
 
 **Con N módulos, se arranca Regulus N veces, cada vez quitando uno, y se verifica que el
 resto carga y responde.**
@@ -236,8 +236,8 @@ El camino completo, que es lo que la métrica norte mide (objetivo: menos de una
 1. `cargo new --lib crates/modules/<id>`
 2. Escribir `regulus-module.toml`: sus nodos, sus puertos y sus campos
 3. Implementar `Module` (cuatro métodos)
-4. Registrarlo (una línea — mecanismo pendiente de BRIEF-3)
+4. Registrarlo (una línea — mecanismo: decisión #10)
 5. `regulus module ls` lo muestra · `regulus serve --without <id>` sigue arrancando
 
 **Si el paso 3 requiere tocar `regulus-core`, el contrato está mal.** Ese es el criterio
-de aceptación de v1 en [`05-roadmap.md`](05-roadmap.md).
+de aceptación de v1.
