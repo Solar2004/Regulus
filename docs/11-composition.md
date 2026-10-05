@@ -1,8 +1,8 @@
 # 11 — Composición: el modelo de Regulus
 
-> **v0.2** · 2026-10-04 · 🔶 **PROPUESTO** — sale de la conversación con Alexander del
-> 2026-10-04. Nada de aquí está aprobado. Cuando se apruebe, se aplica la lista de §11 a
-> los demás docs. La versión en llano está en [`concept.md`](concept.md).
+> **v0.3** · 2026-10-05 · ✅ **DECIDIDO por Alexander** (2026-10-05) — sale de la
+> conversación del 2026-10-04. Respuestas a lo abierto en §12. Pendiente: aplicar la lista
+> de §11 a los demás docs. La versión en llano está en [`concept.md`](concept.md).
 
 ---
 
@@ -212,14 +212,22 @@ ficheros autocontenidos. **No se hace todavía:** índice remoto, descarga, firm
 
 ---
 
-## 12. Abierto
+## 12. Respuestas de Alexander (2026-10-05)
 
-- ❓ **Cardinalidad:** si una entrada acepta uno o varios cables (`skills` sí; `llm`, ¿uno,
-  o varios con rotación?).
-- ❓ **Contrato de cada tipo de puerto:** qué lleva `llm.chat`. Sin esto, dos proveedores
-  "compatibles" pueden no serlo.
-- ❓ **Cómo aporta su UI un módulo** sin que la UI lo conozca por nombre.
-- ❓ **Cómo declara un módulo su workflow interno** y qué expone: en el manifest, en
-  código, o los dos.
-- ❓ **Cómo se aplica el aislamiento de ejecución** (§9, nivel 2): worktree, entorno
-  limpio, permisos de ficheros.
+> *"Lo que tenemos que tener primero es el funcionamiento básico que permita hacer
+> cualquier cosa de estas en el futuro."* — Alexander
+
+La base deja sitio para todo y decide lo mínimo (guardarraíl de `00-principles.md`).
+
+- ✅ **Cardinalidad:** no se decide. Cada entrada declara `uno | varios`; por defecto
+  `uno`. Rotar proveedores es un nodo (*Rotar modelo*), no varios cables.
+- ✅ **Contrato de cada tipo de puerto:** no se decide. Cada tipo lleva versión
+  (`llm.chat@1`); el formato lo fija el primer módulo que lo use.
+- ✅ **UI de un módulo:** por defecto, el sistema de Regulus — el módulo declara campos
+  y la UI los dibuja sola. Un módulo puede traer su propia UI si la necesita.
+- ✅ **Workflow interno de un módulo:** se edita en la interfaz; Regulus lo genera como
+  Rust y lo compila.
+  - 🔶 **Cómo encaja con Personalizable** (*"se cambia sin recompilar"*): recompila
+    **quien crea el módulo**, una vez al crearlo o publicarlo. **Quien lo usa** solo toca
+    lo que el módulo expone, que se guarda en fichero y se aplica sin recompilar.
+- ❓ **Aislamiento de ejecución** (§9, nivel 2): fuera de v1. Se decide más adelante.
