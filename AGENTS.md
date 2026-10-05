@@ -47,6 +47,7 @@ construir todas las habitaciones hoy.**
 | Fichero | Tokens | Qué contiene | Decisiones que viven aquí |
 |---|---|---|---|
 | **`docs/HANDOFF.md`** | ~2.4k | **Si retomas en frío, empieza aquí.** TODO actual en orden con estimaciones. El **razonamiento** detrás de cada decisión grande. Lo descartado y por qué (no lo re-propongas). Cómo trabajar con Alexander. Estado del repo. Las 3 trampas del proyecto. | — |
+| **`docs/concept.md`** | ~1k | **Qué es Regulus en llano**: la idea de Alexander sin tecnicismos. Piezas (módulo, nodo, cable, workflow, perfil, ejecución), cómo funciona, las dos vistas. Más reciente que `01` donde chocan. | — |
 | **`docs/00-principles.md`** | ~1.2k | **Manda sobre todos los demás.** La regla de oro ("como el agua"). Los 5 principios, cada uno con una prueba que se puede fallar. Presupuestos de rendimiento numéricos. El guardarraíl contra el alcance infinito. | Los 5 principios |
 | **`docs/01-vision.md`** | ~2.8k | Por qué existe Regulus. La **doctrina Predator** (qué significa "módulo"). Qué NO es. Los 5 casos de uso canónicos y las 5 capacidades que el core necesita. Requisitos sacados del workflow real. Nombre y marca. Glosario. | Visión, no-objetivos, alcance |
 | **`docs/02-architecture.md`** | ~2.2k | **Los dos límites** (clientes↔core por socket; core↔módulos por trait Rust). Por qué los módulos son in-process. Forma del workspace. Abstracciones del core (`Agent`, `Isolation`, `Project`). Bus y store. | #1 repo, #2 módulo in-process, #3 servidor día 1 |
@@ -58,6 +59,7 @@ construir todas las habitaciones hoy.**
 | **`docs/08-design-system.md`** | ~1.8k | UI kit recomendado, lenguaje visual Regulus Midnight, paleta y tokens en `assets/design/`, integración futura y muestra HTML. | Kit propuesto, aún no instalado |
 | **`docs/09-git.md`** | ~1.8k | **Cómo se commitea y se empuja aquí.** Formato de mensaje, tipos y scopes, qué entra en un commit, política de ramas y push, releases. **Las 7 reglas para agentes.** Lo aplican los hooks de `.githooks/`; la configuración viva está en `.gitconventions`. | #19 harness de git |
 | **`docs/10-docguard.md`** | ~1.4k | **El harness que revisa a los agentes.** Al terminar un turno contrasta lo que hiciste con las reglas de los docs (`harness/docguard/rules.json`) y te para si algo no cumple. Capas, por qué así (research), CLI, límites. | docguard (🔶) |
+| **`docs/11-composition.md`** | ~2.8k | 🔶 **Propuesta: el modelo de Regulus.** Base sin funciones, módulos que traen nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, aislamiento y secretos, cierre de las cajas (#11), instalar módulos. Qué cambia en los demás docs al aprobar. | Composición (🔶) |
 | **`docs/research.md`** | ~1.3k | Datos medidos, no opiniones. Orca (es Electron/TS, no Rust). hcom (es Rust, binario sin `[lib]`). El workflow real de Alexander con cifras. | — |
 | **`docs/ideas/boxes.md`** | ~1.4k | El sistema de cajas: **sin definir**. Tres lecturas posibles, 5 preguntas sin responder. Bloquea `Isolation`. | #11 cajas (abierta) |
 | **`docs/ideas/harness-optimization.md`** | ~3k | **Handoff de investigación**: qué mejorar en el harness para que los agentes rindan al máximo. Qué existe, medir antes de optimizar, líneas de research, candidatos. | — (abierto) |
@@ -70,7 +72,7 @@ construir todas las habitaciones hoy.**
 | Tu tarea | Lee, en este orden | Coste |
 |---|---|---|
 | **Retomar en frío / no sé qué toca** | `00-principles.md` → `HANDOFF.md` | ~3.6k |
-| **Entender el proyecto** | `01-vision.md` | ~2.8k |
+| **Entender el proyecto** | `concept.md` → `11-composition.md` | ~3.8k |
 | **Escribir un módulo** | `01` §2 (doctrina) → `03-modules.md` completo | ~2.5k |
 | **Tocar el core** | `02-architecture.md` → `03-modules.md` → `06-stack.md` §2.1 | ~4.5k |
 | **Diseñar o implementar UI** | `04-client.md` → `06-stack.md` §1-2 → `08-design-system.md` | ~6k |

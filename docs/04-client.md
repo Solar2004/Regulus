@@ -176,7 +176,9 @@ core real, algún método del mock era falso (§1.1).
 - **Framework:** Tauri 2 + React 19 + Vite + Tailwind 4 + zustand
 - **Transporte:** JSON-RPC 2.0 sobre WebSocket en `127.0.0.1`, token en `~/.regulus/token`
 - **Terminal:** xterm.js 6 en el webview, `portable-pty` en el core
-- **Grafo de topología:** `dagre` + SVG a pelo, **no** React Flow
+- **Canvas de composición:** elección actual en [`06-stack.md` §2.3](06-stack.md).
+  El incremento A'/B' usa el contrato de [`composition-preview.md`](composition-preview.md);
+  los métodos y mockups de este documento corresponden al modelo anterior.
 
 Versiones y justificación completa en [`06-stack.md`](06-stack.md).
 

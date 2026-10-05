@@ -62,17 +62,25 @@ la alternativa es `nix` directo, que es lo que hcom hace hoy.
 | Estilos | **Tailwind 4** | — | Rápido de iterar; el diseño de BRIEF-2 se traduce directo. |
 | Estado | **zustand** | — | Ligero. El estado real vive en el core; el cliente solo cachea. |
 | Terminal | **`@xterm/xterm` + `addon-webgl`** | `6.0.0` **estable** | Orca va con `6.1.0-beta.304`; aquí se puede ir con la estable. |
-| Grafo (topología) | **`dagre`** + SVG a pelo | — | Ver §2.3. |
+| Canvas de composición | **`@xyflow/react`** | `12.12.0` (verificado 2026-10-04) | Ver §2.3. |
+| Mock de desarrollo | **`ws`**, tipos `@types/ws` | `8.22.0` / `8.18.2` (verificado 2026-10-04) | JSON-RPC por WebSocket integrado en Vite; no entra en el cliente de producción. |
 
-### 2.3 Por qué NO React Flow para la vista topología
+### 2.3 Canvas de composición con React Flow
 
-React Flow (`@xyflow/react`) es para grafos **editables**: arrastrar nodos, cablear a
-mano. La vista topología de Regulus se **deriva de los manifests** y es de solo lectura
-([`04-client.md` §2.2](04-client.md)).
+**Actualización 2026-10-04:** Alexander pidió empezar el canvas de nodos y workflows de
+[`11-composition.md`](11-composition.md), siguiendo las fases A' y B' de
+[`05-roadmap.md` §1.0](05-roadmap.md). Se adopta React Flow para este incremento visual.
+Esto no aprueba por sí solo todos los contratos abiertos de composición.
 
-`dagre` calcula el layout jerárquico y el resto son ~100 líneas de SVG. Se ahorra una
-dependencia pesada y, más importante, se evita que la UI sugiera que puedes cablear con
-el ratón cuando no puedes.
+El descarte anterior dependía de una topología derivada de manifests y siempre de solo
+lectura. El nuevo requisito incluye editar nodos y cables en D'; React Flow permite
+conservar el renderizador al llegar a esa fase. A'/B' permiten seleccionar, inspeccionar,
+mover la cámara y hacer zoom; crear, mover o conectar nodos sigue desactivado.
+
+Los nodos se renderizan de forma genérica desde los datos del servidor. Las posiciones
+viven en el perfil de ejemplo, los colores en los tokens de diseño. El mock sirve estado
+del sistema por JSON-RPC, sin importar React Flow. Contrato y límites del incremento:
+[`composition-preview.md`](composition-preview.md).
 
 ---
 

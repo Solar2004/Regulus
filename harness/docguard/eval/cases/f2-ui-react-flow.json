@@ -1,9 +1,7 @@
 {
- "note": "React Flow está descartado para la topología.",
- "file": "ui/src/views/Topology.tsx",
- "before": "import { useStore } from \"@/store\";\n",
- "after": "import { useStore } from \"@/store\";\nimport { ReactFlow } from \"@xyflow/react\";\n",
- "expect": [
-  "06-a67ce2"
- ]
+  "note": "React Flow es la elección del canvas de composición A'/B'; su import ya no se prohíbe.",
+  "file": "crates/regulus-tauri/frontend/src/composition/CompositionScene.tsx",
+  "before": "import { useStore } from \"@/store\";\n",
+  "after": "import { useStore } from \"@/store\";\nimport { ReactFlow } from \"@xyflow/react\";\n",
+  "expect": []
 }

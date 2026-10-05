@@ -223,7 +223,7 @@ Dejado por escrito para que nadie lo reabra sin motivo:
 | **Electron** | Contradice el requisito de Rust; el core es Rust igual |
 | **gpui** (de Zed) | No es lib estable para terceros; docs casi inexistentes; API cambia sin aviso |
 | **WASM / `extism`** | Los casos de uso necesitan PTYs, procesos hijos y sockets |
-| **React Flow** | La topología es de solo lectura; `dagre` + SVG bastan ([`06-stack.md` §2.3](06-stack.md)) |
+| **React Flow para la topología antigua** | El descarte se sustituyó al empezar el canvas de composición; elección actual en [`06-stack.md` §2.3](06-stack.md). |
 | **`node-pty`** | Es de Node. `portable-pty` hace lo mismo en Rust y deja el PTY del lado del core |
 | **headroom / token-proxy** | Son de la cadena personal de Alexander, no de Regulus. Aclarado explícitamente. |
 

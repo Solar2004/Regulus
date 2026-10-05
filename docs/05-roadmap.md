@@ -5,6 +5,37 @@
 
 ---
 
+## 1.0 🔶 PROPUESTO (2026-10-04) — v1 rehecho para el modelo de nodos
+
+> *"Primero haremos lo visual, la app. Con esto sabré cómo hacer los workflows y los
+> nodos."* — Alexander
+
+El modelo cambió ([`11-composition.md`](11-composition.md)): el agente sale del core,
+todo son nodos, cables y workflows. Las fases de §1 se diseñaron para el modelo anterior
+(`agent.list`, el agente en el centro) y **se rehacen así si se aprueba**. Sigue siendo
+cliente primero (decisión #9):
+
+| Fase | Qué | Entregable |
+|---|---|---|
+| **A'** | Mock server que sirve un perfil de ejemplo: módulos, nodos, cables, workflows, ejecuciones | El JSON del mock **es** la spec del core nuevo |
+| **B'** | **Canvas** contra el mock: ver nodos y cables, abrir el workflow de un módulo, vista unificada. Solo lectura | El modelo, visible |
+| **C'** | Vista **OPERAR** con ejecuciones (lo que corre) | Plano y en marcha separados |
+| **D'** | Canvas **editable**: crear nodos, tirar cables, guardar a `regulus.toml` | Configurar sin tocar código |
+| **E'** | `regulus-proto` + `regulus-core` + `regulus-cli` reales | La UI no cambia una línea |
+| **F'** | Dos módulos (comunicación + proveedor) + matriz de ablación | La modularidad, verificada |
+
+**Fuera de v1:** plantillas, marketplace, herencia de perfiles, aislamiento de ejecución.
+Se deja la puerta abierta en el formato, no se construyen.
+
+**Incremento visual iniciado (2026-10-04), por petición de Alexander:** el frontend
+conserva el shell, Settings y los componentes UI. Los paneles de agentes del modelo
+anterior se retiraron. A'/B' tienen un mock de lectura por socket y un canvas con perfil
+de ejemplo, detalle de nodos, workflow interno y vista unificada. Contrato y límites en
+[`composition-preview.md`](composition-preview.md). C'–F' siguen pendientes; no se
+consideran aprobados automáticamente los contratos abiertos de `11`.
+
+---
+
 ## 1. Alcance de v1
 
 ✅ **DECIDIDO** — *"No haremos nada de hcom ahora. Lo que haremos es entender y crear la

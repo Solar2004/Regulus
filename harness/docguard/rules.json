@@ -589,22 +589,49 @@
       "hint": "Usar xterm.js 6 + addon-webgl en el webview de Tauri en lugar de un renderizador VTE propio."
     },
     {
-      "id": "06-a67ce2",
-      "kind": "forbid",
-      "text": "No usar React Flow (@xyflow/react) para la vista topología; debe calcularse el layout con dagre y pintarse con SVG.",
+      "id": "06-5239e2",
+      "kind": "semantic",
+      "text": "En el canvas A'/B' permite solo seleccionar, inspeccionar, mover la cámara y hacer zoom sin crear, mover ni conectar nodos, y renderiza los nodos de forma genérica desde los datos del servidor.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
-        "**/*.js",
-        "**/*.jsx",
-        "**/*.ts",
-        "**/*.tsx",
-        "**/package.json",
-        "ui/**"
+        "crates/regulus-tauri/frontend/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/06-stack.md#2. El stack completo",
-      "pattern": "@xyflow/react|react-flow",
-      "hint": "La vista topología se deriva de los manifests y es de solo lectura; usar dagre + ~100 líneas de SVG."
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-5b313c",
+      "kind": "semantic",
+      "text": "Usa en el cliente de escritorio tauri 2.12.1, React 19, Vite, Tailwind 4, zustand, @xterm/xterm más addon-webgl 6.0.0 estable y @xyflow/react 12.12.0.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "crates/regulus-tauri/frontend/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-f09e9e",
+      "kind": "semantic",
+      "text": "Mantén las posiciones de los nodos en el perfil de ejemplo y los colores en los tokens de diseño, sirve el estado del mock por JSON-RPC sin importar React Flow y sin incluir ws en el cliente de producción.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "crates/regulus-tauri/frontend/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-f68af2",
+      "kind": "semantic",
+      "text": "Usa en Rust jsonrpsee 0.26.1, portable-pty 0.9.0, agent-client-protocol 2.2.0, rmcp 3.5.0, rusqlite 0.39 con bundled, tokio 1.x, serde más serde_json 1.x, thiserror 2 en libs con anyhow 1 en bins, y clap 4 con derive.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "**/Cargo.toml",
+        "**/Cargo.lock"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
     },
     {
       "id": "06-83967e",
@@ -843,8 +870,8 @@
     "AGENTS.md#(inicio)": "f5c29a479387f7b5",
     "AGENTS.md#Qué es Regulus, en tres líneas": "85193f71436d48f3",
     "AGENTS.md#⚠️ Los principios mandan sobre todo lo demás": "76a692c406aebef8",
-    "AGENTS.md#Mapa de documentos": "4e5cba85e656600a",
-    "AGENTS.md#Rutas de lectura según tu tarea": "b99fed37e757eb4f",
+    "AGENTS.md#Mapa de documentos": "037585ab9751a0f7",
+    "AGENTS.md#Rutas de lectura según tu tarea": "2d671e6f1951223a",
     "AGENTS.md#Reglas duras": "62eb1553e348507e",
     "AGENTS.md#Lo que toca ahora": "8762a5825fc5051a",
     "AGENTS.md#Contexto del entorno": "61ed08d89c9b2cc9",
@@ -871,7 +898,7 @@
     "docs/04-client.md#2. Las dos vistas": "7e5f0a87ae25010e",
     "docs/04-client.md#3. El protocolo que las vistas implican": "9876184dd7a6d138",
     "docs/04-client.md#4. Estados vacíos": "5e6a0d411128fe94",
-    "docs/04-client.md#5. Orden de trabajo": "cad425dfef8fc747",
+    "docs/04-client.md#5. Orden de trabajo": "d2fb5a2583b22146",
     "docs/04-client.md#6. El handshake, antes que cualquier método": "0bc01d24cd552290",
     "docs/04-client.md#7. Agentes: Regulus es un ACP Client": "9f66104e23f3ac91",
     "docs/04-client.md#8. Multi-proyecto": "199e59301a90f872",
@@ -881,7 +908,7 @@
     "docs/04-client.md#12. Payloads concretos — el contrato de la fase A": "781fc9debeae75c4",
     "docs/06-stack.md#(inicio)": "cb4c472bc194caf2",
     "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2": "62304bb9f8660eb0",
-    "docs/06-stack.md#2. El stack completo": "7b6bcd7cbdb29cf4",
+    "docs/06-stack.md#2. El stack completo": "08bbbb232d5fde2b",
     "docs/06-stack.md#3. La terminal: cómo se reparte": "e77604d9ffa9a7a2",
     "docs/06-stack.md#4. Decisión #8 cerrada: transporte": "e35b19a8ca7cdf4c",
     "docs/06-stack.md#5. Sistema de versionado": "151083252431753e",
