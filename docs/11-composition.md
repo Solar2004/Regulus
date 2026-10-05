@@ -204,8 +204,8 @@ ficheros autocontenidos. **No se hace todavía:** índice remoto, descarga, firm
 | `01-vision.md` §4 | UC-1 se parte en Comunicación y Agente. Nuevos UC: Proveedores, Modelos, Recursos |
 | `01-vision.md` §4.1 | "Identidad de agente" sale de las capacidades del core |
 | `01-vision.md` §3 | "No es un marketplace de plugins" → sí de módulos hechos para Regulus |
-| `02-architecture.md` §4 | `Agent` e `Isolation` salen del core; entran cables, perfiles y ejecuciones |
-| `03-modules.md` | Un módulo trae nodos y un workflow interno con parámetros expuestos; ids con autor y versión |
+| `02-architecture.md` §4 | ✅ Aplicado (v0.4). `Agent` e `Isolation` salen del core; entran cables, perfiles y ejecuciones |
+| `03-modules.md` | ✅ Aplicado (v0.4). Un módulo trae nodos y un workflow interno con parámetros expuestos; ids con autor y versión |
 | `04-client.md` | TOPOLOGÍA = canvas editable; OPERAR = ejecuciones. Los 8 métodos se rehacen (ver `05-roadmap.md` §1.0) |
 | `HANDOFF.md` §4 | React Flow se reabre (cablear con el ratón es ahora el requisito). Un módulo proxy de Regulus no es la cadena personal headroom/token-proxy |
 | `ideas/boxes.md` | Se cierra con §9.1 |

@@ -1,6 +1,7 @@
 # 02 — Arquitectura
 
-> **v0.3** · 2026-10-02
+> **v0.4** · 2026-10-05 · aplica el modelo de composición
+> ([`11-composition.md`](11-composition.md)): el agente sale del core, todo son nodos y cables.
 > Estructura del core, los dos límites, el workspace y el stack.
 > Lee [`01-vision.md`](01-vision.md) primero.
 
@@ -18,13 +19,13 @@ distintas. Confundirlas es el error principal a evitar.
                │  JSON-RPC sobre socket     ← LÍMITE EXTERNO (red)
                │
         ┌──────▼───────┐
-        │ regulus-core │   registro · bus de eventos · store
+        │ regulus-core │   registro · cables · bus · store · ejecuciones
         └──────┬───────┘
                │
                │  trait Module (Rust, in-process)  ← LÍMITE INTERNO
                │
-   ┌───────────┼───────────┬────────────┬──────────┐
- agents      memory      roles      families     mcp     ← módulos = crates
+   ┌─────────────┬─────────┼─────────┬───────────┐
+ comunicación  agente  proveedores  modelos   procesos   ← módulos = crates que traen nodos
 ```
 
 ### Límite externo — core ↔ clientes
@@ -47,7 +48,7 @@ módulo por nombre — solo por capacidad. El contrato está en
 ### La regla que une los dos
 
 **Los nombres de método son los mismos a ambos lados del core.** Un módulo no sabe si
-una llamada vino de la GUI, del CLI o de otro módulo. `agent.list` es `agent.list` en
+una llamada vino de la GUI, del CLI o de otro módulo. `module.list` es `module.list` en
 las dos fronteras.
 
 ---
@@ -91,17 +92,17 @@ Regulus/
 ├─ crates/
 │  ├─ regulus-core/       # registro, bus, trait Module, store. SIN UI.
 │  ├─ regulus-proto/      # tipos del contrato (core ↔ clientes ↔ módulos)
-│  ├─ regulus-cli/        # regulus serve · module ls · agent ls
+│  ├─ regulus-cli/        # regulus serve · module ls · graph · connect
 │  ├─ regulus-tauri/      # app de escritorio: un cliente más
 │  │  ├─ frontend/        # React+Vite: lo que se ve (compila a frontend/dist)
 │  │  └─ src-tauri/       # Cargo, tauri.conf.json, ventana nativa
 │  └─ modules/
 │     ├─ hello/           # módulo trivial de prueba
-│     ├─ agents/          # (futuro) de hcom, en honor a aannoo
-│     ├─ roles/
-│     ├─ families/
-│     ├─ memory/
-│     └─ mcp/
+│     ├─ communication/   # de hcom, en honor a aannoo
+│     ├─ agent/
+│     ├─ providers/
+│     ├─ models/
+│     └─ processes/       # procesos y PTY
 ├─ docs/
 ├─ README.md
 └─ Cargo.toml             # workspace
@@ -120,34 +121,64 @@ Por qué el core es un crate sin UI y no un binario único:
 
 ## 4. Las abstracciones del core
 
-✅ **DECIDIDO** — Se **definen** en v1 aunque no se implementen features sobre ellas.
-Alexander: *"establecer cosas como digamos Agentes, si existirán, establecer que podrán
-tener aislamiento, sistemas, etc., pero hacer de momento la base"*.
+✅ **DECIDIDO** (2026-10-05, [`11-composition.md`](11-composition.md)) — **El core no
+tiene funciones propias.** No sabe qué es un agente, un modelo ni una skill. Solo conoce
+piezas genéricas: nodos, puertos, cables, workflows, perfiles y ejecuciones.
+
+> **Corrección (v0.4):** hasta v0.3 aquí vivían `Agent` e `Isolation`. **Salen del
+> core:** `Agent` es un nodo del módulo agente; `Isolation` pasa a ser los límites de un
+> grupo de nodos (`11` §9.1); procesos y PTY son el módulo procesos.
+
+Forma, no código final. Los nombres de campo coinciden con el mock
+(`frontend/src/composition/model.ts`):
 
 ```rust
-/// La abstracción central.
-/// Los módulos le cuelgan cosas sin conocerse entre ellos.
-pub struct Agent {
-    pub id:        AgentId,
-    pub project:   ProjectId,
-    pub isolation: Isolation,
-    pub state:     AgentState,
+/// Una entrada o salida de un nodo.
+pub struct Port {
+    pub id:          PortId,
+    pub capability:  PortType,     // tipo con versión: "llm.chat@1"
+    pub direction:   Direction,    // Input | Output
+    pub kind:        WireKind,     // Uses | Then
+    pub required:    bool,         // por defecto false (03-modules.md §1.1)
+    pub cardinality: Cardinality,  // One | Many — por defecto One
 }
 
-pub enum AgentState {
-    Spawning,
-    Running,
-    Idle,
-    Stopped,
-    Failed { reason: String },
+pub struct Node {
+    pub id:                NodeId,
+    pub node_type:         String,             // lo declara el módulo
+    pub module:            Option<ModuleId>,   // "autor/módulo@versión"
+    pub resource:          Option<ResourceRef>,// skill, prompt, doc: ficheros
+    pub ports:             Vec<Port>,
+    pub config:            Map<String, Value>, // secretos solo como "secret:<nombre>"
+    pub internal_workflow: Option<WorkflowId>,
+    pub exposed:           Vec<String>,        // lo que se edita sin recompilar
 }
 
-/// Qué significa "aislado" se decide POR AGENTE, no globalmente.
-pub struct Isolation {
-    pub worktree: Option<PathBuf>,  // ¿su propio worktree de git?
-    pub mcp:      McpScope,         // None | Shared | Dedicated { port }
-    pub memory:   MemoryScope,      // None | Project | Global
-    pub env:      EnvScope,         // Inherit | Clean | Explicit(map)
+/// Uses = servicio permanente. Then = suscripción al bus.
+pub struct Wire { pub id: WireId, pub kind: WireKind, pub from: PortRef, pub to: PortRef }
+
+pub struct Workflow {
+    pub id:     WorkflowId,
+    pub kind:   WorkflowKind,          // Main | Extra | Module
+    pub module: Option<ModuleId>,
+    pub nodes:  Vec<Node>,
+    pub wires:  Vec<Wire>,
+}
+
+pub struct Profile {
+    pub id:            ProfileId,
+    pub project:       Option<ProjectId>,  // None = perfil global
+    pub extends:       Option<ProfileId>,  // reservado: herencia fuera de v1
+    pub main_workflow: WorkflowId,
+    pub workflows:     Vec<Workflow>,
+}
+
+/// Una copia viva de un workflow. Puede haber varias del mismo a la vez.
+pub struct Execution {
+    pub id:       ExecutionId,
+    pub workflow: WorkflowId,
+    pub project:  Option<ProjectId>,
+    pub state:    ExecutionState,      // Starting | Running | Stopped | Failed { reason }
 }
 
 pub struct Project {
@@ -157,26 +188,35 @@ pub struct Project {
 }
 ```
 
+Las posiciones y el layout del canvas viajan con el workflow, pero el core no los
+interpreta: son del cliente.
+
+**Reglas de los cables** (`11` §4):
+
+1. **Uses** une una salida con una entrada del **mismo tipo y versión**. Si la entrada es
+   `One`, admite un cable; si es `Many`, varios.
+2. **Then** es una suscripción al bus, no un motor de flujo. El core corta una cadena al
+   pasar de una profundidad **configurable** y lo reporta (bucles A→B→A).
+3. **Autoconexión:** si para una entrada hay exactamente una salida compatible, se conecta
+   sola.
+
+**Qué deja la base abierta a propósito** (`11` §12): cuántos cables admite cada entrada
+(el campo existe, por defecto `One`) y qué lleva cada tipo de puerto (el tipo tiene
+versión; el formato lo fija el primer módulo que lo use).
+
 **Decisión #15: varios proyectos simultáneos.** El core sirve **todos** los proyectos
 abiertos a la vez. Dos consecuencias que son reglas, no sugerencias:
 
-1. **`project_id` aparece en todo lo que tenga estado** — agentes, mensajes, memoria,
-   sesiones, eventos del bus.
+1. **`project_id` aparece en todo lo que tenga estado** — perfiles, ejecuciones, eventos
+   del bus, store.
 2. **Ni el core ni ningún módulo guarda "el proyecto actual".** El proyecto activo es
    estado **del cliente**. Así dos clientes (escritorio y móvil) pueden mirar proyectos
    distintos contra el mismo core.
 
 Detalle completo en [`04-client.md` §8](04-client.md).
 
-**Por qué `Isolation` se define completa en v1 aunque nadie aplique sus campos:**
-retrofitear aislamiento a posteriori es el cambio más caro que existe, porque toca todos
-los módulos a la vez. Definirla ahora cuesta una tarde; añadirla en v3 cuesta un
-rediseño.
-
-❓ **ABIERTO** — `Isolation` es exactamente el territorio de la idea de "cajas" de
-Alexander. Ver [`ideas/boxes.md`](ideas/boxes.md). Si las cajas se adoptan, `Isolation`
-probablemente se convierte en un caso particular de caja, no en un struct fijo. **No
-implementar `Isolation` hasta decidir eso.**
+❓ **ABIERTO** — Aislamiento **de ejecución** (`11` §9, nivel 2): fuera de v1. No se
+implementa; el modelo no lo impide.
 
 ---
 
@@ -213,7 +253,7 @@ Resumen de lo que importa saber desde arquitectura:
 | Capa | Elección |
 |---|---|
 | RPC del límite externo | `jsonrpsee` (JSON-RPC 2.0 sobre WebSocket) |
-| PTY | `portable-pty`, **del lado del core** |
+| PTY | `portable-pty`, en el proceso del core (módulo procesos) |
 | Integración con agentes | `agent-client-protocol` — ver [`07-ecosystem.md`](07-ecosystem.md) |
 | MCP | `rmcp` |
 | Store | `rusqlite` |
@@ -229,9 +269,10 @@ Resumen de lo que importa saber desde arquitectura:
 
 ✅ **DECIDIDO**
 
-**Bus:** estado observable sin polling. `agents` publica `agent.spawned`; `roles`,
-`families` y la UI reaccionan **sin que `agents` sepa que existen**. El bus también es
-lo que alimenta la suscripción de los clientes por socket.
+**Bus:** estado observable sin polling. Comunicación publica `message.received`; un cable
+"luego" lo lleva a Entregar y la UI reacciona, **sin que Comunicación sepa quién
+escucha**. Los cables "luego" corren sobre el bus. También alimenta la suscripción de los
+clientes por socket.
 
 **Store:** un SQLite por proyecto + uno global. Cada módulo obtiene un **namespace
 propio**. Leer de otro namespace solo a través de capacidades declaradas. Evita que el
