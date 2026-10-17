@@ -3,6 +3,7 @@
 members = [
     "crates/regulus-proto",
     "crates/regulus-core",
+    "crates/regulus-cli",
     "crates/modules/hello",
     "crates/regulus-tauri/src-tauri",
 ]

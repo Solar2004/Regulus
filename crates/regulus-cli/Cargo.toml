@@ -1,0 +1,21 @@
+[package]
+name = "regulus-cli"
+description = "The regulus command: runs the core and talks to it like any other client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "regulus"
+path = "src/main.rs"
+
+[dependencies]
+regulus-proto.workspace = true
+regulus-core.workspace = true
+regulus-module-hello = { path = "../modules/hello" }
+anyhow.workspace = true
+clap.workspace = true
+jsonrpsee = { workspace = true, features = ["ws-client"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
