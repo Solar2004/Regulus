@@ -236,7 +236,7 @@ El camino completo, que es lo que la métrica norte mide (objetivo: menos de una
 1. `cargo new --lib crates/modules/<id>`
 2. Escribir `regulus-module.toml`: sus nodos, sus puertos y sus campos
 3. Implementar `Module` (cuatro métodos)
-4. Registrarlo (una línea — mecanismo: decisión #10)
+4. Registrarlo: una línea en `crates/regulus-cli/src/modules.rs` (decisión #10)
 5. `regulus module ls` lo muestra · `regulus serve --without <id>` sigue arrancando
 
 **Si el paso 3 requiere tocar `regulus-core`, el contrato está mal.** Ese es el criterio

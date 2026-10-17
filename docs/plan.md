@@ -105,9 +105,9 @@ Si deriva de código ajeno, su manifest lleva `[module.origin]` con autor, repo,
 
 ### 4.4 Decisiones abiertas que siguen vivas
 
-- **#10 Registro de módulos:** recomendación fuerte, **a mano** (una línea que escribe
-  `regulus module install`). Implementado así en el paso 3
-  (`crates/regulus-cli/src/modules.rs`); falta que Alexander lo dé por cerrado.
+- ✅ **#10 Registro de módulos — cerrada (2026-10-17):** **a mano**, una línea por
+  módulo en `crates/regulus-cli/src/modules.rs` (la que escribirá `regulus module
+  install`). Sin auto-registro (§4.3).
 - **#12 ACP:** protocolo que ~45 agentes ya hablan. Importa al hacer el módulo de
   agentes/comunicación. Investigación en [`old/07-ecosystem.md`](old/07-ecosystem.md).
 
