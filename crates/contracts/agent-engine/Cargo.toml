@@ -1,0 +1,9 @@
+[package]
+name = "regulus-contract-agent-engine"
+description = "The agent.engine@1 capability: what the Agent box asks of an engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true

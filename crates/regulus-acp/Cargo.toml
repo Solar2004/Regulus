@@ -1,0 +1,23 @@
+[package]
+name = "regulus-acp"
+description = "ACP channel and kit shared by Regulus engine modules"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+regulus-contract-agent-engine.workspace = true
+agent-client-protocol = { workspace = true, features = ["process"] }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# A scripted ACP agent the tests talk to; never shipped.
+[[bin]]
+name = "regulus-acp-fake-agent"
+path = "src/bin/fake_agent.rs"
+test = false
+

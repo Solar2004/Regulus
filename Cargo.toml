@@ -4,6 +4,8 @@ members = [
     "crates/regulus-proto",
     "crates/regulus-core",
     "crates/regulus-cli",
+    "crates/regulus-acp",
+    "crates/contracts/agent-engine",
     "crates/modules/hello",
     "crates/regulus-tauri/src-tauri",
 ]
@@ -18,8 +20,12 @@ authors = ["Alexander"]
 [workspace.dependencies]
 regulus-proto = { path = "crates/regulus-proto" }
 regulus-core = { path = "crates/regulus-core" }
+regulus-acp = { path = "crates/regulus-acp" }
+regulus-contract-agent-engine = { path = "crates/contracts/agent-engine" }
+agent-client-protocol = "3.4.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+futures = "0.3"
 getrandom = "0.4"
 jsonrpsee = "0.26.1"
 serde = { version = "1", features = ["derive"] }
