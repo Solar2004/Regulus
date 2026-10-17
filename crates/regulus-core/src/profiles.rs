@@ -1,0 +1,130 @@
+//! Loading profiles from files. A file holds either one profile or `{ "profiles": [...] }`.
+//!
+//! The file format of `regulus.toml` is still open (docs/plan.md §3); JSON and TOML both
+//! map onto the same contract types, so choosing one later changes nothing here.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use regulus_proto::Profile;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ProfileFile {
+    Many { profiles: Vec<Profile> },
+    One(Profile),
+}
+
+#[derive(Debug, Default)]
+pub struct ProfileStore {
+    profiles: Vec<Profile>,
+}
+
+/// Fills names a file left out, so every client gets something to show.
+fn normalize(profile: &mut Profile) {
+    if profile.name.is_empty() {
+        profile.name = profile.id.clone();
+    }
+    for workflow in &mut profile.workflows {
+        if workflow.name.is_empty() {
+            workflow.name = workflow.id.clone();
+        }
+        for node in &mut workflow.nodes {
+            if node.name.is_empty() {
+                node.name = node.id.clone();
+            }
+            for port in &mut node.ports {
+                if port.name.is_empty() {
+                    port.name = port.id.clone();
+                }
+            }
+        }
+    }
+}
+
+fn parse(path: &Path) -> Result<Vec<Profile>, String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let file: ProfileFile = match path.extension().and_then(|e| e.to_str()) {
+        Some("toml") => toml::from_str(&text).map_err(|e| e.to_string()),
+        _ => serde_json::from_str(&text).map_err(|e| e.to_string()),
+    }
+    .map_err(|e| format!("invalid profile file {}: {e}", path.display()))?;
+    Ok(match file {
+        ProfileFile::Many { profiles } => profiles,
+        ProfileFile::One(profile) => vec![profile],
+    })
+}
+
+fn files(path: &Path) -> Result<Vec<PathBuf>, String> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let entries = fs::read_dir(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|p| {
+            p.is_file()
+                && matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("json" | "toml")
+                )
+        })
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+impl ProfileStore {
+    /// Loads every profile found in `paths`. Problems are returned as warnings: a broken
+    /// file never stops the core.
+    pub fn load(paths: &[PathBuf]) -> (Self, Vec<String>) {
+        let mut store = ProfileStore::default();
+        let mut warnings = Vec::new();
+        for path in paths {
+            let found = files(path).and_then(|files| {
+                files
+                    .iter()
+                    .map(|file| parse(file))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|all| all.concat())
+            });
+            match found {
+                Ok(profiles) => profiles.into_iter().for_each(|profile| {
+                    if let Err(warning) = store.insert(profile) {
+                        warnings.push(warning);
+                    }
+                }),
+                Err(warning) => warnings.push(warning),
+            }
+        }
+        (store, warnings)
+    }
+
+    pub fn insert(&mut self, mut profile: Profile) -> Result<(), String> {
+        if self.get(&profile.id).is_some() {
+            return Err(format!(
+                "profile `{}` is defined more than once; keeping the first",
+                profile.id
+            ));
+        }
+        normalize(&mut profile);
+        self.profiles.push(profile);
+        Ok(())
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Profile> {
+        self.profiles.iter().find(|profile| profile.id == id)
+    }
+
+    /// Profiles of one project, or of every project when `project_id` is `None`.
+    pub fn list<'a>(
+        &'a self,
+        project_id: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a Profile> + 'a {
+        self.profiles.iter().filter(move |p| {
+            project_id.is_none_or(|wanted| p.project_id.as_deref() == Some(wanted))
+        })
+    }
+}

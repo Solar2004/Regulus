@@ -2,6 +2,7 @@
 [workspace]
 members = [
     "crates/regulus-proto",
+    "crates/regulus-core",
     "crates/regulus-tauri/src-tauri",
 ]
 resolver = "2"
