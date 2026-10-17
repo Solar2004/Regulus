@@ -1,16 +1,38 @@
 # Regulus — workspace raíz (docs/02-architecture.md §3).
-# De momento solo el shell Tauri; crates/regulus-core, regulus-proto,
-# regulus-cli y modules/* se añaden a `members` al llegar las fases D-F.
 [workspace]
-members = ["crates/regulus-tauri/src-tauri"]
+members = [
+    "crates/regulus-proto",
+    "crates/regulus-tauri/src-tauri",
+]
 resolver = "2"
 
-# Perfil release del shell (antes en crates/regulus-tauri/Cargo.toml:
-# en un workspace solo la raíz define profiles).
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Alexander"]
+
+# Versiones verificadas: docs/06-stack.md §2.1 (único sitio donde se documentan).
+[workspace.dependencies]
+regulus-proto = { path = "crates/regulus-proto" }
+regulus-core = { path = "crates/regulus-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+getrandom = "0.4"
+jsonrpsee = "0.26.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+toml = "1"
+tower = "0.5"
+
+# Perfil release (en un workspace solo la raíz define profiles).
 # Ver https://tauri.app/concept/size/#cargo-configuration
+#
+# Sin `panic = "abort"`: el core contiene el pánico de un módulo con `catch_unwind`
+# (docs/03-modules.md §2.2) y eso solo funciona si el pánico desenrolla.
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
 strip = true

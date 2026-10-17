@@ -1,0 +1,10 @@
+[package]
+name = "regulus-proto"
+description = "Contract types shared by the Regulus core, its clients and its modules"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
