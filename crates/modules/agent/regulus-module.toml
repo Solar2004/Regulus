@@ -1,0 +1,33 @@
+[module]
+id             = "regulus/agent@0.1.0"
+name           = "Agent"
+requires_proto = "^1.2"
+methods        = ["agent.prompt"]
+
+[[node]]
+type = "agent"
+name = "Agent"
+
+  # The CLI that runs this agent: Claude Code, opencode… whatever engine is wired here.
+  # Required because without an engine there is no agent at all: the box is disabled and
+  # says so, the rest of the execution keeps running (docs/03-modules.md §1.1).
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "agent.engine@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  # Where the agent works. Empty: the user's home directory.
+  [[node.field]]
+  id      = "workdir"
+  type    = "text"
+  default = ""
+
+  # What to answer when the agent asks for permission. Asking a person arrives with the bus.
+  [[node.field]]
+  id      = "permissions"
+  type    = "select"
+  default = "reject"
+  options = ["reject", "allow"]

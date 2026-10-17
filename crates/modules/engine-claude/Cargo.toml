@@ -1,0 +1,12 @@
+[package]
+name = "regulus-module-engine-claude"
+description = "Agent engine for Claude Code, over ACP"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-acp.workspace = true
+regulus-contract-agent-engine.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true

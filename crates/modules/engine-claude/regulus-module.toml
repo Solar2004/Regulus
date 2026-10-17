@@ -1,0 +1,41 @@
+[module]
+id             = "regulus/engine-claude@0.1.0"
+name           = "Claude Code engine"
+requires_proto = "^1.2"
+methods        = ["claude.detect"]
+
+[[node]]
+type = "engine-claude"
+name = "Claude Code"
+
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "agent.engine@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The claude binary the adapter drives (CLAUDE_CODE_EXECUTABLE). Empty: the first
+  # `claude` on PATH. Detection also lists profile binaries named claude-*-bin.
+  [[node.field]]
+  id      = "installation"
+  type    = "text"
+  default = ""
+
+  # CLAUDE_CONFIG_DIR for this agent, e.g. ~/.claude-ultra. Empty: the user's own setup.
+  [[node.field]]
+  id      = "config_dir"
+  type    = "text"
+  default = ""
+
+  # The ACP adapter, as a command line split on spaces. The pinned version lives here
+  # and only here (docs/06-stack.md §2.1).
+  [[node.field]]
+  id      = "adapter"
+  type    = "text"
+  default = "npx -y @agentclientprotocol/claude-agent-acp@0.93.0"
+
+  [[node.field]]
+  id      = "startup_seconds"
+  type    = "number"
+  default = 120

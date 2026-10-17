@@ -3220,6 +3220,7 @@ dependencies = [
  "futures",
  "regulus-contract-agent-engine",
  "regulus-core",
+ "regulus-module-agent",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -3261,6 +3262,37 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tower",
+]
+
+[[package]]
+name = "regulus-module-agent"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-agent-engine",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-engine-claude"
+version = "0.1.0"
+dependencies = [
+ "regulus-acp",
+ "regulus-contract-agent-engine",
+ "regulus-core",
+ "regulus-proto",
+]
+
+[[package]]
+name = "regulus-module-engine-opencode"
+version = "0.1.0"
+dependencies = [
+ "regulus-acp",
+ "regulus-contract-agent-engine",
+ "regulus-core",
+ "regulus-proto",
 ]
 
 [[package]]

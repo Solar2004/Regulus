@@ -1,0 +1,57 @@
+# Two Agent boxes, one per engine (docs/12-agents.md). Copy it to ~/.regulus/profiles/
+# and run it with `regulus run agents`.
+id = "agents"
+name = "Agents"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Agents"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "dev"
+  name = "Dev agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 380, y = 65 }
+  config = { workdir = "", permissions = "reject" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true }]
+
+  [[workflows.nodes]]
+  id = "opencode"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 50, y = 65 }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "reviewer"
+  name = "Reviewer agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 380, y = 265 }
+  config = { workdir = "", permissions = "reject" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true }]
+
+  [[workflows.nodes]]
+  id = "claude"
+  name = "Claude Code"
+  type = "engine-claude"
+  module_id = "regulus/engine-claude@0.1.0"
+  position = { x = 50, y = 265 }
+  config = { installation = "", config_dir = "" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "dev-engine"
+  kind = "uses"
+  from = { node_id = "opencode", port_id = "engine" }
+  to = { node_id = "dev", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "reviewer-engine"
+  kind = "uses"
+  from = { node_id = "claude", port_id = "engine" }
+  to = { node_id = "reviewer", port_id = "engine" }

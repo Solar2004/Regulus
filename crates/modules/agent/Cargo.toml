@@ -1,0 +1,13 @@
+[package]
+name = "regulus-module-agent"
+description = "The Agent box: a generic agent node whose engine is whatever is wired into it"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-contract-agent-engine.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true

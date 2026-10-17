@@ -21,3 +21,5 @@ name = "regulus-acp-fake-agent"
 path = "src/bin/fake_agent.rs"
 test = false
 
+[dev-dependencies]
+regulus-module-agent = { path = "../modules/agent" }

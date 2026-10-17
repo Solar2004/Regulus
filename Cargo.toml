@@ -7,6 +7,9 @@ members = [
     "crates/regulus-acp",
     "crates/contracts/agent-engine",
     "crates/modules/hello",
+    "crates/modules/agent",
+    "crates/modules/engine-opencode",
+    "crates/modules/engine-claude",
     "crates/regulus-tauri/src-tauri",
 ]
 resolver = "2"
