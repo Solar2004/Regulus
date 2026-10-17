@@ -78,5 +78,8 @@ Perfil  (global, o propio de un proyecto)
 2. **Funciona por defecto**, sin configurar nada.
 3. **Todo se cambia sin programar:** canvas, fichero o terminal.
 4. **Rápido**, con números medidos ([`00-principles.md`](00-principles.md)).
+5. **Toda pieza es una caja líquida:** por fuera tiene una forma fija; por dentro se le
+   cambia el motor, se le conecta lo que quieras en cada ranura, se envuelve, se abre y
+   se guarda como plantilla ([`00-principles.md`](00-principles.md)).
 
 > *"Nuestro producto tiene que ser como el agua."* — Alexander

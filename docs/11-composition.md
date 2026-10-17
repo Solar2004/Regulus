@@ -190,6 +190,10 @@ mecanismo propio**:
 Si se aprueba, `Isolation` deja de ser un struct del core y pasa a ser los límites de un
 grupo. La #11 se cierra.
 
+La lectura A, generalizada, es la regla 4 de la caja líquida (`00-principles.md`): toda
+caja que entra y sale por la misma capacidad es una **envoltura** y se mete en cualquier
+cable. Los proveedores son el primer caso (`12-agents.md` §6.4).
+
 ---
 
 ## 10. Instalar módulos y compartir

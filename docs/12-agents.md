@@ -1,7 +1,8 @@
 # 12 — Agentes: la caja y sus motores
 
-> **v1.1** · 2026-10-17 · Respuesta de Alexander a la pregunta abierta de `plan.md` §2,
-> más la investigación y la medición del mismo día. Manda sobre `old/07-ecosystem.md`.
+> **v1.2** · 2026-10-17 · Respuesta de Alexander a la pregunta abierta de `plan.md` §2,
+> más la investigación y la medición del mismo día, y los proveedores como caja líquida
+> (`00-principles.md`). Manda sobre `old/07-ecosystem.md`.
 
 ---
 
@@ -26,7 +27,7 @@ el motor traduce eso a su propio idioma.
 
 | Pieza | Qué es | Dónde vive |
 |---|---|---|
-| **Caja Agente** | El nodo que ve el usuario. Entradas genéricas: proveedor, skills, MCP, mensajes | módulo `agent` |
+| **Caja Agente** | El nodo que ve el usuario. Entradas genéricas: un proveedor por propósito (§6.5), skills, MCP, mensajes | módulo `agent` |
 | **Motor** | La compatibilidad con un CLI concreto | un módulo por motor: `engine-claude`, `engine-opencode`… |
 | **Canal** | Cómo habla el motor con el proceso del CLI | dentro de cada motor (§4) |
 
@@ -51,21 +52,21 @@ caja (solo tiene lo conectado), o **uno existente** del usuario (`~/.claude`,
 `~/.claude-ultra`…), que hereda su setup entero. Para Claude, el aislado aplica el mismo
 blindaje que `claude-sub` contra el `.claude/settings.json` del proyecto.
 
-Hoy existe el **existente** (campo `config_dir`; vacío = el setup por defecto del usuario).
-El **aislado** llega con Proveedores: sin proveedor conectado, un perfil vacío no tiene con
-qué autenticarse.
+Los dos existen: el **existente** (`profile = user`, campo `config_dir`; vacío = el setup
+por defecto del usuario) y el **aislado** (`profile = isolated`, §6.7), que necesita un
+proveedor o una suscripción conectados para poder autenticarse.
 
 | Entrada genérica | Motor Claude Code | Motor opencode |
 |---|---|---|
 | Instalación | `CLAUDE_CODE_EXECUTABLE` | binario elegido |
 | Perfil | `CLAUDE_CONFIG_DIR` | su config |
-| Proveedor | `providers/set` de ACP: `anthropic`, `bedrock` o `vertex` + `baseUrl` | proveedor en su config |
+| Proveedor (una ranura por propósito, §6.5) | `providers/set` de ACP: `anthropic`, `bedrock` o `vertex` + `baseUrl` | proveedor en su config |
 | Skills | se colocan en el perfil | por verificar |
 | MCP | `mcpServers` al crear la sesión | igual |
 
 **Un proveedor que no habla el protocolo del motor** (p. ej. solo OpenAI hacia Claude)
-se resuelve con un **nodo traductor** en el cable "usa": Agente ⇢ Traductor ⇢ Proveedor.
-Es la lectura A de las cajas (`11-composition.md` §9.1). Es lo que hoy hace `token-proxy`.
+se resuelve con un **Traductor** en el cable "usa": Agente ⇢ Traductor ⇢ Proveedor. Es
+una envoltura (§6.4) y la lectura A de las cajas (`11-composition.md` §9.1).
 
 ## 4. El canal: ACP primero
 
@@ -127,13 +128,25 @@ queda desactivada y la de opencode sigue funcionando.
 
 ## 6. Proveedores
 
-✅ **DECIDIDO** (Alexander, 2026-10-17: *"lo más flexible"*) — las tres piezas siguientes.
+✅ **DECIDIDO** (Alexander, 2026-10-17: *"lo más flexible"*). Ese mismo día se amplió: el
+proveedor es una **caja líquida** (`00-principles.md`), con motor, envolturas y
+plantillas, y la caja Agente gana una ranura de proveedor por propósito.
+
+```
+ [Agente]
+   principal ◄──── [Plan B] ◄── 1. [Pool claves] ◄── opencode Go ×2
+                              └─ 2. OpenRouter
+   pensar    ◄──── Anthropic (Opus, esfuerzo alto)
+   rápido    ◄──── [Router] "lo barato que haya" ◄── z.ai · local
+   subagente ◄──── Ollama local
+   imágenes  ◄──── [Generador] → se le da al agente como herramienta (MCP)
+```
 
 ### 6.1 La capacidad `llm.endpoint@1`
 
-Un proveedor **no hace de proxy**: describe dónde está el modelo y el CLI habla con él
-directamente. Regulus no toca el tráfico, así que no añade latencia ni se rompe con el
-streaming del CLI.
+Un proveedor **describe** dónde está el modelo y el CLI habla con él directamente.
+Mientras nadie pida tocar cada petición, Regulus no está en el tráfico: no añade latencia
+ni rompe el streaming del CLI. Cuando hace falta tocarlo, entra la pasarela (§6.4).
 
 ```
  Proveedor ⇢ llm.endpoint ⇢ [ Agente ] ── engine.session.start + provider ──► Motor
@@ -149,31 +162,131 @@ El nodo Proveedor responde a `llm.endpoint` con:
 - `protocol` puede ser `anthropic`, `openai`, `bedrock` o `vertex`. Es un dato, no un
   tipo cerrado: un protocolo nuevo no cambia la capacidad.
 - `models` es opcional. El primero es el modelo por defecto.
-- La caja resuelve su entrada `provider` (opcional) y pasa la descripción al motor en
+- La caja resuelve su entrada de proveedor y pasa la descripción al motor en
   `StartArgs.provider`. Es un campo nuevo opcional, así que sigue siendo
   `agent.engine@1` (`03-modules.md` §1).
 - **Cada motor declara los protocolos que habla** (Claude: `anthropic`, `bedrock`,
   `vertex`; opencode: `anthropic`, `openai`). Si no coincide, el arranque falla con un
-  error que dice qué falta. La solución es el nodo traductor del §3.
+  error que dice qué falta. La solución es el Traductor (§6.4).
+- 🔶 **Protocolo por modelo.** Un mismo host puede servir unos modelos por Anthropic y
+  otros por OpenAI (opencode Go: qwen y minimax por `/messages`; glm, kimi y deepseek
+  solo por `/chat/completions`). Llega como campo opcional, así que sigue siendo `@1`. Su
+  forma la fija el primer módulo que lo use (`11-composition.md` §10).
 - `llm.chat@1` queda reservado para cuando sea Regulus quien llame a un modelo.
 
-**Cómo lo traduce cada motor:**
+**Cómo lo traduce cada motor de agente:**
 
 | Motor | Vía |
 |---|---|
 | Claude Code | `providers/set` de ACP (`apiType`, `baseUrl`, `headers`), antes de abrir la sesión |
 | opencode | `OPENCODE_CONFIG_CONTENT` con un proveedor `regulus` (`@ai-sdk/anthropic` o `@ai-sdk/openai-compatible`) y `model = "regulus/<modelo>"` |
 
-### 6.2 El módulo `providers`
+### 6.2 La caja Proveedor y sus motores
 
-Trae **un único nodo genérico** con los campos `protocol`, `base_url`, `credential`
-(`secret:<nombre>`), `auth` (`bearer`, `x-api-key` o `none`) y `model`. OpenRouter,
-z.ai, Anthropic o un proxy local son **plantillas** de ese nodo, no código: añadir un
-proveedor no recompila nada.
+Como la caja Agente: **una caja genérica, y dentro el motor que la hace funcionar.** Cada
+motor es un módulo; la caja los encuentra por capacidad, nunca por nombre.
 
-### 6.3 El perfil aislado
+| Motor | Qué hay detrás | Qué se configura |
+|---|---|---|
+| **API** | un servicio remoto: OpenRouter, opencode Go, Anthropic, z.ai | plantilla, credencial, cabeceras extra, modelos |
+| **Local** | un servidor en el PC: Ollama, LM Studio, llama.cpp, ya arrancado o lanzado por Regulus | arrancarlo y pararlo con la ejecución, pedirle sus modelos, comprobar que responde |
+| **Suscripción** | el login de un plan (§6.6) | login, renovar el token, qué motores de agente lo pueden usar |
 
-El motor elige perfil con el campo `profile`:
+- **La caja** guarda lo que comparten todos los motores: modelos ofrecidos, cabeceras
+  extra y protocolo por modelo. Responde `llm.endpoint`.
+- **El motor** sabe cómo llegar: URL, autenticación y, si es local, el proceso.
+- 🔶 El nombre de la capacidad del motor (`llm.source@1`) y el reparto exacto de campos
+  entre caja y motor se fijan al construirlo. Hoy el módulo `providers` es un único nodo
+  que hace de caja y de motor API (§6.8).
+
+### 6.3 Plantillas
+
+OpenRouter, opencode Go, Anthropic, z.ai o un proxy local **no son código: son
+plantillas** del motor API. Viven en un catálogo, un fichero de datos dentro del módulo.
+El nodo elige `preset = "openrouter"` y se rellenan solos la URL, el protocolo, la
+autenticación, las cabeceras y los modelos. Cualquier campo se puede pisar a mano.
+Añadir un proveedor es añadir unas líneas al catálogo, sin recompilar.
+
+**Cabeceras extra:** cualquier cabecera que el proveedor pida o permita, como
+`x-opencode-session` (opencode Go), o `HTTP-Referer` y `X-Title` (OpenRouter). Un valor
+puede ser `secret:<nombre>`.
+
+**Cada plantilla lleva sus condiciones de uso** en una línea, igual que el catálogo de
+caveman en `alx-claude-setup`. Por ejemplo: opencode Go permite su clave en otros
+agentes, siempre que cada uno mande su propio User-Agent y un `x-opencode-session`
+estable. Las condiciones deciden qué puede hacer el Pool (§6.4) y qué motores pueden usar
+una suscripción (§6.6).
+
+### 6.4 Envolturas y la pasarela
+
+Una **envoltura** es una caja que entra y sale por `llm.endpoint`, así que se mete en
+cualquier cable de proveedor y se encadena sin límite:
+
+| Envoltura | Qué hace |
+|---|---|
+| **Pool** | Varias claves o cuentas que se reparten y rotan al llegar al límite, si las condiciones del proveedor lo permiten |
+| **Plan B** | Prueba en orden; si el primero falla, pasa al siguiente |
+| **Router** | Decide por reglas: modelo, coste, tamaño de la petición, hora |
+| **Traductor** | De OpenAI a Anthropic y al revés |
+
+Todo lo que actúa **en cada petición** (reintentar, rotar, cambiar de proveedor,
+traducir, contar tokens) necesita algo en medio del tráfico. Ese algo es la **pasarela**,
+un proceso de Regulus.
+
+✅ **Regulus compila el dibujo; el usuario no elige "directo o pasarela".**
+
+- Si la cadena de una ranura acaba en un único proveedor sin envolturas, el CLI habla
+  **directo** con él. Cero latencia, como hasta ahora.
+- Si hay envolturas, o varias ranuras con proveedores distintos en un CLI que solo acepta
+  una URL (Claude Code), Regulus arranca **una pasarela** que ejecuta ese dibujo y le pasa
+  al CLI la URL de la pasarela. Deja pasar el streaming sin tocarlo.
+- La pasarela ve todo el tráfico, así que **cuenta tokens, coste y errores** sin más
+  trabajo y lo publica en el bus ("opencode Go al 80 %", "OpenRouter cayó, usando plan
+  B"). Operar lo muestra y otros nodos pueden reaccionar.
+
+La pasarela es una pieza **genérica del producto**. No es token-proxy ni headroom, que
+siguen siendo de la cadena personal de Alexander (`plan.md` §4.3).
+
+### 6.5 Las ranuras de la caja Agente
+
+La caja Agente no tiene una sola entrada de proveedor, sino **una por propósito**. Cada
+motor de agente declara cuáles entiende y las traduce a los ajustes de su CLI. Conectar
+una ranura que el motor no entiende da un aviso en `profile.check`.
+
+| Ranura | Claude Code | opencode |
+|---|---|---|
+| **principal** | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` | `model` |
+| **rápido** (tareas de fondo, títulos) | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `small_model` |
+| **subagentes** | `CLAUDE_CODE_SUBAGENT_MODEL` | el modelo de cada agente de su config |
+| **pensar** | por verificar (`opusplan`, esfuerzo) | el modelo del agente `plan` |
+
+Variables comprobadas en los binarios instalados el 2026-10-17 (Claude Code 2.1.302,
+opencode 1.18.35).
+
+- La ranura **principal** es la entrada `provider` que ya existe. Las demás son
+  opcionales; si no se conectan, usan la principal.
+- Cada ranura puede llevar también **modelo y esfuerzo**. Son opciones de uso y van en la
+  caja, no en el proveedor: un mismo OpenRouter alimenta a una caja con Opus a esfuerzo
+  alto y a otra con GLM barato.
+- **Imágenes** no es un modelo del CLI: ni Claude Code ni opencode generan imágenes. Un
+  proveedor de imágenes se le conecta al agente **como herramienta**, por MCP.
+
+### 6.6 Suscripciones
+
+- **Claude Pro/Max en el motor Claude Code:** con perfil `user` ya funciona, porque hereda
+  el login. Para el perfil aislado, el motor Suscripción guarda como secreto el token de
+  `claude setup-token`, y el motor Claude lo pasa en `CLAUDE_CODE_OAUTH_TOKEN` en lugar de
+  usar `providers/set`. Su protocolo es `anthropic-oauth`, y **solo el motor Claude lo
+  declara**.
+- **Claude Pro/Max en opencode u otro CLI: no.** Anthropic solo permite ese login en sus
+  propias apps. Como opencode no declara `anthropic-oauth`, el arranque falla con un
+  error claro: la regla se cumple sola, sin un caso especial en el código.
+- **opencode Go en Claude Code:** sí, por el motor API con su plantilla (§6.3). Para los
+  modelos que solo hablan OpenAI hace falta el Traductor.
+
+### 6.7 El perfil aislado
+
+El motor de agente elige perfil con el campo `profile`:
 
 - `user` (por defecto): el comportamiento actual. Usa `config_dir`, y si está vacío, el
   setup del usuario.
@@ -188,7 +301,12 @@ Nada se escribe en el perfil del usuario. Cómo aísla cada motor:
 | Claude Code | `CLAUDE_CONFIG_DIR` al perfil y `settingSources: ["user"]` en la sesión: no lee el `.claude/` del proyecto (el blindaje de `claude-sub`) |
 | opencode | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` y `XDG_STATE_HOME` dentro del perfil, y `OPENCODE_DISABLE_PROJECT_CONFIG`, `_CLAUDE_CODE` y `_EXTERNAL_SKILLS`. La caché sigue compartida: no guarda nada del usuario |
 
-### 6.4 Lo construido y lo medido (2026-10-17)
+### 6.8 Lo construido y lo medido (2026-10-17)
+
+Construida la primera versión: un único nodo Proveedor genérico, con los campos
+`protocol`, `base_url`, `credential` (`secret:<nombre>`), `auth` (`bearer`, `x-api-key`
+o `none`) y `model`. Hace de caja y de motor API a la vez, todavía sin plantillas,
+envolturas ni ranuras.
 
 | Pieza | Dónde |
 |---|---|
@@ -215,10 +333,16 @@ lleva. Llegarán como campo opcional cuando alguien conecte Vertex.
 
 Sustituye a las dos ramas de `plan.md` §2:
 
-1. Caja **Agente** + **motor opencode** + **motor Claude** (canal ACP)
-2. **Proveedores** (se enchufan a la caja)
-3. **Skills**
-4. **Comunicación** (hcom, sobre sesiones ACP: `old/07-ecosystem.md` §1.4)
+1. ✅ Caja **Agente** + **motor opencode** + **motor Claude** (canal ACP)
+2. ✅ **Proveedores**, primera versión (§6.8)
+3. **Proveedores como caja líquida**, cada paso cuando algo lo pide:
+   1. Plantillas, cabeceras extra y protocolo por modelo (§6.3), y las ranuras de la
+      caja, todavía en directo (§6.5)
+   2. Suscripción de Claude con `anthropic-oauth` (§6.6)
+   3. Pasarela con Plan B y Pool (§6.4)
+   4. Router, Traductor, motor Local e imágenes por MCP
+4. **Skills**
+5. **Comunicación** (hcom, sobre sesiones ACP: `old/07-ecosystem.md` §1.4)
 
 Precedente más cercano: vibe-kanban (Rust) mezcla canales por agente (stream-json,
 `app-server`, `serve`, ACP) y anuncia su cierre. No absorber sin la matriz de ablación.

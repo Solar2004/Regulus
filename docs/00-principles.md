@@ -1,6 +1,6 @@
 # 00 — Principios: el harness de Regulus
 
-> **v0.1** · 2026-10-02 · ✅ **DECIDIDO por Alexander**
+> **v0.2** · 2026-10-17 · ✅ **DECIDIDO por Alexander**
 > **Este documento manda sobre todos los demás.** Si una decisión técnica de cualquier
 > otro documento viola un principio de aquí, el principio gana y la decisión se revisa.
 >
@@ -18,6 +18,52 @@ El agua toma la forma del recipiente. No pelea con él. No exige que el recipien
 Aplicado a Regulus: **el software se adapta a lo que el usuario quiere hacer, no al
 contrario.** Cuando haya duda entre dos diseños, gana el que deje más opciones abiertas
 al usuario — no el que sea más fácil de escribir.
+
+---
+
+## La forma del agua: la caja líquida
+
+✅ **DECIDIDO** (Alexander, 2026-10-17) — *"Todo es un lego: una caja, pero que se adapta
+y es modificable."*
+
+**Toda pieza de Regulus es una caja líquida:** por fuera tiene una forma fija, y por
+dentro todo se cambia. Agente, Proveedor, Skills, Comunicación o MCP no son conceptos
+distintos: son la misma caja con otra forma.
+
+```
+              LA CAJA LÍQUIDA
+   ┌────────────────────────────────────────────┐
+   │ forma: lo que acepta y lo que entrega      │ ← fija
+   │                                            │
+   │ ranuras   principal · pensar · imágenes…   │ ← por propósito
+   │ motor     Claude │ opencode │ API │ local  │ ← se cambia
+   │ dentro    más cajas (se abre, se ve)       │ ← fractal
+   └────────────────────────────────────────────┘
+        ▲ en cualquier cable se mete otra caja:
+          pool · plan B · router · traductor · caché
+```
+
+| # | Regla | Qué significa | Dónde nació |
+|---|---|---|---|
+| 1 | **Forma fija, contenido líquido** | Una caja se define por las capacidades que acepta y entrega, nunca por lo que tiene dentro | "el core nunca conoce un módulo por su nombre" |
+| 2 | **Motor intercambiable** | Lo que hace funcionar la caja se elige: el CLI del agente, la API o el servidor local del proveedor. Cada motor es un módulo | la caja Agente (`12-agents.md` §1) |
+| 3 | **Ranuras por propósito** | Cada entrada dice *para qué* es (principal, pensar, rápido, imágenes) y acepta cualquier caja que encaje | "para imágenes usa tal proveedor, para pensar tal otro" |
+| 4 | **Envolver** | Una caja que entra y sale por la misma capacidad se mete en cualquier cable: pool, plan B, router, traductor | el proxy en el cable (`11-composition.md` §9.1), "rotar es un nodo" (§10) |
+| 5 | **Abrir** | Toda caja está hecha de cajas: se ve entera y se ajusta lo que expone | el workflow interno, como los grupos de Blender (`11-composition.md` §6) |
+| 6 | **Todo es plantilla** | Cualquier configuración de una caja se guarda y se reutiliza como dato, no como código | los proveedores como plantillas (`12-agents.md` §6) |
+
+**Cuando lo de fuera es rígido, Regulus se adapta, no el usuario.** Si un CLI solo
+acepta una URL y el usuario dibujó tres proveedores, Regulus mete la pieza que falta (la
+pasarela, `12-agents.md` §6.4). El dibujo manda; la limitación del CLI es problema de
+Regulus.
+
+**El core no gana conceptos:** sigue teniendo nodos, puertos y cables
+([`02-architecture.md`](02-architecture.md)). La caja líquida es cómo se **diseña** cada
+módulo, no una pieza nueva de la base.
+
+**Prueba:** ante cualquier pieza nueva, *¿se puede abrir, cambiarle el motor, conectarle
+otra cosa en cada ranura y envolverla, sin tocar el core ni las demás piezas?* Si alguna
+respuesta es no, la pieza está endurecida.
 
 ---
 
@@ -116,16 +162,20 @@ features*) empujan en la misma dirección peligrosa.
 Ser como el agua significa **no endurecerse**. No significa llenar el vaso entero el
 primer día.
 
+Vale igual para la caja líquida: toda caja **se diseña** con motor, ranuras y envolturas
+posibles, pero cada motor, ranura o envoltura **se construye** cuando algo la pide.
+
 ---
 
 ## Cómo se usa este documento
 
-Al revisar código o diseño, estas cinco preguntas se contestan antes de aprobar:
+Al revisar código o diseño, estas seis preguntas se contestan antes de aprobar:
 
 1. ¿Hay algún literal que debería ser configuración? *(Flexible)*
 2. ¿Sigue pasando la matriz de ablación? *(Modular)*
 3. ¿Se midió, y entra en presupuesto? *(Rápido)*
 4. ¿Se puede cambiar sin recompilar? *(Personalizable)*
 5. ¿Existe el comando de CLI equivalente? *(Infraestructura)*
+6. ¿Se puede abrir, cambiarle el motor y envolverla sin tocar el core? *(Caja líquida)*
 
 Si alguna respuesta es "no" y no hay una razón escrita, no se aprueba.

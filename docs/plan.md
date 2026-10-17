@@ -32,11 +32,15 @@ Se enchufan después, por el mismo camino que cualquier otro módulo:
 |---|---|---|
 | **Terminal / procesos** | Lanzar Claude Code, opencode… en terminales | lo que hoy se hace en tmux |
 | **Comunicación** | Que los agentes se hablen entre ellos | **hcom** |
-| **Proveedores** | Conectar OpenAI, Anthropic, modelos locales | API keys |
+| **Proveedores** | Conectar OpenAI, Anthropic, modelos locales, suscripciones; pool, plan B, router | API keys |
 | **Agente** | Un agente propio de Regulus que usa un proveedor | — |
-| **Modelos** | Elegir o rotar modelos | — |
+| **Modelos** | Elegir o rotar modelos: hoy son las ranuras de la caja Agente y las envolturas de Proveedores (`12-agents.md` §6) | — |
 
 Más adelante, también como módulos: roles, familias, MCP aislado, memoria.
+
+✅ **DECIDIDO (2026-10-17) — cada módulo es una caja líquida** (`00-principles.md`):
+forma fija, motor intercambiable, ranuras por propósito, envolturas en los cables, se abre
+y se guarda como plantilla.
 
 ✅ **DECIDIDO (2026-10-17) — el orden de los módulos.** Regulus no tiene agentes propios:
 el nodo Agente es una caja y el CLI (Claude Code, opencode…) es su **motor**, cada uno
@@ -54,6 +58,7 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 3 | **La base**: `regulus-proto`, `regulus-core`, `regulus serve` con `hello` y los métodos del mock | 2-3 días | ✅ hecho (2026-10-17) |
 | 4 | Primer módulo (caja Agente + motores, `12-agents.md` §5) + módulo `hello` + **matriz de ablación** | 1-2 días | ✅ hecho (2026-10-17) |
 | 4b | Proveedores, perfil aislado y secretos (`12-agents.md` §6) | — | ✅ hecho (2026-10-17) |
+| 4c | Proveedores como caja líquida: plantillas, ranuras, suscripción, pasarela (`12-agents.md` §7) | — | — |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar | ~1 sem | — |
 | 6 | Vista Operar con ejecuciones reales | ~1 sem | — |
 
@@ -100,7 +105,7 @@ Si deriva de código ajeno, su manifest lleva `[module.origin]` con autor, repo,
 | gpui, Electron | Inestable / contradice Rust |
 | `inventory` / `linkme` | La auto-registración pelea con la matriz de ablación |
 | `node-pty` | Es de Node; `portable-pty` deja el PTY en el core |
-| headroom / token-proxy en Regulus | Son de la cadena personal de Alexander, no del producto |
+| headroom / token-proxy en Regulus | Son de la cadena personal de Alexander, no del producto. La **pasarela** de `12-agents.md` §6.4 es otra cosa: genérica y del producto (Alexander, 2026-10-17) |
 
 ### 4.4 Decisiones abiertas que siguen vivas
 

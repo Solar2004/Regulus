@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-10-17 · documentación vigente: ~19k tokens. Lo antiguo está en `docs/old/`.
+> Actualizado: 2026-10-17 · documentación vigente: ~21k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -15,8 +15,9 @@ se rompa.
 
 **Estado:** la base funciona (`regulus serve`, CLI, módulo `hello`, matriz de ablación) y
 el canvas carga del core real; la caja Agente corre Claude Code y opencode por ACP, con
-proveedor conectado, perfil aislado y secretos. **Lo siguiente son las Skills.** Plan y
-orden en [`docs/plan.md`](docs/plan.md).
+proveedor conectado, perfil aislado y secretos. **Lo siguiente: los proveedores como caja
+líquida** (plantillas, ranuras por propósito, suscripción, pasarela) **y después las
+Skills.** Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -27,17 +28,22 @@ orden en [`docs/plan.md`](docs/plan.md).
 **Flexible · Modular · Rápido · Personalizable · Infraestructura.**
 
 Cada principio tiene una prueba concreta que se puede fallar. **Lee
-[`docs/00-principles.md`](docs/00-principles.md) (~1.2k tokens) antes de escribir código o
+[`docs/00-principles.md`](docs/00-principles.md) (~2k tokens) antes de escribir código o
 tomar una decisión de diseño.** Si una decisión de cualquier otro documento viola un
 principio, el principio gana.
 
-Las cinco preguntas que se contestan antes de aprobar cualquier cambio:
+**Y la forma que toman: la caja líquida.** Toda pieza tiene forma fija por fuera y por
+dentro se cambia: motor intercambiable, ranuras por propósito, envolturas en los cables,
+se abre y se guarda como plantilla. Está en el mismo documento.
+
+Las seis preguntas que se contestan antes de aprobar cualquier cambio:
 
 1. ¿Hay algún literal que debería ser configuración? *(Flexible)*
 2. ¿Sigue pasando la matriz de ablación? *(Modular)*
 3. ¿Se midió, y entra en presupuesto? *(Rápido)*
 4. ¿Se puede cambiar sin recompilar? *(Personalizable)*
 5. ¿Existe el comando de CLI equivalente? *(Infraestructura)*
+6. ¿Se puede abrir, cambiarle el motor y envolverla sin tocar el core? *(Caja líquida)*
 
 Y el guardarraíl, que está en el mismo documento: **flexibilidad es no cerrar puertas, no
 construir todas las habitaciones hoy.**
@@ -50,9 +56,9 @@ construir todas las habitaciones hoy.**
 |---|---|---|
 | **`docs/plan.md`** | ~1.8k | **Si retomas en frío, empieza aquí.** Qué es base y qué es módulo, orden de trabajo, la pregunta abierta, lo rescatado de los docs antiguos (doctrina Predator, descartados, trampas) y cómo trabajar con Alexander. |
 | **`docs/concept.md`** | ~1k | Qué es Regulus en llano: piezas (módulo, nodo, cable, workflow, perfil, ejecución) y las dos vistas. |
-| **`docs/00-principles.md`** | ~1.2k | **Manda sobre todos los demás.** "Como el agua", los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
+| **`docs/00-principles.md`** | ~2k | **Manda sobre todos los demás.** "Como el agua", **la caja líquida**, los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
 | **`docs/11-composition.md`** | ~2.6k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). |
-| **`docs/12-agents.md`** | ~3.4k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores** (`llm.endpoint@1`), perfil aislado y lo construido. |
+| **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido. |
 | **`docs/02-architecture.md`** | ~2.5k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
 | **`docs/04-client.md`** | ~0.9k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema. |
@@ -69,11 +75,11 @@ construir todas las habitaciones hoy.**
 
 | Tu tarea | Lee, en este orden | Coste |
 |---|---|---|
-| **Retomar en frío / no sé qué toca** | `00-principles.md` → `plan.md` | ~3k |
+| **Retomar en frío / no sé qué toca** | `00-principles.md` → `plan.md` | ~3.8k |
 | **Entender el proyecto** | `concept.md` → `11-composition.md` | ~3.6k |
 | **Tocar el core** | `02-architecture.md` → `03-modules.md` → `06-stack.md` §2.1 | ~5k |
 | **Escribir un módulo** | `plan.md` §4.1 → `03-modules.md` | ~2.5k |
-| **Tocar agentes, motores o proveedores** | `12-agents.md` → `03-modules.md` | ~4.8k |
+| **Tocar agentes, motores o proveedores** | `12-agents.md` → `03-modules.md` | ~6.9k |
 | **Diseñar o implementar UI** | `04-client.md` → `composition-preview.md` → `08-design-system.md` | ~3.5k |
 | **Elegir una dependencia** | `plan.md` §4.3 (lo descartado) → `06-stack.md` | ~2.5k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |
@@ -153,8 +159,9 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Skills** (se enchufan a la caja Agente; se colocan en el perfil, `12-agents.md` §3) | nada |
-| 2 | **Comunicación** (hcom) | el anterior |
+| 1 | **Proveedores como caja líquida**: plantillas, ranuras, suscripción, pasarela (`12-agents.md` §7) | nada |
+| 2 | **Skills** (se enchufan a la caja Agente; se colocan en el perfil, `12-agents.md` §3) | nada |
+| 3 | **Comunicación** (hcom) | Skills |
 
 ---
 
