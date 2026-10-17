@@ -56,6 +56,15 @@ auth     = "x-api-key"
 models   = ["claude-sonnet-5-5", "claude-opus-5-5"]
 terms    = "Pay per use with an API key. Claude Pro/Max logins are not API keys and only work in Anthropic's own apps."
 
+# The token from `claude setup-token`, stored as a secret: credential = "secret:claude-sub".
+[presets.claude-subscription]
+name     = "Claude Pro/Max (subscription)"
+protocol = "anthropic-oauth"
+base_url = "https://api.anthropic.com"
+auth     = "bearer"
+models   = ["claude-sonnet-5-5", "claude-opus-5-5"]
+terms    = "Subscription login. Anthropic allows it only in its own apps: only the Claude Code engine accepts it."
+
 [presets.zai-coding-plan]
 name     = "Z.ai Coding Plan"
 protocol = "anthropic"

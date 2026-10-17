@@ -21,6 +21,10 @@ pub mod protocol {
     pub const ANTHROPIC: &str = "anthropic";
     /// OpenAI Chat Completions. `base_url` as `OPENAI_BASE_URL` takes it, with `/v1`.
     pub const OPENAI: &str = "openai";
+    /// Anthropic Messages paid by a Claude Pro/Max login: the token from
+    /// `claude setup-token`, sent as `authorization: Bearer`. Anthropic allows it only in
+    /// its own apps, so only engines running those declare it (docs/12-agents.md §6.6).
+    pub const ANTHROPIC_OAUTH: &str = "anthropic-oauth";
     pub const BEDROCK: &str = "bedrock";
     pub const VERTEX: &str = "vertex";
 }

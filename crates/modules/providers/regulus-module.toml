@@ -35,7 +35,7 @@ name = "AI provider"
   id      = "protocol"
   type    = "select"
   default = "anthropic"
-  options = ["anthropic", "openai", "bedrock", "vertex"]
+  options = ["anthropic", "anthropic-oauth", "openai", "bedrock", "vertex"]
 
   # As the protocol's own clients take it: anthropic without /v1, openai with /v1.
   [[node.field]]

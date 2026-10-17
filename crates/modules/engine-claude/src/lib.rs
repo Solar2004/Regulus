@@ -18,6 +18,12 @@ const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 /// The adapter's one provider slot (`providers/list`), set before the session opens.
 const SET_PROVIDER: &str = "providers/set";
 const PROVIDER_ID: &str = "main";
+/// A Claude Pro/Max login reaches Claude Code through its environment, not `providers/set`.
+const OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+const BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
+const CUSTOM_HEADERS_ENV: &str = "ANTHROPIC_CUSTOM_HEADERS";
+/// Credentials that would outrank the login if the user's environment carried them.
+const OUTRANKING_ENV: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 /// The model setting each slot becomes, in the session's environment.
 const SLOT_ENV: &[(&str, &str)] = &[
     (slot::FAST, "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
@@ -40,7 +46,12 @@ impl AcpEngine for Claude {
     }
 
     fn protocols(&self) -> &'static [&'static str] {
-        &[protocol::ANTHROPIC, protocol::BEDROCK, protocol::VERTEX]
+        &[
+            protocol::ANTHROPIC,
+            protocol::ANTHROPIC_OAUTH,
+            protocol::BEDROCK,
+            protocol::VERTEX,
+        ]
     }
 
     fn slots(&self) -> &'static [&'static str] {
@@ -72,14 +83,22 @@ impl AcpEngine for Claude {
                 .env
                 .insert(CONFIG_DIR_ENV.into(), dir.to_string_lossy().into_owned());
         }
+        let mut env = slot_env(start.provider, start.slots)?;
+        let subscription = start
+            .provider
+            .filter(|p| p.protocol == protocol::ANTHROPIC_OAUTH);
+        if let Some(provider) = subscription {
+            env.extend(subscription_env(provider)?);
+        }
         Ok(Prepared {
             launch,
-            meta: session_meta(
-                start.isolated,
-                start.provider,
-                slot_env(start.provider, start.slots)?,
-            ),
-            setup: start.provider.map(set_provider).into_iter().collect(),
+            meta: session_meta(start.isolated, start.provider, env),
+            setup: start
+                .provider
+                .filter(|_| subscription.is_none())
+                .map(set_provider)
+                .into_iter()
+                .collect(),
         })
     }
 }
@@ -94,6 +113,38 @@ fn set_provider(provider: &LlmEndpoint) -> SetupRequest {
             "headers": provider.headers,
         }),
     }
+}
+
+/// A Claude Pro/Max login (docs/12-agents.md §6.6): the token goes in the session's
+/// environment, the endpoint is pinned so the user's own `ANTHROPIC_BASE_URL` cannot
+/// send it elsewhere, and any API key the user's environment carries is cleared, since
+/// Claude Code would use it over the login.
+fn subscription_env(provider: &LlmEndpoint) -> Result<Map<String, Value>, String> {
+    let token = provider
+        .header("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or(
+            "the subscription provider carries no token: run `claude setup-token`, store \
+             what it prints as a secret and set `credential = \"secret:<name>\"`",
+        )?;
+    let mut env = Map::new();
+    env.insert(OAUTH_TOKEN_ENV.into(), json!(token));
+    env.insert(BASE_URL_ENV.into(), json!(provider.base_url));
+    for var in OUTRANKING_ENV {
+        env.insert((*var).into(), json!(""));
+    }
+    let extra: Vec<String> = provider
+        .headers
+        .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("authorization"))
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect();
+    if !extra.is_empty() {
+        env.insert(CUSTOM_HEADERS_ENV.into(), json!(extra.join("\n")));
+    }
+    Ok(env)
 }
 
 /// Claude Code talks to one endpoint, so a slot can only pick another model there. A slot
@@ -231,6 +282,31 @@ mod tests {
             "{error}"
         );
         assert!(slot_env(None, &slots).is_err());
+    }
+
+    #[test]
+    fn a_subscription_goes_in_the_environment_not_through_providers_set() {
+        let provider = LlmEndpoint {
+            protocol: "anthropic-oauth".into(),
+            base_url: "https://api.anthropic.com".into(),
+            headers: [
+                ("authorization".into(), "Bearer sk-ant-oat-1".into()),
+                ("x-extra".into(), "1".into()),
+            ]
+            .into(),
+            models: vec!["claude-opus-5-5".into()],
+        };
+        let env = subscription_env(&provider).unwrap();
+        assert_eq!(env["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat-1");
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "");
+        assert_eq!(env["ANTHROPIC_CUSTOM_HEADERS"], "x-extra: 1");
+        let without = LlmEndpoint {
+            headers: BTreeMap::new(),
+            ..provider
+        };
+        let error = subscription_env(&without).unwrap_err();
+        assert!(error.contains("claude setup-token"), "{error}");
     }
 
     #[test]

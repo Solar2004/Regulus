@@ -307,6 +307,26 @@ ningún proceso vivo.
 - **opencode Go en Claude Code:** sí, por el motor API con su plantilla (§6.3). Para los
   modelos que solo hablan OpenAI hace falta el Traductor.
 
+**Construido y medido (2026-10-17): Claude Pro/Max con `anthropic-oauth`.** Todavía sin
+motor Suscripción: es la plantilla `claude-subscription` del nodo Proveedor, con
+`credential = "secret:claude-sub"` y el token de `claude setup-token` guardado con
+`regulus secret set claude-sub`. El proveedor lo manda como `authorization: Bearer`, como
+cualquier credencial, y el motor Claude, al ver `anthropic-oauth`, no usa
+`providers/set`. Lo pasa en el entorno de la sesión (`_meta.claudeCode.options.env`):
+
+- `CLAUDE_CODE_OAUTH_TOKEN` con el token, y `ANTHROPIC_BASE_URL` con la URL del
+  proveedor, para que una del entorno del usuario no se lleve el token a otro sitio.
+- `ANTHROPIC_API_KEY` y `ANTHROPIC_AUTH_TOKEN` vacías: si el entorno del usuario trae
+  una, Claude Code la usaría antes que el login.
+- Las cabeceras extra del proveedor van en `ANTHROPIC_CUSTOM_HEADERS`.
+
+Probado contra el endpoint de prueba con perfil aislado: la petición llegó con
+`Authorization: Bearer <token>`, sin `x-api-key` y con el modelo del proveedor, y la
+caja respondió. La misma plantilla en una caja con opencode falla al arrancar: *"opencode
+engine speaks anthropic, openai; the `provider` provider speaks `anthropic-oauth`"*. Sin
+un token real no se ha probado contra Anthropic; renovar el token sigue siendo cosa del
+motor Suscripción.
+
 ### 6.7 El perfil aislado
 
 El motor de agente elige perfil con el campo `profile`:
@@ -333,7 +353,7 @@ ranuras.
 
 **Plantillas y cabeceras extra (§6.3), construidas:** campo `preset`, catálogo de serie
 en `crates/modules/providers/presets.toml` (openrouter, opencode-go, anthropic,
-zai-coding-plan, deepseek, moonshot, ollama…), un catálogo propio opcional con el campo
+claude-subscription, zai-coding-plan, deepseek, moonshot, ollama…), un catálogo propio opcional con el campo
 `catalog`, y el campo `headers`. Cada ajuste sale del nodo, si no de la plantilla, y si
 no del valor por defecto del manifest. Un host con dos protocolos tiene una plantilla por
 protocolo (`opencode-go` y `opencode-go-openai`). Así, el protocolo por modelo (§6.1)
@@ -369,7 +389,7 @@ Sustituye a las dos ramas de `plan.md` §2:
 3. **Proveedores como caja líquida**, cada paso cuando algo lo pide:
    1. ✅ Plantillas y cabeceras extra (§6.3), y las ranuras `fast` y `subagent`, en
       directo (§6.5). El protocolo por modelo espera a que alguien lo necesite
-   2. Suscripción de Claude con `anthropic-oauth` (§6.6)
+   2. ✅ Suscripción de Claude con `anthropic-oauth`, como plantilla (§6.6)
    3. Pasarela con Plan B y Pool (§6.4)
    4. Router, Traductor, motor Local e imágenes por MCP
 4. **Skills**
