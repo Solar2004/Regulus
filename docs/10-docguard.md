@@ -1,6 +1,6 @@
 # 10 — docguard: que los agentes sigan la documentación
 
-> **v0.2** · 2026-10-03 · 🔶 **PROPUESTO** — construido y probado, pendiente de aprobación
+> **v0.3** · 2026-10-17 · 🔶 **PROPUESTO** — construido y probado, pendiente de aprobación
 > de Alexander.
 >
 > Vale para todo agente que trabaje en este repo. Si eres un agente: no tienes que hacer
@@ -102,10 +102,17 @@ bloquean sin juicio, así que las activa un humano.
 
 ## 6. Decisiones y límites conocidos
 
-- **Juez: `opencode/muse-spark-1.3-contributor-free` con el agente `plan`.** El tier
-  gratuito de Zen rechaza agentes propios o herramientas recortadas ("free tier can only
-  be used from within OpenCode"). `plan` es de solo lectura por su prompt; por eso el juez
-  corre además en un directorio temporal vacío.
+- **Juez: una lista de modelos gratuitos de Zen, con el agente `plan`.** Hoy son
+  `deepseek-v4.1-flash-free`, `glm-5.3-flash-free` y `mimo-v2.6-flash-free`, por ese
+  orden (Alexander, 2026-10-17). Si uno falla (retirado, caído o sin respuesta a tiempo),
+  contesta el siguiente. Pasó de verdad: Zen retiró `muse-spark-1.3-contributor-free` y
+  docguard se quedó sin juez. Si fallan todos, `semantic` se salta con un aviso, `compile`
+  conserva las reglas que ya tenía, y las reglas manuales y las capas deterministas siguen
+  activas. Por eso las reglas que no pueden faltar, como la caja líquida, también están
+  escritas a mano. Coste: un modelo gratuito puede entrenar con lo que se le envía (reglas
+  y diff). El tier gratuito rechaza agentes propios o herramientas recortadas ("free tier
+  can only be used from within OpenCode"). `plan` es de solo lectura por su prompt; por
+  eso el juez corre además en un directorio temporal vacío.
 - **Atribución por ficheros tocados** (`attribution = touched`). Con varios agentes en el
   mismo árbol, git no sabe quién cambió qué. Coste: lo que un agente cambie por bash no se
   le revisa. `attribution = worktree` revisa todo lo que cambió desde que empezó la sesión.

@@ -98,9 +98,29 @@
       "origin": "manual"
     },
     {
-      "id": "AGENTS-076c29",
+      "id": "MOD-trait",
       "kind": "semantic",
-      "text": "Escribe cada commit como tipo(scope): asunto en imperativo, minúscula, sin punto y ≤72 caracteres, con el por qué en el cuerpo más Refs y Co-Authored-By, usando solo tipos y scopes de .gitconventions y añadiendo el scope nuevo ahí en el mismo commit.",
+      "paths": [
+        "crates/**"
+      ],
+      "text": "El trait `Module` tiene exactamente cuatro métodos (`manifest`, `init`, `call`, `shutdown`) y `ModuleCtx` no gana métodos `pub` nuevos sin cambiar antes `docs/03-modules.md` §2.",
+      "source": "docs/03-modules.md §2. El contrato",
+      "origin": "manual"
+    },
+    {
+      "id": "PRIN-liquid-box",
+      "kind": "semantic",
+      "paths": [
+        "crates/**"
+      ],
+      "text": "Toda pieza es una caja líquida: se define por las capacidades que acepta y entrega. Su motor se elige como otro módulo, sus entradas son ranuras por propósito que aceptan cualquier caja con esa capacidad, y en sus cables cabe una envoltura. Nada de eso exige tocar el core ni las demás piezas. Una caja que solo funciona con un motor, un proveedor o un módulo concreto, nombrado en el código, está endurecida.",
+      "source": "docs/00-principles.md §La forma del agua: la caja líquida",
+      "origin": "manual"
+    },
+    {
+      "id": "AGENTS-3c174c",
+      "kind": "semantic",
+      "text": "Haz un commit por incremento verificado y toca solo lo que te pidieron.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -109,9 +129,9 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-444635",
+      "id": "AGENTS-4169d2",
       "kind": "semantic",
-      "text": "Quitar cualquier módulo debe dejar el resto funcionando y verificarse con la matriz de ablación de docs/03-modules.md §4.",
+      "text": "Toda pieza de la base debe estar justificada por un módulo de docs/plan.md §2 que la pida; si ningún módulo la pide, no se construye.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "crates/**"
@@ -120,20 +140,9 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-49837d",
+      "id": "AGENTS-457de2",
       "kind": "semantic",
-      "text": "Mantén las versiones de dependencias solo en docs/06-stack.md: no las dupliques en otro fichero, enlaza y elimina la duplicación que encuentres.",
-      "source": "AGENTS.md §Reglas duras",
-      "paths": [
-        "**"
-      ],
-      "origin": "compiled",
-      "section_key": "AGENTS.md#Reglas duras"
-    },
-    {
-      "id": "AGENTS-4a3b62",
-      "kind": "semantic",
-      "text": "No construyas ninguna pieza de la base que no pida un módulo de docs/plan.md §2.",
+      "text": "Quitar cualquier módulo debe dejar el resto funcionando; verifícalo con la matriz de ablación de docs/03-modules.md §4.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "crates/**"
@@ -142,9 +151,9 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-54642b",
+      "id": "AGENTS-6fad14",
       "kind": "semantic",
-      "text": "No empieces el orden de los módulos ni el primer módulo: espera la respuesta de Alexander definida en docs/plan.md §2.",
+      "text": "Los mensajes de commit siguen el formato tipo(scope): asunto en imperativo, minúscula, sin punto, ≤72 caracteres, y un scope nuevo se añade a .gitconventions en el mismo commit que lo usa.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -153,9 +162,9 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-6a5d57",
+      "id": "AGENTS-91de0d",
       "kind": "semantic",
-      "text": "Comprueba los hooks con scripts/install-hooks.sh --check, haz un commit por incremento verificado y toca solo lo pedido.",
+      "text": "No construyas aislamiento de ejecución: está fuera de v1 (docs/11-composition.md §12).",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
         "**"
@@ -164,15 +173,63 @@
       "section_key": "AGENTS.md#Reglas duras"
     },
     {
-      "id": "AGENTS-d5e95d",
+      "id": "AGENTS-ee71ef",
       "kind": "semantic",
-      "text": "No implementes aislamiento de ejecución: queda fuera de v1.",
+      "text": "Las versiones de dependencias viven solo en docs/06-stack.md; si encuentras una versión duplicada en otro documento, bórrala y deja un enlace.",
       "source": "AGENTS.md §Reglas duras",
       "paths": [
-        "**"
+        "docs/**",
+        "AGENTS.md"
       ],
       "origin": "compiled",
       "section_key": "AGENTS.md#Reglas duras"
+    },
+    {
+      "id": "00-4a1e83",
+      "kind": "semantic",
+      "text": "No apruebes un cambio que no pase las seis preguntas de revisión (literal→configuración, matriz de ablación, presupuesto, sin recompilar, comando de CLI equivalente, caja líquida) sin una razón escrita.",
+      "source": "docs/00-principles.md §Cómo se usa este documento",
+      "paths": [
+        "crates/**",
+        "ui/**",
+        "src-tauri/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/00-principles.md#Cómo se usa este documento"
+    },
+    {
+      "id": "00-c6ef86",
+      "kind": "semantic",
+      "text": "No hardcodees, no asumas un solo caso y no acoples: si el cambio cierra una puerta, hazlo hoy; no construyas piezas que nadie ha pedido.",
+      "source": "docs/00-principles.md §El guardarraíl: flexibilidad ≠ alcance infinito",
+      "paths": [
+        "crates/**",
+        "ui/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/00-principles.md#El guardarraíl: flexibilidad ≠ alcance infinito"
+    },
+    {
+      "id": "00-4387d5",
+      "kind": "semantic",
+      "text": "El core no gana conceptos nuevos: sigue teniendo solo nodos, puertos y cables.",
+      "source": "docs/00-principles.md §La forma del agua: la caja líquida",
+      "paths": [
+        "crates/regulus-core/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/00-principles.md#La forma del agua: la caja líquida"
+    },
+    {
+      "id": "00-f5f988",
+      "kind": "semantic",
+      "text": "Cualquier configuración de una caja se guarda y reutiliza como dato, no como código.",
+      "source": "docs/00-principles.md §La forma del agua: la caja líquida",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/00-principles.md#La forma del agua: la caja líquida"
     },
     {
       "id": "00-0444e3",
@@ -257,23 +314,12 @@
       "section_key": "docs/02-architecture.md#2. Por qué los módulos son in-process"
     },
     {
-      "id": "02-71eaf0",
+      "id": "02-177a36",
       "kind": "semantic",
-      "text": "regulus-core no contiene UI: solo registro, bus, trait Module y store.",
+      "text": "El core es un crate sin UI: la interfaz gráfica vive en `crates/regulus-tauri`, no en `crates/regulus-core`.",
       "source": "docs/02-architecture.md §3. Forma del repositorio",
       "paths": [
         "crates/regulus-core/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/02-architecture.md#3. Forma del repositorio"
-    },
-    {
-      "id": "02-c9d1cb",
-      "kind": "semantic",
-      "text": "Los tipos del contrato entre core, clientes y módulos viven en regulus-proto y no se duplican en otros crates.",
-      "source": "docs/02-architecture.md §3. Forma del repositorio",
-      "paths": [
-        "crates/**"
       ],
       "origin": "compiled",
       "section_key": "docs/02-architecture.md#3. Forma del repositorio"
@@ -323,36 +369,51 @@
       "section_key": "docs/02-architecture.md#4. Las abstracciones del core"
     },
     {
-      "id": "02-042a00",
+      "id": "02-05211e",
       "kind": "semantic",
-      "text": "Mantén la GUI en Tauri 2 y no exijas navegador embebido.",
+      "text": "Todas las versiones verificadas viven solo en `06-stack.md`: no las dupliques en otros documentos.",
       "source": "docs/02-architecture.md §5. Stack",
       "paths": [
-        "src-tauri/**",
-        "frontend/**",
-        "ui/**"
+        "docs/**"
       ],
       "origin": "compiled",
       "section_key": "docs/02-architecture.md#5. Stack"
     },
     {
-      "id": "02-cde183",
+      "id": "02-4e121a",
       "kind": "semantic",
-      "text": "Expón el límite externo por JSON-RPC 2.0 sobre WebSocket en 127.0.0.1 con token en ~/.regulus/token.",
+      "text": "La GUI se implementa con Tauri 2.",
       "source": "docs/02-architecture.md §5. Stack",
       "paths": [
-        "crates/**"
+        "crates/regulus-tauri/**"
       ],
       "origin": "compiled",
       "section_key": "docs/02-architecture.md#5. Stack"
     },
     {
-      "id": "02-da5549",
+      "id": "02-51aa6a",
       "kind": "semantic",
-      "text": "Usa jsonrpsee para el RPC, portable-pty en el proceso del core (módulo procesos), agent-client-protocol para la integración con agentes, rmcp para MCP y rusqlite para el store, y no declares versiones en arquitectura: viven solo en docs/06-stack.md.",
+      "text": "El RPC del límite externo es JSON-RPC 2.0 sobre WebSocket en `127.0.0.1`, con token en `~/.regulus/token`.",
       "source": "docs/02-architecture.md §5. Stack",
       "paths": [
-        "crates/**"
+        "crates/regulus-core/**",
+        "crates/regulus-proto/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/02-architecture.md#5. Stack"
+    },
+    {
+      "id": "02-520949",
+      "kind": "semantic",
+      "text": "El core, la CLI y los módulos están escritos en Rust.",
+      "source": "docs/02-architecture.md §5. Stack",
+      "paths": [
+        "crates/regulus-core/**",
+        "crates/regulus-proto/**",
+        "crates/regulus-cli/**",
+        "crates/regulus-acp/**",
+        "crates/contracts/**",
+        "crates/modules/**"
       ],
       "origin": "compiled",
       "section_key": "docs/02-architecture.md#5. Stack"
@@ -382,36 +443,46 @@
       "section_key": "docs/02-architecture.md#6. Bus de eventos y store"
     },
     {
-      "id": "03-5258be",
+      "id": "03-7a60c7",
       "kind": "semantic",
-      "text": "Conecta módulos solo por capacidad (`llm.chat@1` por cable «usa»), nunca por nombre.",
+      "text": "Una capacidad es un tipo de puerto con versión (`llm.chat@1`): cambiar su formato sube la versión (`llm.chat@2`) y no rompe a los demás.",
       "source": "docs/03-modules.md §1. Capacidades, no nombres",
       "paths": [
-        "crates/modules/**"
+        "**/regulus-module.toml"
       ],
       "origin": "compiled",
       "section_key": "docs/03-modules.md#1. Capacidades, no nombres"
     },
     {
-      "id": "03-f53aec",
-      "kind": "forbid",
-      "text": "Declara `required = true` solo como excepción justificada; por defecto las entradas son opcionales.",
+      "id": "03-7f9c56",
+      "kind": "semantic",
+      "text": "En el manifest de un módulo, las entradas de cada nodo son opcionales por defecto (`required = false`); `required = true` es la excepción y hay que justificarla.",
       "source": "docs/03-modules.md §1. Capacidades, no nombres",
       "paths": [
-        "crates/modules/**/regulus-module.toml"
+        "**/regulus-module.toml"
       ],
       "origin": "compiled",
-      "section_key": "docs/03-modules.md#1. Capacidades, no nombres",
-      "pattern": "required\\s*=\\s*true",
-      "hint": "Justifica required=true o usa required=false."
+      "section_key": "docs/03-modules.md#1. Capacidades, no nombres"
     },
     {
-      "id": "03-3aede3",
+      "id": "03-191682",
       "kind": "semantic",
-      "text": "Envuelve toda invocación a `module.call` en `catch_unwind` y, ante un pánico, marca el módulo como `Broken` sin tumbar el host.",
+      "text": "El core contiene el pánico al invocar un módulo (`catch_unwind`): el módulo pasa a estado `Broken` y el host no cae.",
       "source": "docs/03-modules.md §2. El contrato",
       "paths": [
         "crates/regulus-core/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/03-modules.md#2. El contrato"
+    },
+    {
+      "id": "03-6eea32",
+      "kind": "semantic",
+      "text": "El registro de módulos es a mano, una línea por módulo en `crates/regulus-cli/src/modules.rs`; `inventory` y `linkme` quedan descartados.",
+      "source": "docs/03-modules.md §2. El contrato",
+      "paths": [
+        "crates/regulus-cli/src/modules.rs",
+        "crates/modules/**"
       ],
       "origin": "compiled",
       "section_key": "docs/03-modules.md#2. El contrato"
@@ -450,20 +521,9 @@
       "section_key": "docs/03-modules.md#4. La matriz de ablación"
     },
     {
-      "id": "03-388440",
+      "id": "03-6f885d",
       "kind": "semantic",
-      "text": "Implementa cada módulo sin modificar `regulus-core`; si hay que tocarlo, el contrato está mal.",
-      "source": "docs/03-modules.md §5. Escribir un módulo",
-      "paths": [
-        "crates/modules/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/03-modules.md#5. Escribir un módulo"
-    },
-    {
-      "id": "03-52d533",
-      "kind": "semantic",
-      "text": "Crea cada módulo como su propio crate en `crates/modules/<id>` con sus nodos, puertos y campos en `regulus-module.toml`.",
+      "text": "Añadir un módulo nuevo (su crate bajo `crates/modules/<id>`, su `regulus-module.toml` y la implementación de `Module`) no debe requerir tocar `regulus-core`; si lo requiere, el contrato está mal.",
       "source": "docs/03-modules.md §5. Escribir un módulo",
       "paths": [
         "crates/modules/**"
@@ -650,9 +710,32 @@
       "section_key": "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2"
     },
     {
-      "id": "06-097073",
+      "id": "06-04af88",
       "kind": "semantic",
-      "text": "Renderiza los nodos de forma genérica desde los datos del servidor, con posiciones en el perfil de ejemplo y colores en los tokens de diseño, y sirve el estado del mock por JSON-RPC sin importar React Flow.",
+      "text": "Usa exactamente los crates y versiones fijados en las tablas de §2.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "crates/**/Cargo.toml",
+        "ui/package.json"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-50bfa0",
+      "kind": "semantic",
+      "text": "Fija la versión del adaptador ACP de Claude en el campo `adapter` de `crates/modules/engine-claude/regulus-module.toml`, nunca en el código.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "crates/modules/engine-claude/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-682af0",
+      "kind": "semantic",
+      "text": "Renderiza los nodos del canvas de forma genérica desde los datos del servidor, con las posiciones en el perfil de ejemplo y los colores en los tokens de diseño.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
         "ui/src/**"
@@ -661,9 +744,9 @@
       "section_key": "docs/06-stack.md#2. El stack completo"
     },
     {
-      "id": "06-42f2b5",
+      "id": "06-789730",
       "kind": "semantic",
-      "text": "En el incremento A'/B' del canvas, permite solo seleccionar, inspeccionar, mover la cámara y hacer zoom; no actives crear, mover ni conectar nodos.",
+      "text": "Haz que el mock sirva el estado del sistema por JSON-RPC sin importar React Flow.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
         "ui/src/**"
@@ -672,29 +755,59 @@
       "section_key": "docs/06-stack.md#2. El stack completo"
     },
     {
-      "id": "06-62c282",
+      "id": "06-87ca1e",
       "kind": "semantic",
-      "text": "Usa @xterm/xterm + addon-webgl para la terminal; no escribas un emulador o renderizador VTE propio.",
+      "text": "Genera el token de `<home>/token` con `getrandom` y bytes del sistema operativo, sin añadir la dependencia `rand`.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-a5f835",
+      "kind": "semantic",
+      "text": "Deja desactivado crear, mover o conectar nodos en el canvas; solo permite seleccionar, inspeccionar, mover la cámara y hacer zoom.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "ui/src/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-c0bb70",
+      "kind": "semantic",
+      "text": "Actualiza la fecha de verificación de §2 cuando cambien las versiones del stack.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "docs/06-stack.md"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-c0e197",
+      "kind": "semantic",
+      "text": "Mantén los módulos síncronos: cada sesión ACP corre en un hilo propio con `futures::executor` y no necesita `tokio`.",
+      "source": "docs/06-stack.md §2. El stack completo",
+      "paths": [
+        "crates/modules/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/06-stack.md#2. El stack completo"
+    },
+    {
+      "id": "06-e7c490",
+      "kind": "semantic",
+      "text": "Mantén `ws` y `@types/ws` fuera del cliente de producción: son solo del mock de desarrollo.",
       "source": "docs/06-stack.md §2. El stack completo",
       "paths": [
         "ui/**"
       ],
       "origin": "compiled",
       "section_key": "docs/06-stack.md#2. El stack completo"
-    },
-    {
-      "id": "06-6b4dfc",
-      "kind": "forbid",
-      "text": "No importes `ws` en el cliente de producción; el mock JSON-RPC por WebSocket solo vive integrado en Vite.",
-      "source": "docs/06-stack.md §2. El stack completo",
-      "paths": [
-        "ui/src/**",
-        "ui/package.json"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/06-stack.md#2. El stack completo",
-      "pattern": "['\"]ws['\"]",
-      "hint": "Mueve el uso a la config de Vite o al script de mock de desarrollo."
     },
     {
       "id": "06-83967e",
@@ -1134,44 +1247,77 @@
       "section_key": "docs/11-composition.md#7. Perfiles"
     },
     {
-      "id": "11-616432",
+      "id": "11-0ae827",
       "kind": "semantic",
-      "text": "Guarda en los workflows solo referencias del tipo `secret:nombre` y mantén las claves en `~/.regulus/secrets` o el llavero del sistema.",
+      "text": "Un secreto que no existe hace fallar la llamada con un mensaje que explica cómo crearlo; nunca llega un valor vacío al módulo.",
       "source": "docs/11-composition.md §9. Aislamiento y secretos",
       "paths": [
-        "**/*.toml"
+        "crates/**"
       ],
       "origin": "compiled",
       "section_key": "docs/11-composition.md#9. Aislamiento y secretos"
     },
     {
-      "id": "PLAN-736265",
+      "id": "11-101caa",
       "kind": "semantic",
-      "text": "Haz que la UI funcione contra el core real solo cambiando `VITE_RPC_URL`, sin cambiar ninguna línea.",
-      "source": "docs/plan.md §3. Orden de trabajo",
+      "text": "No escribas claves dentro de un workflow, plantilla ni módulo: un workflow guarda solo referencias como `secret:openai`, y las claves viven en el almacén (`~/.regulus/secrets` o el llavero del sistema); compartir una plantilla o un módulo nunca comparte una clave.",
+      "source": "docs/11-composition.md §9. Aislamiento y secretos",
       "paths": [
-        "ui/**"
+        "**"
       ],
       "origin": "compiled",
-      "section_key": "docs/plan.md#3. Orden de trabajo"
+      "section_key": "docs/11-composition.md#9. Aislamiento y secretos"
     },
     {
-      "id": "PLAN-27ea0d",
-      "kind": "forbid",
-      "text": "No invoques `hcom --flags` por debajo: el código ajeno absorbido se reescribe como módulo propio, no se lanza su binario.",
-      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "id": "11-a0b9c0",
+      "kind": "semantic",
+      "text": "El almacén `file` guarda los secretos en `<casa>/secrets.toml` con permisos 0600.",
+      "source": "docs/11-composition.md §9. Aislamiento y secretos",
       "paths": [
         "crates/**"
       ],
       "origin": "compiled",
-      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos",
-      "pattern": "hcom\\s+--",
-      "hint": "Reescribe la funcionalidad como módulo propio en su propio crate en vez de llamar al binario externo."
+      "section_key": "docs/11-composition.md#9. Aislamiento y secretos"
     },
     {
-      "id": "PLAN-7a813e",
+      "id": "11-c9646d",
       "kind": "semantic",
-      "text": "Mantén cada módulo absorbido en su propio crate.",
+      "text": "Los valores de los secretos no aparecen nunca en los logs ni en las respuestas de la CLI ni de la GUI, y `secret.list` devuelve solo los nombres.",
+      "source": "docs/11-composition.md §9. Aislamiento y secretos",
+      "paths": [
+        "crates/**",
+        "ui/src/**",
+        "src-tauri/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#9. Aislamiento y secretos"
+    },
+    {
+      "id": "11-dabf9d",
+      "kind": "semantic",
+      "text": "Los secretos los resuelve el core, no los módulos: ningún módulo lee el almacén de secretos ni sustituye por su valor una referencia `secret:<nombre>`, de modo que cambiar de almacén no toca ningún módulo.",
+      "source": "docs/11-composition.md §9. Aislamiento y secretos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/11-composition.md#9. Aislamiento y secretos"
+    },
+    {
+      "id": "PLAN-d4390a",
+      "kind": "semantic",
+      "text": "Regulus no tiene agentes propios: el nodo Agente es una caja y el CLI (Claude Code, opencode…) es su motor, cada uno un módulo.",
+      "source": "docs/plan.md §2. Lo que son módulos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#2. Lo que son módulos"
+    },
+    {
+      "id": "PLAN-0f8c0e",
+      "kind": "semantic",
+      "text": "Si un módulo deriva de código ajeno, su manifest lleva `[module.origin]` con autor, repo, licencia y `honors` (hcom → aannoo).",
       "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
       "paths": [
         "crates/**"
@@ -1180,66 +1326,91 @@
       "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
     },
     {
-      "id": "PLAN-809832",
+      "id": "PLAN-49eff7",
       "kind": "semantic",
-      "text": "No añadas ninguna pieza a la base sin un módulo de §2 que la pida.",
+      "text": "Un módulo absorbido vive en su propio crate.",
       "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
-      "paths": [
-        "crates/regulus-core/**",
-        "crates/regulus-proto/**"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
-    },
-    {
-      "id": "PLAN-e106aa",
-      "kind": "semantic",
-      "text": "Incluye `[module.origin]` con autor, repo, licencia y `honors` en el manifest de todo módulo derivado de código ajeno.",
-      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
-      "paths": [
-        "crates/**/Cargo.toml"
-      ],
-      "origin": "compiled",
-      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
-    },
-    {
-      "id": "MOD-trait",
-      "kind": "semantic",
       "paths": [
         "crates/**"
       ],
-      "text": "El trait `Module` tiene exactamente cuatro métodos (`manifest`, `init`, `call`, `shutdown`) y `ModuleCtx` no gana métodos `pub` nuevos sin cambiar antes `docs/03-modules.md` §2.",
-      "source": "docs/03-modules.md §2. El contrato",
-      "origin": "manual"
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "PLAN-8126b0",
+      "kind": "semantic",
+      "text": "El registro de módulos es a mano, una línea por módulo en `crates/regulus-cli/src/modules.rs`: sin auto-registro.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "PLAN-9b7917",
+      "kind": "semantic",
+      "text": "No reintroduzcas sin un argumento nuevo las ideas descartadas: procesos externos como mecanismo principal (la puerta queda abierta vía `ProcessModule`), WASM/`extism`, gpui/Electron, `inventory`/`linkme`, `node-pty` y headroom/token-proxy en Regulus.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**",
+        "ui/**",
+        "src-tauri/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "PLAN-c3dda4",
+      "kind": "semantic",
+      "text": "Regulus arranca sin un módulo absorbido y el resto del sistema funciona.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
+    },
+    {
+      "id": "PLAN-d412bc",
+      "kind": "semantic",
+      "text": "El código ajeno (hcom) se absorbe y se reescribe como módulo propio de Regulus: no se lanza un binario de otro ni hay `hcom --flags` por debajo.",
+      "source": "docs/plan.md §4. Lo rescatado de los docs antiguos",
+      "paths": [
+        "crates/**"
+      ],
+      "origin": "compiled",
+      "section_key": "docs/plan.md#4. Lo rescatado de los docs antiguos"
     }
   ],
   "sections": {
-    "AGENTS.md#(inicio)": "a768c2f7913f0ff8",
-    "AGENTS.md#Qué es Regulus, en tres líneas": "2a35043e451c6897",
-    "AGENTS.md#⚠️ Los principios mandan sobre todo lo demás": "76a692c406aebef8",
-    "AGENTS.md#Mapa de documentos": "20688309326096c6",
-    "AGENTS.md#Rutas de lectura según tu tarea": "50a69482589681b3",
-    "AGENTS.md#Reglas duras": "62ff412fdb3d5a7e",
-    "AGENTS.md#Lo que toca ahora": "0573ba7978f2427d",
+    "AGENTS.md#(inicio)": "40b5e7d6aa2e9e78",
+    "AGENTS.md#Qué es Regulus, en tres líneas": "8b114e0884546b78",
+    "AGENTS.md#⚠️ Los principios mandan sobre todo lo demás": "c06a63162c0ef93e",
+    "AGENTS.md#Mapa de documentos": "c89298ffb607b7b6",
+    "AGENTS.md#Rutas de lectura según tu tarea": "cfbbeff50892016c",
+    "AGENTS.md#Reglas duras": "863de89ecf3ef629",
+    "AGENTS.md#Lo que toca ahora": "9a5f7d4c3fdc58f5",
     "AGENTS.md#Contexto del entorno": "1b861ec4d176b491",
-    "docs/00-principles.md#(inicio)": "c4628afd1a63ac52",
+    "docs/00-principles.md#(inicio)": "237a5928ac0cd49e",
     "docs/00-principles.md#La regla de oro": "9d1e03c25dfce6f0",
+    "docs/00-principles.md#La forma del agua: la caja líquida": "d5bf7e8fd1aed8b9",
     "docs/00-principles.md#Los cinco principios": "72f0ad029f26251a",
-    "docs/00-principles.md#El guardarraíl: flexibilidad ≠ alcance infinito": "2749ab98a43581cf",
-    "docs/00-principles.md#Cómo se usa este documento": "36490de2a76c3596",
+    "docs/00-principles.md#El guardarraíl: flexibilidad ≠ alcance infinito": "af14a54c6b24fdcd",
+    "docs/00-principles.md#Cómo se usa este documento": "1f95ae3dcbaf99f0",
     "docs/02-architecture.md#(inicio)": "276461cae5caf81a",
     "docs/02-architecture.md#1. Los dos límites": "de01079ccb53ed5c",
     "docs/02-architecture.md#2. Por qué los módulos son in-process": "46f03fabb408e40d",
-    "docs/02-architecture.md#3. Forma del repositorio": "a8658b904032a35d",
+    "docs/02-architecture.md#3. Forma del repositorio": "f5f9b83b09958310",
     "docs/02-architecture.md#4. Las abstracciones del core": "49201165464b1870",
-    "docs/02-architecture.md#5. Stack": "d9eb199e60eafce9",
+    "docs/02-architecture.md#5. Stack": "5fd08762db65f4da",
     "docs/02-architecture.md#6. Bus de eventos y store": "8eb75dbd4b85b93c",
     "docs/03-modules.md#(inicio)": "3bcb2cf7e4685ae4",
-    "docs/03-modules.md#1. Capacidades, no nombres": "f67bc91f4c779db5",
-    "docs/03-modules.md#2. El contrato": "8b0c7be4cae5413c",
+    "docs/03-modules.md#1. Capacidades, no nombres": "caea8b6c36dfa543",
+    "docs/03-modules.md#2. El contrato": "6369b88b04612167",
     "docs/03-modules.md#3. Estados de un módulo": "a689afc170f2312e",
     "docs/03-modules.md#4. La matriz de ablación": "de22155be2346796",
-    "docs/03-modules.md#5. Escribir un módulo": "08d3afc3edd9a4b6",
+    "docs/03-modules.md#5. Escribir un módulo": "87f7c0ef88aaa2ef",
     "docs/04-client.md#(inicio)": "fa2b617711160800",
     "docs/04-client.md#1. El mock es la spec del core": "c82d12784a11f410",
     "docs/04-client.md#2. Las dos vistas": "4cb645289e32713a",
@@ -1249,7 +1420,7 @@
     "docs/04-client.md#6. Idioma y tema": "1575419287935bb9",
     "docs/06-stack.md#(inicio)": "cb4c472bc194caf2",
     "docs/06-stack.md#1. Decisión #7 cerrada: Tauri 2": "aaab36d239711095",
-    "docs/06-stack.md#2. El stack completo": "508f28aa9bd67969",
+    "docs/06-stack.md#2. El stack completo": "2287f137b86394d0",
     "docs/06-stack.md#3. La terminal: cómo se reparte": "e77604d9ffa9a7a2",
     "docs/06-stack.md#4. Decisión #8 cerrada: transporte": "e35b19a8ca7cdf4c",
     "docs/06-stack.md#5. Sistema de versionado": "2849e21b4afb091b",
@@ -1272,9 +1443,9 @@
     "docs/09-git.md#8. Verificación del propio harness": "5df190ce198325bc",
     "docs/plan.md#(inicio)": "27f41fb5f1b48b84",
     "docs/plan.md#1. Lo que es Regulus: la base": "1cb276b99c3cde89",
-    "docs/plan.md#2. Lo que son módulos": "a4f444b774e9ce7a",
-    "docs/plan.md#3. Orden de trabajo": "35a1faf786821d69",
-    "docs/plan.md#4. Lo rescatado de los docs antiguos": "72f8268b8c4f5725",
+    "docs/plan.md#2. Lo que son módulos": "97fd9a69681cc8f2",
+    "docs/plan.md#3. Orden de trabajo": "d4e0efdc3ce0df32",
+    "docs/plan.md#4. Lo rescatado de los docs antiguos": "6c2d53cfa075fc1c",
     "docs/plan.md#5. Cómo trabajar con Alexander": "b15d62d4898b9475",
     "docs/11-composition.md#(inicio)": "03f12a03f822e2da",
     "docs/11-composition.md#1. El modelo en un dibujo": "bc8c9941ffb77468",
@@ -1285,7 +1456,7 @@
     "docs/11-composition.md#6. El workflow de cada módulo": "84c7852445a3c54f",
     "docs/11-composition.md#7. Perfiles": "9c062cc6f8c84302",
     "docs/11-composition.md#8. Ejecuciones: el plano y lo que corre": "9bdd1fea13a55260",
-    "docs/11-composition.md#9. Aislamiento y secretos": "65de6d88ea8785d4",
+    "docs/11-composition.md#9. Aislamiento y secretos": "b90b2e03d2fb8cd3",
     "docs/11-composition.md#10. Instalar módulos y compartir": "8fcf86a97a9e685c",
     "docs/11-composition.md#11. Qué cambió en otros documentos": "11e4f2b5ebee0a38",
     "docs/11-composition.md#12. Respuestas de Alexander (2026-10-05)": "325b8bc867ba06b9"

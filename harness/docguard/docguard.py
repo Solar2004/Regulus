@@ -50,7 +50,7 @@ PROMPTS = HERE / "prompts"
 # Valores por defecto: docguard.conf los sobreescribe. Ningún literal más abajo.
 DEFAULTS = {
     "enabled": "true",
-    "judge_model": "opencode/muse-spark-1.3-contributor-free",
+    "judge_model": "opencode/deepseek-v4.1-flash-free",
     "judge_agent": "plan",
     "judge_timeout": "240",
     "judge_verify": "true",
@@ -66,7 +66,7 @@ DEFAULTS = {
     "ignore_paths": "",
     "compile_sources": "AGENTS.md",
     "compile_heading_level": "2",
-    "compile_model": "opencode/muse-spark-1.3-contributor-free",
+    "compile_model": "opencode/deepseek-v4.1-flash-free",
     "check_timeout": "300",
     "check_output_chars": "1500",
     "loop_edits": "8",
@@ -470,6 +470,18 @@ def run_opencode(model: str, prompt: str, agent: str) -> str:
     return r.stdout
 
 
+def ask_model(key: str, prompt: str) -> str:
+    """Ask the models listed in `key`, in order: if one fails (retired, down, timeout),
+    the next one answers. Only when all of them fail does the error reach the caller."""
+    errors = []
+    for model in cfg_list(key):
+        try:
+            return run_opencode(model, prompt, cfg("judge_agent"))
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            errors.append(f"{model}: {str(e).splitlines()[0][:160]}")
+    raise RuntimeError("no model answered — " + "; ".join(errors))
+
+
 def parse_json(text: str) -> dict:
     fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
     for cand in reversed(fenced or []):
@@ -522,7 +534,6 @@ def judge(diffs: dict[str, tuple[str, list]]) -> tuple[list[dict], str]:
              and any(rule_applies(r, f) for f in diffs)}
     if not rules:
         return [], ""
-    model, agent = cfg("judge_model"), cfg("judge_agent")
     per, max_calls = cfg_int("judge_rules_per_call"), cfg_int("judge_max_calls")
 
     # opencode trunca el fichero adjunto si es grande, y el juez se queda sin ver parte del
@@ -543,16 +554,16 @@ def judge(diffs: dict[str, tuple[str, list]]) -> tuple[list[dict], str]:
 
     found: list[dict] = []
     for rules_txt, diff_txt in jobs:
-        out = parse_json(run_opencode(model, render("judge.md", RULES=rules_txt, DIFF=diff_txt), agent))
+        out = parse_json(ask_model("judge_model", render("judge.md", RULES=rules_txt, DIFF=diff_txt)))
         found += [f for f in out.get("violations", []) if isinstance(f, dict) and grounded(f, rules, diffs)]
 
     if found and cfg_bool("judge_verify"):
         # El verificador solo ve las reglas citadas y los ficheros con hallazgos.
         cited = rules_text([rules[k] for k in dict.fromkeys(f["rule"] for f in found)])
         diff_txt = "\n\n".join(diffs[f][0] for f in dict.fromkeys(f["file"] for f in found))
-        out = parse_json(run_opencode(model, render(
+        out = parse_json(ask_model("judge_model", render(
             "verify.md", RULES=cited, DIFF=clip(diff_txt),
-            FINDINGS=json.dumps(found, ensure_ascii=False, indent=1)), agent))
+            FINDINGS=json.dumps(found, ensure_ascii=False, indent=1))))
         keep = {int(i) for i in out.get("keep", []) if str(i).lstrip("-").isdigit()}
         found = [f for i, f in enumerate(found) if i in keep]
     return found, partial
@@ -874,9 +885,22 @@ def compile_rules(force: bool) -> int:
         print(f"… {src}: {len(todo)} sección(es) a compilar", file=sys.stderr)
         doc = "\n\n".join(f"<section id=\"{i}\" title=\"{t}\">\n{b}\n</section>"
                           for i, (t, b, _) in enumerate(todo))
-        out = parse_json(run_opencode(cfg("compile_model"),
-                                      render("compile.md", SOURCE=src, SECTIONS=doc,
-                                             EXISTING=rules_text(manual) or "(none)"), cfg("judge_agent")))
+        try:
+            out = parse_json(ask_model("compile_model",
+                                       render("compile.md", SOURCE=src, SECTIONS=doc,
+                                              EXISTING=rules_text(manual) or "(none)")))
+        except RuntimeError as e:
+            # Keep what was compiled before and leave the hashes as they were, so the next
+            # run retries these sections. The manual rules still apply meanwhile.
+            print(f"⚠ {src}: not compiled, previous rules kept ({e})", file=sys.stderr)
+            keys = {k for _, _, k in todo}
+            keep += [r for r in old if r["section_key"] in keys]
+            for k in keys:
+                if k in seen:
+                    sections_now[k] = seen[k]
+                else:
+                    sections_now.pop(k, None)
+            continue
         calls += 1
         for r in out.get("rules", []):
             try:
@@ -922,8 +946,7 @@ def dedupe(manual: list[dict], compiled: list[dict]) -> tuple[list[dict], int]:
     listing = "\n".join(f"- {r['id']} [{r['kind']}] ({', '.join(r.get('paths') or ['**'])}): {r['text']}"
                          for r in pool)
     try:
-        groups = parse_json(run_opencode(cfg("compile_model"), render("dedupe.md", RULES=listing),
-                                         cfg("judge_agent"))).get("duplicates", [])
+        groups = parse_json(ask_model("compile_model", render("dedupe.md", RULES=listing))).get("duplicates", [])
     except Exception as e:  # sin deduplicar sigue siendo correcto, solo más largo
         print(f"⚠ deduplicación omitida ({e})", file=sys.stderr)
         return compiled, 0
@@ -987,7 +1010,7 @@ def run_eval(use_judge: bool) -> int:
           f"(tp {tp}, fp {fp}, fn {fn}){'' if use_judge else ' · sin juez'}")
     out = state_dir() / "last-eval.json"
     out.write_text(json.dumps({"precision": prec, "recall": recall, "judge": use_judge,
-                               "model": cfg("judge_model"), "cases": report},
+                               "model": " ".join(cfg_list("judge_model")), "cases": report},
                               ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"informe → {rel(str(out))}")
     return 0 if not fp and not fn else 1
