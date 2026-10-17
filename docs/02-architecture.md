@@ -92,14 +92,18 @@ Regulus/
 ├─ crates/
 │  ├─ regulus-core/       # registro, bus, trait Module, store. SIN UI.
 │  ├─ regulus-proto/      # tipos del contrato (core ↔ clientes ↔ módulos)
-│  ├─ regulus-cli/        # regulus serve · module ls · graph · connect
+│  ├─ regulus-cli/        # regulus serve · module ls · graph · run · agent prompt
+│  ├─ regulus-acp/        # canal ACP + kit que comparten los motores de agente
+│  ├─ contracts/          # formato de cada capacidad (agent-engine/ = agent.engine@1)
 │  ├─ regulus-tauri/      # app de escritorio: un cliente más
 │  │  ├─ frontend/        # React+Vite: lo que se ve (compila a frontend/dist)
 │  │  └─ src-tauri/       # Cargo, tauri.conf.json, ventana nativa
 │  └─ modules/
 │     ├─ hello/           # módulo trivial de prueba
 │     ├─ communication/   # de hcom, en honor a aannoo
-│     ├─ agent/
+│     ├─ agent/           # la caja Agente (12-agents.md)
+│     ├─ engine-claude/   # un motor por CLI
+│     ├─ engine-opencode/
 │     ├─ providers/
 │     ├─ models/
 │     └─ processes/       # procesos y PTY

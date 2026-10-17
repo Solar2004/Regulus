@@ -51,6 +51,10 @@ caja (solo tiene lo conectado), o **uno existente** del usuario (`~/.claude`,
 `~/.claude-ultra`…), que hereda su setup entero. Para Claude, el aislado aplica el mismo
 blindaje que `claude-sub` contra el `.claude/settings.json` del proyecto.
 
+Hoy existe el **existente** (campo `config_dir`; vacío = el setup por defecto del usuario).
+El **aislado** llega con Proveedores: sin proveedor conectado, un perfil vacío no tiene con
+qué autenticarse.
+
 | Entrada genérica | Motor Claude Code | Motor opencode |
 |---|---|---|
 | Instalación | `CLAUDE_CODE_EXECUTABLE` | binario elegido |
@@ -71,8 +75,8 @@ controle un agente de terminal. Abrir sesión, mandar un mensaje, recibir lo que
 Sin él, Regulus tendría que aprender el método privado de cada CLI. hcom lo hizo así y
 son ~549 KB de pegamento que se rompe con cada versión.
 
-🔶 **PROPUESTO** — **ACP es el canal por defecto; un motor puede traer su canal nativo
-si ACP se le queda corto.** El canal vive dentro del motor, así que cambiarlo no toca
+✅ **DECIDIDO** (Alexander, 2026-10-17) — **ACP es el canal por defecto; un motor puede
+traer su canal nativo si ACP se le queda corto.** El canal vive dentro del motor, así que cambiarlo no toca
 nada más. El código ACP es una librería compartida por los motores, no un módulo.
 
 **Medido el 2026-10-17 en la máquina de Alexander:**
@@ -93,7 +97,35 @@ nada más. El código ACP es una librería compartida por los motores, no un mó
   terminal. Regulus lanza sus sesiones y puede reanudarlas desde disco. Ver el TUI real
   del agente es una vista opcional en PTY, no el canal de control.
 
-## 5. Orden resultante
+## 5. Lo construido (2026-10-17)
+
+| Pieza | Dónde |
+|---|---|
+| Contrato `agent.engine@1` | `crates/contracts/agent-engine`: lo comparten la caja y los motores, que no se conocen entre sí |
+| Canal ACP + kit de motor | `crates/regulus-acp`: una sesión = un proceso; `EngineModule` sirve el contrato |
+| Caja Agente | `crates/modules/agent`: entrada `engine` (obligatoria), campos `workdir` y `permissions` |
+| Motor opencode | `crates/modules/engine-opencode`: `installation`, `config_dir` |
+| Motor Claude Code | `crates/modules/engine-claude`: `installation`, `config_dir`, `adapter` |
+
+**El contrato `agent.engine@1`:** `engine.detect` (instalaciones del PC),
+`engine.session.start` (`cwd`, `permissions`), `engine.session.prompt` (`text` →
+`stop_reason` + `text`) y `engine.session.stop`. Cambiar su forma es `agent.engine@2`. Los
+contratos de capacidad viven en `crates/contracts/<capacidad>`, no dentro de ningún módulo.
+
+**Cada motor anuncia además su propio método de detección** (`claude.detect`,
+`opencode.detect`), para que la UI liste las instalaciones sin arrancar nada. Detectado en
+la máquina de Alexander: `claude`, `claude-sub-bin` y `claude-ultra-bin` (cada uno con su
+versión), y los dos `opencode`.
+
+**Permisos:** cada caja elige `reject` (por defecto) o `allow`. Preguntar a una persona
+llega con el bus, que es quien puede llevar la pregunta hasta un cliente.
+
+**Probado de punta a punta** con `regulus run agents` (`crates/modules/agent/examples/`):
+las dos cajas arrancan, responden, conservan el contexto entre prompts y, al parar,
+no queda ningún proceso vivo. Con `--without regulus/engine-claude`, la caja de Claude
+queda desactivada y la de opencode sigue funcionando.
+
+## 6. Orden resultante
 
 Sustituye a las dos ramas de `plan.md` §2:
 

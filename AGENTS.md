@@ -14,7 +14,8 @@ quitarlo**. El producto no son las features: es poder añadirlas y quitarlas sin
 se rompa.
 
 **Estado:** la base funciona (`regulus serve`, CLI, módulo `hello`, matriz de ablación) y
-el canvas carga del core real. **Lo siguiente es la caja Agente con sus motores.** Plan y
+el canvas carga del core real; la caja Agente corre Claude Code y opencode por ACP.
+**Lo siguiente son los Proveedores.** Plan y
 orden en [`docs/plan.md`](docs/plan.md).
 
 ---
@@ -51,7 +52,7 @@ construir todas las habitaciones hoy.**
 | **`docs/concept.md`** | ~1k | Qué es Regulus en llano: piezas (módulo, nodo, cable, workflow, perfil, ejecución) y las dos vistas. |
 | **`docs/00-principles.md`** | ~1.2k | **Manda sobre todos los demás.** "Como el agua", los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
 | **`docs/11-composition.md`** | ~2.6k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). |
-| **`docs/12-agents.md`** | ~1.6k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP (🔶) y lo medido. |
+| **`docs/12-agents.md`** | ~2.4k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1` y lo construido. |
 | **`docs/02-architecture.md`** | ~2.5k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
 | **`docs/04-client.md`** | ~0.9k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema. |
@@ -152,8 +153,8 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Caja Agente + motores opencode y Claude** por ACP (`12-agents.md` §5) | 🔶 canal ACP pendiente de OK |
-| 2 | **Proveedores**, luego **Skills**, luego **Comunicación** | el anterior |
+| 1 | **Proveedores** (se enchufan a la caja Agente; trae el perfil aislado) | nada |
+| 2 | **Skills**, luego **Comunicación** | el anterior |
 
 ---
 
