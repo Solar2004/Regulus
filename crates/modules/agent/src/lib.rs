@@ -2,14 +2,14 @@
 //! holds what is wired into it and hands the work to its engine, reached only through
 //! the `agent.engine@1` capability. It never knows which CLI is behind it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
 use regulus_contract_agent_engine as engine;
 use regulus_contract_llm_endpoint as llm;
 use regulus_core::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
-use regulus_proto::{method, Manifest, NodeCall};
+use regulus_proto::{method, Direction, Manifest, NodeCall};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
@@ -77,6 +77,19 @@ impl Agent {
         }
     }
 
+    fn slot_ports<'a>(&'a self, node_type: &str) -> impl Iterator<Item = &'a str> {
+        self.manifest
+            .node_type(node_type)
+            .into_iter()
+            .flat_map(|t| t.ports.iter())
+            .filter(|p| {
+                p.direction == Direction::Input
+                    && p.capability == llm::CAPABILITY
+                    && p.id != PROVIDER_PORT
+            })
+            .map(|p| p.id.as_str())
+    }
+
     fn running(&self) -> std::sync::MutexGuard<'_, HashMap<NodeRef, Running>> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -104,18 +117,28 @@ impl Agent {
             Some("allow") => engine::Permissions::Allow,
             _ => engine::Permissions::Reject,
         };
-        let provider = match self.ctx.resolve(&me, PROVIDER_PORT).first() {
-            None => None,
-            Some(endpoint) => Some(parse::<llm::LlmEndpoint>(self.ctx.call(
-                endpoint,
-                llm::DESCRIBE,
-                Value::Null,
-            )?)?),
+        let describe = |port: &str| -> Result<Option<llm::LlmEndpoint>, ModuleError> {
+            match self.ctx.resolve(&me, port).first() {
+                None => Ok(None),
+                Some(endpoint) => {
+                    parse(self.ctx.call(endpoint, llm::DESCRIBE, Value::Null)?).map(Some)
+                }
+            }
         };
+        let provider = describe(PROVIDER_PORT)?;
+        // Every other `llm.endpoint` input of the box is a slot named after its port, so a
+        // new slot is a manifest change (docs/12-agents.md §6.5).
+        let mut slots = BTreeMap::new();
+        for port in self.slot_ports(&call.node.node_type) {
+            if let Some(endpoint) = describe(port)? {
+                slots.insert(port.to_string(), endpoint);
+            }
+        }
         let args = engine::StartArgs {
             cwd: workdir(self.manifest.setting(&call.node, "workdir"))?,
             permissions,
             provider,
+            slots,
         };
         let started: engine::Started =
             parse(self.ctx.call(&engine, engine::SESSION_START, json(args)?)?)?;

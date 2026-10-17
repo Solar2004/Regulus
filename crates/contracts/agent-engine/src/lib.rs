@@ -5,6 +5,7 @@
 //! depend on this crate and on nothing of each other. Changing a shape here means a new
 //! capability version (`agent.engine@2`), not a silent break.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub use regulus_contract_llm_endpoint::LlmEndpoint;
@@ -20,6 +21,16 @@ pub const SESSION_START: &str = "engine.session.start";
 pub const SESSION_PROMPT: &str = "engine.session.prompt";
 /// Ends a session and its process: [`StopArgs`] → `null`.
 pub const SESSION_STOP: &str = "engine.session.stop";
+
+/// The Agent box's provider slots besides the main one (docs/12-agents.md §6.5): each
+/// takes a provider for one purpose. A slot an engine does not know is left out with a
+/// warning, never a failure.
+pub mod slot {
+    /// Background work: titles, summaries, quick checks.
+    pub const FAST: &str = "fast";
+    /// The subagents the CLI spawns on its own.
+    pub const SUBAGENT: &str = "subagent";
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installation {
@@ -51,6 +62,9 @@ pub struct StartArgs {
     /// it extends `@1` without breaking engines that ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<LlmEndpoint>,
+    /// Providers for other purposes, keyed by [`slot`]. Optional, so it extends `@1`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slots: BTreeMap<String, LlmEndpoint>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +77,9 @@ pub struct Agent {
 pub struct Started {
     pub session_id: String,
     pub agent: Agent,
+    /// What was wired in but left out, and why. Optional, so it extends `@1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

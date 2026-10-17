@@ -28,6 +28,23 @@ name = "Agent"
   direction  = "input"
   kind       = "uses"
 
+  # Providers for one purpose each (docs/12-agents.md §6.5). Optional: an empty slot
+  # uses the main provider. Any other llm.endpoint input added here is a slot too, named
+  # after its id; each engine says which slots it knows.
+  [[node.port]]
+  id         = "fast"
+  name       = "fast"
+  capability = "llm.endpoint@1"
+  direction  = "input"
+  kind       = "uses"
+
+  [[node.port]]
+  id         = "subagent"
+  name       = "subagent"
+  capability = "llm.endpoint@1"
+  direction  = "input"
+  kind       = "uses"
+
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]
   id      = "workdir"

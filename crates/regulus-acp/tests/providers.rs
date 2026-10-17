@@ -29,8 +29,9 @@ name = "Fake"
   options = ["user", "isolated"]
 "#;
 
-/// What the engine was handed for each session it prepared.
-type Seen = Arc<Mutex<Vec<(Option<LlmEndpoint>, Option<PathBuf>, bool)>>>;
+/// What the engine was handed for each session it prepared: provider, profile directory,
+/// whether it is isolated, and the slots that reached it.
+type Seen = Arc<Mutex<Vec<(Option<LlmEndpoint>, Option<PathBuf>, bool, Vec<String>)>>>;
 
 struct Fake(Seen);
 
@@ -44,11 +45,15 @@ impl AcpEngine for Fake {
     fn protocols(&self) -> &'static [&'static str] {
         &["anthropic"]
     }
+    fn slots(&self) -> &'static [&'static str] {
+        &["subagent"]
+    }
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {
         self.0.lock().unwrap().push((
             start.provider.cloned(),
             start.config_dir.clone(),
             start.isolated,
+            start.slots.keys().cloned().collect(),
         ));
         Ok(Prepared {
             launch: Launch {
@@ -61,7 +66,12 @@ impl AcpEngine for Fake {
 }
 
 fn profile(protocol: &str) -> Profile {
-    serde_json::from_value(json!({
+    profile_with(protocol, &[])
+}
+
+/// The profile with the provider also wired into each of `slots`.
+fn profile_with(protocol: &str, slots: &[&str]) -> Profile {
+    let mut profile = json!({
         "id": "agents",
         "project_id": "demo",
         "main_workflow_id": "main",
@@ -92,8 +102,22 @@ fn profile(protocol: &str) -> Profile {
                   "to": { "node_id": "agent", "port_id": "provider" } }
             ]
         }]
-    }))
-    .unwrap()
+    });
+    let workflow = &mut profile["workflows"][0];
+    for slot in slots {
+        workflow["nodes"][0]["ports"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(
+                { "id": slot, "capability": "llm.endpoint@1", "direction": "input", "kind": "uses" }
+            ));
+        workflow["wires"].as_array_mut().unwrap().push(json!({
+            "id": format!("slot-{slot}"), "kind": "uses",
+            "from": { "node_id": "openrouter", "port_id": "endpoint" },
+            "to": { "node_id": "agent", "port_id": slot }
+        }));
+    }
+    serde_json::from_value(profile).unwrap()
 }
 
 fn home(test: &str) -> PathBuf {
@@ -103,6 +127,10 @@ fn home(test: &str) -> PathBuf {
 }
 
 fn core(home: &Path, protocol: &str, seen: &Seen) -> Arc<Core> {
+    core_with(home, profile(protocol), seen)
+}
+
+fn core_with(home: &Path, profile: Profile, seen: &Seen) -> Arc<Core> {
     let modules: Vec<Box<dyn Module>> = vec![
         Box::new(regulus_module_agent::Agent::new()),
         Box::new(regulus_module_providers::Providers::new()),
@@ -112,7 +140,7 @@ fn core(home: &Path, protocol: &str, seen: &Seen) -> Arc<Core> {
         )),
     ];
     let mut profiles = ProfileStore::default();
-    profiles.insert(profile(protocol)).unwrap();
+    profiles.insert(profile).unwrap();
     let storage = Storage {
         secrets: Secrets::new(vec![Source::File(home.join("secrets.toml"))]),
         data_dir: Some(home.join("data")),
@@ -154,7 +182,7 @@ fn the_provider_reaches_the_engine_with_its_secret_and_an_isolated_profile() {
     let execution = start(&core);
     assert_eq!(execution["state"]["status"], "running", "{execution}");
 
-    let (provider, config_dir, isolated) = seen.lock().unwrap().last().cloned().unwrap();
+    let (provider, config_dir, isolated, _) = seen.lock().unwrap().last().cloned().unwrap();
     let provider = provider.expect("the box hands the provider to the engine");
     assert_eq!(provider.header("Authorization"), Some("Bearer sk-or-1"));
     assert_eq!(provider.models, vec!["m1".to_string()]);
@@ -187,5 +215,32 @@ fn a_provider_the_engine_cannot_speak_fails_the_start_before_launching() {
     let reason = execution["state"]["reason"].as_str().unwrap();
     assert!(reason.contains("translator"), "{reason}");
     assert!(seen.lock().unwrap().is_empty(), "nothing was launched");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn slots_reach_the_engine_that_knows_them_and_the_others_only_warn() {
+    let home = home("slots");
+    let seen = Seen::default();
+    let core = core_with(
+        &home,
+        profile_with("anthropic", &["fast", "subagent"]),
+        &seen,
+    );
+    core.dispatch(
+        method::SECRET_SET,
+        json!({ "name": "openrouter", "value": "k" }),
+    )
+    .unwrap();
+    let execution = start(&core);
+    assert_eq!(
+        execution["state"]["status"], "running",
+        "a slot the engine does not know never fails the start: {execution}"
+    );
+    let (_, _, _, slots) = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(slots, vec!["subagent".to_string()]);
+    let id = execution["id"].as_str().unwrap();
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }

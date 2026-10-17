@@ -258,7 +258,7 @@ una ranura que el motor no entiende da un aviso en `profile.check`.
 | **principal** | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` | `model` |
 | **rápido** (tareas de fondo, títulos) | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `small_model` |
 | **subagentes** | `CLAUDE_CODE_SUBAGENT_MODEL` | el modelo de cada agente de su config |
-| **pensar** | por verificar (`opusplan`, esfuerzo) | el modelo del agente `plan` |
+| **pensar** | por verificar (`opusplan`, esfuerzo); aún no es una ranura | el modelo del agente `plan` |
 
 Variables comprobadas en los binarios instalados el 2026-10-17 (Claude Code 2.1.302,
 opencode 1.18.35).
@@ -270,6 +270,29 @@ opencode 1.18.35).
   alto y a otra con GLM barato.
 - **Imágenes** no es un modelo del CLI: ni Claude Code ni opencode generan imágenes. Un
   proveedor de imágenes se le conecta al agente **como herramienta**, por MCP.
+
+**Construido y medido (2026-10-17): las ranuras `fast` y `subagent`.** La caja trata
+como ranura cualquier entrada `llm.endpoint@1` de su manifest que no sea `provider`, así
+que añadir una ranura es tocar solo el manifest. Llegan al motor en
+`StartArgs.slots`, un campo opcional que mantiene `agent.engine@1`, y cada motor declara
+las suyas. Una ranura que el motor no conoce se deja fuera con un aviso: va en
+`Started.warnings` y en el log del servidor, porque el core todavía no guarda lo que
+responde el arranque de un nodo. La pregunta en `profile.check` llega cuando el core
+sepa preguntar a los motores.
+
+- **Claude Code:** las ranuras van como variables de entorno de la sesión
+  (`_meta.claudeCode.options.env`), que el adaptador mezcla en el entorno de `claude`.
+  En directo solo pueden elegir otro modelo **del mismo endpoint** que la principal; si
+  apuntan a otro sitio, el arranque falla diciendo que hace falta la pasarela.
+- **opencode:** admite varios proveedores a la vez, así que cada ranura puede ir a su
+  propio endpoint sin pasarela: `small_model` para `fast` y el modelo de sus subagentes
+  `general` y `explore` para `subagent`.
+
+Probado contra el endpoint de prueba, con las dos cajas en perfil aislado: opencode pidió
+`fast-model` para su tarea de fondo y `main-model` para responder, y el proceso `claude`
+arrancó con `ANTHROPIC_DEFAULT_HAIKU_MODEL=fast-model`. En una sesión tan corta, Claude
+no lanzó ninguna tarea de fondo, así que no llegó a pedir ese modelo. Al parar no quedó
+ningún proceso vivo.
 
 ### 6.6 Suscripciones
 
@@ -344,8 +367,8 @@ Sustituye a las dos ramas de `plan.md` §2:
 1. ✅ Caja **Agente** + **motor opencode** + **motor Claude** (canal ACP)
 2. ✅ **Proveedores**, primera versión (§6.8)
 3. **Proveedores como caja líquida**, cada paso cuando algo lo pide:
-   1. Plantillas, cabeceras extra y protocolo por modelo (§6.3), y las ranuras de la
-      caja, todavía en directo (§6.5)
+   1. ✅ Plantillas y cabeceras extra (§6.3), y las ranuras `fast` y `subagent`, en
+      directo (§6.5). El protocolo por modelo espera a que alguien lo necesite
    2. Suscripción de Claude con `anthropic-oauth` (§6.6)
    3. Pasarela con Plan B y Pool (§6.4)
    4. Router, Traductor, motor Local e imágenes por MCP

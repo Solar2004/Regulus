@@ -3,7 +3,7 @@
 //! [`EngineModule`] turns that into a module serving `agent.engine@1` over ACP, and
 //! settles for it what every engine shares: the profile and the provider check.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, PoisonError};
@@ -39,6 +39,12 @@ pub trait AcpEngine: Send + Sync + 'static {
     /// any other is refused before anything is launched.
     fn protocols(&self) -> &'static [&'static str];
 
+    /// The Agent box slots ([`contract::slot`]) this engine can hand to its CLI. Others
+    /// are left out of the session with a warning.
+    fn slots(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// How to launch the CLI's ACP side and open the session for this node.
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String>;
 }
@@ -55,6 +61,8 @@ pub struct Start<'a> {
     pub isolated: bool,
     /// The provider wired into the box, already checked against [`AcpEngine::protocols`].
     pub provider: Option<&'a LlmEndpoint>,
+    /// The slot providers, checked the same way and only those in [`AcpEngine::slots`].
+    pub slots: &'a BTreeMap<String, LlmEndpoint>,
 }
 
 /// How to launch the CLI and what to tell it before and when opening the session.
@@ -224,11 +232,28 @@ impl<E: AcpEngine> EngineModule<E> {
             manifest: &self.manifest,
             node: &call.node,
         };
-        if let Some(provider) = &args.provider {
-            let speaks = self.engine.protocols();
+        let mut warnings = Vec::new();
+        let mut slots = args.slots;
+        slots.retain(|slot, _| {
+            let known = self.engine.slots().contains(&slot.as_str());
+            if !known {
+                warnings.push(format!(
+                    "{} has no `{slot}` slot: its provider was left out",
+                    self.manifest.module.name
+                ));
+            }
+            known
+        });
+        // The core does not keep what a node start answers yet: the server log does.
+        for warning in &warnings {
+            eprintln!("regulus: node `{}`: {warning}", call.node.id);
+        }
+        let speaks = self.engine.protocols();
+        let wired = args.provider.iter().map(|p| ("provider", p));
+        for (input, provider) in wired.chain(slots.iter().map(|(s, p)| (s.as_str(), p))) {
             if !speaks.contains(&provider.protocol.as_str()) {
                 return Err(failed(format!(
-                    "{} speaks {}; the provider speaks `{}`: wire a translator between them",
+                    "{} speaks {}; the `{input}` provider speaks `{}`: wire a translator between them",
                     self.manifest.module.name,
                     speaks.join(", "),
                     provider.protocol
@@ -263,6 +288,7 @@ impl<E: AcpEngine> EngineModule<E> {
                 config_dir,
                 isolated,
                 provider: args.provider.as_ref(),
+                slots: &slots,
             })
             .map_err(failed)?;
         let startup = settings
@@ -295,6 +321,7 @@ impl<E: AcpEngine> EngineModule<E> {
                 name: agent.name,
                 version: agent.version,
             },
+            warnings,
         })
     }
 

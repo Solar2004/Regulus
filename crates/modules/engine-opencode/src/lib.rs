@@ -2,11 +2,12 @@
 //! the binary and turns the profile and the provider into its configuration
 //! (docs/12-agents.md §3, §6).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use regulus_acp::engine::{find_on_path, installations, AcpEngine, EngineModule, Prepared, Start};
 use regulus_acp::Launch;
-use regulus_contract_agent_engine::{Installation, LlmEndpoint};
+use regulus_contract_agent_engine::{slot, Installation, LlmEndpoint};
 use regulus_contract_llm_endpoint::protocol;
 use regulus_core::parse_manifest;
 use serde_json::{json, Map, Value};
@@ -30,8 +31,11 @@ const ISOLATED_HOMES: &[(&str, &str)] = &[
     ("XDG_DATA_HOME", "data"),
     ("XDG_STATE_HOME", "state"),
 ];
-/// The provider id the wired endpoint gets inside opencode: models are `regulus/<id>`.
+/// The provider id the wired endpoint gets inside opencode: models are `regulus/<id>`. A
+/// slot on another endpoint gets `regulus-<slot>`.
 const PROVIDER_ID: &str = "regulus";
+/// opencode's built-in subagents, whose model the `subagent` slot sets.
+const SUBAGENTS: &[&str] = &["general", "explore"];
 
 pub struct Opencode;
 
@@ -42,6 +46,10 @@ impl AcpEngine for Opencode {
 
     fn protocols(&self) -> &'static [&'static str] {
         &[protocol::ANTHROPIC, protocol::OPENAI]
+    }
+
+    fn slots(&self) -> &'static [&'static str] {
+        &[slot::FAST, slot::SUBAGENT]
     }
 
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {
@@ -63,10 +71,10 @@ impl AcpEngine for Opencode {
                 isolate(&mut launch, dir);
             }
         }
-        if let Some(provider) = start.provider {
+        if let Some(config) = config(start.provider, start.slots)? {
             launch
                 .env
-                .insert(CONFIG_CONTENT_ENV.into(), config(provider)?.to_string());
+                .insert(CONFIG_CONTENT_ENV.into(), config.to_string());
         }
         Ok(Prepared {
             launch,
@@ -86,13 +94,77 @@ fn isolate(launch: &mut Launch, dir: &Path) {
     }
 }
 
-/// The endpoint as an opencode provider. The credential moves from the headers to the
-/// SDK option that sends it, so it is not sent twice.
-fn config(provider: &LlmEndpoint) -> Result<Value, String> {
-    let model = provider
-        .models
-        .first()
-        .ok_or("opencode needs a model: set `model` on the provider")?;
+/// The wired providers as opencode configuration: one opencode provider per endpoint, the
+/// main model, `small_model` for the `fast` slot and the subagents' model for `subagent`.
+/// opencode holds several providers at once, so every slot can reach its own endpoint.
+fn config(
+    main: Option<&LlmEndpoint>,
+    slots: &BTreeMap<String, LlmEndpoint>,
+) -> Result<Option<Value>, String> {
+    if main.is_none() && slots.is_empty() {
+        return Ok(None);
+    }
+    // Endpoints that reach the same place share one opencode provider.
+    let mut routes: Vec<(String, LlmEndpoint, Vec<String>)> = Vec::new();
+    let mut route = |endpoint: &LlmEndpoint, id: String, input: &str| {
+        let model = endpoint
+            .models
+            .first()
+            .ok_or_else(|| {
+                format!("opencode needs a model: set `model` on the `{input}` provider")
+            })?
+            .clone();
+        let found = routes.iter_mut().find(|(_, e, _)| {
+            e.protocol == endpoint.protocol
+                && e.base_url == endpoint.base_url
+                && e.headers == endpoint.headers
+        });
+        let id = match found {
+            Some((id, _, models)) => {
+                models.extend(endpoint.models.iter().cloned());
+                id.clone()
+            }
+            None => {
+                routes.push((id.clone(), endpoint.clone(), endpoint.models.clone()));
+                id
+            }
+        };
+        Ok::<_, String>(format!("{id}/{model}"))
+    };
+    let mut root = Map::new();
+    if let Some(main) = main {
+        root.insert(
+            "model".into(),
+            json!(route(main, PROVIDER_ID.into(), "provider")?),
+        );
+    }
+    for (name, endpoint) in slots {
+        let model = route(endpoint, format!("{PROVIDER_ID}-{name}"), name)?;
+        match name.as_str() {
+            slot::FAST => {
+                root.insert("small_model".into(), json!(model));
+            }
+            slot::SUBAGENT => {
+                let agents: Map<String, Value> = SUBAGENTS
+                    .iter()
+                    .map(|a| ((*a).to_string(), json!({ "model": model })))
+                    .collect();
+                root.insert("agent".into(), Value::Object(agents));
+            }
+            _ => {}
+        }
+    }
+    let mut providers = Map::new();
+    for (id, endpoint, models) in routes {
+        providers.insert(id, provider_entry(&endpoint, &models)?);
+    }
+    root.insert("provider".into(), Value::Object(providers));
+    Ok(Some(Value::Object(root)))
+}
+
+/// One endpoint as an opencode provider. The credential moves from the headers to the SDK
+/// option that sends it, so it is not sent twice.
+fn provider_entry(provider: &LlmEndpoint, models: &[String]) -> Result<Value, String> {
     let mut headers = provider.headers.clone();
     let mut options = Map::new();
     let bearer = headers
@@ -133,17 +205,8 @@ fn config(provider: &LlmEndpoint) -> Result<Value, String> {
     if !headers.is_empty() {
         options.insert("headers".into(), json!(headers));
     }
-    let models: Map<String, Value> = provider
-        .models
-        .iter()
-        .map(|m| (m.clone(), json!({})))
-        .collect();
-    Ok(json!({
-        "provider": {
-            PROVIDER_ID: { "npm": npm, "name": "Regulus", "options": options, "models": models }
-        },
-        "model": format!("{PROVIDER_ID}/{model}"),
-    }))
+    let models: Map<String, Value> = models.iter().map(|m| (m.clone(), json!({}))).collect();
+    Ok(json!({ "npm": npm, "name": "Regulus", "options": options, "models": models }))
 }
 
 pub fn module() -> EngineModule<Opencode> {
@@ -173,7 +236,7 @@ mod tests {
             "https://openrouter.ai/api/",
             ("authorization", "Bearer k"),
         );
-        let config = config(&provider).unwrap();
+        let config = config(Some(&provider), &BTreeMap::new()).unwrap().unwrap();
         let regulus = &config["provider"]["regulus"];
         assert_eq!(regulus["npm"], "@ai-sdk/anthropic");
         assert_eq!(
@@ -188,7 +251,7 @@ mod tests {
     #[test]
     fn an_openai_endpoint_keeps_its_base_url() {
         let provider = endpoint("openai", "http://127.0.0.1:8000/v1", ("x-team", "a"));
-        let config = config(&provider).unwrap();
+        let config = config(Some(&provider), &BTreeMap::new()).unwrap().unwrap();
         let options = &config["provider"]["regulus"]["options"];
         assert_eq!(options["baseURL"], "http://127.0.0.1:8000/v1");
         assert_eq!(options["headers"]["x-team"], "a");
@@ -199,6 +262,36 @@ mod tests {
     fn without_a_model_opencode_cannot_use_the_provider() {
         let mut provider = endpoint("anthropic", "http://127.0.0.1:3456", ("x", "y"));
         provider.models.clear();
-        assert!(config(&provider).is_err());
+        assert!(config(Some(&provider), &BTreeMap::new()).is_err());
+        assert!(config(None, &BTreeMap::new()).unwrap().is_none());
+    }
+
+    #[test]
+    fn slots_share_the_main_endpoint_or_get_their_own() {
+        let main = endpoint(
+            "anthropic",
+            "https://opencode.ai/zen/go",
+            ("x-api-key", "k"),
+        );
+        let mut same = main.clone();
+        same.models = vec!["m3".into()];
+        let other = endpoint(
+            "openai",
+            "https://openrouter.ai/api/v1",
+            ("authorization", "Bearer o"),
+        );
+        let slots = [("fast".to_string(), same), ("subagent".to_string(), other)].into();
+        let config = config(Some(&main), &slots).unwrap().unwrap();
+        assert_eq!(config["model"], "regulus/m1");
+        assert_eq!(config["small_model"], "regulus/m3");
+        assert_eq!(config["agent"]["general"]["model"], "regulus-subagent/m1");
+        assert_eq!(config["agent"]["explore"]["model"], "regulus-subagent/m1");
+        let providers = config["provider"].as_object().unwrap();
+        assert_eq!(providers.len(), 2);
+        assert!(providers["regulus"]["models"].get("m3").is_some());
+        assert_eq!(
+            providers["regulus-subagent"]["npm"],
+            "@ai-sdk/openai-compatible"
+        );
     }
 }
