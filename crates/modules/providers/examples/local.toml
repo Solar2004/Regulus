@@ -1,6 +1,7 @@
 # One provider feeding two Agent boxes, each in an isolated profile (docs/12-agents.md §6).
-# The provider is a local Anthropic-compatible proxy; for OpenRouter, change base_url to
-# https://openrouter.ai/api and the model. Copy it to ~/.regulus/profiles/, then:
+# The provider is a local Anthropic-compatible proxy. For a known provider, replace its
+# config with a template, e.g. { preset = "openrouter", credential = "secret:openrouter" }
+# (templates in ../presets.toml). Copy it to ~/.regulus/profiles/, then:
 #
 #   regulus secret set local-proxy
 #   regulus run local

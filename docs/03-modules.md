@@ -88,7 +88,7 @@ Regulus lo genera como Rust y lo compila.**
 ### 1.3 La UI de un módulo
 
 ✅ **DECIDIDO** (`11` §12) — **Por defecto, el sistema de Regulus:** el módulo declara
-campos (`[[node.field]]`: texto, número, desplegable…) y la UI los dibuja sola. Ningún
+campos (`[[node.field]]`: texto, número, desplegable, mapa `nombre = valor`…) y la UI los dibuja sola. Ningún
 módulo necesita escribir UI. Un módulo **puede** traer su propia UI si la necesita; cómo
 se enchufa sin que la UI lo conozca por nombre se decide cuando el primero lo pida.
 

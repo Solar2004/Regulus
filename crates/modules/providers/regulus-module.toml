@@ -4,7 +4,7 @@ name           = "Providers"
 requires_proto = "^1.3"
 
 # One generic node. OpenRouter, Anthropic, z.ai or a local proxy are templates of it,
-# not code: adding a provider recompiles nothing (docs/12-agents.md §6.2).
+# not code: adding a provider recompiles nothing (docs/12-agents.md §6.3).
 [[node]]
 type = "provider"
 name = "AI provider"
@@ -15,6 +15,20 @@ name = "AI provider"
   capability = "llm.endpoint@1"
   direction  = "output"
   kind       = "uses"
+
+  # A template from presets.toml or from `catalog`: it fills in every field below that
+  # the node leaves empty. Empty: no template, the node sets everything.
+  [[node.field]]
+  id      = "preset"
+  type    = "text"
+  default = ""
+
+  # A TOML file of the user's own templates, same format as presets.toml. Its entries
+  # add to the built-in ones and replace those with the same id. Empty: built-in only.
+  [[node.field]]
+  id      = "catalog"
+  type    = "text"
+  default = ""
 
   # The protocol the endpoint speaks. Engines say which ones they accept.
   [[node.field]]
@@ -40,9 +54,17 @@ name = "AI provider"
   id      = "auth"
   type    = "select"
   default = "bearer"
-  options = ["bearer", "x-api-key"]
+  options = ["bearer", "x-api-key", "none"]
 
-  # Model ids, comma separated; the first is the default. Empty: the engine's choice.
+  # Extra headers sent with every request, over the template's: name = value. A value
+  # can be secret:<name>.
+  [[node.field]]
+  id      = "headers"
+  type    = "map"
+  default = {}
+
+  # Model ids, comma separated; the first is the default. Empty: the template's, or the
+  # engine's choice.
   [[node.field]]
   id      = "model"
   type    = "text"

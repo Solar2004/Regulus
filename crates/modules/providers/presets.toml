@@ -1,0 +1,88 @@
+# Provider templates (docs/12-agents.md §6.3). A provider node picks one with
+# `preset = "<id>"`; any field the node sets itself wins over the template. Adding a
+# provider is adding an entry here, or to the node's own `catalog` file: nothing is
+# recompiled.
+#
+# Fields: name, protocol, base_url, auth (bearer | x-api-key | none), models (the first is
+# the default), headers and terms, one line on what the provider allows.
+#
+# `base_url` as each protocol's own clients take it: anthropic without /v1, openai with
+# it. The credential never lives here: the node sets `credential = "secret:<name>"`.
+#
+# A host that serves some models over Anthropic and others over OpenAI gets one template
+# per protocol (`opencode-go` and `opencode-go-openai`).
+
+[presets.openrouter]
+name     = "OpenRouter"
+protocol = "anthropic"
+base_url = "https://openrouter.ai/api"
+auth     = "bearer"
+models   = ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5"]
+headers  = { "X-Title" = "Regulus" }
+terms    = "Pay per use. Any client may use the key."
+
+[presets.openrouter-openai]
+name     = "OpenRouter (OpenAI protocol)"
+protocol = "openai"
+base_url = "https://openrouter.ai/api/v1"
+auth     = "bearer"
+models   = ["z-ai/glm-5.3", "moonshotai/kimi-k3", "deepseek/deepseek-v4-pro"]
+headers  = { "X-Title" = "Regulus" }
+terms    = "Pay per use. Any client may use the key."
+
+[presets.opencode-go]
+name     = "OpenCode Go"
+protocol = "anthropic"
+base_url = "https://opencode.ai/zen/go"
+auth     = "x-api-key"
+models   = ["qwen3.8-max", "minimax-m3"]
+headers  = { "x-opencode-session" = "regulus" }
+terms    = "Subscription. The key may be used in other coding agents that send their own User-Agent and a stable x-opencode-session."
+
+[presets.opencode-go-openai]
+name     = "OpenCode Go (OpenAI protocol)"
+protocol = "openai"
+base_url = "https://opencode.ai/zen/go/v1"
+auth     = "bearer"
+models   = ["glm-5.3", "kimi-k3", "deepseek-v4-flash"]
+headers  = { "x-opencode-session" = "regulus" }
+terms    = "Subscription. The key may be used in other coding agents that send their own User-Agent and a stable x-opencode-session."
+
+[presets.anthropic]
+name     = "Anthropic API"
+protocol = "anthropic"
+base_url = "https://api.anthropic.com"
+auth     = "x-api-key"
+models   = ["claude-sonnet-5-5", "claude-opus-5-5"]
+terms    = "Pay per use with an API key. Claude Pro/Max logins are not API keys and only work in Anthropic's own apps."
+
+[presets.zai-coding-plan]
+name     = "Z.ai Coding Plan"
+protocol = "anthropic"
+base_url = "https://api.z.ai/api/anthropic"
+auth     = "bearer"
+models   = ["glm-5.3"]
+terms    = "Subscription. Its quota is for the tools Z.ai lists, Claude Code and OpenCode among them, sending their own User-Agent."
+
+[presets.deepseek]
+name     = "DeepSeek"
+protocol = "anthropic"
+base_url = "https://api.deepseek.com/anthropic"
+auth     = "bearer"
+models   = ["deepseek-v4-pro", "deepseek-v4-flash"]
+terms    = "Pay per use. Any client may use the key."
+
+[presets.moonshot]
+name     = "Moonshot"
+protocol = "anthropic"
+base_url = "https://api.moonshot.ai/anthropic"
+auth     = "bearer"
+models   = ["kimi-k3"]
+terms    = "Pay per use. Any client may use the key."
+
+[presets.ollama]
+name     = "Ollama (local)"
+protocol = "openai"
+base_url = "http://127.0.0.1:11434/v1"
+auth     = "none"
+terms    = "Runs on this machine."

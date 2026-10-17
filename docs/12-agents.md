@@ -305,8 +305,16 @@ Nada se escribe en el perfil del usuario. Cómo aísla cada motor:
 
 Construida la primera versión: un único nodo Proveedor genérico, con los campos
 `protocol`, `base_url`, `credential` (`secret:<nombre>`), `auth` (`bearer`, `x-api-key`
-o `none`) y `model`. Hace de caja y de motor API a la vez, todavía sin plantillas,
-envolturas ni ranuras.
+o `none`) y `model`. Hace de caja y de motor API a la vez, todavía sin envolturas ni
+ranuras.
+
+**Plantillas y cabeceras extra (§6.3), construidas:** campo `preset`, catálogo de serie
+en `crates/modules/providers/presets.toml` (openrouter, opencode-go, anthropic,
+zai-coding-plan, deepseek, moonshot, ollama…), un catálogo propio opcional con el campo
+`catalog`, y el campo `headers`. Cada ajuste sale del nodo, si no de la plantilla, y si
+no del valor por defecto del manifest. Un host con dos protocolos tiene una plantilla por
+protocolo (`opencode-go` y `opencode-go-openai`). Así, el protocolo por modelo (§6.1)
+sigue pendiente hasta que una sesión necesite mezclar los dos.
 
 | Pieza | Dónde |
 |---|---|
