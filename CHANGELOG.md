@@ -15,6 +15,13 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Agentes** (`docs/12-agents.md`): la caja Agente y los motores Claude Code y opencode,
+  que hablan con su CLI por ACP. Cada motor detecta las instalaciones del PC
+  (`claude.detect`, `opencode.detect`) y usa la que elijas con tu perfil
+  (`config_dir`). Ejemplo en `crates/modules/agent/examples/agents.toml`.
+- Ejecuciones: `execution.start` / `execution.stop` (protocolo `1.2`) y los comandos
+  `regulus run`, `regulus stop`, `regulus ps` y `regulus agent prompt`. Un nodo al que
+  le falta una entrada obligatoria queda desactivado sin tumbar el resto.
 - El core: `regulus serve` sirve JSON-RPC 2.0 por WebSocket en loopback, protocolo `1.1`
   (`hello`, `profile.list`, `profile.get`, `profile.check`, `module.list`,
   `execution.list`). Pide el token de `<home>/token` (`Authorization: Bearer` o
