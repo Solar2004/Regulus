@@ -47,6 +47,9 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Serialización | **`serde`** + **`serde_json`** | `1.x` | Obvio. |
 | Errores | **`thiserror`** (libs) + **`anyhow`** (bins) | `2` / `1` | Convención estándar; hcom ya la sigue. |
 | CLI | **`clap`** `derive` | `4` | Lo mismo que hcom. |
+| Middleware HTTP | **`tower`** | `0.5` | La puerta del token en el upgrade; es la versión que usa `jsonrpsee` 0.26. |
+| Token aleatorio | **`getrandom`** | `0.4` | Bytes del sistema operativo para `<home>/token`, sin arrastrar `rand`. |
+| Config y manifiestos | **`toml`** | `1` | `config.toml` y `regulus-module.toml`. |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,

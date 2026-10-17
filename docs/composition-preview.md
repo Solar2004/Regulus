@@ -28,6 +28,12 @@ negociar un major compatible.
 | `profile.get` | `id` | Perfil con workflow principal y todos sus workflows |
 | `module.list` | — | Módulos de ejemplo y tipos de nodo que aportan |
 | `execution.list` | — | Lista vacía; nada está ejecutándose |
+| `profile.check` *(1.1, solo core real)* | `id` | Diagnósticos del perfil: `severity`, `code`, `message` |
+
+El core real (`regulus serve`) habla el protocolo `1.1`, compatible con el `1.0` del mock.
+Errores propios: `-32001` falta `hello`, `-32002` módulo no disponible, `-32003` el módulo
+falló o entró en pánico. Además pide el token de `<home>/token` en el upgrade
+(`?token=` desde la webview).
 
 El perfil contiene `project_id` nullable y `extends` reservado. Cada workflow contiene
 sus nodos, cables y coordenadas. Cada nodo declara módulo o recurso, tipo, configuración,

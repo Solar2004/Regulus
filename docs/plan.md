@@ -53,8 +53,8 @@ llaman a la API?
 |---|---|---|---|
 | 1 | Mock + canvas de solo lectura (A'/B') | — | ✅ hecho |
 | 2 | Modelo de composición aprobado y aplicado a `02`/`03` | — | ✅ hecho |
-| 3 | **La base**: `regulus-proto`, `regulus-core`, `regulus serve` con `hello` y los métodos del mock | 2-3 días | siguiente |
-| 4 | Primer módulo (según §2) + módulo `hello` + **matriz de ablación** | 1-2 días | — |
+| 3 | **La base**: `regulus-proto`, `regulus-core`, `regulus serve` con `hello` y los métodos del mock | 2-3 días | ✅ hecho (2026-10-17) |
+| 4 | Primer módulo (según §2) + módulo `hello` + **matriz de ablación** | 1-2 días | `hello` y la matriz hechos; falta el primer módulo |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar | ~1 sem | — |
 | 6 | Vista Operar con ejecuciones reales | ~1 sem | — |
 
@@ -106,7 +106,8 @@ Si deriva de código ajeno, su manifest lleva `[module.origin]` con autor, repo,
 ### 4.4 Decisiones abiertas que siguen vivas
 
 - **#10 Registro de módulos:** recomendación fuerte, **a mano** (una línea que escribe
-  `regulus module install`). Se cierra en el paso 3.
+  `regulus module install`). Implementado así en el paso 3
+  (`crates/regulus-cli/src/modules.rs`); falta que Alexander lo dé por cerrado.
 - **#12 ACP:** protocolo que ~45 agentes ya hablan. Importa al hacer el módulo de
   agentes/comunicación. Investigación en [`old/07-ecosystem.md`](old/07-ecosystem.md).
 
