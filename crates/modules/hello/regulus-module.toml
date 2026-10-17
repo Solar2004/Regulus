@@ -1,0 +1,21 @@
+[module]
+id             = "regulus/hello@0.1.0"
+name           = "Hello"
+requires_proto = "^1"
+methods        = ["hello.greet"]
+
+[[node]]
+type = "greeter"
+name = "Greeter"
+
+  [[node.port]]
+  id         = "greeting"
+  name       = "greeting"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = "world"

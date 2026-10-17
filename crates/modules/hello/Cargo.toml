@@ -1,0 +1,11 @@
+[package]
+name = "regulus-module-hello"
+description = "Trivial Regulus module used to exercise the registry and the ablation matrix"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde_json.workspace = true

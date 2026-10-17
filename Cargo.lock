@@ -3043,6 +3043,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "regulus-module-hello"
+version = "0.1.0"
+dependencies = [
+ "regulus-core",
+ "regulus-proto",
+ "serde_json",
+]
+
+[[package]]
 name = "regulus-proto"
 version = "0.1.0"
 dependencies = [
