@@ -1,14 +1,20 @@
 [package]
 name = "regulus-core"
-description = "The Regulus base: module registry, wires and profiles"
+description = "The Regulus base: module registry, wires, profiles and the JSON-RPC server"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
 [dependencies]
 regulus-proto.workspace = true
+getrandom.workspace = true
+jsonrpsee = { workspace = true, features = ["server"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 toml.workspace = true
+tower.workspace = true
 
+[dev-dependencies]
+jsonrpsee = { workspace = true, features = ["server", "ws-client"] }
