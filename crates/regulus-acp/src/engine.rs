@@ -1,6 +1,7 @@
 //! What every ACP engine module has in common (docs/12-agents.md §3). An engine only
-//! says how to find its CLI and how to launch it for a node; [`EngineModule`] turns that
-//! into a module serving `agent.engine@1` over ACP.
+//! says how to find its CLI, which protocols it speaks and how to launch it for a node;
+//! [`EngineModule`] turns that into a module serving `agent.engine@1` over ACP, and
+//! settles for it what every engine shares: the profile and the provider check.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,16 +10,24 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use regulus_contract_agent_engine as contract;
-use regulus_core::{Module, ModuleCtx, ModuleError};
+use regulus_contract_agent_engine::LlmEndpoint;
+use regulus_core::{Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Manifest, Node, NodeCall};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{Launch, Permissions, SessionOptions, Sessions};
+use crate::{Launch, Permissions, SessionOptions, Sessions, SetupRequest};
 
 /// The field every engine node has for how long its CLI may take to open a session.
 pub const STARTUP_FIELD: &str = "startup_seconds";
+/// `user` (the default): `config_dir`, or the user's own setup. `isolated`: a profile
+/// that only has what is wired in (docs/12-agents.md §6.3).
+pub const PROFILE_FIELD: &str = "profile";
+pub const CONFIG_DIR_FIELD: &str = "config_dir";
+const ISOLATED: &str = "isolated";
+/// Inside the node's own directory, where an isolated profile lives by default.
+const PROFILE_DIR: &str = "profile";
 const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The part that differs between engines.
@@ -26,18 +35,35 @@ pub trait AcpEngine: Send + Sync + 'static {
     /// Installations of the CLI on this machine, best first.
     fn detect(&self) -> Vec<contract::Installation>;
 
-    /// How to launch the CLI's ACP side for this node. `settings` reads the node's fields
-    /// with the manifest defaults filled in.
-    fn launch(
-        &self,
-        settings: &Settings<'_>,
-        detected: &[contract::Installation],
-    ) -> Result<Launch, String>;
+    /// The `llm.endpoint` protocols this engine can hand to its CLI. A provider speaking
+    /// any other is refused before anything is launched.
+    fn protocols(&self) -> &'static [&'static str];
 
+    /// How to launch the CLI's ACP side and open the session for this node.
+    fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String>;
+}
+
+/// Everything an engine needs to prepare one session.
+pub struct Start<'a> {
+    /// The node's fields with the manifest defaults filled in.
+    pub settings: Settings<'a>,
+    pub detected: &'a [contract::Installation],
+    /// The profile directory to point the CLI at. `None`: the user's own setup.
+    pub config_dir: Option<PathBuf>,
+    /// Whether that directory is an isolated profile, which must not pick up anything
+    /// the user did not wire in.
+    pub isolated: bool,
+    /// The provider wired into the box, already checked against [`AcpEngine::protocols`].
+    pub provider: Option<&'a LlmEndpoint>,
+}
+
+/// How to launch the CLI and what to tell it before and when opening the session.
+#[derive(Debug, Default)]
+pub struct Prepared {
+    pub launch: Launch,
     /// Agent-specific `_meta` for `session/new`.
-    fn session_meta(&self, _settings: &Settings<'_>) -> Option<Map<String, Value>> {
-        None
-    }
+    pub meta: Option<Map<String, Value>>,
+    pub setup: Vec<SetupRequest>,
 }
 
 /// A node's settings: its own value, else the manifest default.
@@ -160,6 +186,7 @@ pub fn installations(paths: Vec<PathBuf>) -> Vec<contract::Installation> {
 pub struct EngineModule<E> {
     manifest: Manifest,
     engine: E,
+    ctx: ModuleCtx,
     sessions: Sessions,
     owners: Mutex<HashMap<String, Vec<String>>>,
 }
@@ -181,6 +208,7 @@ impl<E: AcpEngine> EngineModule<E> {
         Self {
             manifest,
             engine,
+            ctx: ModuleCtx::default(),
             sessions: Sessions::default(),
             owners: Mutex::default(),
         }
@@ -196,8 +224,47 @@ impl<E: AcpEngine> EngineModule<E> {
             manifest: &self.manifest,
             node: &call.node,
         };
+        if let Some(provider) = &args.provider {
+            let speaks = self.engine.protocols();
+            if !speaks.contains(&provider.protocol.as_str()) {
+                return Err(failed(format!(
+                    "{} speaks {}; the provider speaks `{}`: wire a translator between them",
+                    self.manifest.module.name,
+                    speaks.join(", "),
+                    provider.protocol
+                )));
+            }
+        }
+        let isolated = settings.text(PROFILE_FIELD) == Some(ISOLATED);
+        let config_dir = match settings.path(CONFIG_DIR_FIELD) {
+            Some(dir) => Some(dir),
+            None if isolated => {
+                let me = NodeRef {
+                    execution_id: call.execution_id.clone(),
+                    node_id: call.node.id.clone(),
+                };
+                Some(self.ctx.node_dir(&me)?.join(PROFILE_DIR))
+            }
+            None => None,
+        };
+        if let Some(dir) = config_dir.as_ref().filter(|_| isolated) {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| failed(format!("cannot create {}: {e}", dir.display())))?;
+        }
         let detected = self.engine.detect();
-        let launch = self.engine.launch(&settings, &detected).map_err(failed)?;
+        let prepared = self
+            .engine
+            .prepare(&Start {
+                settings: Settings {
+                    manifest: &self.manifest,
+                    node: &call.node,
+                },
+                detected: &detected,
+                config_dir,
+                isolated,
+                provider: args.provider.as_ref(),
+            })
+            .map_err(failed)?;
         let startup = settings
             .value(STARTUP_FIELD)
             .and_then(Value::as_f64)
@@ -208,10 +275,14 @@ impl<E: AcpEngine> EngineModule<E> {
                 contract::Permissions::Allow => Permissions::Allow,
                 contract::Permissions::Reject => Permissions::Reject,
             },
-            meta: self.engine.session_meta(&settings),
+            meta: prepared.meta,
+            setup: prepared.setup,
             startup: Duration::from_secs_f64(startup.max(1.0)),
         };
-        let (session_id, agent) = self.sessions.start(launch, options).map_err(failed)?;
+        let (session_id, agent) = self
+            .sessions
+            .start(prepared.launch, options)
+            .map_err(failed)?;
         self.owners
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -244,7 +315,8 @@ impl<E: AcpEngine> Module for EngineModule<E> {
         &self.manifest
     }
 
-    fn init(&mut self, _ctx: &ModuleCtx) -> Result<(), ModuleError> {
+    fn init(&mut self, ctx: &ModuleCtx) -> Result<(), ModuleError> {
+        self.ctx = ctx.clone();
         Ok(())
     }
 

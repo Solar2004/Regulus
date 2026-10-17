@@ -1,0 +1,12 @@
+[package]
+name = "regulus-module-providers"
+description = "Providers: describe a model endpoint that agents and other nodes use directly"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-contract-llm-endpoint.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde_json.workspace = true

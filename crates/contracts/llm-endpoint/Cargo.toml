@@ -1,0 +1,9 @@
+[package]
+name = "regulus-contract-llm-endpoint"
+description = "The llm.endpoint@1 capability: where a model is and how to reach it"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true

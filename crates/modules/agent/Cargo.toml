@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 regulus-contract-agent-engine.workspace = true
+regulus-contract-llm-endpoint.workspace = true
 regulus-core.workspace = true
 regulus-proto.workspace = true
 serde.workspace = true

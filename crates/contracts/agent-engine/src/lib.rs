@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+pub use regulus_contract_llm_endpoint::LlmEndpoint;
 use serde::{Deserialize, Serialize};
 
 pub const CAPABILITY: &str = "agent.engine@1";
@@ -46,6 +47,10 @@ pub struct StartArgs {
     pub cwd: PathBuf,
     #[serde(default)]
     pub permissions: Permissions,
+    /// The model endpoint wired into the box, if any (docs/12-agents.md §6). Optional, so
+    /// it extends `@1` without breaking engines that ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<LlmEndpoint>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

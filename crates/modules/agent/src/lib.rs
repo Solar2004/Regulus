@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
 use regulus_contract_agent_engine as engine;
+use regulus_contract_llm_endpoint as llm;
 use regulus_core::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Manifest, NodeCall};
 use serde::de::DeserializeOwned;
@@ -16,6 +17,7 @@ use serde_json::Value;
 const MANIFEST: &str = include_str!("../regulus-module.toml");
 const PROMPT: &str = "agent.prompt";
 const ENGINE_PORT: &str = "engine";
+const PROVIDER_PORT: &str = "provider";
 
 /// A started agent node: the engine behind it and the session it opened there.
 struct Running {
@@ -102,9 +104,18 @@ impl Agent {
             Some("allow") => engine::Permissions::Allow,
             _ => engine::Permissions::Reject,
         };
+        let provider = match self.ctx.resolve(&me, PROVIDER_PORT).first() {
+            None => None,
+            Some(endpoint) => Some(parse::<llm::LlmEndpoint>(self.ctx.call(
+                endpoint,
+                llm::DESCRIBE,
+                Value::Null,
+            )?)?),
+        };
         let args = engine::StartArgs {
             cwd: workdir(self.manifest.setting(&call.node, "workdir"))?,
             permissions,
+            provider,
         };
         let started: engine::Started =
             parse(self.ctx.call(&engine, engine::SESSION_START, json(args)?)?)?;

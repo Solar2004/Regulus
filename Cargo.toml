@@ -6,10 +6,12 @@ members = [
     "crates/regulus-cli",
     "crates/regulus-acp",
     "crates/contracts/agent-engine",
+    "crates/contracts/llm-endpoint",
     "crates/modules/hello",
     "crates/modules/agent",
     "crates/modules/engine-opencode",
     "crates/modules/engine-claude",
+    "crates/modules/providers",
     "crates/regulus-tauri/src-tauri",
 ]
 resolver = "2"
@@ -25,6 +27,7 @@ regulus-proto = { path = "crates/regulus-proto" }
 regulus-core = { path = "crates/regulus-core" }
 regulus-acp = { path = "crates/regulus-acp" }
 regulus-contract-agent-engine = { path = "crates/contracts/agent-engine" }
+regulus-contract-llm-endpoint = { path = "crates/contracts/llm-endpoint" }
 agent-client-protocol = "3.4.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

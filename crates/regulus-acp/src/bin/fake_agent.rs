@@ -5,7 +5,9 @@
 //! - `cwd` answers the session's working directory
 //! - `env NAME` answers that environment variable, or `<unset>`
 //! - `permission` asks the client for permission and answers the option it chose
-//! - `exit` kills the process mid-turn
+//! - `provider` answers what `providers/set` received before the session, or `<unset>`
+//! - `meta` answers the `_meta` of `session/new`
+//! - `exit` kills the process mid-turn, saying so on stderr
 //! - anything else is echoed back in two chunks
 
 use std::io::{self, BufRead, Write};
@@ -30,6 +32,8 @@ fn main() {
     let mut lines = stdin.lock().lines();
     let mut out = io::stdout();
     let mut cwd = String::new();
+    let mut provider = Value::Null;
+    let mut meta = Value::Null;
     while let Some(Ok(line)) = lines.next() {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -44,7 +48,12 @@ fn main() {
             }),
             Some("session/new") => {
                 cwd = params["cwd"].as_str().unwrap_or_default().to_string();
+                meta = params["_meta"].clone();
                 json!({ "sessionId": "fake-session" })
+            }
+            Some("providers/set") => {
+                provider = params.clone();
+                json!({})
             }
             Some("session/prompt") => {
                 let session = params["sessionId"].as_str().unwrap_or_default().to_string();
@@ -53,12 +62,21 @@ fn main() {
                     .unwrap_or_default()
                     .to_string();
                 if text == "exit" {
+                    eprintln!("fake-agent: told to exit");
                     std::process::exit(3);
                 } else if text == "cwd" {
                     chunk(&mut out, &session, &cwd);
                 } else if let Some(name) = text.strip_prefix("env ") {
                     let value = std::env::var(name).unwrap_or_else(|_| "<unset>".into());
                     chunk(&mut out, &session, &value);
+                } else if text == "provider" {
+                    let answer = match &provider {
+                        Value::Null => "<unset>".to_string(),
+                        set => set.to_string(),
+                    };
+                    chunk(&mut out, &session, &answer);
+                } else if text == "meta" {
+                    chunk(&mut out, &session, &meta.to_string());
                 } else if text == "permission" {
                     let options = json!([
                         { "optionId": "yes", "name": "Allow", "kind": "allow_once" },

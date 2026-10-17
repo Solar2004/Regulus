@@ -19,6 +19,15 @@ name = "Agent"
   kind       = "uses"
   required   = true
 
+  # The model the engine uses. Optional: without one, the engine's own setup decides
+  # (docs/12-agents.md §6).
+  [[node.port]]
+  id         = "provider"
+  name       = "provider"
+  capability = "llm.endpoint@1"
+  direction  = "input"
+  kind       = "uses"
+
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]
   id      = "workdir"

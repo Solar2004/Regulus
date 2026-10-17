@@ -22,7 +22,15 @@ name = "Claude Code"
   type    = "text"
   default = ""
 
-  # CLAUDE_CONFIG_DIR for this agent, e.g. ~/.claude-ultra. Empty: the user's own setup.
+  # user: config_dir, or the user's own setup if empty. isolated: a profile with only what
+  # is wired in, kept per node by Regulus unless config_dir says where (docs/12-agents.md §6.3).
+  [[node.field]]
+  id      = "profile"
+  type    = "select"
+  default = "user"
+  options = ["user", "isolated"]
+
+  # CLAUDE_CONFIG_DIR for this agent, e.g. ~/.claude-ultra. Empty: see profile.
   [[node.field]]
   id      = "config_dir"
   type    = "text"

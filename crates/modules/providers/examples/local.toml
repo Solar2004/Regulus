@@ -1,0 +1,89 @@
+# One provider feeding two Agent boxes, each in an isolated profile (docs/12-agents.md §6).
+# The provider is a local Anthropic-compatible proxy; for OpenRouter, change base_url to
+# https://openrouter.ai/api and the model. Copy it to ~/.regulus/profiles/, then:
+#
+#   regulus secret set local-proxy
+#   regulus run local
+id = "local"
+name = "Local provider"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Local provider"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "proxy"
+  name = "Local proxy"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 50, y = 165 }
+  config = { protocol = "anthropic", base_url = "http://127.0.0.1:3456", credential = "secret:local-proxy", auth = "x-api-key", model = "claude-opus-4-6" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "dev"
+  name = "Dev agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 380, y = 65 }
+  config = { workdir = "", permissions = "reject" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "provider", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "opencode"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 50, y = 65 }
+  config = { profile = "isolated" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "reviewer"
+  name = "Reviewer agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 380, y = 265 }
+  config = { workdir = "", permissions = "reject" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "provider", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "claude"
+  name = "Claude Code"
+  type = "engine-claude"
+  module_id = "regulus/engine-claude@0.1.0"
+  position = { x = 50, y = 265 }
+  config = { profile = "isolated" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "dev-engine"
+  kind = "uses"
+  from = { node_id = "opencode", port_id = "engine" }
+  to = { node_id = "dev", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "dev-provider"
+  kind = "uses"
+  from = { node_id = "proxy", port_id = "endpoint" }
+  to = { node_id = "dev", port_id = "provider" }
+
+  [[workflows.wires]]
+  id = "reviewer-engine"
+  kind = "uses"
+  from = { node_id = "claude", port_id = "engine" }
+  to = { node_id = "reviewer", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "reviewer-provider"
+  kind = "uses"
+  from = { node_id = "proxy", port_id = "endpoint" }
+  to = { node_id = "reviewer", port_id = "provider" }

@@ -2,7 +2,7 @@
 //! Agent box, the box reaches its engine over the wire, the engine opens an ACP session,
 //! a prompt goes through and stopping the execution ends the agent process.
 
-use regulus_acp::engine::{AcpEngine, EngineModule, Settings};
+use regulus_acp::engine::{AcpEngine, EngineModule, Prepared, Start};
 use regulus_acp::Launch;
 use regulus_contract_agent_engine::Installation;
 use regulus_core::{parse_manifest, Core, Module, ProfileStore};
@@ -29,10 +29,16 @@ impl AcpEngine for Fake {
             version: None,
         }]
     }
-    fn launch(&self, _: &Settings<'_>, detected: &[Installation]) -> Result<Launch, String> {
-        Ok(Launch {
-            program: detected[0].path.clone(),
-            ..Launch::default()
+    fn protocols(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {
+        Ok(Prepared {
+            launch: Launch {
+                program: start.detected[0].path.clone(),
+                ..Launch::default()
+            },
+            ..Prepared::default()
         })
     }
 }

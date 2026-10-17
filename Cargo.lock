@@ -3221,6 +3221,7 @@ dependencies = [
  "regulus-contract-agent-engine",
  "regulus-core",
  "regulus-module-agent",
+ "regulus-module-providers",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -3239,6 +3240,7 @@ dependencies = [
  "regulus-module-engine-claude",
  "regulus-module-engine-opencode",
  "regulus-module-hello",
+ "regulus-module-providers",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -3247,6 +3249,14 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-agent-engine"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-llm-endpoint",
+ "serde",
+]
+
+[[package]]
+name = "regulus-contract-llm-endpoint"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -3272,6 +3282,7 @@ name = "regulus-module-agent"
 version = "0.1.0"
 dependencies = [
  "regulus-contract-agent-engine",
+ "regulus-contract-llm-endpoint",
  "regulus-core",
  "regulus-proto",
  "serde",
@@ -3284,8 +3295,10 @@ version = "0.1.0"
 dependencies = [
  "regulus-acp",
  "regulus-contract-agent-engine",
+ "regulus-contract-llm-endpoint",
  "regulus-core",
  "regulus-proto",
+ "serde_json",
 ]
 
 [[package]]
@@ -3294,14 +3307,26 @@ version = "0.1.0"
 dependencies = [
  "regulus-acp",
  "regulus-contract-agent-engine",
+ "regulus-contract-llm-endpoint",
  "regulus-core",
  "regulus-proto",
+ "serde_json",
 ]
 
 [[package]]
 name = "regulus-module-hello"
 version = "0.1.0"
 dependencies = [
+ "regulus-core",
+ "regulus-proto",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-providers"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-llm-endpoint",
  "regulus-core",
  "regulus-proto",
  "serde_json",

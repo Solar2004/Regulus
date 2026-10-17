@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use regulus_acp::{Error, Launch, Permissions, Session, SessionOptions};
+use regulus_acp::{Error, Launch, Permissions, Session, SessionOptions, SetupRequest};
 
 fn launch() -> Launch {
     Launch {
@@ -18,6 +18,7 @@ fn options(permissions: Permissions) -> SessionOptions {
         cwd: PathBuf::from("/tmp/regulus-acp-test"),
         permissions,
         meta: None,
+        setup: Vec::new(),
         startup: Duration::from_secs(10),
     }
 }
@@ -55,7 +56,10 @@ fn permission_requests_follow_the_policy() {
 #[test]
 fn an_agent_that_dies_mid_turn_closes_the_session() {
     let session = Session::start(launch(), options(Permissions::Reject)).unwrap();
-    assert!(session.prompt("exit").is_err());
+    match session.prompt("exit") {
+        Err(Error::Ended(reason)) => assert!(reason.contains("told to exit"), "{reason}"),
+        other => panic!("expected the agent's last words, got {other:?}"),
+    }
     assert!(session.prompt("hello").is_err());
 }
 
@@ -89,4 +93,36 @@ fn a_program_that_never_answers_times_out() {
         started.elapsed() < Duration::from_secs(5),
         "the dropped session must not wait for the agent"
     );
+}
+
+#[test]
+fn setup_requests_reach_the_agent_before_the_session_opens() {
+    let mut options = options(Permissions::Reject);
+    options.setup = vec![SetupRequest {
+        method: "providers/set".into(),
+        params: serde_json::json!({ "providerId": "main", "baseUrl": "http://127.0.0.1:1" }),
+    }];
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "claudeCode".into(),
+        serde_json::json!({ "options": { "model": "m1" } }),
+    );
+    options.meta = Some(meta);
+    let session = Session::start(launch(), options).unwrap();
+    let provider: serde_json::Value =
+        serde_json::from_str(&session.prompt("provider").unwrap().text).unwrap();
+    assert_eq!(provider["baseUrl"], "http://127.0.0.1:1");
+    let meta: serde_json::Value =
+        serde_json::from_str(&session.prompt("meta").unwrap().text).unwrap();
+    assert_eq!(meta["claudeCode"]["options"]["model"], "m1");
+}
+
+#[test]
+fn a_setup_request_the_agent_refuses_fails_the_start() {
+    let mut options = options(Permissions::Reject);
+    options.setup = vec![SetupRequest {
+        method: "nobody/knows".into(),
+        params: serde_json::Value::Null,
+    }];
+    assert!(Session::start(launch(), options).is_err());
 }

@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
     on_receive_request, AcpAgent, AcpAgentConfig, ActiveSession, Agent, Client, ConnectionTo,
-    SessionMessage,
+    SessionMessage, UntypedMessage,
 };
 use futures::channel::{mpsc as async_mpsc, oneshot};
 use futures::StreamExt;
@@ -54,6 +54,15 @@ pub enum Permissions {
     Reject,
 }
 
+/// A request sent after `initialize` and before `session/new`, for agent-specific setup
+/// such as `providers/set`. The channel does not know what it means.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetupRequest {
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionOptions {
     pub cwd: PathBuf,
@@ -62,6 +71,9 @@ pub struct SessionOptions {
     /// Sent as `_meta` of `session/new`: agent-specific options (docs/12-agents.md §3).
     #[serde(default)]
     pub meta: Option<Map<String, Value>>,
+    /// Sent in order before the session opens; the first one to fail fails the start.
+    #[serde(default)]
+    pub setup: Vec<SetupRequest>,
     /// How long the agent may take to start and open the session.
     pub startup: Duration,
 }
@@ -87,17 +99,46 @@ pub enum Error {
     Timeout(Duration),
     #[error("the agent session is closed")]
     Closed,
+    /// The agent process ended on its own; what it said on the way out.
+    #[error("the agent ended: {0}")]
+    Ended(String),
     #[error("{0}")]
     Protocol(String),
 }
 
 type Reply = mpsc::Sender<Result<Turn, Error>>;
 
+/// Why the session's thread finished, set before it is marked done. A prompt that loses
+/// its agent waits for it, so the agent's last words are not lost to a race.
+#[derive(Default)]
+struct Outcome {
+    state: Mutex<(bool, Option<String>)>,
+    done: Condvar,
+}
+
+impl Outcome {
+    fn finish(&self, reason: Option<String>) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        *state = (true, reason);
+        self.done.notify_all();
+    }
+
+    fn reason(&self) -> Option<String> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self
+            .done
+            .wait_while(state, |(done, _)| !*done)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.1.clone()
+    }
+}
+
 pub struct Session {
     id: String,
     agent: AgentInfo,
     prompts: async_mpsc::UnboundedSender<(String, Reply)>,
     cancel: Mutex<Option<oneshot::Sender<()>>>,
+    outcome: Arc<Outcome>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -109,16 +150,23 @@ impl Session {
         let (prompts, prompt_rx) = async_mpsc::unbounded();
         let (cancel, cancel_rx) = oneshot::channel();
         let agent = AcpAgent::new(config(&launch));
+        let outcome = Arc::new(Outcome::default());
+        let finished = outcome.clone();
         let thread = std::thread::Builder::new()
             .name("regulus-acp".into())
             .spawn(move || {
                 let failed = ready_tx.clone();
                 let run = Box::pin(run(agent, options, ready_tx, prompt_rx));
                 // Losing the race to `cancel` drops the connection, which kills the agent.
-                let outcome = futures::executor::block_on(futures::future::select(run, cancel_rx));
-                if let futures::future::Either::Left((Err(error), _)) = outcome {
-                    let _ = failed.send(Err(Error::Protocol(error.to_string())));
-                }
+                let result = futures::executor::block_on(futures::future::select(run, cancel_rx));
+                let reason = match result {
+                    futures::future::Either::Left((Err(error), _)) => {
+                        let _ = failed.send(Err(Error::Protocol(error.to_string())));
+                        Some(error.to_string())
+                    }
+                    _ => None,
+                };
+                finished.finish(reason);
             })
             .map_err(|e| Error::Protocol(format!("cannot start the session thread: {e}")))?;
         let mut session = Session {
@@ -126,6 +174,7 @@ impl Session {
             agent: AgentInfo::default(),
             prompts,
             cancel: Mutex::new(Some(cancel)),
+            outcome,
             thread: Some(thread),
         };
         match ready_rx.recv_timeout(startup) {
@@ -149,12 +198,14 @@ impl Session {
     }
 
     /// Sends a prompt and waits for the end of the turn. Prompts to one session queue up.
+    /// If the agent dies meanwhile, the error carries what it said on the way out.
     pub fn prompt(&self, text: &str) -> Result<Turn, Error> {
         let (reply, answer) = mpsc::channel();
-        self.prompts
-            .unbounded_send((text.to_string(), reply))
-            .map_err(|_| Error::Closed)?;
-        answer.recv().map_err(|_| Error::Closed)?
+        let sent = self.prompts.unbounded_send((text.to_string(), reply));
+        match sent.ok().and_then(|()| answer.recv().ok()) {
+            Some(turn) => turn,
+            None => Err(self.outcome.reason().map_or(Error::Closed, Error::Ended)),
+        }
     }
 
     /// Kills the agent. A prompt waiting on it returns `Closed`.
@@ -249,6 +300,10 @@ async fn run(
                     version: i.version,
                 })
                 .unwrap_or_default();
+            for setup in &options.setup {
+                let request = UntypedMessage::new(&setup.method, &setup.params)?;
+                connection.send_request(request).block_task().await?;
+            }
             let request = NewSessionRequest::new(options.cwd.clone()).meta(options.meta.clone());
             let mut session = connection
                 .build_session_from(request)

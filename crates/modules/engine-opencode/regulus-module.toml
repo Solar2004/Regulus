@@ -21,7 +21,15 @@ name = "opencode"
   type    = "text"
   default = ""
 
-  # OPENCODE_CONFIG_DIR for this agent. Empty: the user's own opencode setup.
+  # user: config_dir, or the user's own setup if empty. isolated: a profile with only what
+  # is wired in, kept per node by Regulus unless config_dir says where (docs/12-agents.md §6.3).
+  [[node.field]]
+  id      = "profile"
+  type    = "select"
+  default = "user"
+  options = ["user", "isolated"]
+
+  # OPENCODE_CONFIG_DIR for this agent, Empty: see profile.
   [[node.field]]
   id      = "config_dir"
   type    = "text"

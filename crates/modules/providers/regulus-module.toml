@@ -1,0 +1,49 @@
+[module]
+id             = "regulus/providers@0.1.0"
+name           = "Providers"
+requires_proto = "^1.3"
+
+# One generic node. OpenRouter, Anthropic, z.ai or a local proxy are templates of it,
+# not code: adding a provider recompiles nothing (docs/12-agents.md §6.2).
+[[node]]
+type = "provider"
+name = "AI provider"
+
+  [[node.port]]
+  id         = "endpoint"
+  name       = "endpoint"
+  capability = "llm.endpoint@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The protocol the endpoint speaks. Engines say which ones they accept.
+  [[node.field]]
+  id      = "protocol"
+  type    = "select"
+  default = "anthropic"
+  options = ["anthropic", "openai", "bedrock", "vertex"]
+
+  # As the protocol's own clients take it: anthropic without /v1, openai with /v1.
+  [[node.field]]
+  id      = "base_url"
+  type    = "text"
+  default = ""
+
+  # The key, as a reference: secret:<name>. Empty: no credential (a local proxy).
+  [[node.field]]
+  id      = "credential"
+  type    = "text"
+  default = ""
+
+  # How the credential is sent.
+  [[node.field]]
+  id      = "auth"
+  type    = "select"
+  default = "bearer"
+  options = ["bearer", "x-api-key"]
+
+  # Model ids, comma separated; the first is the default. Empty: the engine's choice.
+  [[node.field]]
+  id      = "model"
+  type    = "text"
+  default = ""
