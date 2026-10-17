@@ -40,7 +40,7 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 |---|---|---|---|
 | RPC servidor y cliente | **`jsonrpsee`** | `0.26.1` (upd 2026-09-30) | JSON-RPC 2.0 con WebSocket nativo, servidor **y** cliente. Cubre los dos lados del límite externo. |
 | PTY | **`portable-pty`** | `0.9.0` · 18M descargas | De wezterm. Multiplataforma incluido ConPTY en Windows. |
-| Agentes | **`agent-client-protocol`** | `2.2.0` (upd 2026-09-18) | Ver [`old/07-ecosystem.md`](old/07-ecosystem.md). Da 45 agentes sin escribir integraciones. |
+| Agentes | **`agent-client-protocol`** | `3.4.0` (upd 2026-10-16) | Canal de los motores ([`12-agents.md`](12-agents.md) §4). 43 agentes sin escribir integraciones. |
 | MCP | **`rmcp`** | `3.5.0` (upd 2026-09-28) · 31M descargas | SDK oficial de MCP para Rust. Sirve UC-4 y UC-5. |
 | Store | **`rusqlite`** | `0.39` (bundled) | Lo mismo que ya usa hcom, así el código absorbido encaja. |
 | Async | **`tokio`** | `1.x` | Lo exigen `jsonrpsee` y `rmcp`. |

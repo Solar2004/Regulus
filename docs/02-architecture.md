@@ -254,7 +254,7 @@ Resumen de lo que importa saber desde arquitectura:
 |---|---|
 | RPC del límite externo | `jsonrpsee` (JSON-RPC 2.0 sobre WebSocket) |
 | PTY | `portable-pty`, en el proceso del core (módulo procesos) |
-| Integración con agentes | `agent-client-protocol` — ver [`old/07-ecosystem.md`](old/07-ecosystem.md) |
+| Integración con agentes | `agent-client-protocol` — ver [`12-agents.md`](12-agents.md) |
 | MCP | `rmcp` |
 | Store | `rusqlite` |
 

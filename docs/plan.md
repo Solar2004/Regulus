@@ -38,12 +38,10 @@ Se enchufan después, por el mismo camino que cualquier otro módulo:
 
 Más adelante, también como módulos: roles, familias, MCP aislado, memoria.
 
-❓ **ABIERTO — el orden de los módulos.** Depende de una pregunta a Alexander: ¿los
-agentes son **CLIs en terminal** (Claude Code, opencode por hcom) o **agentes propios** que
-llaman a la API?
-
-- CLIs → Terminal → Comunicación → el resto.
-- Propios → Proveedores → Agente → Comunicación.
+✅ **DECIDIDO (2026-10-17) — el orden de los módulos.** Regulus no tiene agentes propios:
+el nodo Agente es una caja y el CLI (Claude Code, opencode…) es su **motor**, cada uno
+un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación. Detalle en
+[`12-agents.md`](12-agents.md).
 
 ---
 
@@ -54,7 +52,7 @@ llaman a la API?
 | 1 | Mock + canvas de solo lectura (A'/B') | — | ✅ hecho |
 | 2 | Modelo de composición aprobado y aplicado a `02`/`03` | — | ✅ hecho |
 | 3 | **La base**: `regulus-proto`, `regulus-core`, `regulus serve` con `hello` y los métodos del mock | 2-3 días | ✅ hecho (2026-10-17) |
-| 4 | Primer módulo (según §2) + módulo `hello` + **matriz de ablación** | 1-2 días | `hello` y la matriz hechos; falta el primer módulo |
+| 4 | Primer módulo (caja Agente + motores, `12-agents.md` §5) + módulo `hello` + **matriz de ablación** | 1-2 días | `hello` y la matriz hechos; siguiente: Agente |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar | ~1 sem | — |
 | 6 | Vista Operar con ejecuciones reales | ~1 sem | — |
 
