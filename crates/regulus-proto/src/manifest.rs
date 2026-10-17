@@ -49,11 +49,31 @@ pub struct Field {
     pub field_type: String,
     #[serde(default)]
     pub default: Option<Value>,
+    /// Allowed values, for `select`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<Value>,
 }
 
 impl NodeType {
     pub fn field(&self, id: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.id == id)
+    }
+}
+
+impl Manifest {
+    pub fn node_type(&self, node_type: &str) -> Option<&NodeType> {
+        self.nodes.iter().find(|node| node.node_type == node_type)
+    }
+
+    /// A node's setting: its own value if the profile sets one, otherwise the default
+    /// the manifest declares for that field.
+    pub fn setting<'a>(&'a self, node: &'a crate::Node, field: &str) -> Option<&'a Value> {
+        node.config.get(field).or_else(|| {
+            self.node_type(&node.node_type)?
+                .field(field)?
+                .default
+                .as_ref()
+        })
     }
 }
 

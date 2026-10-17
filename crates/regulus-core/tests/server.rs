@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use jsonrpsee::core::client::{ClientT, Error};
 use jsonrpsee::core::params::ObjectParams;
@@ -93,7 +92,7 @@ async fn start() -> Harness {
     ];
     let (core, warnings) = assemble(&config, modules);
     assert!(warnings.is_empty(), "{warnings:?}");
-    let running = serve(&config, Arc::new(core)).await.unwrap();
+    let running = serve(&config, core).await.unwrap();
     let port = std::fs::read_to_string(config.port_path()).unwrap();
     assert_eq!(port, running.addr.port().to_string());
     let token = std::fs::read_to_string(config.token_path()).unwrap();

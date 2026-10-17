@@ -2,7 +2,6 @@
 //! command except `serve` goes over the socket; none of them reaches into the core.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
@@ -144,7 +143,6 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
     for warning in warnings {
         eprintln!("regulus: {warning}");
     }
-    let core = Arc::new(core);
     let running = regulus_core::serve(&config, core.clone()).await?;
     eprintln!(
         "regulus: serving ws://{} (proto {PROTOCOL}, token in {}) in {} ms",
@@ -154,7 +152,7 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
     );
     tokio::signal::ctrl_c().await?;
     running.stop().await;
-    core.registry().shutdown();
+    core.shutdown();
     Ok(())
 }
 

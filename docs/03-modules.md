@@ -118,19 +118,21 @@ Cuatro métodos. Nada más. Tres propiedades que esto compra:
 
 ```rust
 impl ModuleCtx {
-    /// Lo conectado por cable "usa" a esa entrada. None si no hay cable.
-    pub fn resolve(&self, port: &str) -> Option<CapabilityHandle>;
+    /// Lo conectado por cable "usa" a esa entrada de ese nodo, en esa ejecución.
+    pub fn resolve(&self, node: &NodeRef, port: &str) -> Vec<Endpoint>;
 
-    /// Publicar en el bus. Los suscriptores son desconocidos para quien publica.
-    pub fn emit(&self, event: Event);
+    /// Llamar al nodo del otro extremo. Le llega como `NodeCall` con su configuración.
+    pub fn call(&self, to: &Endpoint, method: &str, args: Value) -> Result<Value>;
 
-    /// Suscribirse a eventos por patrón.
-    pub fn subscribe(&self, pattern: &str) -> EventStream;
-
-    /// El namespace propio del módulo en el store.
-    pub fn store(&self) -> StoreHandle;
+    // Llegan con el primer módulo que los pida:
+    // emit / subscribe (bus) y store.
 }
 ```
+
+🔶 `resolve` recibe el nodo porque un módulo atiende a todos sus nodos de todas las
+ejecuciones con una sola instancia. Los métodos de una capacidad (p. ej. los de
+`agent.engine@1`) **no** van en `methods`: varios módulos los sirven a la vez y solo se
+alcanzan a través de un `Endpoint`, nunca por nombre global.
 
 **Si un módulo necesita algo que `ModuleCtx` no da, es una conversación de diseño, no un
 `pub` nuevo.** Esta superficie es deliberadamente pequeña: cada método que se le añade
@@ -160,16 +162,31 @@ match result {
 Un módulo que entra en pánico pasa a estado `Broken` y la UI lo muestra como tal
 (§3, y [`04-client.md` §3](04-client.md)). El host no cae.
 
-❓ **ABIERTO** — **Cómo ejecuta el core un nodo**: instanciarlo por ejecución, entregarle
-los eventos de sus cables "luego". Se concreta al escribir la base (fase E',
-[`plan.md` §3](plan.md)). Si exige cambiar el trait, se cambia **aquí
-primero**.
+🔶 **PROPUESTO** (2026-10-17, lo pide la caja Agente, `12-agents.md`) — **Cómo ejecuta el
+core un nodo.** El trait no cambia.
 
-❓ **ABIERTO** — Mecanismo de registro de módulos: a mano, `inventory`, `linkme` o
-`abi_stable`. Se cierra en el paso 3 de [`plan.md`](plan.md). Criterios: ergonomía al
-añadir un módulo, si permite la ablación de §4, y compatibilidad con `catch_unwind`.
-Instalar es **recompilar automático** (`11` §10): `regulus module install X` añade el
-crate y recompila. Encaja con el registro a mano: la línea la escribe el comando.
+1. `execution.start { profile_id, workflow_id? }` copia el workflow (la ejecución no ve
+   cambios posteriores del perfil) y llama a `node/start` en cada nodo de módulo, en
+   orden de cables "usa": primero lo que se usa, luego quien lo usa. `execution.stop`
+   llama a `node/stop` en orden inverso.
+2. `node/start` y `node/stop` son nombres reservados: el core los envía al módulo dueño
+   del nodo y no se pueden declarar en `methods`. Un módulo que no los implementa
+   (`UnknownMethod`) simplemente no tiene ciclo de vida.
+3. Toda llamada dirigida a un nodo lleva `NodeCall { execution_id, node, args }`: el nodo
+   con su configuración y los argumentos de quien llama.
+4. Un nodo con una entrada `required` sin nada utilizable detrás (nada conectado, o lo
+   conectado es de un módulo que no está) **no arranca**: queda en `disabled` de la
+   ejecución con las entradas que le faltan, y lo mismo quien dependa de él. El resto de
+   la ejecución sigue (§1.1).
+5. Si un `node/start` falla, la ejecución pasa a `failed` con el motivo y se paran los
+   nodos ya arrancados.
+
+Los cables "luego" llegan con el bus; este paso no los necesita.
+
+✅ **DECIDIDO** (#10, 2026-10-17) — Registro **a mano**: una línea por módulo en
+`crates/regulus-cli/src/modules.rs`. Instalar es **recompilar automático** (`11` §10):
+`regulus module install X` añade el crate y escribe esa línea. `inventory` y `linkme`
+quedan descartados porque pelean con la ablación (§4).
 
 ---
 

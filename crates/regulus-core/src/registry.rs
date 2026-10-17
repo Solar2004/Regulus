@@ -88,6 +88,11 @@ impl Registry {
     /// version). A module that is incompatible, conflicts or fails in `init` stays listed
     /// with its state; it never takes the host down.
     pub fn load(modules: Vec<Box<dyn Module>>, without: &[String]) -> Self {
+        Self::load_with(modules, without, &ModuleCtx::default())
+    }
+
+    /// Like [`Registry::load`], handing `ctx` to every module's `init`.
+    pub fn load_with(modules: Vec<Box<dyn Module>>, without: &[String], ctx: &ModuleCtx) -> Self {
         let mut registry = Registry::default();
         for module in modules {
             let manifest = match catch_unwind(AssertUnwindSafe(|| module.manifest().clone())) {
@@ -103,12 +108,12 @@ impl Registry {
             if excluded(&manifest.module.id, without) {
                 continue;
             }
-            registry.admit(manifest, module);
+            registry.admit(manifest, module, ctx);
         }
         registry
     }
 
-    fn admit(&mut self, manifest: Manifest, mut module: Box<dyn Module>) {
+    fn admit(&mut self, manifest: Manifest, mut module: Box<dyn Module>, ctx: &ModuleCtx) {
         let index = self.entries.len();
         let state = if let Some(requires) = manifest
             .module
@@ -120,17 +125,16 @@ impl Registry {
                 requires: requires.into(),
                 have: PROTOCOL.into(),
             }
-        } else if let Some(taken) = manifest
-            .module
-            .methods
-            .iter()
-            .find(|m| method::CORE.contains(&m.as_str()) || self.routes.contains_key(*m))
-        {
+        } else if let Some(taken) = manifest.module.methods.iter().find(|m| {
+            method::CORE.contains(&m.as_str())
+                || [method::NODE_START, method::NODE_STOP].contains(&m.as_str())
+                || self.routes.contains_key(*m)
+        }) {
             ModuleState::Broken {
                 reason: format!("method `{taken}` is already served by the core or another module"),
             }
         } else {
-            match catch_unwind(AssertUnwindSafe(|| module.init(&ModuleCtx::default()))) {
+            match catch_unwind(AssertUnwindSafe(|| module.init(ctx))) {
                 Ok(Ok(())) => {
                     for name in &manifest.module.methods {
                         self.routes.insert(name.clone(), index);
@@ -155,6 +159,32 @@ impl Registry {
     /// Calls the module that declared `name`, containing any panic at this edge.
     pub fn call(&self, name: &str, params: Value) -> Result<Value, CallError> {
         let entry = &self.entries[*self.routes.get(name).ok_or(CallError::NotFound)?];
+        Self::invoke(entry, name, params)
+    }
+
+    /// Calls a method on one module chosen by id (any version if the exact one is not
+    /// loaded): how the core reaches the owner of a node. The method does not need to be
+    /// declared in `methods`.
+    pub fn call_module(
+        &self,
+        module_id: &str,
+        name: &str,
+        params: Value,
+    ) -> Result<Value, CallError> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|e| e.manifest.module.id == module_id)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|e| base_id(&e.manifest.module.id) == base_id(module_id))
+            })
+            .ok_or(CallError::NotFound)?;
+        Self::invoke(entry, name, params)
+    }
+
+    fn invoke(entry: &Entry, name: &str, params: Value) -> Result<Value, CallError> {
         let id = entry.manifest.module.id.clone();
         let unavailable = |state: &ModuleState| CallError::Unavailable {
             module: id.clone(),

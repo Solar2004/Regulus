@@ -214,18 +214,20 @@ fn methods(core: Arc<Core>) -> Result<RpcModule<Core>, jsonrpsee::server::Regist
     rpc.register_method(method::HELLO, |params, _, extensions| {
         hello(params, extensions)
     })?;
+    // Module code may block; whatever reaches a module runs on the blocking pool, never on
+    // the reactor. That is every module method plus starting and stopping executions.
+    let reaches_modules = [method::EXECUTION_START, method::EXECUTION_STOP];
     for name in method::CORE
         .iter()
         .copied()
-        .filter(|name| *name != method::HELLO)
+        .filter(|name| *name != method::HELLO && !reaches_modules.contains(name))
     {
         rpc.register_method(name, move |params, core, extensions| {
             negotiated(extensions)?;
             core.dispatch(name, object(params)?)
         })?;
     }
-    // Module code may block; it runs on the blocking pool, never on the reactor.
-    for name in module_methods {
+    for name in module_methods.into_iter().chain(reaches_modules) {
         rpc.register_blocking_method(name, move |params, core, extensions| {
             negotiated(&extensions)?;
             core.dispatch(name, object(params)?)

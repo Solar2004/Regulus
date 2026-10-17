@@ -5,8 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`.
-pub const PROTOCOL: &str = "1.1";
+/// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`;
+/// 1.2 adds `execution.start` and `execution.stop`.
+pub const PROTOCOL: &str = "1.2";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -15,6 +16,8 @@ pub mod method {
     pub const PROFILE_CHECK: &str = "profile.check";
     pub const MODULE_LIST: &str = "module.list";
     pub const EXECUTION_LIST: &str = "execution.list";
+    pub const EXECUTION_START: &str = "execution.start";
+    pub const EXECUTION_STOP: &str = "execution.stop";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -24,7 +27,14 @@ pub mod method {
         PROFILE_CHECK,
         MODULE_LIST,
         EXECUTION_LIST,
+        EXECUTION_START,
+        EXECUTION_STOP,
     ];
+
+    /// Sent by the core to the module that owns a node, never by a client. A module may
+    /// not declare them; one that does not implement them has no lifecycle.
+    pub const NODE_START: &str = "node/start";
+    pub const NODE_STOP: &str = "node/stop";
 }
 
 /// Error codes beyond the JSON-RPC 2.0 standard ones.
@@ -63,6 +73,25 @@ pub struct ProjectFilter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdParams {
     pub id: String,
+}
+
+/// `execution.start`: no `workflow_id` means the profile's main workflow.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionStartParams {
+    pub profile_id: String,
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+}
+
+/// What a module receives when a call is addressed to one of its nodes: `node/start`,
+/// `node/stop`, or a capability method reached through a wire. `node` carries the node's
+/// configuration as it was when the execution started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeCall {
+    pub execution_id: String,
+    pub node: crate::Node,
+    #[serde(default)]
+    pub args: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

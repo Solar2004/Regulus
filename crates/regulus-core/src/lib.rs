@@ -16,17 +16,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub use config::Config;
-pub use module::{parse_manifest, Module, ModuleCtx, ModuleError};
+pub use module::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 pub use profiles::ProfileStore;
 pub use registry::Registry;
 pub use service::{Core, RpcError};
 
 /// Builds a core from its configuration and the modules its host links in. Returns the
 /// warnings found while loading, which never stop the start.
-pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Core, Vec<String>) {
-    let registry = Registry::load(modules, &config.modules.without);
+pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
     let (profiles, warnings) = ProfileStore::load(&config.profiles.paths);
-    (Core::new(registry, profiles), warnings)
+    (
+        Core::build(modules, &config.modules.without, profiles),
+        warnings,
+    )
 }
 
 /// Starts serving: creates the home directory, the token and the default profiles

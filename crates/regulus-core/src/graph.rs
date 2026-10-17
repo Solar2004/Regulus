@@ -224,3 +224,51 @@ fn check_workflow(
         }
     }
 }
+
+/// The order in which a workflow's nodes start: whatever a node uses over a "uses" wire
+/// starts before it. Nodes caught in a cycle keep their declared order, after the rest.
+pub fn start_order(workflow: &Workflow) -> Vec<&regulus_proto::Node> {
+    let index: HashMap<&str, usize> = workflow
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (node.id.as_str(), i))
+        .collect();
+    let mut waiting = vec![0usize; workflow.nodes.len()];
+    let mut users: Vec<Vec<usize>> = vec![Vec::new(); workflow.nodes.len()];
+    for wire in workflow
+        .wires
+        .iter()
+        .filter(|w| w.kind == regulus_proto::WireKind::Uses)
+    {
+        let (Some(&from), Some(&to)) = (
+            index.get(wire.from.node_id.as_str()),
+            index.get(wire.to.node_id.as_str()),
+        ) else {
+            continue;
+        };
+        if from != to {
+            waiting[to] += 1;
+            users[from].push(to);
+        }
+    }
+    let mut order = Vec::with_capacity(workflow.nodes.len());
+    let mut done = vec![false; workflow.nodes.len()];
+    let mut progress = true;
+    while progress {
+        progress = false;
+        for i in 0..workflow.nodes.len() {
+            if done[i] || waiting[i] > 0 {
+                continue;
+            }
+            done[i] = true;
+            progress = true;
+            order.push(i);
+            for &user in &users[i] {
+                waiting[user] -= 1;
+            }
+        }
+    }
+    order.extend((0..workflow.nodes.len()).filter(|&i| !done[i]));
+    order.into_iter().map(|i| &workflow.nodes[i]).collect()
+}

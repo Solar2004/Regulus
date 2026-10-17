@@ -186,6 +186,17 @@ pub struct Execution {
     pub workflow_id: String,
     pub project_id: Option<String>,
     pub state: ExecutionState,
+    /// Nodes left off because a required input has nothing usable wired into it. The
+    /// rest of the execution runs without them (docs/03-modules.md §1.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<DisabledNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisabledNode {
+    pub node_id: String,
+    /// The required input ports with nothing usable behind them.
+    pub missing: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
