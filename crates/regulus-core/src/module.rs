@@ -1,5 +1,6 @@
 //! The internal boundary: the contract every module fulfils (docs/03-modules.md §2).
 
+use std::path::PathBuf;
 use std::sync::Weak;
 
 use regulus_proto::Manifest;
@@ -45,11 +46,24 @@ impl Endpoint {
 #[derive(Debug, Clone, Default)]
 pub struct ModuleCtx {
     core: Weak<Core>,
+    /// The module this context was handed to: what scopes its directories.
+    module_id: String,
 }
 
 impl ModuleCtx {
     pub(crate) fn new(core: Weak<Core>) -> Self {
-        Self { core }
+        Self {
+            core,
+            module_id: String::new(),
+        }
+    }
+
+    /// The same core, seen by one module.
+    pub(crate) fn for_module(&self, module_id: &str) -> Self {
+        Self {
+            core: self.core.clone(),
+            module_id: module_id.into(),
+        }
     }
 
     fn core(&self) -> Result<std::sync::Arc<Core>, ModuleError> {
@@ -70,6 +84,13 @@ impl ModuleCtx {
     /// configuration and `args`.
     pub fn call(&self, to: &Endpoint, method: &str, args: Value) -> Result<Value, ModuleError> {
         self.core()?.call_node(to, method, args)
+    }
+
+    /// A directory of this module's own for `node`, created if missing. It belongs to the
+    /// node's project, workflow and id, not to the execution, so it outlives executions
+    /// (docs/03-modules.md §2.1).
+    pub fn node_dir(&self, node: &NodeRef) -> Result<PathBuf, ModuleError> {
+        self.core()?.node_dir(&self.module_id, node)
     }
 }
 

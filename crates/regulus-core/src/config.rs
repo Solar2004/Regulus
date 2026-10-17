@@ -8,12 +8,17 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::secrets::{Secrets, Source};
+
 pub const HOME_ENV: &str = "REGULUS_HOME";
 const HOME_DIR: &str = ".regulus";
 const CONFIG_FILE: &str = "config.toml";
 const TOKEN_FILE: &str = "token";
 const PORT_FILE: &str = "port";
 const PROFILES_DIR: &str = "profiles";
+const DATA_DIR: &str = "data";
+const SECRETS_FILE: &str = "secrets.toml";
+const FILE_SOURCE: &str = "file";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -24,6 +29,8 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("secrets.sources: unknown source `{0}` (known: file)")]
+    UnknownSecretSource(String),
     #[error("server.host = {0} is not a loopback address; binding beyond 127.0.0.1 needs an explicit decision (docs/06-stack.md §4)")]
     NotLoopback(IpAddr),
 }
@@ -65,6 +72,40 @@ pub struct ModulesConfig {
     pub without: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecretsConfig {
+    /// Where secrets are looked up, in order; new ones go to the first. Today: `file`.
+    pub sources: Vec<String>,
+    /// The `file` source. Relative paths are resolved against the home directory.
+    pub file: PathBuf,
+}
+
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self {
+            sources: vec![FILE_SOURCE.into()],
+            file: PathBuf::from(SECRETS_FILE),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DataConfig {
+    /// Root of the directories modules keep per node (`ModuleCtx::node_dir`). Relative
+    /// paths are resolved against the home directory.
+    pub dir: PathBuf,
+}
+
+impl Default for DataConfig {
+    fn default() -> Self {
+        Self {
+            dir: PathBuf::from(DATA_DIR),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -73,6 +114,8 @@ pub struct Config {
     pub server: ServerConfig,
     pub profiles: ProfilesConfig,
     pub modules: ModulesConfig,
+    pub secrets: SecretsConfig,
+    pub data: DataConfig,
 }
 
 /// `REGULUS_HOME`, or `~/.regulus`.
@@ -108,7 +151,25 @@ impl Config {
         if !self.server.host.is_loopback() {
             return Err(ConfigError::NotLoopback(self.server.host));
         }
+        if let Some(unknown) = self.secrets.sources.iter().find(|s| *s != FILE_SOURCE) {
+            return Err(ConfigError::UnknownSecretSource(unknown.clone()));
+        }
         Ok(())
+    }
+
+    /// The secret store the configured sources describe.
+    pub fn secrets(&self) -> Secrets {
+        let sources = self
+            .secrets
+            .sources
+            .iter()
+            .map(|_| Source::File(self.home.join(&self.secrets.file)))
+            .collect();
+        Secrets::new(sources)
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        self.home.join(&self.data.dir)
     }
 
     pub fn token_path(&self) -> PathBuf {

@@ -1,12 +1,13 @@
 //! What the core answers, independent of the transport.
 
 use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use regulus_proto::{
     code, method, Direction, DisabledNode, Execution, ExecutionStartParams, ExecutionState,
-    IdParams, NodeCall, ProjectFilter, WireKind, Workflow,
+    IdParams, NameParams, Node, NodeCall, ProjectFilter, SecretSetParams, WireKind, Workflow,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -16,6 +17,7 @@ use crate::graph::{check_profile, start_order};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
 use crate::registry::{CallError, Registry};
+use crate::secrets::{SecretError, Secrets};
 
 /// JSON-RPC "method not found".
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -59,6 +61,40 @@ impl From<CallError> for RpcError {
     }
 }
 
+impl From<SecretError> for RpcError {
+    fn from(error: SecretError) -> Self {
+        let code = match error {
+            SecretError::InvalidName(_) | SecretError::Missing(_) => code::INVALID_PARAMS,
+            SecretError::ReadOnly | SecretError::Store { .. } => code::MODULE_FAILED,
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+/// What the core keeps on disk for the modules: the secrets it resolves for them and the
+/// root of their per-node directories. Without a data directory, `node_dir` fails.
+#[derive(Debug, Clone, Default)]
+pub struct Storage {
+    pub secrets: Secrets,
+    pub data_dir: Option<PathBuf>,
+}
+
+/// Directories of nodes outside any project.
+const GLOBAL_DATA: &str = "global";
+/// Directories of nodes in a project, one per project id.
+const PROJECTS_DATA: &str = "projects";
+
+/// One plain path component: an id can never climb out of the data directory.
+fn path_segment(id: &str) -> Result<&str, ModuleError> {
+    let mut components = Path::new(id).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) if !id.contains('\\') => Ok(id),
+        _ => Err(ModuleError::Failed(format!(
+            "`{id}` cannot name a directory"
+        ))),
+    }
+}
+
 /// A running copy of a workflow. The workflow is copied when the execution starts, so
 /// later edits to the profile do not reach it.
 struct Live {
@@ -76,6 +112,7 @@ struct Live {
 pub struct Core {
     registry: Registry,
     profiles: ProfileStore,
+    storage: Storage,
     executions: Mutex<Vec<Live>>,
     next_execution: AtomicU64,
 }
@@ -97,9 +134,20 @@ impl Core {
         without: &[String],
         profiles: ProfileStore,
     ) -> Arc<Self> {
+        Self::build_with(modules, without, profiles, Storage::default())
+    }
+
+    /// [`Core::build`] with secrets and a data directory for the modules.
+    pub fn build_with(
+        modules: Vec<Box<dyn Module>>,
+        without: &[String],
+        profiles: ProfileStore,
+        storage: Storage,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|core| Self {
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
             profiles,
+            storage,
             executions: Mutex::default(),
             next_execution: AtomicU64::new(1),
         })
@@ -148,6 +196,22 @@ impl Core {
                     self.stop(&params.id)
                         .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?,
                 )
+            }
+            method::SECRET_SET => {
+                let params: SecretSetParams = parse(params)?;
+                self.storage.secrets.set(&params.name, &params.value)?;
+                Ok(Value::Null)
+            }
+            method::SECRET_LIST => json(self.storage.secrets.names()?),
+            method::SECRET_DELETE => {
+                let params: NameParams = parse(params)?;
+                if !self.storage.secrets.delete(&params.name)? {
+                    return Err(RpcError::invalid_params(format!(
+                        "secret `{}` is not set",
+                        params.name
+                    )));
+                }
+                Ok(Value::Null)
             }
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
@@ -276,16 +340,20 @@ impl Core {
                 live.active.insert(node.id.clone());
                 live.started.push(node_ref);
             }
-            let call = NodeCall {
-                execution_id: id.clone(),
-                node: node.clone(),
-                args: Value::Null,
+            let started = match self.node_call(&id, node, Value::Null) {
+                Err(error) => Err(error.to_string()),
+                Ok(call) => {
+                    match self
+                        .registry
+                        .call_module(module_id, method::NODE_START, json(call)?)
+                    {
+                        Ok(_) | Err(CallError::Module(ModuleError::UnknownMethod(_))) => Ok(()),
+                        Err(error) => Err(error.to_string()),
+                    }
+                }
             };
-            match self
-                .registry
-                .call_module(module_id, method::NODE_START, json(call)?)
-            {
-                Ok(_) | Err(CallError::Module(ModuleError::UnknownMethod(_))) => {}
+            match started {
+                Ok(()) => {}
                 Err(error) => {
                     self.stop(&id);
                     let reason = format!("node `{}` failed to start: {error}", node.id);
@@ -322,11 +390,14 @@ impl Core {
             let Some(module_id) = node.module_id.as_deref() else {
                 continue;
             };
-            let call = NodeCall {
-                execution_id: execution_id.into(),
-                node: node.clone(),
-                args: Value::Null,
-            };
+            // A secret gone since the start must not keep a node from stopping.
+            let call = self
+                .node_call(execution_id, node, Value::Null)
+                .unwrap_or_else(|_| NodeCall {
+                    execution_id: execution_id.into(),
+                    node: node.clone(),
+                    args: Value::Null,
+                });
             let Ok(params) = serde_json::to_value(call) else {
                 continue;
             };
@@ -357,6 +428,63 @@ impl Core {
             self.stop(&id);
         }
         self.registry.shutdown();
+    }
+
+    /// What a module gets for one of its nodes: the node with its secrets resolved.
+    fn node_call(
+        &self,
+        execution_id: &str,
+        node: &Node,
+        args: Value,
+    ) -> Result<NodeCall, SecretError> {
+        let mut node = node.clone();
+        for value in node.config.values_mut() {
+            self.storage.secrets.resolve(value)?;
+        }
+        Ok(NodeCall {
+            execution_id: execution_id.into(),
+            node,
+            args,
+        })
+    }
+
+    /// `<data>/{global | projects/<project>}/<module>/<workflow>/<node>`
+    /// (`ModuleCtx::node_dir`). The module id loses its version: an upgrade keeps the data.
+    pub(crate) fn node_dir(&self, module_id: &str, node: &NodeRef) -> Result<PathBuf, ModuleError> {
+        let root = self
+            .storage
+            .data_dir
+            .as_ref()
+            .ok_or_else(|| ModuleError::Failed("this core has no data directory".into()))?;
+        let (workflow_id, project_id) = {
+            let executions = self.executions();
+            let live = executions
+                .iter()
+                .find(|live| live.execution.id == node.execution_id)
+                .ok_or_else(|| {
+                    ModuleError::Failed(format!("execution `{}` is gone", node.execution_id))
+                })?;
+            (
+                live.execution.workflow_id.clone(),
+                live.execution.project_id.clone(),
+            )
+        };
+        let mut dir = match &project_id {
+            None => root.join(GLOBAL_DATA),
+            Some(project) => root.join(PROJECTS_DATA).join(path_segment(project)?),
+        };
+        let module = module_id.split('@').next().unwrap_or_default();
+        if module.is_empty() {
+            return Err(ModuleError::Failed("no module behind this context".into()));
+        }
+        for part in module.split('/') {
+            dir.push(path_segment(part)?);
+        }
+        dir.push(path_segment(&workflow_id)?);
+        dir.push(path_segment(&node.node_id)?);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ModuleError::Failed(format!("cannot create {}: {e}", dir.display())))?;
+        Ok(dir)
     }
 
     /// What is wired over "uses" into `port` of a node (`ModuleCtx::resolve`).
@@ -406,11 +534,9 @@ impl Core {
             .iter()
             .find(|n| n.id == to.node.node_id)
             .ok_or_else(|| ModuleError::Failed(format!("node `{}` is gone", to.node.node_id)))?;
-        let call = NodeCall {
-            execution_id: to.node.execution_id.clone(),
-            node: node.clone(),
-            args,
-        };
+        let call = self
+            .node_call(&to.node.execution_id, node, args)
+            .map_err(|e| ModuleError::Failed(e.to_string()))?;
         let params = serde_json::to_value(call).map_err(|e| ModuleError::Failed(e.to_string()))?;
         match self.registry.call_module(&to.module_id, name, params) {
             Ok(value) => Ok(value),

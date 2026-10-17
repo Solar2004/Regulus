@@ -1,7 +1,9 @@
 //! `regulus`: runs the core, and talks to a running one like any other client. Every
 //! command except `serve` goes over the socket; none of them reaches into the core.
 
+use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -81,6 +83,22 @@ enum Command {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Secrets that workflows name as `secret:<name>`.
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretCommand {
+    /// Store a secret. The value is read from stdin, never from the command line, so it
+    /// stays out of the shell history.
+    Set { name: String },
+    /// List secret names. Values are never shown.
+    Ls,
+    /// Delete a secret.
+    Rm { name: String },
 }
 
 #[derive(Subcommand)]
@@ -200,7 +218,55 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Secret { command } => match command {
+            SecretCommand::Set { name } => {
+                let value = read_secret(&name)?;
+                let params = serde_json::json!({ "name": name, "value": value });
+                let _: Value = client.request(method::SECRET_SET, params).await?;
+                Ok(())
+            }
+            SecretCommand::Ls => {
+                let names: Vec<String> = client.request(method::SECRET_LIST, Value::Null).await?;
+                for name in names {
+                    println!("{name}");
+                }
+                Ok(())
+            }
+            SecretCommand::Rm { name } => {
+                let params = serde_json::json!({ "name": name });
+                let _: Value = client.request(method::SECRET_DELETE, params).await?;
+                Ok(())
+            }
+        },
     }
+}
+
+/// One line from stdin. On a terminal, asks for it and hides what is typed.
+fn read_secret(name: &str) -> Result<String> {
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    let echo = |on: bool| {
+        let _ = std::process::Command::new("stty")
+            .arg(if on { "echo" } else { "-echo" })
+            .stdin(Stdio::inherit())
+            .status();
+    };
+    if terminal {
+        eprint!("value for `{name}`: ");
+        echo(false);
+    }
+    let mut line = String::new();
+    let read = stdin.lock().read_line(&mut line);
+    if terminal {
+        echo(true);
+        eprintln!();
+    }
+    read.context("cannot read the secret from stdin")?;
+    let value = line.trim_end_matches(['\n', '\r']).to_string();
+    if value.is_empty() {
+        bail!("empty secret: nothing stored");
+    }
+    Ok(value)
 }
 
 fn print_execution(execution: &Execution) {

@@ -6,8 +6,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`;
-/// 1.2 adds `execution.start` and `execution.stop`.
-pub const PROTOCOL: &str = "1.2";
+/// 1.2 adds `execution.start` and `execution.stop`; 1.3 adds `secret.set`, `secret.list`
+/// and `secret.delete`.
+pub const PROTOCOL: &str = "1.3";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -18,6 +19,9 @@ pub mod method {
     pub const EXECUTION_LIST: &str = "execution.list";
     pub const EXECUTION_START: &str = "execution.start";
     pub const EXECUTION_STOP: &str = "execution.stop";
+    pub const SECRET_SET: &str = "secret.set";
+    pub const SECRET_LIST: &str = "secret.list";
+    pub const SECRET_DELETE: &str = "secret.delete";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -29,6 +33,9 @@ pub mod method {
         EXECUTION_LIST,
         EXECUTION_START,
         EXECUTION_STOP,
+        SECRET_SET,
+        SECRET_LIST,
+        SECRET_DELETE,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -83,9 +90,23 @@ pub struct ExecutionStartParams {
     pub workflow_id: Option<String>,
 }
 
+/// `secret.set`. The value never comes back: `secret.list` answers names only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretSetParams {
+    pub name: String,
+    pub value: String,
+}
+
+/// `secret.delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameParams {
+    pub name: String,
+}
+
 /// What a module receives when a call is addressed to one of its nodes: `node/start`,
 /// `node/stop`, or a capability method reached through a wire. `node` carries the node's
-/// configuration as it was when the execution started.
+/// configuration as it was when the execution started, with every `secret:<name>`
+/// already swapped for the secret.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeCall {
     pub execution_id: String,

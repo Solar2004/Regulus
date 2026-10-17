@@ -134,7 +134,8 @@ impl Registry {
                 reason: format!("method `{taken}` is already served by the core or another module"),
             }
         } else {
-            match catch_unwind(AssertUnwindSafe(|| module.init(ctx))) {
+            let ctx = ctx.for_module(&manifest.module.id);
+            match catch_unwind(AssertUnwindSafe(|| module.init(&ctx))) {
                 Ok(Ok(())) => {
                     for name in &manifest.module.methods {
                         self.routes.insert(name.clone(), index);

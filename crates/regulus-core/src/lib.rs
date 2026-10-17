@@ -7,6 +7,7 @@ pub mod graph;
 pub mod module;
 pub mod profiles;
 pub mod registry;
+pub mod secrets;
 pub mod server;
 pub mod service;
 
@@ -19,14 +20,23 @@ pub use config::Config;
 pub use module::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 pub use profiles::ProfileStore;
 pub use registry::Registry;
-pub use service::{Core, RpcError};
+pub use secrets::Secrets;
+pub use service::{Core, RpcError, Storage};
 
 /// Builds a core from its configuration and the modules its host links in. Returns the
 /// warnings found while loading, which never stop the start.
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
     let (profiles, warnings) = ProfileStore::load(&config.profiles.paths);
     (
-        Core::build(modules, &config.modules.without, profiles),
+        Core::build_with(
+            modules,
+            &config.modules.without,
+            profiles,
+            Storage {
+                secrets: config.secrets(),
+                data_dir: Some(config.data_dir()),
+            },
+        ),
         warnings,
     )
 }
