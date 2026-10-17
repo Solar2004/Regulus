@@ -1,0 +1,9 @@
+[package]
+name = "regulus-contract-skill"
+description = "The skill@1 capability: a skill folder an agent can load"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true

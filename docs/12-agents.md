@@ -61,8 +61,17 @@ proveedor o una suscripción conectados para poder autenticarse.
 | Instalación | `CLAUDE_CODE_EXECUTABLE` | binario elegido |
 | Perfil | `CLAUDE_CONFIG_DIR` | su config |
 | Proveedor (una ranura por propósito, §6.5) | `providers/set` de ACP: `anthropic`, `bedrock` o `vertex` + `baseUrl` | proveedor en su config |
-| Skills | se colocan en el perfil | por verificar |
+| Skills | enlace en `CLAUDE_CONFIG_DIR/skills/<nombre>` | enlace en `OPENCODE_CONFIG_DIR/skills/<nombre>` |
 | MCP | `mcpServers` al crear la sesión | igual |
+
+**Skills, base construida (2026-10-17).** Una skill es un recurso: una carpeta con
+`SKILL.md`, el formato que leen Claude Code y opencode. El módulo `skills` tiene un nodo
+`skill` (campos `path` y `name`) que ofrece `skill@1`; la caja tiene la entrada `skills`
+(varias) y pasa la lista al motor en `StartArgs.skills`. El motor dice dónde las lee su
+CLI (`AcpEngine::skills_dir`) y `regulus-acp` las enlaza ahí, quitando antes los enlaces
+de la vez anterior. Solo en perfil aislado: en el del usuario no se escribe nada y queda
+un aviso. Probado: la skill aparece enlazada en el perfil de Claude, y con
+`--without regulus/skills` la ejecución sigue funcionando.
 
 **Un proveedor que no habla el protocolo del motor** (p. ej. solo OpenAI hacia Claude)
 se resuelve con un **Traductor** en el cable "usa": Agente ⇢ Traductor ⇢ Proveedor. Es
@@ -390,9 +399,9 @@ Sustituye a las dos ramas de `plan.md` §2:
    1. ✅ Plantillas y cabeceras extra (§6.3), y las ranuras `fast` y `subagent`, en
       directo (§6.5). El protocolo por modelo espera a que alguien lo necesite
    2. ✅ Suscripción de Claude con `anthropic-oauth`, como plantilla (§6.6)
-   3. Pasarela con Plan B y Pool (§6.4)
-   4. Router, Traductor, motor Local e imágenes por MCP
-4. **Skills**
+   3. ⏸ Pasarela con Plan B y Pool (§6.4): aplazada, la estructura basta por ahora
+   4. ⏸ Router, Traductor, motor Local e imágenes por MCP
+4. ✅ **Skills**, base (§3)
 5. **Comunicación** (hcom, sobre sesiones ACP: `old/07-ecosystem.md` §1.4)
 
 Precedente más cercano: vibe-kanban (Rust) mezcla canales por agente (stream-json,

@@ -3241,6 +3241,7 @@ dependencies = [
  "regulus-module-engine-opencode",
  "regulus-module-hello",
  "regulus-module-providers",
+ "regulus-module-skills",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -3252,11 +3253,19 @@ name = "regulus-contract-agent-engine"
 version = "0.1.0"
 dependencies = [
  "regulus-contract-llm-endpoint",
+ "regulus-contract-skill",
  "serde",
 ]
 
 [[package]]
 name = "regulus-contract-llm-endpoint"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "regulus-contract-skill"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -3283,6 +3292,7 @@ version = "0.1.0"
 dependencies = [
  "regulus-contract-agent-engine",
  "regulus-contract-llm-endpoint",
+ "regulus-contract-skill",
  "regulus-core",
  "regulus-proto",
  "serde",
@@ -3332,6 +3342,16 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "regulus-module-skills"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-skill",
+ "regulus-core",
+ "regulus-proto",
+ "serde_json",
 ]
 
 [[package]]

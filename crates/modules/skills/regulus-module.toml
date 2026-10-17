@@ -1,0 +1,29 @@
+[module]
+id             = "regulus/skills@0.1.0"
+name           = "Skills"
+requires_proto = "^1.2"
+
+# A skill is a file resource, not code: the node points at a folder with a SKILL.md and
+# adding one recompiles nothing (docs/11-composition.md §3).
+[[node]]
+type = "skill"
+name = "Skill"
+
+  [[node.port]]
+  id         = "skill"
+  name       = "skill"
+  capability = "skill@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The folder holding SKILL.md, e.g. ~/skills/review.
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  # The name it gets in the agent's profile. Empty: the folder's name.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""

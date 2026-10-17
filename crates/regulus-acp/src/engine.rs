@@ -45,6 +45,12 @@ pub trait AcpEngine: Send + Sync + 'static {
         &[]
     }
 
+    /// Where the CLI reads skills, relative to its profile directory. `None`: the engine
+    /// takes no skills, and wired ones are left out with a warning.
+    fn skills_dir(&self) -> Option<&'static str> {
+        None
+    }
+
     /// How to launch the CLI's ACP side and open the session for this node.
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String>;
 }
@@ -179,6 +185,43 @@ pub fn version(program: &Path) -> Option<String> {
         .filter(|line| !line.is_empty())
 }
 
+/// Links each skill folder into `dir` under its name. Links left from an earlier run are
+/// removed first, so a skill unwired since is gone; anything else in `dir` is kept.
+pub fn place_skills(dir: &Path, skills: &[contract::Skill]) -> Result<(), String> {
+    let cannot = |what: &str, path: &Path, e: std::io::Error| {
+        format!("cannot {what} {}: {e}", path.display())
+    };
+    std::fs::create_dir_all(dir).map_err(|e| cannot("create", dir, e))?;
+    let entries = std::fs::read_dir(dir).map_err(|e| cannot("read", dir, e))?;
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) {
+            let path = entry.path();
+            std::fs::remove_file(&path).map_err(|e| cannot("remove", &path, e))?;
+        }
+    }
+    for skill in skills {
+        let link = dir.join(&skill.name);
+        if link.exists() {
+            return Err(format!(
+                "two skills are named `{}`, or the profile has its own: rename one",
+                skill.name
+            ));
+        }
+        symlink(&skill.path, &link).map_err(|e| cannot("link", &link, e))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
 pub fn installations(paths: Vec<PathBuf>) -> Vec<contract::Installation> {
     paths
         .into_iter()
@@ -275,6 +318,20 @@ impl<E: AcpEngine> EngineModule<E> {
         if let Some(dir) = config_dir.as_ref().filter(|_| isolated) {
             std::fs::create_dir_all(dir)
                 .map_err(|e| failed(format!("cannot create {}: {e}", dir.display())))?;
+        }
+        let left_out = match (self.engine.skills_dir(), config_dir.as_ref()) {
+            _ if args.skills.is_empty() => None,
+            (Some(sub), Some(dir)) if isolated => {
+                place_skills(&dir.join(sub), &args.skills).map_err(failed)?;
+                None
+            }
+            // The user's own profile is never written to (docs/12-agents.md §6.7).
+            (Some(_), _) => Some("skills are placed only in an isolated profile".to_string()),
+            (None, _) => Some(format!("{} takes no skills", self.manifest.module.name)),
+        };
+        if let Some(warning) = left_out {
+            eprintln!("regulus: node `{}`: {warning}", call.node.id);
+            warnings.push(warning);
         }
         let detected = self.engine.detect();
         let prepared = self
@@ -386,5 +443,32 @@ impl<E: AcpEngine> Module for EngineModule<E> {
     fn shutdown(&mut self) -> Result<(), ModuleError> {
         self.sessions.stop_all();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skills_are_linked_and_unwired_ones_go_away() {
+        let root = std::env::temp_dir().join(format!("regulus-place-{}", std::process::id()));
+        let (review, lint) = (root.join("src/review"), root.join("src/lint"));
+        std::fs::create_dir_all(&review).unwrap();
+        std::fs::create_dir_all(&lint).unwrap();
+        let dir = root.join("profile/skills");
+        let skill = |name: &str, path: &Path| contract::Skill {
+            name: name.into(),
+            path: path.to_path_buf(),
+        };
+        place_skills(&dir, &[skill("review", &review), skill("lint", &lint)]).unwrap();
+        assert_eq!(std::fs::read_link(dir.join("review")).unwrap(), review);
+        std::fs::create_dir_all(dir.join("own")).unwrap();
+        place_skills(&dir, &[skill("lint", &lint)]).unwrap();
+        assert!(!dir.join("review").exists());
+        assert!(dir.join("lint").exists() && dir.join("own").is_dir());
+        let error = place_skills(&dir, &[skill("own", &lint)]).unwrap_err();
+        assert!(error.contains("`own`"), "{error}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

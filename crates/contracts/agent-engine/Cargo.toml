@@ -7,4 +7,5 @@ authors.workspace = true
 
 [dependencies]
 regulus-contract-llm-endpoint.workspace = true
+regulus-contract-skill.workspace = true
 serde.workspace = true

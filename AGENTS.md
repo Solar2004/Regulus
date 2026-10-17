@@ -15,9 +15,9 @@ se rompa.
 
 **Estado:** la base funciona (`regulus serve`, CLI, módulo `hello`, matriz de ablación) y
 el canvas carga del core real; la caja Agente corre Claude Code y opencode por ACP, con
-proveedor conectado, perfil aislado y secretos. **Lo siguiente: los proveedores como caja
-líquida** (plantillas, ranuras por propósito, suscripción, pasarela) **y después las
-Skills.** Plan y orden en [`docs/plan.md`](docs/plan.md).
+proveedores (plantillas, ranuras, suscripción de Claude), skills, perfil aislado y
+secretos. **Lo siguiente: Comunicación (hcom).** La pasarela de proveedores queda
+aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -159,9 +159,8 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Proveedores como caja líquida**: plantillas, ranuras, suscripción, pasarela (`12-agents.md` §7) | nada |
-| 2 | **Skills** (se enchufan a la caja Agente; se colocan en el perfil, `12-agents.md` §3) | nada |
-| 3 | **Comunicación** (hcom) | Skills |
+| 1 | **Comunicación** (hcom) | nada |
+| — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
 ---
 

@@ -1,0 +1,12 @@
+[package]
+name = "regulus-module-skills"
+description = "Skills: point at a skill folder that agents load"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-contract-skill.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde_json.workspace = true

@@ -15,6 +15,8 @@ use serde_json::{json, Map, Value};
 const MANIFEST: &str = include_str!("../regulus-module.toml");
 const BINARY: &str = "opencode";
 const CONFIG_DIR_ENV: &str = "OPENCODE_CONFIG_DIR";
+/// Inside OPENCODE_CONFIG_DIR, where opencode looks for `skills/**/SKILL.md`.
+const SKILLS_DIR: &str = "skills";
 /// Configuration merged over everything else opencode reads.
 const CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 /// What an isolated profile switches off: the project's opencode config, and what
@@ -50,6 +52,10 @@ impl AcpEngine for Opencode {
 
     fn slots(&self) -> &'static [&'static str] {
         &[slot::FAST, slot::SUBAGENT]
+    }
+
+    fn skills_dir(&self) -> Option<&'static str> {
+        Some(SKILLS_DIR)
     }
 
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {

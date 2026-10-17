@@ -15,6 +15,8 @@ const MANIFEST: &str = include_str!("../regulus-module.toml");
 const BINARY: &str = "claude";
 const EXECUTABLE_ENV: &str = "CLAUDE_CODE_EXECUTABLE";
 const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+/// Inside CLAUDE_CONFIG_DIR, where Claude Code reads the user's skills.
+const SKILLS_DIR: &str = "skills";
 /// The adapter's one provider slot (`providers/list`), set before the session opens.
 const SET_PROVIDER: &str = "providers/set";
 const PROVIDER_ID: &str = "main";
@@ -56,6 +58,10 @@ impl AcpEngine for Claude {
 
     fn slots(&self) -> &'static [&'static str] {
         &[slot::FAST, slot::SUBAGENT]
+    }
+
+    fn skills_dir(&self) -> Option<&'static str> {
+        Some(SKILLS_DIR)
     }
 
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {

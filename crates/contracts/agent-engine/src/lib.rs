@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub use regulus_contract_llm_endpoint::LlmEndpoint;
+pub use regulus_contract_skill::Skill;
 use serde::{Deserialize, Serialize};
 
 pub const CAPABILITY: &str = "agent.engine@1";
@@ -65,6 +66,10 @@ pub struct StartArgs {
     /// Providers for other purposes, keyed by [`slot`]. Optional, so it extends `@1`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slots: BTreeMap<String, LlmEndpoint>,
+    /// The skills wired into the box, for the engine to place in the profile. Optional,
+    /// so it extends `@1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<Skill>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

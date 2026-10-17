@@ -45,6 +45,15 @@ name = "Agent"
   direction  = "input"
   kind       = "uses"
 
+  # Skills the agent loads (docs/12-agents.md §3). The engine places them in the profile.
+  [[node.port]]
+  id          = "skills"
+  name        = "skills"
+  capability  = "skill@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]
   id      = "workdir"
