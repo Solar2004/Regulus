@@ -181,7 +181,35 @@ El motor elige perfil con el campo `profile`:
   `ModuleCtx::node_dir` (`03-modules.md` §2.1), o en `config_dir` si se rellena. Se
   conserva entre ejecuciones para poder reanudar sesiones.
 
-Nada se escribe en el perfil del usuario.
+Nada se escribe en el perfil del usuario. Cómo aísla cada motor:
+
+| Motor | Aislado |
+|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` al perfil y `settingSources: ["user"]` en la sesión: no lee el `.claude/` del proyecto (el blindaje de `claude-sub`) |
+| opencode | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` y `XDG_STATE_HOME` dentro del perfil, y `OPENCODE_DISABLE_PROJECT_CONFIG`, `_CLAUDE_CODE` y `_EXTERNAL_SKILLS`. La caché sigue compartida: no guarda nada del usuario |
+
+### 6.4 Lo construido y lo medido (2026-10-17)
+
+| Pieza | Dónde |
+|---|---|
+| Contrato `llm.endpoint@1` | `crates/contracts/llm-endpoint` |
+| Módulo Proveedores | `crates/modules/providers`; ejemplo en `examples/local.toml` |
+| Entrada `provider` de la caja | `crates/modules/agent` |
+| Protocolos, perfil y peticiones previas a la sesión | `crates/regulus-acp` (`AcpEngine::prepare`) |
+| Secretos y `node_dir` | `crates/regulus-core` (`secrets.rs`, `ModuleCtx`); CLI `regulus secret` |
+
+**Probado de punta a punta** contra un endpoint Anthropic de prueba: las dos cajas, en
+perfil aislado y con el mismo proveedor, responden. El endpoint recibió la clave sacada
+del almacén de secretos y el modelo del proveedor. Claude entró por `providers/set` y
+opencode por su config. Sin el secreto, la ejecución falla diciendo cómo crearlo. Con
+`--without regulus/providers`, las cajas siguen funcionando. Al parar no queda ningún
+proceso vivo.
+
+**Si un agente muere,** el error del prompt trae lo último que escribió por stderr, en
+lugar de un "session is closed" que no dice nada.
+
+**Límite conocido:** `vertex` necesita proyecto y región, que `llm.endpoint@1` todavía no
+lleva. Llegarán como campo opcional cuando alguien conecte Vertex.
 
 ## 7. Orden resultante
 

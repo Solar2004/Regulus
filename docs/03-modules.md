@@ -141,7 +141,7 @@ ejecuciones con una sola instancia. Los métodos de una capacidad (p. ej. los de
 alcanzan a través de un `Endpoint`, nunca por nombre global.
 
 ✅ `node_dir` lo pidió el perfil aislado de los motores (`12-agents.md` §6.3). Es
-`<casa>/data/<proyecto | global>/<módulo>/<workflow>/<nodo>`: un módulo no puede ver los
+`<casa>/data/{global | projects/<proyecto>}/<módulo>/<workflow>/<nodo>`: un módulo no puede ver los
 directorios de otro módulo ni de otro proyecto. Si el usuario quiere el perfil en otro
 sitio, lo dice en un campo del nodo. Es la parte en ficheros del namespace del store
 (`02-architecture.md` §6), que sigue ❓ abierto.
