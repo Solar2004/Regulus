@@ -57,7 +57,9 @@ name = "Agent"
 
 **Lo que la base deja abierto a propósito** (`11` §12): `cardinality` existe, por
 defecto `one`; y el formato de cada tipo de puerto lo fija el primer módulo que lo use.
-Cambiar de formato es subir la versión (`llm.chat@2`), no romper a los demás.
+Cambiar de formato es subir la versión (`llm.chat@2`), no romper a los demás. Añadir un
+campo **opcional** que los antiguos pueden ignorar no cambia la forma y no sube versión
+(Alexander, 2026-10-17).
 
 ### 1.1 `required` es el campo más importante del manifest
 
@@ -124,6 +126,10 @@ impl ModuleCtx {
     /// Llamar al nodo del otro extremo. Le llega como `NodeCall` con su configuración.
     pub fn call(&self, to: &Endpoint, method: &str, args: Value) -> Result<Value>;
 
+    /// Directorio propio de ese nodo, para este módulo y su proyecto. Se conserva entre
+    /// ejecuciones. Cuelga de la casa de Regulus (`REGULUS_HOME`), así que se mueve con ella.
+    pub fn node_dir(&self, node: &NodeRef) -> Result<PathBuf>;
+
     // Llegan con el primer módulo que los pida:
     // emit / subscribe (bus) y store.
 }
@@ -133,6 +139,12 @@ impl ModuleCtx {
 ejecuciones con una sola instancia. Los métodos de una capacidad (p. ej. los de
 `agent.engine@1`) **no** van en `methods`: varios módulos los sirven a la vez y solo se
 alcanzan a través de un `Endpoint`, nunca por nombre global.
+
+✅ `node_dir` lo pidió el perfil aislado de los motores (`12-agents.md` §6.3). Es
+`<casa>/data/<proyecto | global>/<módulo>/<workflow>/<nodo>`: un módulo no puede ver los
+directorios de otro módulo ni de otro proyecto. Si el usuario quiere el perfil en otro
+sitio, lo dice en un campo del nodo. Es la parte en ficheros del namespace del store
+(`02-architecture.md` §6), que sigue ❓ abierto.
 
 **Si un módulo necesita algo que `ModuleCtx` no da, es una conversación de diseño, no un
 `pub` nuevo.** Esta superficie es deliberadamente pequeña: cada método que se le añade

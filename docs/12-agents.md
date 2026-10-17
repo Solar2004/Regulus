@@ -1,6 +1,6 @@
 # 12 — Agentes: la caja y sus motores
 
-> **v1.0** · 2026-10-17 · Respuesta de Alexander a la pregunta abierta de `plan.md` §2,
+> **v1.1** · 2026-10-17 · Respuesta de Alexander a la pregunta abierta de `plan.md` §2,
 > más la investigación y la medición del mismo día. Manda sobre `old/07-ecosystem.md`.
 
 ---
@@ -125,7 +125,65 @@ las dos cajas arrancan, responden, conservan el contexto entre prompts y, al par
 no queda ningún proceso vivo. Con `--without regulus/engine-claude`, la caja de Claude
 queda desactivada y la de opencode sigue funcionando.
 
-## 6. Orden resultante
+## 6. Proveedores
+
+✅ **DECIDIDO** (Alexander, 2026-10-17: *"lo más flexible"*) — las tres piezas siguientes.
+
+### 6.1 La capacidad `llm.endpoint@1`
+
+Un proveedor **no hace de proxy**: describe dónde está el modelo y el CLI habla con él
+directamente. Regulus no toca el tráfico, así que no añade latencia ni se rompe con el
+streaming del CLI.
+
+```
+ Proveedor ⇢ llm.endpoint ⇢ [ Agente ] ── engine.session.start + provider ──► Motor
+```
+
+El nodo Proveedor responde a `llm.endpoint` con:
+
+```json
+{ "protocol": "anthropic", "base_url": "https://openrouter.ai/api",
+  "headers": { "authorization": "Bearer …" }, "models": ["…"] }
+```
+
+- `protocol` puede ser `anthropic`, `openai`, `bedrock` o `vertex`. Es un dato, no un
+  tipo cerrado: un protocolo nuevo no cambia la capacidad.
+- `models` es opcional. El primero es el modelo por defecto.
+- La caja resuelve su entrada `provider` (opcional) y pasa la descripción al motor en
+  `StartArgs.provider`. Es un campo nuevo opcional, así que sigue siendo
+  `agent.engine@1` (`03-modules.md` §1).
+- **Cada motor declara los protocolos que habla** (Claude: `anthropic`, `bedrock`,
+  `vertex`; opencode: `anthropic`, `openai`). Si no coincide, el arranque falla con un
+  error que dice qué falta. La solución es el nodo traductor del §3.
+- `llm.chat@1` queda reservado para cuando sea Regulus quien llame a un modelo.
+
+**Cómo lo traduce cada motor:**
+
+| Motor | Vía |
+|---|---|
+| Claude Code | `providers/set` de ACP (`apiType`, `baseUrl`, `headers`), antes de abrir la sesión |
+| opencode | `OPENCODE_CONFIG_CONTENT` con un proveedor `regulus` (`@ai-sdk/anthropic` o `@ai-sdk/openai-compatible`) y `model = "regulus/<modelo>"` |
+
+### 6.2 El módulo `providers`
+
+Trae **un único nodo genérico** con los campos `protocol`, `base_url`, `credential`
+(`secret:<nombre>`), `auth` (`bearer`, `x-api-key` o `none`) y `model`. OpenRouter,
+z.ai, Anthropic o un proxy local son **plantillas** de ese nodo, no código: añadir un
+proveedor no recompila nada.
+
+### 6.3 El perfil aislado
+
+El motor elige perfil con el campo `profile`:
+
+- `user` (por defecto): el comportamiento actual. Usa `config_dir`, y si está vacío, el
+  setup del usuario.
+- `isolated`: un perfil vacío que solo tiene lo conectado. Vive en
+  `ModuleCtx::node_dir` (`03-modules.md` §2.1), o en `config_dir` si se rellena. Se
+  conserva entre ejecuciones para poder reanudar sesiones.
+
+Nada se escribe en el perfil del usuario.
+
+## 7. Orden resultante
 
 Sustituye a las dos ramas de `plan.md` §2:
 

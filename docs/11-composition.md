@@ -162,6 +162,20 @@ su copia.
 (`secret:openai`); las claves viven en `~/.regulus/secrets` (o el llavero del sistema).
 Así compartir una plantilla o un módulo nunca comparte una clave.
 
+✅ **Cómo se resuelven** (Alexander, 2026-10-17: *"lo más flexible"*):
+
+- **Los resuelve el core**, no los módulos. Al entregar a un módulo la configuración de
+  un nodo, cada valor `secret:<nombre>` se cambia por la clave. Ningún módulo conoce el
+  almacén, así que cambiar de almacén no toca ningún módulo.
+- **Los almacenes son una lista ordenada** en `config.toml` (`[secrets] sources`). Hoy
+  solo existe `file` (`<casa>/secrets.toml`, permisos 0600). El llavero del sistema será
+  otra fuente cuando alguien la pida; la puerta queda abierta.
+- **Un secreto que no existe** hace fallar la llamada con un mensaje que dice cómo
+  crearlo. Nunca llega vacío al módulo.
+- **CLI y GUI por igual:** los métodos `secret.set`, `secret.list` (solo nombres) y
+  `secret.delete`, y el comando `regulus secret`. Los valores no aparecen en los logs ni
+  en las respuestas.
+
 ### 9.1 Las cajas (decisión #11) se resuelven aquí
 
 Las tres lecturas de [`old/ideas/boxes.md`](old/ideas/boxes.md) caben en este modelo **sin
