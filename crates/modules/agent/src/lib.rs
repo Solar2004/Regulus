@@ -10,6 +10,7 @@ use regulus_contract_agent_engine as engine;
 use regulus_contract_llm_endpoint as llm;
 use regulus_contract_participant as participant;
 use regulus_contract_skill as skill;
+use regulus_contract_toolset as toolset;
 use regulus_core::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Direction, Manifest, NodeCall};
 use serde::de::DeserializeOwned;
@@ -21,6 +22,7 @@ const PROMPT: &str = "agent.prompt";
 const ENGINE_PORT: &str = "engine";
 const PROVIDER_PORT: &str = "provider";
 const SKILLS_PORT: &str = "skills";
+const TOOLS_PORT: &str = "tools";
 const NAME_FIELD: &str = "name";
 /// What the box says it is to channels.
 const KIND: &str = "agent";
@@ -146,12 +148,26 @@ impl Agent {
             .iter()
             .map(|endpoint| parse(self.ctx.call(endpoint, skill::DESCRIBE, Value::Null)?))
             .collect::<Result<Vec<skill::Skill>, _>>()?;
+        // Tools are mounted in the box's own name: the agent cannot pick another one.
+        let caller = self.name(&call.node);
+        let tools = self
+            .ctx
+            .resolve(&me, TOOLS_PORT)
+            .iter()
+            .map(|endpoint| {
+                let args = json(toolset::MountArgs {
+                    caller: caller.clone(),
+                })?;
+                parse(self.ctx.call(endpoint, toolset::MOUNT, args)?)
+            })
+            .collect::<Result<Vec<toolset::Mount>, _>>()?;
         let args = engine::StartArgs {
             cwd: workdir(self.manifest.setting(&call.node, "workdir"))?,
             permissions,
             provider,
             slots,
             skills,
+            tools,
         };
         let started: engine::Started =
             parse(self.ctx.call(&engine, engine::SESSION_START, json(args)?)?)?;
@@ -181,17 +197,21 @@ impl Agent {
         Ok(Value::Null)
     }
 
-    /// The agent as a participant: its name and where its session stands, asked to the
-    /// engine (ACP knows when a turn is running).
-    fn describe(&self, call: NodeCall) -> Result<Value, ModuleError> {
-        let name = self
-            .manifest
-            .setting(&call.node, NAME_FIELD)
+    /// The name channels and tools know the agent by: its `name` field, or the node id.
+    fn name(&self, node: &regulus_proto::Node) -> String {
+        self.manifest
+            .setting(node, NAME_FIELD)
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|n| !n.is_empty())
-            .unwrap_or(&call.node.id)
-            .to_string();
+            .unwrap_or(&node.id)
+            .to_string()
+    }
+
+    /// The agent as a participant: its name and where its session stands, asked to the
+    /// engine (ACP knows when a turn is running).
+    fn describe(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let name = self.name(&call.node);
         let me = NodeRef {
             execution_id: call.execution_id,
             node_id: call.node.id,

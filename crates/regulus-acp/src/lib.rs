@@ -15,9 +15,9 @@ use std::time::Duration;
 pub mod engine;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PermissionOptionKind,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    ContentBlock, ContentChunk, EnvVariable, InitializeRequest, McpServer, McpServerStdio,
+    NewSessionRequest, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
@@ -76,6 +76,20 @@ pub struct SessionOptions {
     pub setup: Vec<SetupRequest>,
     /// How long the agent may take to start and open the session.
     pub startup: Duration,
+    /// MCP servers over stdio, passed in `session/new`; every ACP agent accepts them.
+    #[serde(default)]
+    pub mcp_servers: Vec<StdioServer>,
+}
+
+/// An MCP server the agent starts as a process and talks to over stdio.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StdioServer {
+    pub name: String,
+    pub command: PathBuf,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Who answered `initialize`.
@@ -336,7 +350,21 @@ async fn run(
                 let request = UntypedMessage::new(&setup.method, &setup.params)?;
                 connection.send_request(request).block_task().await?;
             }
-            let request = NewSessionRequest::new(options.cwd.clone()).meta(options.meta.clone());
+            let servers = options
+                .mcp_servers
+                .iter()
+                .map(|s| {
+                    let env = s.env.iter().map(|(k, v)| EnvVariable::new(k, v)).collect();
+                    McpServer::Stdio(
+                        McpServerStdio::new(&s.name, &s.command)
+                            .args(s.args.clone())
+                            .env(env),
+                    )
+                })
+                .collect();
+            let request = NewSessionRequest::new(options.cwd.clone())
+                .meta(options.meta.clone())
+                .mcp_servers(servers);
             let mut session = connection
                 .build_session_from(request)
                 .block_task()

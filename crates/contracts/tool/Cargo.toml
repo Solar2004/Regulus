@@ -1,0 +1,10 @@
+[package]
+name = "regulus-contract-tool"
+description = "The tool@1 capability: operations a module offers for agents to call"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

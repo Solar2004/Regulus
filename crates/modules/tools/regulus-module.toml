@@ -1,0 +1,50 @@
+[module]
+id             = "regulus/tools@0.1.0"
+name           = "Tools"
+requires_proto = "^1.2"
+# What a protocol bridge calls with the binding it was mounted with.
+methods        = ["tools.list", "tools.call"]
+
+# Gathers the operations of every node wired into `tools` and presents them to the
+# agents wired to `toolset`. It knows nothing of what the operations do, nor of the
+# protocol that carries them: that is the engine wired into `engine` (MCP today).
+[[node]]
+type = "tools"
+name = "Tools"
+
+  [[node.port]]
+  id          = "tools"
+  name        = "tools"
+  capability  = "tool@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
+  # The protocol agents reach the tools by. Required: without it nothing can mount.
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "tools.engine@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  [[node.port]]
+  id         = "toolset"
+  name       = "toolset"
+  capability = "toolset@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # What the agent sees the tools as.
+  [[node.field]]
+  id      = "server_name"
+  type    = "text"
+  default = "regulus"
+
+  # How results are written for the agent. A new format is a new option here.
+  [[node.field]]
+  id      = "format"
+  type    = "select"
+  default = "json"
+  options = ["json"]

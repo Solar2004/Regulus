@@ -3235,6 +3235,7 @@ dependencies = [
  "anyhow",
  "clap",
  "jsonrpsee",
+ "regulus-contract-tool",
  "regulus-core",
  "regulus-module-agent",
  "regulus-module-communication",
@@ -3243,6 +3244,8 @@ dependencies = [
  "regulus-module-hello",
  "regulus-module-providers",
  "regulus-module-skills",
+ "regulus-module-tools",
+ "regulus-module-tools-mcp",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -3255,6 +3258,7 @@ version = "0.1.0"
 dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-contract-skill",
+ "regulus-contract-toolset",
  "serde",
 ]
 
@@ -3274,6 +3278,21 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-skill"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "regulus-contract-tool"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-contract-toolset"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -3302,6 +3321,7 @@ dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-contract-participant",
  "regulus-contract-skill",
+ "regulus-contract-toolset",
  "regulus-core",
  "regulus-proto",
  "serde",
@@ -3313,6 +3333,7 @@ name = "regulus-module-communication"
 version = "0.1.0"
 dependencies = [
  "regulus-contract-participant",
+ "regulus-contract-tool",
  "regulus-core",
  "regulus-proto",
  "serde",
@@ -3371,6 +3392,31 @@ dependencies = [
  "regulus-contract-skill",
  "regulus-core",
  "regulus-proto",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-tools"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "regulus-contract-tool",
+ "regulus-contract-toolset",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-tools-mcp"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-tool",
+ "regulus-contract-toolset",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
  "serde_json",
 ]
 

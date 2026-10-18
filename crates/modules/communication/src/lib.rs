@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use regulus_contract_participant::{Delivery, Identity, Reply, State, DELIVER, DESCRIBE};
+use regulus_contract_tool as tool;
 use regulus_core::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Manifest, NodeCall};
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,11 @@ const HISTORY: &str = "comm.history";
 const PARTICIPANTS: &str = "comm.participants";
 const POLL_FIELD: &str = "poll_ms";
 const MAX_WAIT_FIELD: &str = "max_wait_seconds";
+const INBOX_FIELD: &str = "inbox_limit";
+// The operations the channel offers over `tool@1`.
+const TOOL_SEND: &str = "send";
+const TOOL_WHO: &str = "participants";
+const TOOL_INBOX: &str = "inbox";
 const CHANNEL: &str = "channel";
 const PARTICIPANTS_PORT: &str = "participants";
 const LOG_FILE: &str = "messages.jsonl";
@@ -450,6 +456,60 @@ impl Communication {
         Ok(Value::Null)
     }
 
+    fn tool_call(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let request: tool::Call = parse(call.args.clone())?;
+        let channel = NodeRef {
+            execution_id: call.execution_id.clone(),
+            node_id: call.node.id.clone(),
+        };
+        let data = match request.name.as_str() {
+            TOOL_SEND => self.send(SendParams {
+                execution_id: channel.execution_id,
+                node_id: channel.node_id,
+                from: request.caller.name,
+                text: request
+                    .args
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }),
+            TOOL_WHO => self.list(ChannelParams {
+                execution_id: channel.execution_id,
+                node_id: channel.node_id,
+            }),
+            TOOL_INBOX => {
+                let since = request
+                    .args
+                    .get("since")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let limit = self
+                    .manifest
+                    .setting(&call.node, INBOX_FIELD)
+                    .and_then(Value::as_f64)
+                    .map_or(usize::MAX, |n| n.max(0.0) as usize);
+                let mut mine: Vec<Message> = Log::read(&self.log_path(&channel)?)
+                    .map_err(ModuleError::Failed)?
+                    .into_iter()
+                    .filter(|m| m.id > since && m.to.contains(&request.caller.name))
+                    .collect();
+                let skip = mine.len().saturating_sub(limit);
+                mine.drain(..skip);
+                json(mine)
+            }
+            other => return Err(ModuleError::InvalidParams(format!("no tool `{other}`"))),
+        };
+        // What went wrong is an answer for the agent to read, not a broken call.
+        Ok(match data {
+            Ok(data) => json(tool::Outcome { data, error: false })?,
+            Err(e) => json(tool::Outcome {
+                data: Value::String(e.to_string()),
+                error: true,
+            })?,
+        })
+    }
+
     fn history(&self, params: HistoryParams) -> Result<Value, ModuleError> {
         let channel = NodeRef {
             execution_id: params.execution_id,
@@ -484,6 +544,42 @@ fn wait_free(ctx: &ModuleCtx, job: &Job) -> Result<(), ModuleError> {
             State::Busy => std::thread::sleep(job.pace.poll),
         }
     }
+}
+
+/// The operations a channel offers to agents. What they do is here; how they reach an
+/// agent (MCP or anything else) is the tools box's business.
+fn tool_specs() -> Vec<tool::Spec> {
+    vec![
+        tool::Spec {
+            name: TOOL_SEND.into(),
+            description: "Send a message to the channel. Mention participants with @name to \
+                          send it only to them; without mentions it goes to everyone else. \
+                          You send in your own name."
+                .into(),
+            input: serde_json::json!({
+                "type": "object",
+                "properties": { "text": { "type": "string", "description": "The message." } },
+                "required": ["text"],
+            }),
+        },
+        tool::Spec {
+            name: TOOL_WHO.into(),
+            description: "Who is in the channel: each participant's @name and whether it is \
+                          idle, busy or gone."
+                .into(),
+            input: serde_json::json!({ "type": "object", "properties": {} }),
+        },
+        tool::Spec {
+            name: TOOL_INBOX.into(),
+            description: "Messages sent to you in the channel, oldest first. Pass `since` with \
+                          the last id you saw to get only newer ones."
+                .into(),
+            input: serde_json::json!({
+                "type": "object",
+                "properties": { "since": { "type": "integer", "description": "Only ids above this." } },
+            }),
+        },
+    ]
 }
 
 /// Hands one message to one participant and records what it answered, or why it failed.
@@ -536,6 +632,8 @@ impl Module for Communication {
             SEND => self.send(parse(params)?),
             HISTORY => self.history(parse(params)?),
             PARTICIPANTS => self.list(parse(params)?),
+            tool::LIST => json(tool_specs()),
+            tool::CALL => self.tool_call(parse(params)?),
             method::NODE_START => self.start(parse(params)?),
             method::NODE_STOP => self.stop(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),

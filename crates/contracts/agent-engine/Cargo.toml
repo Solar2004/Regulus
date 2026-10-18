@@ -8,4 +8,5 @@ authors.workspace = true
 [dependencies]
 regulus-contract-llm-endpoint.workspace = true
 regulus-contract-skill.workspace = true
+regulus-contract-toolset.workspace = true
 serde.workspace = true

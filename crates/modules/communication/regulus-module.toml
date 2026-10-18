@@ -27,6 +27,15 @@ name = "Channel"
   kind        = "uses"
   cardinality = "many"
 
+  # What agents can do in the channel (send, participants, inbox), for a tools box to
+  # present them. Sends are made in the caller's name, set by its Agent box.
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
   # How often to ask a busy participant whether it is free.
   [[node.field]]
   id      = "poll_ms"
@@ -38,3 +47,9 @@ name = "Channel"
   id      = "max_wait_seconds"
   type    = "number"
   default = 600
+
+  # How many messages the `inbox` tool returns at most, the newest ones.
+  [[node.field]]
+  id      = "inbox_limit"
+  type    = "number"
+  default = 20

@@ -69,6 +69,15 @@ name = "Agent"
   type    = "text"
   default = ""
 
+  # Tools the agent can call, mounted in its name (docs/11-composition.md §3.0).
+  [[node.port]]
+  id          = "tools"
+  name        = "tools"
+  capability  = "toolset@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]
   id      = "workdir"

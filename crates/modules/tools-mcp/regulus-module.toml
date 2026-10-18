@@ -1,0 +1,18 @@
+[module]
+id             = "regulus/tools-mcp@0.1.0"
+name           = "MCP"
+requires_proto = "^1.2"
+
+# One way for agents to reach tools: an MCP server over stdio, which every ACP agent
+# must accept. The server is a small bridge process that forwards each call to the
+# tools box; another protocol is another engine module, not a change here.
+[[node]]
+type = "tools-mcp"
+name = "MCP"
+
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "tools.engine@1"
+  direction  = "input"
+  kind       = "uses"

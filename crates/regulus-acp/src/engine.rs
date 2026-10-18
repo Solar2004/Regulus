@@ -17,7 +17,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{Launch, Permissions, SessionOptions, Sessions, SetupRequest, State};
+use crate::{Launch, Permissions, SessionOptions, Sessions, SetupRequest, State, StdioServer};
+
+/// The tool protocol every ACP agent accepts (`session/new` takes MCP servers over stdio).
+const MCP_STDIO: &str = "mcp-stdio";
 
 /// The field every engine node has for how long its CLI may take to open a session.
 pub const STARTUP_FIELD: &str = "startup_seconds";
@@ -333,6 +336,24 @@ impl<E: AcpEngine> EngineModule<E> {
             eprintln!("regulus: node `{}`: {warning}", call.node.id);
             warnings.push(warning);
         }
+        let mut mcp_servers = Vec::new();
+        for mount in args.tools {
+            if mount.protocol == MCP_STDIO {
+                mcp_servers.push(StdioServer {
+                    name: mount.name,
+                    command: mount.command,
+                    args: mount.args,
+                    env: mount.env,
+                });
+            } else {
+                let warning = format!(
+                    "{} cannot mount `{}` tools: it speaks {MCP_STDIO}",
+                    self.manifest.module.name, mount.protocol
+                );
+                eprintln!("regulus: node `{}`: {warning}", call.node.id);
+                warnings.push(warning);
+            }
+        }
         let detected = self.engine.detect();
         let prepared = self
             .engine
@@ -361,6 +382,7 @@ impl<E: AcpEngine> EngineModule<E> {
             meta: prepared.meta,
             setup: prepared.setup,
             startup: Duration::from_secs_f64(startup.max(1.0)),
+            mcp_servers,
         };
         let (session_id, agent) = self
             .sessions

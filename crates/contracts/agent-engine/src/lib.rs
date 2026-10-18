@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 pub use regulus_contract_llm_endpoint::LlmEndpoint;
 pub use regulus_contract_skill::Skill;
+pub use regulus_contract_toolset::Mount;
 use serde::{Deserialize, Serialize};
 
 pub const CAPABILITY: &str = "agent.engine@1";
@@ -73,6 +74,10 @@ pub struct StartArgs {
     /// so it extends `@1`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<Skill>,
+    /// Tool servers to start with the session, each in the protocol it says. One the
+    /// engine does not speak is left out with a warning. Optional, so it extends `@1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Mount>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -88,6 +88,10 @@ enum Command {
         #[command(subcommand)]
         command: MsgCommand,
     },
+    /// The MCP bridge an agent starts to reach its tools. Not for people: it speaks MCP
+    /// on stdio and reads its binding from the environment.
+    #[command(name = "tools-mcp", hide = true)]
+    ToolsMcp,
     /// Secrets that workflows name as `secret:<name>`.
     Secret {
         #[command(subcommand)]
@@ -168,6 +172,7 @@ async fn main() -> Result<()> {
     };
     match cli.command {
         Command::Serve { port, without } => serve(config, port, without).await,
+        Command::ToolsMcp => tools_bridge(&client).await,
         Command::Call { method, params } => {
             let params: Value = serde_json::from_str(&params).context("params must be JSON")?;
             let result: Value = client.request(&method, params).await?;
@@ -398,7 +403,16 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.server.port = port;
     }
     config.modules.without.extend(without);
-    let (core, warnings) = regulus_core::assemble(&config, regulus_cli::modules::installed());
+    // Agents start the tools bridge as this same program, pointed at this same home.
+    let bridge = regulus_cli::modules::Bridge {
+        program: std::env::current_exe().context("cannot find this program's path")?,
+        args: vec![
+            "--home".into(),
+            config.home.to_string_lossy().into_owned(),
+            TOOLS_MCP_COMMAND.into(),
+        ],
+    };
+    let (core, warnings) = regulus_core::assemble(&config, regulus_cli::modules::hosted(bridge));
     for warning in warnings {
         eprintln!("regulus: {warning}");
     }
@@ -412,6 +426,49 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
     tokio::signal::ctrl_c().await?;
     running.stop().await;
     core.shutdown();
+    Ok(())
+}
+
+const TOOLS_MCP_COMMAND: &str = "tools-mcp";
+
+/// The tools box, reached through the core with the binding the agent was mounted with.
+struct ToolsBackend<'a> {
+    client: &'a Client<'a>,
+    binding: String,
+    runtime: tokio::runtime::Handle,
+}
+
+impl regulus_module_tools_mcp::Backend for ToolsBackend<'_> {
+    fn list(&self) -> Result<Vec<regulus_contract_tool::Spec>, String> {
+        let params = serde_json::json!({ "binding": self.binding });
+        self.runtime
+            .block_on(self.client.request("tools.list", params))
+            .map_err(|e| e.to_string())
+    }
+
+    fn call(&self, name: &str, args: Value) -> Result<(String, bool), String> {
+        let params = serde_json::json!({ "binding": self.binding, "name": name, "args": args });
+        let written: Value = self
+            .runtime
+            .block_on(self.client.request("tools.call", params))
+            .map_err(|e| e.to_string())?;
+        Ok((
+            written["text"].as_str().unwrap_or_default().to_string(),
+            written["error"].as_bool().unwrap_or(false),
+        ))
+    }
+}
+
+async fn tools_bridge(client: &Client<'_>) -> Result<()> {
+    let binding = std::env::var(regulus_module_tools_mcp::BINDING_ENV)
+        .with_context(|| format!("{} is not set", regulus_module_tools_mcp::BINDING_ENV))?;
+    let backend = ToolsBackend {
+        client,
+        binding,
+        runtime: tokio::runtime::Handle::current(),
+    };
+    // stdio is blocking; the runtime keeps serving the backend's requests meanwhile.
+    tokio::task::block_in_place(|| regulus_module_tools_mcp::serve(&backend, TOOLS_MCP_COMMAND))?;
     Ok(())
 }
 

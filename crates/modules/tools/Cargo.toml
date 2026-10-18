@@ -1,0 +1,15 @@
+[package]
+name = "regulus-module-tools"
+description = "Tools: presents the operations modules offer to agents, over a swappable protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+regulus-contract-tool.workspace = true
+regulus-contract-toolset.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -114,6 +114,37 @@ libre antes de entregar: pregunta cada `poll_ms` (500) y se rinde a los
 CLI: `regulus msg who` muestra nombre, estado y mensajes en cola. Probado con opencode y
 Claude: dos mensajes a un agente ocupado esperan su turno y se entregan en orden.
 
+**Paso 2, hecho (2026-10-18).** Tres módulos, cada uno cambiable por separado:
+
+| Pieza | Módulo | Qué sabe |
+|---|---|---|
+| Operaciones | `communication` (salida `tools`, `tool@1`) | `send`, `participants`, `inbox`; nada de MCP |
+| Caja Herramientas | `tools` (`tools` → `toolset`) | junta operaciones, nombre de quien llama, formato |
+| Motor | `tools-mcp` (`tools.engine@1`) | MCP por stdio; nada de mensajes |
+
+- `tool@1` (`tool.list`, `tool.call`): operaciones con esquema JSON; el resultado es
+  dato, no texto. `toolset@1` (`toolset.mount`) y `tools.engine@1`
+  (`tools.engine.mount`) comparten la forma `Mount` (protocolo, orden, argumentos,
+  entorno).
+- La caja Agente monta cada `toolset` **en nombre de su campo `name`**: el agente no
+  puede enviar como otro. Cada montaje recibe un vínculo aleatorio que viaja en el
+  entorno del puente, no en sus argumentos.
+- El formato es el campo `format` de la caja (`json`); TOON será otra opción ahí. El
+  protocolo es el motor: otro protocolo es otro módulo conectado a `engine`.
+- El motor ACP pasa los montajes `mcp-stdio` en `session/new`; uno que no hable el
+  protocolo se queda fuera con aviso. El puente es el mismo binario (`regulus
+  tools-mcp`, oculto) apuntando al mismo `--home`.
+- Los permisos de la caja Agente valen también para las herramientas: con `reject`,
+  Claude no puede llamarlas.
+
+Probado: Claude envió por su cuenta a opencode, se entregó por ACP y la respuesta quedó
+registrada; opencode leyó su bandeja con `inbox`.
+
+❓ **Abierto — el ciclo.** Agente → Canal (`participants`) → Herramientas → Agente es un
+ciclo. El core arranca los nodos de un ciclo en el orden declarado, y el agente necesita
+la caja y el canal ya activos para montar y listar. Hoy funciona solo si el canal y la
+caja se declaran antes que los agentes.
+
 ### 3.1 Conjunto base
 
 La IA es el centro del *propósito*, no de la *estructura*. Regulus viene de serie con los

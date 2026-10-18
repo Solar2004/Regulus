@@ -20,6 +20,7 @@ fn options(permissions: Permissions) -> SessionOptions {
         meta: None,
         setup: Vec::new(),
         startup: Duration::from_secs(10),
+        mcp_servers: Vec::new(),
     }
 }
 
