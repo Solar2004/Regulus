@@ -1,8 +1,9 @@
 import { ArrowRight, Blocks, FolderOpen, GitBranch, Home, LayoutTemplate, PackageOpen, Settings, SlidersHorizontal } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import Titlebar from "@/components/Titlebar";
 import { Button } from "@/components/ui/button";
 import { t, type LocaleKey } from "@/lib/i18n";
+import { useCore, type CoreSource, type CoreStatus } from "@/core/connection";
 import { useRegulusUi } from "@/store/useRegulusUi";
 import "@/shell.css";
 
@@ -61,14 +62,23 @@ function SettingsScene() {
   </div>;
 }
 
+function connectionLabel(status: CoreStatus, source: CoreSource): LocaleKey {
+  if (status === "loading") return "shell.connecting";
+  if (status === "incompatible") return "graph.incompatible";
+  if (status === "offline") return "shell.offline";
+  return source === "mock" ? "graph.mock" : "shell.connected";
+}
+
 export default function App() {
   const { view, setView, density } = useRegulusUi();
+  const { status, source, connect } = useCore();
+  useEffect(() => { connect(); }, [connect]);
   return <div className="regulus-shell" data-density={density}>
     <Titlebar />
     <div className="shell-body">
       <aside className="shell-navigation"><div className="workspace-label">{t("shell.global")}</div><nav aria-label={t("app.name")}>{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-label={t(label)} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}><Icon size={18} strokeWidth={1.5} /><span>{t(label as LocaleKey)}</span></button>)}</nav><div className="sidebar-bottom"><PackageOpen size={16} /><span>{t("settings.modulesEmpty")}</span></div></aside>
       <main className="shell-main">{view === "settings" ? <SettingsScene /> : view === "composition" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}><CompositionScene /></Suspense> : <HomeScene />}</main>
     </div>
-    <footer className="shell-status" role="status"><span>{t("shell.preview")}</span><span>{t(view === "composition" ? "graph.mock" : "shell.offline")}</span></footer>
+    <footer className="shell-status" role="status"><span>{t("shell.preview")}</span><span data-connection={status}>{t(connectionLabel(status, source))}</span></footer>
   </div>;
 }

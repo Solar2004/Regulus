@@ -57,6 +57,14 @@ Iconos y colores de cada estado: [`08-design-system.md`](08-design-system.md).
 - **Arranque:** la app nunca lanza un segundo core si el puerto responde a `hello`. El core
   auto-lanzado se desprende (cerrar la ventana no lo mata). `autostart = false` lo
   desactiva; sin core, la app muestra el comando exacto a ejecutar.
+- **Hecho (2026-10-18):** la conexión es una sola para toda la app (`src/core/connection.ts`).
+  En el escritorio, el shell lee `port` y `token` del home, la UI dice `hello` y, si nadie
+  responde, el shell lanza `regulus --home <home> serve` en su propio grupo de procesos y
+  espera el puerto nuevo. Lo configura `[client]` de `config.toml`: `autostart` (`true`),
+  `core_command` (vacío = `regulus` junto a la app, si no el del `PATH`) y
+  `start_timeout_ms` (5000). Lo que imprime el core lanzado va a `<home>/core.log`. En un
+  navegador sigue igual: `VITE_RPC_URL` o el mock. La lógica vive en `regulus_core::local`
+  para que la TUI la use también.
 
 ---
 

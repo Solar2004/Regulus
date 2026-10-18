@@ -18,6 +18,7 @@ const PORT_FILE: &str = "port";
 const PROFILES_DIR: &str = "profiles";
 const DATA_DIR: &str = "data";
 const SECRETS_FILE: &str = "secrets.toml";
+const CORE_LOG_FILE: &str = "core.log";
 const FILE_SOURCE: &str = "file";
 
 #[derive(Debug, thiserror::Error)]
@@ -106,6 +107,28 @@ impl Default for DataConfig {
     }
 }
 
+/// How clients (the app, the terminal UI) find a core, or start one when none answers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientConfig {
+    /// Start a core when none answers. Off, the client shows the command to run instead.
+    pub autostart: bool,
+    /// The program to start it with; empty looks next to the client, then on `PATH`.
+    pub core_command: PathBuf,
+    /// How long a started core has to write its port, in milliseconds.
+    pub start_timeout_ms: u64,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            autostart: true,
+            core_command: PathBuf::new(),
+            start_timeout_ms: 5000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -116,6 +139,7 @@ pub struct Config {
     pub modules: ModulesConfig,
     pub secrets: SecretsConfig,
     pub data: DataConfig,
+    pub client: ClientConfig,
 }
 
 /// `REGULUS_HOME`, or `~/.regulus`.
@@ -178,6 +202,11 @@ impl Config {
 
     pub fn port_path(&self) -> PathBuf {
         self.home.join(PORT_FILE)
+    }
+
+    /// Where a core started by a client writes what it prints.
+    pub fn core_log_path(&self) -> PathBuf {
+        self.home.join(CORE_LOG_FILE)
     }
 
     pub fn default_profiles_dir(&self) -> PathBuf {

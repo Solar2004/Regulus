@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod graph;
+pub mod local;
 pub mod module;
 pub mod profiles;
 pub mod registry;

@@ -3432,6 +3432,7 @@ dependencies = [
 name = "regulus-tauri"
 version = "0.1.0"
 dependencies = [
+ "regulus-core",
  "serde",
  "serde_json",
  "tauri",

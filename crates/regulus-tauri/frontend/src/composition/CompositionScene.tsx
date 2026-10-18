@@ -3,6 +3,7 @@ import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edg
 import { ArrowRight, Blocks, FileText, GitBranch, LockKeyhole, PackageOpen, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t } from "@/lib/i18n";
+import { useCore } from "@/core/connection";
 import { useComposition } from "./client";
 import type { CompositionNode, Profile, Workflow } from "./model";
 import "@xyflow/react/dist/style.css";
@@ -81,7 +82,8 @@ function NodeInspector({ node, workflow, profile, onOpenWorkflow, onClose }: {
 }
 
 export default function CompositionScene() {
-  const { status, profiles, retry } = useComposition();
+  const { status, reason, profiles, retry } = useComposition();
+  const source = useCore((s) => s.source);
   const [profileId, setProfileId] = useState<string | null>(null);
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -94,7 +96,7 @@ export default function CompositionScene() {
   return <section className="composition-scene">
     <header className="graph-toolbar"><div><h1>{t("canvas.title")}</h1><span className="graph-mode">{t("graph.readOnly")}</span></div>
       {status === "ready" && profile && <label>{t("graph.profile")}<select value={profile.id} onChange={(event) => { setProfileId(event.target.value); setWorkflowId(null); setSelected(null); }}>{profiles.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}
-      <span className="graph-source">{t("graph.mock")}</span>
+      <span className="graph-source">{t(source === "mock" ? "graph.mock" : "graph.core")}</span>
     </header>
     {status === "ready" && profile ? <>
       <nav className="workflow-tabs" aria-label={t("graph.workflows")}><button aria-current={activeWorkflow === "all" ? "page" : undefined} onClick={() => openWorkflow("all")}><GitBranch size={14} />{t("graph.all")}</button>{profile.workflows.map((workflow) => <button key={workflow.id} aria-current={activeWorkflow === workflow.id ? "page" : undefined} onClick={() => openWorkflow(workflow.id)}>{workflow.kind === "module" ? <Blocks size={14} /> : <GitBranch size={14} />}{workflow.name}</button>)}</nav>
@@ -116,6 +118,6 @@ export default function CompositionScene() {
         {graph.count === 0 && <div className="graph-empty-overlay"><PackageOpen size={32} /><p>{t("graph.emptyWorkflow")}</p></div>}
       </div>{selectedNode && <NodeInspector node={selectedNode.data.item} workflow={selectedNode.data.workflow} profile={profile} onOpenWorkflow={openWorkflow} onClose={() => setSelected(null)} />}</div>
       <footer className="graph-footer"><div><span className="wire-sample uses" />{t("graph.uses")}<span className="wire-sample then" />{t("graph.then")}</div><span>{graph.count} {t("graph.nodes")} · {graph.edges.length} {t("graph.connections")}</span><span>{t("graph.noExecution")}</span></footer>
-    </> : <div className="graph-connection-state" role="status"><GitBranch size={36} strokeWidth={1.25} /><h2>{t(status === "loading" ? "graph.loading" : status === "incompatible" ? "graph.incompatible" : status === "ready" ? "graph.noProfiles" : "graph.offline")}</h2><p>{t(status === "loading" ? "graph.loadingDescription" : status === "ready" ? "graph.noProfilesDescription" : "graph.offlineDescription")}</p>{status !== "loading" && <Button variant="outline" onClick={retry}>{t("graph.retry")}</Button>}</div>}
+    </> : <div className="graph-connection-state" role="status"><GitBranch size={36} strokeWidth={1.25} /><h2>{t(status === "loading" ? "graph.loading" : status === "incompatible" ? "graph.incompatible" : status === "ready" ? "graph.noProfiles" : "graph.offline")}</h2><p>{t(status === "loading" ? "graph.loadingDescription" : status === "ready" ? "graph.noProfilesDescription" : source === "mock" ? "graph.offlineDescription" : "graph.offlineCore")}</p>{reason && status !== "loading" && <code className="graph-reason">{reason}</code>}{status !== "loading" && <Button variant="outline" onClick={retry}>{t("graph.retry")}</Button>}</div>}
   </section>;
 }
