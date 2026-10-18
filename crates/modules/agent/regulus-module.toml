@@ -63,6 +63,12 @@ name = "Agent"
   kind        = "uses"
   cardinality = "many"
 
+  # The name channels know the agent by (`@name`). Empty: the node id.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""
+
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]
   id      = "workdir"

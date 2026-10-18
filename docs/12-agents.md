@@ -119,7 +119,7 @@ nada más. El código ACP es una librería compartida por los motores, no un mó
 
 **El contrato `agent.engine@1`:** `engine.detect` (instalaciones del PC),
 `engine.session.start` (`cwd`, `permissions`), `engine.session.prompt` (`text` →
-`stop_reason` + `text`) y `engine.session.stop`. Cambiar su forma es `agent.engine@2`. Los
+`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional) y `engine.session.stop`. Cambiar su forma es `agent.engine@2`. Los
 contratos de capacidad viven en `crates/contracts/<capacidad>`, no dentro de ningún módulo.
 
 **Cada motor anuncia además su propio método de detección** (`claude.detect`,

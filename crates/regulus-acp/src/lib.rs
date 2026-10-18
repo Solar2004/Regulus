@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -106,6 +106,18 @@ pub enum Error {
     Protocol(String),
 }
 
+/// Where a session stands, as far as its client can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    /// Waiting for a prompt.
+    Idle,
+    /// In a turn, maybe with more prompts queued behind it.
+    Busy,
+    /// The agent process is gone.
+    Ended,
+}
+
 type Reply = mpsc::Sender<Result<Turn, Error>>;
 
 /// Why the session's thread finished, set before it is marked done. A prompt that loses
@@ -131,6 +143,10 @@ impl Outcome {
             .unwrap_or_else(PoisonError::into_inner);
         state.1.clone()
     }
+
+    fn is_done(&self) -> bool {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).0
+    }
 }
 
 pub struct Session {
@@ -139,6 +155,8 @@ pub struct Session {
     prompts: async_mpsc::UnboundedSender<(String, Reply)>,
     cancel: Mutex<Option<oneshot::Sender<()>>>,
     outcome: Arc<Outcome>,
+    /// Prompts sent and not answered yet, the one in its turn included.
+    pending: AtomicUsize,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -175,6 +193,7 @@ impl Session {
             prompts,
             cancel: Mutex::new(Some(cancel)),
             outcome,
+            pending: AtomicUsize::new(0),
             thread: Some(thread),
         };
         match ready_rx.recv_timeout(startup) {
@@ -201,10 +220,23 @@ impl Session {
     /// If the agent dies meanwhile, the error carries what it said on the way out.
     pub fn prompt(&self, text: &str) -> Result<Turn, Error> {
         let (reply, answer) = mpsc::channel();
+        self.pending.fetch_add(1, Ordering::SeqCst);
         let sent = self.prompts.unbounded_send((text.to_string(), reply));
-        match sent.ok().and_then(|()| answer.recv().ok()) {
+        let answered = sent.ok().and_then(|()| answer.recv().ok());
+        self.pending.fetch_sub(1, Ordering::SeqCst);
+        match answered {
             Some(turn) => turn,
             None => Err(self.outcome.reason().map_or(Error::Closed, Error::Ended)),
+        }
+    }
+
+    pub fn state(&self) -> State {
+        if self.outcome.is_done() {
+            State::Ended
+        } else if self.pending.load(Ordering::SeqCst) > 0 {
+            State::Busy
+        } else {
+            State::Idle
         }
     }
 
@@ -383,6 +415,11 @@ impl Sessions {
     pub fn prompt(&self, key: &str, text: &str) -> Result<Turn, Error> {
         let session = self.live().get(key).cloned().ok_or(Error::Closed)?;
         session.prompt(text)
+    }
+
+    /// Where a session stands; a session closed or never opened has ended.
+    pub fn state(&self, key: &str) -> State {
+        self.live().get(key).map_or(State::Ended, |s| s.state())
     }
 
     /// Closes a session; a prompt in flight on it returns `Closed`. False if unknown.

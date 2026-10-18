@@ -105,6 +105,15 @@ que el agente quede libre, ACP como vía · 2 · Herramientas con motor MCP y fo
 4 · suscripciones, hilos e intención · 5 · PTY y relay. TOON y el protocolo propio
 quedan como puertas abiertas, sin construir.
 
+**Paso 1, hecho (2026-10-18).** `participant@1` gana `participant.describe`: nombre
+(`@nombre`, único en el canal), tipo y estado (`idle`, `busy`, `gone`, `unknown`). La caja
+Agente toma el nombre de su campo `name` (vacío: el id del nodo) y el estado de su motor
+por `engine.session.status`, que ACP conoce. El canal espera a que el participante quede
+libre antes de entregar: pregunta cada `poll_ms` (500) y se rinde a los
+`max_wait_seconds` (600); un participante que no dice su estado recibe sin esperar.
+CLI: `regulus msg who` muestra nombre, estado y mensajes en cola. Probado con opencode y
+Claude: dos mensajes a un agente ocupado esperan su turno y se entregan en orden.
+
 ### 3.1 Conjunto base
 
 La IA es el centro del *propósito*, no de la *estructura*. Regulus viene de serie con los

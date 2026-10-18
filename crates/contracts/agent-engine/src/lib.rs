@@ -20,6 +20,9 @@ pub const DETECT: &str = "engine.detect";
 pub const SESSION_START: &str = "engine.session.start";
 /// One turn: [`PromptArgs`] → [`Turn`].
 pub const SESSION_PROMPT: &str = "engine.session.prompt";
+/// Where a session stands: [`StatusArgs`] → [`Status`]. Optional: an engine without it
+/// answers `UnknownMethod` and the box reports the state as unknown.
+pub const SESSION_STATUS: &str = "engine.session.status";
 /// Ends a session and its process: [`StopArgs`] → `null`.
 pub const SESSION_STOP: &str = "engine.session.stop";
 
@@ -102,4 +105,25 @@ pub struct Turn {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopArgs {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusArgs {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionState {
+    /// Waiting for a prompt.
+    Idle,
+    /// In a turn.
+    Busy,
+    /// The session or its process is gone.
+    Ended,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    pub state: SessionState,
 }

@@ -2,7 +2,7 @@
 id             = "regulus/communication@0.1.0"
 name           = "Communication"
 requires_proto = "^1.2"
-methods        = ["comm.send", "comm.history"]
+methods        = ["comm.send", "comm.history", "comm.participants"]
 
 # The idea and the message model come from hcom; the code is Regulus's own
 # (docs/plan.md §4.1).
@@ -13,7 +13,8 @@ license = "MIT"
 honors  = "aannoo, author of hcom"
 
 # A channel delivers each message to the participants it names with @name, or to all of
-# them but the sender. Each participant gets its messages one at a time, in order.
+# them but the sender. Each participant gets its messages one at a time, in order, and
+# only once it is free: a busy agent is asked again every `poll_ms`.
 [[node]]
 type = "channel"
 name = "Channel"
@@ -25,3 +26,15 @@ name = "Channel"
   direction   = "input"
   kind        = "uses"
   cardinality = "many"
+
+  # How often to ask a busy participant whether it is free.
+  [[node.field]]
+  id      = "poll_ms"
+  type    = "number"
+  default = 500
+
+  # How long a message waits for a busy participant before it is given up.
+  [[node.field]]
+  id      = "max_wait_seconds"
+  type    = "number"
+  default = 600

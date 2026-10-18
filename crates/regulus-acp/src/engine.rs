@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{Launch, Permissions, SessionOptions, Sessions, SetupRequest};
+use crate::{Launch, Permissions, SessionOptions, Sessions, SetupRequest, State};
 
 /// The field every engine node has for how long its CLI may take to open a session.
 pub const STARTUP_FIELD: &str = "startup_seconds";
@@ -425,6 +425,16 @@ impl<E: AcpEngine> Module for EngineModule<E> {
                     stop_reason: turn.stop_reason,
                     text: turn.text,
                 })
+            }
+            contract::SESSION_STATUS => {
+                let call: NodeCall = parse(params)?;
+                let args: contract::StatusArgs = parse(call.args)?;
+                let state = match self.sessions.state(&args.session_id) {
+                    State::Idle => contract::SessionState::Idle,
+                    State::Busy => contract::SessionState::Busy,
+                    State::Ended => contract::SessionState::Ended,
+                };
+                json(contract::Status { state })
             }
             contract::SESSION_STOP => {
                 let call: NodeCall = parse(params)?;

@@ -3,6 +3,10 @@
 //! `participant@1`; for an agent that is a prompt in its session, the way hcom typed into
 //! the agent's terminal (docs/old/07-ecosystem.md §1.4).
 //!
+//! A participant says who it is and whether it is free (`participant.describe`); the
+//! channel waits while it is busy, so a message never lands in the middle of a turn. How
+//! the message reaches it (an ACP prompt for an agent) is the participant's business.
+//!
 //! What a participant answers is recorded, not delivered: an agent writes to another one
 //! on purpose, never as a side effect of answering. Every message is kept in the channel
 //! node's own directory, so the history outlives executions.
@@ -11,11 +15,12 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use regulus_contract_participant::{Delivery, Reply, DELIVER};
+use regulus_contract_participant::{Delivery, Identity, Reply, State, DELIVER, DESCRIBE};
 use regulus_core::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Manifest, NodeCall};
 use serde::{Deserialize, Serialize};
@@ -24,6 +29,10 @@ use serde_json::Value;
 const MANIFEST: &str = include_str!("../regulus-module.toml");
 const SEND: &str = "comm.send";
 const HISTORY: &str = "comm.history";
+const PARTICIPANTS: &str = "comm.participants";
+const POLL_FIELD: &str = "poll_ms";
+const MAX_WAIT_FIELD: &str = "max_wait_seconds";
+const CHANNEL: &str = "channel";
 const PARTICIPANTS_PORT: &str = "participants";
 const LOG_FILE: &str = "messages.jsonl";
 
@@ -52,6 +61,22 @@ struct SendParams {
     /// `user` unless told otherwise).
     from: String,
     text: String,
+}
+
+#[derive(Deserialize)]
+struct ChannelParams {
+    execution_id: String,
+    node_id: String,
+}
+
+/// A participant as `comm.participants` shows it.
+#[derive(Serialize)]
+struct Seen {
+    #[serde(flatten)]
+    identity: Identity,
+    node: String,
+    /// Messages waiting for it, the one being delivered included.
+    queued: usize,
 }
 
 #[derive(Deserialize)]
@@ -110,12 +135,45 @@ impl Log {
     }
 }
 
+/// How a channel waits for a busy participant, from its fields.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    poll: Duration,
+    max_wait: Duration,
+}
+
+impl Pace {
+    /// From a field reader; `setting` gives the node's value or the manifest default.
+    fn read<'a>(setting: impl Fn(&str) -> Option<&'a Value>) -> Self {
+        let number = |field| {
+            setting(field)
+                .and_then(Value::as_f64)
+                .unwrap_or_default()
+                .max(0.0)
+        };
+        Self {
+            poll: Duration::from_secs_f64(number(POLL_FIELD) / 1000.0)
+                .max(Duration::from_millis(1)),
+            max_wait: Duration::from_secs_f64(number(MAX_WAIT_FIELD)),
+        }
+    }
+}
+
 /// One message on its way to one participant.
 struct Job {
     to: Endpoint,
+    /// Its name in the channel.
+    name: String,
     delivery: Delivery,
     message_id: u64,
     log: PathBuf,
+    pace: Pace,
+}
+
+/// A participant's queue and how many messages wait in it.
+struct Queue {
+    jobs: Sender<Job>,
+    waiting: Arc<AtomicUsize>,
 }
 
 pub struct Communication {
@@ -123,7 +181,23 @@ pub struct Communication {
     ctx: ModuleCtx,
     log: Arc<Log>,
     /// One queue per participant of a running execution: `<execution>/<node>`.
-    queues: Mutex<HashMap<String, Sender<Job>>>,
+    queues: Mutex<HashMap<String, Queue>>,
+    /// The pace of each started channel; one not started (yet) uses the defaults.
+    paces: Mutex<HashMap<NodeRef, Pace>>,
+}
+
+/// Who a participant is. One that does not say is named after its node.
+fn identify(ctx: &ModuleCtx, endpoint: &Endpoint) -> Identity {
+    let unknown = || Identity {
+        name: endpoint.node().node_id.clone(),
+        kind: String::new(),
+        state: State::Unknown,
+    };
+    ctx.call(endpoint, DESCRIBE, Value::Null)
+        .ok()
+        .and_then(|answer| serde_json::from_value::<Identity>(answer).ok())
+        .filter(|identity| !identity.name.trim().is_empty())
+        .unwrap_or_else(unknown)
 }
 
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ModuleError> {
@@ -189,7 +263,50 @@ impl Communication {
             ctx: ModuleCtx::default(),
             log: Arc::default(),
             queues: Mutex::default(),
+            paces: Mutex::default(),
         }
+    }
+
+    fn pace(&self, channel: &NodeRef) -> Pace {
+        let started = self
+            .paces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(channel)
+            .copied();
+        started.unwrap_or_else(|| {
+            let channel = self.manifest.node_type(CHANNEL);
+            Pace::read(|field| channel?.field(field)?.default.as_ref())
+        })
+    }
+
+    /// The participants wired into a channel, with who they say they are.
+    fn participants(&self, channel: &NodeRef) -> Result<Vec<(Endpoint, Identity)>, ModuleError> {
+        let wired = self.ctx.resolve(channel, PARTICIPANTS_PORT);
+        if wired.is_empty() {
+            return Err(ModuleError::Failed(format!(
+                "no channel `{}` with participants in execution `{}`",
+                channel.node_id, channel.execution_id
+            )));
+        }
+        let found: Vec<(Endpoint, Identity)> = wired
+            .into_iter()
+            .map(|endpoint| {
+                let identity = identify(&self.ctx, &endpoint);
+                (endpoint, identity)
+            })
+            .collect();
+        for (i, (endpoint, identity)) in found.iter().enumerate() {
+            if let Some((other, _)) = found[..i].iter().find(|(_, o)| o.name == identity.name) {
+                return Err(ModuleError::Failed(format!(
+                    "`{}` and `{}` are both called @{}: rename one",
+                    other.node().node_id,
+                    endpoint.node().node_id,
+                    identity.name
+                )));
+            }
+        }
+        Ok(found)
     }
 
     fn log_path(&self, channel: &NodeRef) -> Result<PathBuf, ModuleError> {
@@ -205,14 +322,8 @@ impl Communication {
         if text.is_empty() {
             return Err(ModuleError::InvalidParams("the message is empty".into()));
         }
-        let wired = self.ctx.resolve(&channel, PARTICIPANTS_PORT);
-        if wired.is_empty() {
-            return Err(ModuleError::Failed(format!(
-                "no channel `{}` with participants in execution `{}`",
-                channel.node_id, channel.execution_id
-            )));
-        }
-        let names: Vec<String> = wired.iter().map(|e| e.node().node_id.clone()).collect();
+        let wired = self.participants(&channel)?;
+        let names: Vec<String> = wired.iter().map(|(_, i)| i.name.clone()).collect();
         let from = params.from.trim().to_string();
         if from.is_empty() || from.contains(char::is_whitespace) {
             return Err(ModuleError::InvalidParams(format!(
@@ -236,9 +347,11 @@ impl Communication {
                 },
             )
             .map_err(ModuleError::Failed)?;
-        for endpoint in wired.into_iter().filter(|e| to.contains(&e.node().node_id)) {
+        let pace = self.pace(&channel);
+        for (endpoint, identity) in wired.into_iter().filter(|(_, i)| to.contains(&i.name)) {
             self.enqueue(Job {
                 to: endpoint,
+                name: identity.name,
                 delivery: Delivery {
                     channel: channel.node_id.clone(),
                     from: from.clone(),
@@ -246,6 +359,7 @@ impl Communication {
                 },
                 message_id: message.id,
                 log: log.clone(),
+                pace,
             });
         }
         json(Sent { id: message.id, to })
@@ -255,28 +369,80 @@ impl Communication {
         let key = format!("{}/{}", job.to.node().execution_id, job.to.node().node_id);
         let mut queues = self.queues.lock().unwrap_or_else(PoisonError::into_inner);
         let job = match queues.get(&key) {
-            Some(queue) => match queue.send(job) {
-                Ok(()) => return,
-                // Its worker is gone: start a new one with the same job.
-                Err(mpsc::SendError(job)) => job,
-            },
+            Some(queue) => {
+                queue.waiting.fetch_add(1, Ordering::SeqCst);
+                match queue.jobs.send(job) {
+                    Ok(()) => return,
+                    // Its worker is gone: start a new one with the same job.
+                    Err(mpsc::SendError(job)) => job,
+                }
+            }
             None => job,
         };
-        let (queue, jobs) = mpsc::channel::<Job>();
-        let (ctx, log) = (self.ctx.clone(), self.log.clone());
+        let (sender, jobs) = mpsc::channel::<Job>();
+        let waiting = Arc::new(AtomicUsize::new(1));
+        let (ctx, log, left) = (self.ctx.clone(), self.log.clone(), waiting.clone());
         std::thread::spawn(move || {
             for job in jobs {
                 deliver(&ctx, &log, job);
+                left.fetch_sub(1, Ordering::SeqCst);
             }
         });
-        let _ = queue.send(job);
-        queues.insert(key, queue);
+        let _ = sender.send(job);
+        queues.insert(
+            key,
+            Queue {
+                jobs: sender,
+                waiting,
+            },
+        );
+    }
+
+    fn start(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let pace = Pace::read(|field| self.manifest.setting(&call.node, field));
+        let me = NodeRef {
+            execution_id: call.execution_id,
+            node_id: call.node.id,
+        };
+        self.paces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(me, pace);
+        Ok(Value::Null)
+    }
+
+    fn list(&self, params: ChannelParams) -> Result<Value, ModuleError> {
+        let channel = NodeRef {
+            execution_id: params.execution_id,
+            node_id: params.node_id,
+        };
+        let queues = self.queues.lock().unwrap_or_else(PoisonError::into_inner);
+        let seen: Vec<Seen> = self
+            .participants(&channel)?
+            .into_iter()
+            .map(|(endpoint, identity)| {
+                let node = endpoint.node();
+                let key = format!("{}/{}", node.execution_id, node.node_id);
+                Seen {
+                    identity,
+                    node: node.node_id.clone(),
+                    queued: queues
+                        .get(&key)
+                        .map_or(0, |q| q.waiting.load(Ordering::SeqCst)),
+                }
+            })
+            .collect();
+        json(seen)
     }
 
     /// Drops the queues of an execution's participants once its channel stops; messages
     /// already queued are still delivered or fail on their own.
     fn stop(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let prefix = format!("{}/", call.execution_id);
+        self.paces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|node, _| node.execution_id != call.execution_id);
         self.queues
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -298,12 +464,36 @@ impl Communication {
     }
 }
 
+/// Waits until the participant can take a message: busy waits up to `max_wait`, gone
+/// fails at once, unknown does not wait.
+fn wait_free(ctx: &ModuleCtx, job: &Job) -> Result<(), ModuleError> {
+    let since = Instant::now();
+    loop {
+        match identify(ctx, &job.to).state {
+            State::Idle | State::Unknown => return Ok(()),
+            State::Gone => {
+                return Err(ModuleError::Failed(format!("@{} is not running", job.name)))
+            }
+            State::Busy if since.elapsed() >= job.pace.max_wait => {
+                return Err(ModuleError::Failed(format!(
+                    "@{} stayed busy for more than {} s",
+                    job.name,
+                    job.pace.max_wait.as_secs()
+                )))
+            }
+            State::Busy => std::thread::sleep(job.pace.poll),
+        }
+    }
+}
+
 /// Hands one message to one participant and records what it answered, or why it failed.
 fn deliver(ctx: &ModuleCtx, log: &Log, job: Job) {
-    let participant = job.to.node().node_id.clone();
+    let participant = job.name.clone();
     let sender = job.delivery.from.clone();
-    let outcome = serde_json::to_value(&job.delivery)
-        .map_err(|e| ModuleError::Failed(e.to_string()))
+    let outcome = wait_free(ctx, &job)
+        .and_then(|()| {
+            serde_json::to_value(&job.delivery).map_err(|e| ModuleError::Failed(e.to_string()))
+        })
         .and_then(|args| ctx.call(&job.to, DELIVER, args))
         .and_then(parse::<Reply>);
     let (text, error) = match outcome {
@@ -345,6 +535,8 @@ impl Module for Communication {
         match name {
             SEND => self.send(parse(params)?),
             HISTORY => self.history(parse(params)?),
+            PARTICIPANTS => self.list(parse(params)?),
+            method::NODE_START => self.start(parse(params)?),
             method::NODE_STOP => self.stop(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }

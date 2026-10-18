@@ -13,6 +13,36 @@ pub const CAPABILITY: &str = "participant@1";
 /// It may take as long as the participant needs to answer, an agent's whole turn.
 pub const DELIVER: &str = "participant.deliver";
 
+/// Who the participant is and whether it can take a message now: `NodeCall` → [`Identity`].
+/// Optional: a participant without it is named after its node, in an unknown state.
+pub const DESCRIBE: &str = "participant.describe";
+
+/// Whether a participant can take a message right now. The channel waits while it is
+/// busy, so a message never lands in the middle of someone else's turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Idle,
+    Busy,
+    /// Not running: nothing can be delivered.
+    Gone,
+    /// It does not say; the channel delivers without waiting.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    /// The name others mention it by, `@name`. Unique in a channel.
+    pub name: String,
+    /// What it is: `agent`, `person`, `script`… Informative only.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    #[serde(default)]
+    pub state: State,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivery {
     /// The channel node the message went through.

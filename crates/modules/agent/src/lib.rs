@@ -21,6 +21,9 @@ const PROMPT: &str = "agent.prompt";
 const ENGINE_PORT: &str = "engine";
 const PROVIDER_PORT: &str = "provider";
 const SKILLS_PORT: &str = "skills";
+const NAME_FIELD: &str = "name";
+/// What the box says it is to channels.
+const KIND: &str = "agent";
 
 /// A started agent node: the engine behind it and the session it opened there.
 struct Running {
@@ -178,6 +181,47 @@ impl Agent {
         Ok(Value::Null)
     }
 
+    /// The agent as a participant: its name and where its session stands, asked to the
+    /// engine (ACP knows when a turn is running).
+    fn describe(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let name = self
+            .manifest
+            .setting(&call.node, NAME_FIELD)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&call.node.id)
+            .to_string();
+        let me = NodeRef {
+            execution_id: call.execution_id,
+            node_id: call.node.id,
+        };
+        let running = self
+            .running()
+            .get(&me)
+            .map(|r| (r.engine.clone(), r.session_id.clone()));
+        let state = match running {
+            None => participant::State::Gone,
+            Some((engine, session_id)) => {
+                let args = json(engine::StatusArgs { session_id })?;
+                match self.ctx.call(&engine, engine::SESSION_STATUS, args) {
+                    Ok(answer) => match parse::<engine::Status>(answer)?.state {
+                        engine::SessionState::Idle => participant::State::Idle,
+                        engine::SessionState::Busy => participant::State::Busy,
+                        engine::SessionState::Ended => participant::State::Gone,
+                    },
+                    Err(ModuleError::UnknownMethod(_)) => participant::State::Unknown,
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        json(participant::Identity {
+            name,
+            kind: KIND.into(),
+            state,
+        })
+    }
+
     /// A message from a channel, prompted into the session as the user would type it.
     fn deliver(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let delivery: participant::Delivery = parse(call.args)?;
@@ -237,6 +281,7 @@ impl Module for Agent {
             method::NODE_START => self.start(parse(params)?),
             method::NODE_STOP => self.stop(parse(params)?),
             PROMPT => self.prompt(parse(params)?),
+            participant::DESCRIBE => self.describe(parse(params)?),
             participant::DELIVER => self.deliver(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }

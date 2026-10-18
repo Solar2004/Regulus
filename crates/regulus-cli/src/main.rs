@@ -130,6 +130,8 @@ enum MsgCommand {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
+    /// Who is in the channel: name, what it is, whether it is free, messages waiting.
+    Who { execution: String, channel: String },
     /// The channel's messages and answers, oldest first.
     Log {
         execution: String,
@@ -265,6 +267,26 @@ async fn main() -> Result<()> {
                     .filter_map(Value::as_str)
                     .collect();
                 println!("#{} → {}", sent["id"], to.join(", "));
+                Ok(())
+            }
+            MsgCommand::Who { execution, channel } => {
+                let params = serde_json::json!({ "execution_id": execution, "node_id": channel });
+                let seen: Vec<Value> = client.request("comm.participants", params).await?;
+                for p in seen {
+                    let kind = p["kind"].as_str().unwrap_or_default();
+                    println!(
+                        "@{} ({}{}) {} · {} queued",
+                        p["name"].as_str().unwrap_or_default(),
+                        p["node"].as_str().unwrap_or_default(),
+                        if kind.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {kind}")
+                        },
+                        p["state"].as_str().unwrap_or("unknown"),
+                        p["queued"]
+                    );
+                }
                 Ok(())
             }
             MsgCommand::Log {
