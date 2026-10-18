@@ -117,6 +117,10 @@ pub struct ClientConfig {
     pub core_command: PathBuf,
     /// How long a started core has to write its port, in milliseconds.
     pub start_timeout_ms: u64,
+    /// Play the opening animation. It never delays the first screen; any key skips it.
+    pub intro: bool,
+    /// How often a client asks the core what is running, in milliseconds.
+    pub refresh_ms: u64,
 }
 
 impl Default for ClientConfig {
@@ -125,6 +129,8 @@ impl Default for ClientConfig {
             autostart: true,
             core_command: PathBuf::new(),
             start_timeout_ms: 5000,
+            intro: true,
+            refresh_ms: 1000,
         }
     }
 }

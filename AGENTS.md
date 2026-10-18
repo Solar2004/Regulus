@@ -16,7 +16,8 @@ se rompa.
 **Estado:** la base funciona (`regulus serve`, CLI, módulo `hello`, matriz de ablación) y
 el canvas carga del core real; la caja Agente corre Claude Code y opencode por ACP, con
 proveedores (plantillas, ranuras, suscripción de Claude), skills, perfil aislado y
-secretos, y un canal de Comunicación entre agentes. **Lo siguiente: que los agentes
+secretos, un canal de Comunicación entre agentes, y una TUI (`regulus` sin comando)
+con la vista Operar. **Lo siguiente: que los agentes
 envíen mensajes por su cuenta (herramienta MCP).** La pasarela de proveedores queda
 aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 

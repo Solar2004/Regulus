@@ -62,7 +62,7 @@ Iconos y colores de cada estado: [`08-design-system.md`](08-design-system.md).
   responde, el shell lanza `regulus --home <home> serve` en su propio grupo de procesos y
   espera el puerto nuevo. Lo configura `[client]` de `config.toml`: `autostart` (`true`),
   `core_command` (vacío = `regulus` junto a la app, si no el del `PATH`) y
-  `start_timeout_ms` (5000). Lo que imprime el core lanzado va a `<home>/core.log`. En un
+  `start_timeout_ms` (5000), más `intro` y `refresh_ms` para la TUI (§7). Lo que imprime el core lanzado va a `<home>/core.log`. En un
   navegador sigue igual: `VITE_RPC_URL` o el mock. La lógica vive en `regulus_core::local`
   para que la TUI la use también.
 
@@ -84,3 +84,35 @@ clientes miran proyectos distintos contra el mismo core.
   (`frontend/src/locales/`). Prohibido escribir textos visibles directamente en un `.tsx`.
 - **Solo tema oscuro visible**, pero todos los colores pasan por variables CSS de
   [`08-design-system.md`](08-design-system.md). Prohibido hardcodear colores.
+
+---
+
+## 7. La TUI
+
+✅ **DECIDIDO** (2026-10-18, Alexander) — `regulus` sin comando, en una terminal, abre una
+interfaz a pantalla completa hecha con `ratatui` (versión en
+[`06-stack.md`](06-stack.md) §2.1). Es un cliente más: vive en el mismo binario, encuentra
+o lanza el core con `regulus_core::local` (§4) y habla el mismo protocolo que la app. Si
+la entrada o la salida no son una terminal (scripts, pipes), imprime la ayuda y sale con
+código 2, como antes; los comandos (`run`, `msg send`…) no cambian.
+
+- **Primera versión: la vista Operar.** Perfiles (Enter ejecuta), ejecuciones (`s` para),
+  nodos de la ejecución con su estado (§3) y, a la derecha, lo que dice el nodo elegido:
+  la conversación con un agente (`agent.prompt`) o el canal con sus participantes
+  (`comm.history`, `comm.participants`, `comm.send` como `user`). Cada acción tiene su
+  comando de CLI.
+- **Qué es cada nodo se sabe por capacidad, nunca por módulo:** agente = tiene una entrada
+  `agent.engine`; canal = tiene una entrada `participant`. Sin el módulo, el nodo sale
+  como *no instalado* y lo demás sigue.
+- **La intro:** REGULUS letra a letra, brilla y se desvanece. No retrasa nada: la conexión
+  ocurre mientras tanto, cualquier tecla la salta, y con el core ya en marcha dura
+  < 1 s (lo comprueba un test). `client.intro = false` la apaga.
+- **Refresco:** sin bus todavía, pregunta al core cada `client.refresh_ms` (1000) qué
+  corre y, si hay un canal elegido, sus mensajes.
+- **Colores:** los de `assets/design/palette.json`, el mismo fichero del que salen los
+  tokens de la app. Un estado es siempre símbolo + palabra, nunca solo color; en la
+  terminal no hay SVG, así que el símbolo es un glifo.
+- **Textos en inglés en el código**, como los de la CLI. Si llega la traducción a la
+  terminal, se sacan a un fichero.
+- La conversación con un agente es de la sesión de la TUI: el core aún no guarda los
+  turnos. Las ejecuciones necesitan `profile_id` (protocolo 1.4) para saber sus nodos.

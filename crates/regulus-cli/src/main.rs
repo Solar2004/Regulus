@@ -7,14 +7,12 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
-use jsonrpsee::core::client::ClientT;
-use jsonrpsee::core::params::ObjectParams;
-use jsonrpsee::ws_client::{HeaderMap, WsClient, WsClientBuilder};
+use clap::{CommandFactory, Parser, Subcommand};
+use jsonrpsee::ws_client::WsClient;
+use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
-    method, Execution, ExecutionState, HelloParams, HelloResult, ModuleSummary, Profile,
-    ProfileSummary, WireKind, PROTOCOL,
+    method, Execution, ExecutionState, ModuleSummary, Profile, ProfileSummary, WireKind, PROTOCOL,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -34,8 +32,9 @@ struct Cli {
     /// Seconds to wait for an answer. Agent turns can take minutes.
     #[arg(long, global = true, default_value_t = 600)]
     timeout: u64,
+    /// Without a command, on a terminal, opens the terminal UI.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -170,7 +169,15 @@ async fn main() -> Result<()> {
         config: &config,
         timeout: Duration::from_secs(cli.timeout),
     };
-    match cli.command {
+    let Some(command) = cli.command else {
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return regulus_cli::tui::run(config.clone(), client.timeout).await;
+        }
+        // Scripts and pipes get the usage, as a missing command always gave them.
+        Cli::command().print_help()?;
+        std::process::exit(2);
+    };
+    match command {
         Command::Serve { port, without } => serve(config, port, without).await,
         Command::ToolsMcp => tools_bridge(&client).await,
         Command::Call { method, params } => {
@@ -482,63 +489,18 @@ impl Client<'_> {
     /// Connects and says `hello`.
     async fn connect(&self) -> Result<WsClient> {
         let config = self.config;
-        let port = std::fs::read_to_string(config.port_path()).with_context(|| {
+        let endpoint = regulus_core::local::endpoint(config).with_context(|| {
             format!(
                 "no running core: {} is missing",
                 config.port_path().display()
             )
         })?;
-        let token = std::fs::read_to_string(config.token_path())
-            .with_context(|| format!("cannot read {}", config.token_path().display()))?;
-        let mut headers = HeaderMap::new();
-        headers.insert("Authorization", format!("Bearer {}", token.trim()).parse()?);
-        let url = format!("ws://{}:{}/", config.server.host, port.trim());
-        let client = WsClientBuilder::default()
-            .set_headers(headers)
-            .request_timeout(self.timeout)
-            .build(&url)
-            .await
-            .with_context(|| format!("cannot connect to {url}"))?;
-        let hello = HelloParams {
-            client: CLIENT_NAME.into(),
-            proto: Some(PROTOCOL.into()),
-        };
-        let answer: HelloResult = client
-            .request(method::HELLO, object(serde_json::to_value(hello)?)?)
-            .await?;
-        if !answer.compatible {
-            bail!(
-                "core {} speaks protocol {}, this client speaks {PROTOCOL}",
-                answer.core,
-                answer.proto
-            );
-        }
-        Ok(client)
+        Ok(rpc::connect(&endpoint, CLIENT_NAME, self.timeout).await?.0)
     }
 
-    /// A call error from the core is shown as its message alone.
     async fn request<T: DeserializeOwned>(&self, name: &str, params: Value) -> Result<T> {
-        match self.connect().await?.request(name, object(params)?).await {
-            Ok(value) => Ok(value),
-            Err(jsonrpsee::core::client::Error::Call(error)) => bail!("{}", error.message()),
-            Err(error) => Err(error.into()),
-        }
+        rpc::call(&self.connect().await?, name, params).await
     }
-}
-
-/// The protocol takes named parameters only; `null` means none.
-fn object(params: Value) -> Result<ObjectParams> {
-    let mut out = ObjectParams::new();
-    match params {
-        Value::Null => {}
-        Value::Object(map) => {
-            for (key, value) in map {
-                out.insert(&key, value)?;
-            }
-        }
-        other => bail!("params must be a JSON object, got {other}"),
-    }
-    Ok(out)
 }
 
 fn print_graph(profile: &Profile) {

@@ -25,6 +25,7 @@ regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client"] }
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
