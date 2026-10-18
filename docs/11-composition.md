@@ -73,6 +73,38 @@ Claude en el mismo canal, y con `--without regulus/communication` las cajas sigu
 funcionando. Falta que un agente pueda **enviar** por su cuenta: una herramienta MCP en
 su sesión. El inyector de PTY de hcom, para agentes sin ACP, sigue aplazado.
 
+### 3.0 Comunicación como caja líquida
+
+✅ **DECIDIDO (Alexander, 2026-10-18).** La base de arriba era un método fijo, no una
+caja. Comunicación es un módulo propio (no lanza hcom) y **ACP es su corazón para
+entregar y observar**, pero solo como una vía más.
+
+**Qué hace y cómo llega van separados.** Cada capa es su propio módulo:
+
+```
+ Comunicación          Herramientas (módulo aparte)       Agente
+ send · list · inbox → motor: MCP │ propio │ CLI      → ranura tools
+ (operaciones)          formato: JSON │ TOON │ …
+```
+
+- **Comunicación** ofrece operaciones con nombre y tipos por una capacidad neutra
+  (`tool@1`, nombre provisional). No sabe qué es MCP.
+- **Herramientas** recoge operaciones de cualquier módulo y se las presenta al agente.
+  Motor intercambiable (MCP hoy; protocolo propio o vía CLI mañana) y **formato como
+  envoltura** (JSON hoy; TOON u otro mañana). Otras cosas que hablen protocolos de fuera
+  seguirán la misma regla: el protocolo es un módulo aparte de lo que transporta.
+- **Agente** tiene una ranura `tools` y monta lo que le conecten (ACP pasa los servidores
+  al abrir la sesión).
+
+Límite conocido: Claude Code y opencode solo aceptan herramientas por MCP, que exige
+JSON-RPC por fuera; con ellos, otro formato solo cabe dentro de los resultados.
+
+**Orden:** 1 · reformar en caja: identidad por agente, estado vía ACP, cola que espera a
+que el agente quede libre, ACP como vía · 2 · Herramientas con motor MCP y formato JSON
+(send/list/inbox) · 3 · observar y choques: ediciones vistas por ACP, aviso < 30 s ·
+4 · suscripciones, hilos e intención · 5 · PTY y relay. TOON y el protocolo propio
+quedan como puertas abiertas, sin construir.
+
 ### 3.1 Conjunto base
 
 La IA es el centro del *propósito*, no de la *estructura*. Regulus viene de serie con los

@@ -160,7 +160,7 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Comunicación**: que un agente envíe por su cuenta, con una herramienta MCP (`11-composition.md` §3) | nada |
+| 1 | **Comunicación como caja** y módulo **Herramientas** aparte (MCP es un motor), 5 pasos (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
 ---

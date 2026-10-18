@@ -60,6 +60,7 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 4b | Proveedores, perfil aislado y secretos (`12-agents.md` §6) | — | ✅ hecho (2026-10-17) |
 | 4c | Proveedores como caja líquida: plantillas, ranuras, suscripción (`12-agents.md` §7); la pasarela, aplazada | — | ✅ base (2026-10-17) |
 | 4d | Skills (`12-agents.md` §3) y Comunicación, base (`11-composition.md` §3) | — | ✅ base (2026-10-18) |
+| 4e | Comunicación como caja y módulo Herramientas, 5 pasos (`11-composition.md` §3.0) | — | en curso |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar | ~1 sem | — |
 | 6 | Vista Operar con ejecuciones reales | ~1 sem | — |
 
