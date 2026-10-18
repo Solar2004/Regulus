@@ -146,6 +146,12 @@ La entrada `participants` del canal es `lazy`: el canal solo la lee en marcha, a
 `start_order` ignora sus cables y arranca canal → caja → agentes, se declaren como se
 declaren. El core solo mira el flag del puerto, no el módulo.
 
+✅ **El bucle** (Alexander, 2026-10-18). Dos agentes pueden contestarse sin fin por
+`send`. El canal limita los envíos de cada agente por la herramienta: campos
+`send_limit` (10) y `send_window_seconds` (60); 0 es sin límite. Pasado el límite, `send`
+devuelve un error que el agente lee. Lo que envía una persona por la CLI no cuenta.
+Probado: un agente que reintentaba sin parar quedó en `send_limit` envíos por ventana.
+
 ### 3.1 Conjunto base
 
 La IA es el centro del *propósito*, no de la *estructura*. Regulus viene de serie con los

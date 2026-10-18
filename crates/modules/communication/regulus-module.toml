@@ -55,3 +55,16 @@ name = "Channel"
   id      = "inbox_limit"
   type    = "number"
   default = 20
+
+  # How many messages one agent may send through the `send` tool in a window, so two
+  # agents cannot answer each other forever; 0 is no limit.
+  [[node.field]]
+  id      = "send_limit"
+  type    = "number"
+  default = 10
+
+  # The window `send_limit` counts in.
+  [[node.field]]
+  id      = "send_window_seconds"
+  type    = "number"
+  default = 60

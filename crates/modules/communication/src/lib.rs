@@ -10,8 +10,12 @@
 //! What a participant answers is recorded, not delivered: an agent writes to another one
 //! on purpose, never as a side effect of answering. Every message is kept in the channel
 //! node's own directory, so the history outlives executions.
+//!
+//! Two agents can keep writing to each other forever, so what an agent sends through the
+//! `send` tool is limited per sender: at most `send_limit` messages every
+//! `send_window_seconds`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -34,6 +38,8 @@ const PARTICIPANTS: &str = "comm.participants";
 const POLL_FIELD: &str = "poll_ms";
 const MAX_WAIT_FIELD: &str = "max_wait_seconds";
 const INBOX_FIELD: &str = "inbox_limit";
+const SEND_LIMIT_FIELD: &str = "send_limit";
+const SEND_WINDOW_FIELD: &str = "send_window_seconds";
 // The operations the channel offers over `tool@1`.
 const TOOL_SEND: &str = "send";
 const TOOL_WHO: &str = "participants";
@@ -141,11 +147,15 @@ impl Log {
     }
 }
 
-/// How a channel waits for a busy participant, from its fields.
+/// How a channel waits for a busy participant and how fast agents may send, from its
+/// fields.
 #[derive(Debug, Clone, Copy)]
 struct Pace {
     poll: Duration,
     max_wait: Duration,
+    /// Sends one agent may make in `window`; 0 is no limit.
+    send_limit: usize,
+    window: Duration,
 }
 
 impl Pace {
@@ -161,8 +171,29 @@ impl Pace {
             poll: Duration::from_secs_f64(number(POLL_FIELD) / 1000.0)
                 .max(Duration::from_millis(1)),
             max_wait: Duration::from_secs_f64(number(MAX_WAIT_FIELD)),
+            send_limit: number(SEND_LIMIT_FIELD) as usize,
+            window: Duration::from_secs_f64(number(SEND_WINDOW_FIELD)),
         }
     }
+}
+
+/// Whether one more send fits, given when the sender's last ones were made; a send that
+/// fits is recorded.
+fn admit(sent: &mut VecDeque<Instant>, now: Instant, pace: Pace) -> bool {
+    if pace.send_limit == 0 {
+        return true;
+    }
+    while sent
+        .front()
+        .is_some_and(|at| now.duration_since(*at) >= pace.window)
+    {
+        sent.pop_front();
+    }
+    if sent.len() >= pace.send_limit {
+        return false;
+    }
+    sent.push_back(now);
+    true
 }
 
 /// One message on its way to one participant.
@@ -190,6 +221,8 @@ pub struct Communication {
     queues: Mutex<HashMap<String, Queue>>,
     /// The pace of each started channel; one not started (yet) uses the defaults.
     paces: Mutex<HashMap<NodeRef, Pace>>,
+    /// When each agent sent through a channel's tool lately: `(channel, sender)`.
+    sends: Mutex<HashMap<(NodeRef, String), VecDeque<Instant>>>,
 }
 
 /// Who a participant is. One that does not say is named after its node.
@@ -270,6 +303,7 @@ impl Communication {
             log: Arc::default(),
             queues: Mutex::default(),
             paces: Mutex::default(),
+            sends: Mutex::default(),
         }
     }
 
@@ -449,11 +483,25 @@ impl Communication {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|node, _| node.execution_id != call.execution_id);
+        self.sends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(node, _), _| node.execution_id != call.execution_id);
         self.queues
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|key, _| !key.starts_with(&prefix));
         Ok(Value::Null)
+    }
+
+    /// Records a send through the tool if the sender is still under the channel's limit.
+    fn admit(&self, channel: &NodeRef, from: &str) -> bool {
+        let pace = self.pace(channel);
+        let mut sends = self.sends.lock().unwrap_or_else(PoisonError::into_inner);
+        let sent = sends
+            .entry((channel.clone(), from.to_string()))
+            .or_default();
+        admit(sent, Instant::now(), pace)
     }
 
     fn tool_call(&self, call: NodeCall) -> Result<Value, ModuleError> {
@@ -463,6 +511,14 @@ impl Communication {
             node_id: call.node.id.clone(),
         };
         let data = match request.name.as_str() {
+            TOOL_SEND if !self.admit(&channel, &request.caller.name) => {
+                let pace = self.pace(&channel);
+                Err(ModuleError::Failed(format!(
+                    "too many messages: at most {} every {} s. Wait before sending again",
+                    pace.send_limit,
+                    pace.window.as_secs_f64()
+                )))
+            }
             TOOL_SEND => self.send(SendParams {
                 execution_id: channel.execution_id,
                 node_id: channel.node_id,
@@ -655,6 +711,27 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn an_agent_sends_at_most_the_limit_in_a_window() {
+        let pace = Pace {
+            poll: Duration::from_millis(1),
+            max_wait: Duration::ZERO,
+            send_limit: 2,
+            window: Duration::from_secs(60),
+        };
+        let start = Instant::now();
+        let mut sent = VecDeque::new();
+        assert!(admit(&mut sent, start, pace));
+        assert!(admit(&mut sent, start + Duration::from_secs(1), pace));
+        assert!(!admit(&mut sent, start + Duration::from_secs(2), pace));
+        assert!(admit(&mut sent, start + Duration::from_secs(60), pace));
+        let unlimited = Pace {
+            send_limit: 0,
+            ..pace
+        };
+        assert!((0..100).all(|_| admit(&mut sent, start, unlimited)));
     }
 
     #[test]
