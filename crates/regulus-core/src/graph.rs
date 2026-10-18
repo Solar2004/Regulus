@@ -226,7 +226,8 @@ fn check_workflow(
 }
 
 /// The order in which a workflow's nodes start: whatever a node uses over a "uses" wire
-/// starts before it. Nodes caught in a cycle keep their declared order, after the rest.
+/// starts before it, unless the wire ends in a lazy input. Nodes caught in a cycle keep
+/// their declared order, after the rest.
 pub fn start_order(workflow: &Workflow) -> Vec<&regulus_proto::Node> {
     let index: HashMap<&str, usize> = workflow
         .nodes
@@ -239,7 +240,7 @@ pub fn start_order(workflow: &Workflow) -> Vec<&regulus_proto::Node> {
     for wire in workflow
         .wires
         .iter()
-        .filter(|w| w.kind == regulus_proto::WireKind::Uses)
+        .filter(|w| w.kind == regulus_proto::WireKind::Uses && !lazy_end(workflow, w))
     {
         let (Some(&from), Some(&to)) = (
             index.get(wire.from.node_id.as_str()),
@@ -271,4 +272,14 @@ pub fn start_order(workflow: &Workflow) -> Vec<&regulus_proto::Node> {
     }
     order.extend((0..workflow.nodes.len()).filter(|&i| !done[i]));
     order.into_iter().map(|i| &workflow.nodes[i]).collect()
+}
+
+/// Whether a wire ends in an input its node reads only while running.
+fn lazy_end(workflow: &Workflow, wire: &regulus_proto::Wire) -> bool {
+    workflow
+        .nodes
+        .iter()
+        .find(|n| n.id == wire.to.node_id)
+        .and_then(|n| n.ports.iter().find(|p| p.id == wire.to.port_id))
+        .is_some_and(|p| p.lazy)
 }

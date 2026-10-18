@@ -47,6 +47,14 @@ pub struct Port {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
+    /// An input the node only reads while running, never when it starts: its wires do not
+    /// order the start, so it can close a cycle (a channel whose participants use it).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lazy: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]

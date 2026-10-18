@@ -140,10 +140,11 @@ Claude: dos mensajes a un agente ocupado esperan su turno y se entregan en orden
 Probado: Claude envió por su cuenta a opencode, se entregó por ACP y la respuesta quedó
 registrada; opencode leyó su bandeja con `inbox`.
 
-❓ **Abierto — el ciclo.** Agente → Canal (`participants`) → Herramientas → Agente es un
-ciclo. El core arranca los nodos de un ciclo en el orden declarado, y el agente necesita
-la caja y el canal ya activos para montar y listar. Hoy funciona solo si el canal y la
-caja se declaran antes que los agentes.
+✅ **El ciclo** (Alexander, 2026-10-18). Agente → Canal (`participants`) → Herramientas →
+Agente es un ciclo, y el agente necesita la caja y el canal activos para montar y listar.
+La entrada `participants` del canal es `lazy`: el canal solo la lee en marcha, así que
+`start_order` ignora sus cables y arranca canal → caja → agentes, se declaren como se
+declaren. El core solo mira el flag del puerto, no el módulo.
 
 ### 3.1 Conjunto base
 

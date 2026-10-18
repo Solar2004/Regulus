@@ -1,6 +1,6 @@
 //! The wiring rules of docs/02-architecture.md §4, checked by `check_profile`.
 
-use regulus_core::graph::check_profile;
+use regulus_core::graph::{check_profile, start_order};
 use regulus_proto::{
     Cardinality, Diagnostic, Direction, Node, Port, PortRef, Profile, Severity, Wire, WireKind,
     Workflow, WorkflowKind,
@@ -18,6 +18,7 @@ fn port(id: &str, capability: &str, direction: Direction, kind: WireKind) -> Por
         kind,
         required: false,
         cardinality: Cardinality::One,
+        lazy: false,
     }
 }
 
@@ -235,4 +236,81 @@ fn ids_are_unique_and_references_exist() {
     ] {
         assert!(found.contains(code), "{code} not in {found}");
     }
+}
+
+/// An agent whose tools come from a channel that has the agent as a participant.
+fn channel_cycle(lazy: bool) -> Workflow {
+    let mut participants = port(
+        "participants",
+        "participant@1",
+        Direction::Input,
+        WireKind::Uses,
+    );
+    participants.lazy = lazy;
+    let nodes = vec![
+        node(
+            "agent",
+            vec![
+                port(
+                    "participant",
+                    "participant@1",
+                    Direction::Output,
+                    WireKind::Uses,
+                ),
+                port("tools", "toolset@1", Direction::Input, WireKind::Uses),
+            ],
+        ),
+        node(
+            "toolbox",
+            vec![
+                port("tools", "tool@1", Direction::Input, WireKind::Uses),
+                port("toolset", "toolset@1", Direction::Output, WireKind::Uses),
+            ],
+        ),
+        node(
+            "channel",
+            vec![
+                participants,
+                port("tools", "tool@1", Direction::Output, WireKind::Uses),
+            ],
+        ),
+    ];
+    let wires = vec![
+        wire(
+            "w1",
+            WireKind::Uses,
+            ("agent", "participant"),
+            ("channel", "participants"),
+        ),
+        wire(
+            "w2",
+            WireKind::Uses,
+            ("channel", "tools"),
+            ("toolbox", "tools"),
+        ),
+        wire(
+            "w3",
+            WireKind::Uses,
+            ("toolbox", "toolset"),
+            ("agent", "tools"),
+        ),
+    ];
+    profile(nodes, wires).workflows.remove(0)
+}
+
+fn ids(workflow: &Workflow) -> Vec<&str> {
+    start_order(workflow)
+        .iter()
+        .map(|n| n.id.as_str())
+        .collect()
+}
+
+#[test]
+fn a_cycle_keeps_the_declared_order() {
+    assert_eq!(ids(&channel_cycle(false)), ["agent", "toolbox", "channel"]);
+}
+
+#[test]
+fn a_lazy_input_does_not_order_the_start() {
+    assert_eq!(ids(&channel_cycle(true)), ["channel", "toolbox", "agent"]);
 }

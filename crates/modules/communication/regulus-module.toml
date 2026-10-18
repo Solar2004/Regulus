@@ -26,6 +26,8 @@ name = "Channel"
   direction   = "input"
   kind        = "uses"
   cardinality = "many"
+  # Read only while running, so participants may use this channel's tools.
+  lazy        = true
 
   # What agents can do in the channel (send, participants, inbox), for a tools box to
   # present them. Sends are made in the caller's name, set by its Agent box.

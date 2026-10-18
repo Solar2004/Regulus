@@ -180,7 +180,9 @@ core un nodo.** El trait no cambia.
 1. `execution.start { profile_id, workflow_id? }` copia el workflow (la ejecución no ve
    cambios posteriores del perfil) y llama a `node/start` en cada nodo de módulo, en
    orden de cables "usa": primero lo que se usa, luego quien lo usa. `execution.stop`
-   llama a `node/stop` en orden inverso.
+   llama a `node/stop` en orden inverso. Un cable que entra en una entrada `lazy` no
+   cuenta para el orden: el nodo solo la lee en marcha, nunca al arrancar, y así puede
+   cerrar un ciclo (Alexander, 2026-10-18).
 2. `node/start` y `node/stop` son nombres reservados: el core los envía al módulo dueño
    del nodo y no se pueden declarar en `methods`. Un módulo que no los implementa
    (`UnknownMethod`) simplemente no tiene ciclo de vida.

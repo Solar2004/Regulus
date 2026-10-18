@@ -145,6 +145,7 @@ pub struct Port {
     pub kind:        WireKind,     // Uses | Then
     pub required:    bool,         // por defecto false (03-modules.md §1.1)
     pub cardinality: Cardinality,  // One | Many — por defecto One
+    pub lazy:        bool,         // solo se lee en marcha: no ordena el arranque
 }
 
 pub struct Node {
