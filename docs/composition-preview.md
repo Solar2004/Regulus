@@ -29,13 +29,13 @@ negociar un major compatible.
 | `module.list` | — | Módulos de ejemplo y tipos de nodo que aportan |
 | `execution.list` | — | Lista vacía; nada está ejecutándose |
 | `profile.check` *(1.1, solo core real)* | `id` | Diagnósticos del perfil: `severity`, `code`, `message` |
-| `execution.start` *(1.2)* | `profile_id`, `workflow_id?` | La ejecución: `id`, `state`, y `disabled` (nodos sin sus entradas obligatorias) |
+| `execution.start` *(1.2)* | `profile_id`, `workflow_id?` | La ejecución: `id`, `profile_id` *(1.4)*, `workflow_id`, `state`, y `disabled` (nodos sin sus entradas obligatorias) |
 | `execution.stop` *(1.2)* | `id` | La ejecución parada |
 | `secret.set` *(1.3)* | `name`, `value` | `null` |
 | `secret.list` *(1.3)* | — | Nombres de los secretos, nunca los valores |
 | `secret.delete` *(1.3)* | `name` | `null` |
 
-El core real (`regulus serve`) habla el protocolo `1.3`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.4`, compatible con el `1.0` del mock.
 Los métodos de los módulos se suman a estos (p. ej. `agent.prompt`, `claude.detect`).
 Errores propios: `-32001` falta `hello`, `-32002` módulo no disponible, `-32003` el módulo
 falló o entró en pánico. Además pide el token de `<home>/token` en el upgrade

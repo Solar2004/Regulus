@@ -272,6 +272,7 @@ impl Core {
                 "exec-{}",
                 self.next_execution.fetch_add(1, Ordering::Relaxed)
             ),
+            profile_id: profile.id.clone(),
             workflow_id,
             project_id: profile.project_id.clone(),
             state: ExecutionState::Starting,

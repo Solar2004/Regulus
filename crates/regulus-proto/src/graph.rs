@@ -191,6 +191,9 @@ pub struct ProfileSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Execution {
     pub id: String,
+    /// The profile the workflow comes from: workflow ids are only unique inside one.
+    #[serde(default)]
+    pub profile_id: String,
     pub workflow_id: String,
     pub project_id: Option<String>,
     pub state: ExecutionState,

@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`;
 /// 1.2 adds `execution.start` and `execution.stop`; 1.3 adds `secret.set`, `secret.list`
-/// and `secret.delete`.
-pub const PROTOCOL: &str = "1.3";
+/// and `secret.delete`; 1.4 adds `profile_id` to executions.
+pub const PROTOCOL: &str = "1.4";
 
 pub mod method {
     pub const HELLO: &str = "hello";
