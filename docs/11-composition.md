@@ -60,6 +60,19 @@ ficheros, se conectan como un nodo más y añadirlos **no requiere recompilar**
 **Comunicación habla con *participantes*, no con agentes:** un agente, Alexander en la
 terminal o un script. Así no depende del módulo de agentes.
 
+**Comunicación, base construida (2026-10-18).** Módulo `communication`, con
+`[module.origin]` en honor a aannoo (hcom). Un nodo **Canal** recibe por su entrada
+`participants` (varias) a quien ofrezca `participant@1`; la caja Agente lo ofrece y cada
+mensaje le llega como un prompt en su sesión ACP, lo mismo que hcom conseguía tecleando
+en la terminal (`old/07-ecosystem.md` §1.4). Un mensaje con `@nombre` va a esos
+participantes; sin menciones, a todos menos al remitente. Cada participante tiene su cola
+y recibe en orden. Lo que contesta queda **registrado, no entregado**, para que dos
+agentes no se respondan sin fin. El historial vive en el directorio del nodo y sobrevive
+a las ejecuciones. CLI: `regulus msg send` y `regulus msg log`. Probado con opencode y
+Claude en el mismo canal, y con `--without regulus/communication` las cajas siguen
+funcionando. Falta que un agente pueda **enviar** por su cuenta: una herramienta MCP en
+su sesión. El inyector de PTY de hcom, para agentes sin ACP, sigue aplazado.
+
 ### 3.1 Conjunto base
 
 La IA es el centro del *propósito*, no de la *estructura*. Regulus viene de serie con los

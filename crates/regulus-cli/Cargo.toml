@@ -18,6 +18,7 @@ regulus-module-engine-opencode = { path = "../modules/engine-opencode" }
 regulus-module-engine-claude = { path = "../modules/engine-claude" }
 regulus-module-providers = { path = "../modules/providers" }
 regulus-module-skills = { path = "../modules/skills" }
+regulus-module-communication = { path = "../modules/communication" }
 anyhow.workspace = true
 clap.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client"] }

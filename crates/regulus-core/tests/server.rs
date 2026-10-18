@@ -28,6 +28,7 @@ fn echo(id: &str, method: &str, panics: bool) -> Box<dyn Module> {
         requires_proto: None,
         methods: vec![method.into()],
         workflow_id: None,
+        origin: None,
     };
     Box::new(Echo {
         manifest: Manifest {

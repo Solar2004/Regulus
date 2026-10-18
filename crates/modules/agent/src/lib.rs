@@ -8,6 +8,7 @@ use std::sync::{Mutex, PoisonError};
 
 use regulus_contract_agent_engine as engine;
 use regulus_contract_llm_endpoint as llm;
+use regulus_contract_participant as participant;
 use regulus_contract_skill as skill;
 use regulus_core::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Direction, Manifest, NodeCall};
@@ -177,6 +178,21 @@ impl Agent {
         Ok(Value::Null)
     }
 
+    /// A message from a channel, prompted into the session as the user would type it.
+    fn deliver(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let delivery: participant::Delivery = parse(call.args)?;
+        let text = format!(
+            "[message from @{} in channel `{}`]\n{}",
+            delivery.from, delivery.channel, delivery.text
+        );
+        let turn: engine::Turn = parse(self.prompt(PromptParams {
+            execution_id: call.execution_id,
+            node_id: call.node.id,
+            text,
+        })?)?;
+        json(participant::Reply { text: turn.text })
+    }
+
     fn prompt(&self, params: PromptParams) -> Result<Value, ModuleError> {
         let me = NodeRef {
             execution_id: params.execution_id,
@@ -221,6 +237,7 @@ impl Module for Agent {
             method::NODE_START => self.start(parse(params)?),
             method::NODE_STOP => self.stop(parse(params)?),
             PROMPT => self.prompt(parse(params)?),
+            participant::DELIVER => self.deliver(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }
     }

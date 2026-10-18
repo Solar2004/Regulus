@@ -9,6 +9,7 @@ authors.workspace = true
 regulus-contract-agent-engine.workspace = true
 regulus-contract-llm-endpoint.workspace = true
 regulus-contract-skill.workspace = true
+regulus-contract-participant.workspace = true
 regulus-core.workspace = true
 regulus-proto.workspace = true
 serde.workspace = true

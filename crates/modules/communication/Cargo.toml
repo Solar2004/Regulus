@@ -1,0 +1,13 @@
+[package]
+name = "regulus-module-communication"
+description = "Communication: channels that deliver messages between participants, after hcom"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-contract-participant.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true

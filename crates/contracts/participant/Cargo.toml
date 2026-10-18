@@ -1,0 +1,9 @@
+[package]
+name = "regulus-contract-participant"
+description = "The participant@1 capability: someone a channel can deliver messages to"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true

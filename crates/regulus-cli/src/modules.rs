@@ -13,5 +13,6 @@ pub fn installed() -> Vec<Box<dyn Module>> {
         Box::new(regulus_module_engine_claude::module()),
         Box::new(regulus_module_providers::Providers::new()),
         Box::new(regulus_module_skills::Skills::new()),
+        Box::new(regulus_module_communication::Communication::new()),
     ]
 }

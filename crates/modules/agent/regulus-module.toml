@@ -45,6 +45,15 @@ name = "Agent"
   direction  = "input"
   kind       = "uses"
 
+  # The agent as someone channels deliver messages to (docs/11-composition.md §3): each
+  # message arrives as a prompt in its session.
+  [[node.port]]
+  id         = "participant"
+  name       = "participant"
+  capability = "participant@1"
+  direction  = "output"
+  kind       = "uses"
+
   # Skills the agent loads (docs/12-agents.md §3). The engine places them in the profile.
   [[node.port]]
   id          = "skills"

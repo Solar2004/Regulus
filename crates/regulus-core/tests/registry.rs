@@ -31,6 +31,7 @@ fn fake(
         requires_proto: requires.map(Into::into),
         methods: methods.iter().map(|m| m.to_string()).collect(),
         workflow_id: None,
+        origin: None,
     };
     Box::new(Fake {
         manifest: Manifest {

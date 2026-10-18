@@ -26,6 +26,20 @@ pub struct ModuleInfo {
     pub methods: Vec<String>,
     #[serde(default)]
     pub workflow_id: Option<String>,
+    /// Where the module comes from if it derives from someone else's code
+    /// (docs/plan.md §4.1). The UI shows it on the module's card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub author: String,
+    pub repo: String,
+    pub license: String,
+    /// Who the module honors, e.g. the original author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub honors: Option<String>,
 }
 
 /// A kind of node a module brings: its ports and the fields the UI draws by itself.

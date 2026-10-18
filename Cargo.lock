@@ -3237,6 +3237,7 @@ dependencies = [
  "jsonrpsee",
  "regulus-core",
  "regulus-module-agent",
+ "regulus-module-communication",
  "regulus-module-engine-claude",
  "regulus-module-engine-opencode",
  "regulus-module-hello",
@@ -3259,6 +3260,13 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-llm-endpoint"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "regulus-contract-participant"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -3292,7 +3300,19 @@ version = "0.1.0"
 dependencies = [
  "regulus-contract-agent-engine",
  "regulus-contract-llm-endpoint",
+ "regulus-contract-participant",
  "regulus-contract-skill",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-communication"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-participant",
  "regulus-core",
  "regulus-proto",
  "serde",

@@ -83,6 +83,11 @@ enum Command {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Messages through a channel node of a running execution.
+    Msg {
+        #[command(subcommand)]
+        command: MsgCommand,
+    },
     /// Secrets that workflows name as `secret:<name>`.
     Secret {
         #[command(subcommand)]
@@ -109,6 +114,29 @@ enum AgentCommand {
         node: String,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MsgCommand {
+    /// Send a message. `@name` sends it to those participants; without it, to all of
+    /// them. Returns once it is queued; answers show up in `msg log`.
+    Send {
+        execution: String,
+        channel: String,
+        /// Who it is from.
+        #[arg(long, default_value = "user")]
+        from: String,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// The channel's messages and answers, oldest first.
+    Log {
+        execution: String,
+        channel: String,
+        /// Only the last N.
+        #[arg(long)]
+        last: Option<usize>,
     },
 }
 
@@ -218,6 +246,61 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Msg { command } => match command {
+            MsgCommand::Send {
+                execution,
+                channel,
+                from,
+                text,
+            } => {
+                let params = serde_json::json!({
+                    "execution_id": execution, "node_id": channel,
+                    "from": from, "text": text.join(" "),
+                });
+                let sent: Value = client.request("comm.send", params).await?;
+                let to: Vec<&str> = sent["to"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                println!("#{} → {}", sent["id"], to.join(", "));
+                Ok(())
+            }
+            MsgCommand::Log {
+                execution,
+                channel,
+                last,
+            } => {
+                let params = serde_json::json!({
+                    "execution_id": execution, "node_id": channel, "limit": last,
+                });
+                let messages: Vec<Value> = client.request("comm.history", params).await?;
+                for m in messages {
+                    let to: Vec<&str> = m["to"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect();
+                    let body = match m["error"].as_str() {
+                        Some(error) => format!("(not delivered: {error})"),
+                        None => m["text"].as_str().unwrap_or_default().to_string(),
+                    };
+                    let reply = m["reply_to"]
+                        .as_u64()
+                        .map(|id| format!(" re #{id}"))
+                        .unwrap_or_default();
+                    println!(
+                        "#{} {} → {}{reply}: {body}",
+                        m["id"],
+                        m["from"].as_str().unwrap_or_default(),
+                        to.join(", ")
+                    );
+                }
+                Ok(())
+            }
+        },
         Command::Secret { command } => match command {
             SecretCommand::Set { name } => {
                 let value = read_secret(&name)?;

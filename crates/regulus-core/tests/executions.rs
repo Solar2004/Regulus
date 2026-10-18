@@ -29,6 +29,7 @@ fn manifest(id: &str) -> Manifest {
         requires_proto: None,
         methods: vec![],
         workflow_id: None,
+        origin: None,
     };
     Manifest {
         module,

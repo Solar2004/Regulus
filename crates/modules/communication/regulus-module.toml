@@ -1,0 +1,27 @@
+[module]
+id             = "regulus/communication@0.1.0"
+name           = "Communication"
+requires_proto = "^1.2"
+methods        = ["comm.send", "comm.history"]
+
+# The idea and the message model come from hcom; the code is Regulus's own
+# (docs/plan.md §4.1).
+[module.origin]
+author  = "aannoo"
+repo    = "https://github.com/aannoo/hcom"
+license = "MIT"
+honors  = "aannoo, author of hcom"
+
+# A channel delivers each message to the participants it names with @name, or to all of
+# them but the sender. Each participant gets its messages one at a time, in order.
+[[node]]
+type = "channel"
+name = "Channel"
+
+  [[node.port]]
+  id          = "participants"
+  name        = "participants"
+  capability  = "participant@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
