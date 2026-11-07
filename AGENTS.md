@@ -17,9 +17,10 @@ se rompa.
 el canvas carga del core real; la caja Agente corre Claude Code y opencode por ACP, con
 proveedores (plantillas, ranuras, suscripción de Claude), skills, perfil aislado y
 secretos, un canal de Comunicación entre agentes, y una TUI (`regulus` sin comando)
-con la vista Operar. **Lo siguiente: que los agentes
-envíen mensajes por su cuenta (herramienta MCP).** La pasarela de proveedores queda
-aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+con la vista Operar; los agentes ya se envían mensajes por una herramienta MCP. **Lo
+siguiente: la lógica de IA de serie** — cable "luego" con dato, store, workflow como caja,
+ranura `hooks`, y los módulos y plantillas de [`docs/13-blocks.md`](docs/13-blocks.md).
+La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -61,6 +62,7 @@ construir todas las habitaciones hoy.**
 | **`docs/00-principles.md`** | ~2k | **Manda sobre todos los demás.** "Como el agua", **la caja líquida**, los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
 | **`docs/11-composition.md`** | ~2.6k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). |
 | **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido. |
+| **`docs/13-blocks.md`** | ~3.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom), límites honestos y fuentes. |
 | **`docs/02-architecture.md`** | ~2.5k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
 | **`docs/04-client.md`** | ~0.9k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema. |
@@ -82,6 +84,7 @@ construir todas las habitaciones hoy.**
 | **Tocar el core** | `02-architecture.md` → `03-modules.md` → `06-stack.md` §2.1 | ~5k |
 | **Escribir un módulo** | `plan.md` §4.1 → `03-modules.md` | ~2.5k |
 | **Tocar agentes, motores o proveedores** | `12-agents.md` → `03-modules.md` | ~6.9k |
+| **Escribir un bloque de lógica o una plantilla** | `13-blocks.md` → `03-modules.md` | ~5.7k |
 | **Diseñar o implementar UI** | `04-client.md` → `composition-preview.md` → `08-design-system.md` | ~3.5k |
 | **Elegir una dependencia** | `plan.md` §4.3 (lo descartado) → `06-stack.md` | ~2.5k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |
@@ -161,7 +164,8 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Comunicación como caja** y módulo **Herramientas** aparte (MCP es un motor), 5 pasos (`11-composition.md` §3.0) | nada |
+| 1 | **Bloques** (`13-blocks.md` §7): core (cable "luego" con dato, store, workflow como caja, `Call`) → ranura `hooks` → módulos de lógica y entorno → plantillas | nada |
+| 2 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
 ---

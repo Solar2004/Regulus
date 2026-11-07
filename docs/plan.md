@@ -61,8 +61,9 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 4c | Proveedores como caja líquida: plantillas, ranuras, suscripción (`12-agents.md` §7); la pasarela, aplazada | — | ✅ base (2026-10-17) |
 | 4d | Skills (`12-agents.md` §3) y Comunicación, base (`11-composition.md` §3) | — | ✅ base (2026-10-18) |
 | 4e | Comunicación como caja y módulo Herramientas, 5 pasos (`11-composition.md` §3.0) | — | en curso |
+| 4f | **Bloques** (`13-blocks.md` §7): core (cable "luego" con dato, store, workflow como caja, `Call`), ranura `hooks`, módulos de lógica y entorno, plantillas | ~5 sem | ✅ decidido (2026-11-07), en curso |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar | ~1 sem | — |
-| 6 | Vista Operar con ejecuciones reales | ~1 sem | — |
+| 6 | Vista Operar con ejecuciones reales, instalar plantillas | ~1 sem | — |
 
 **Prueba de la base (paso 3):** la UI apunta al core real con `VITE_RPC_URL` y funciona
 sin cambiar una línea.
