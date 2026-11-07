@@ -335,3 +335,29 @@ fn a_glob_read_stops_at_its_total_cap_after_sending_what_fit() {
         "{refused:?}"
     );
 }
+
+#[test]
+fn write_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+    let root = temp("atomic");
+    let write = json!({ "path": "plan.md", "mode": "append" });
+    let core = core(
+        reader_and_writer(&root, json!({}), write),
+        &root.join("data"),
+    );
+    let id = start(&core, "p");
+    for line in ["one", "two", "three"] {
+        send(&core, &id, "put", json!(line));
+    }
+    idle(&core, &id);
+    assert!(failures(&core, &id).is_empty());
+    assert_eq!(
+        fs::read_to_string(root.join("plan.md")).unwrap(),
+        "one\ntwo\nthree"
+    );
+    let left: Vec<String> = fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "data")
+        .collect();
+    assert_eq!(left, ["plan.md"], "no temporary file stays");
+}

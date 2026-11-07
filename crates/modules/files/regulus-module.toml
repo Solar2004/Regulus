@@ -84,7 +84,9 @@ name = "File to prompt"
   options = ["no", "yes"]
 
 # Writes what arrives on `in` to a file and sends its absolute path on `written`. Text
-# goes as is; any other value as indented JSON.
+# goes as is; any other value as indented JSON. The file is filled beside the target and
+# renamed over it, so a reader never sees half of it (the file gets default permissions).
+# The path must stay under the base folder unless `allow_outside = yes` (top of file).
 [[node]]
 type = "write"
 name = "Prompt to file"

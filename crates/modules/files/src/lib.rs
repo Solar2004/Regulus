@@ -9,8 +9,9 @@ mod place;
 mod watch;
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{
@@ -28,6 +29,8 @@ const OUT: &str = "out";
 const WRITTEN: &str = "written";
 const YES: &str = "yes";
 const APPEND: &str = "append";
+/// What ends the name of the hidden file `write` fills before renaming it over the target.
+const TEMP_SUFFIX: &str = ".regulus-tmp";
 /// Characters that make a `path` a glob.
 const GLOB_CHARS: &[char] = &['*', '?', '['];
 
@@ -302,28 +305,39 @@ fn write(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
         fs::create_dir_all(parent).map_err(|e| failed(parent, e))?;
     }
     let text = as_text(&event.value);
+    let mut content = Vec::new();
     if here.text("mode") == APPEND {
-        let had = fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| failed(&path, e))?;
-        let separator = if had {
-            here.text("separator")
-        } else {
-            String::new()
-        };
-        file.write_all(format!("{separator}{text}").as_bytes())
-            .map_err(|e| failed(&path, e))?;
-    } else {
-        fs::write(&path, &text).map_err(|e| failed(&path, e))?;
+        match fs::metadata(&path) {
+            Ok(meta) if !meta.is_file() => return Err(failed(&path, "not a regular file")),
+            Ok(_) => content = fs::read(&path).map_err(|e| failed(&path, e))?,
+            Err(_) => {}
+        }
+        if !content.is_empty() {
+            content.extend(here.text("separator").into_bytes());
+        }
     }
+    content.extend(text.as_bytes());
+    replace(&path, &content)?;
     let written = path.display().to_string();
     if here.has_output(WRITTEN) {
         here.emit(WRITTEN, json!(written))?;
     }
     Ok(json!({ "written": written, "bytes": text.len() }))
+}
+
+/// Puts `content` in `path` all at once: written to a hidden file beside it, then renamed
+/// over it, so a reader (a `document` hook, a `watch`) never sees half of it.
+fn replace(path: &Path, content: &[u8]) -> Result<(), ModuleError> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_file_name(format!(".{name}.{}-{n}{TEMP_SUFFIX}", std::process::id()));
+    let written = fs::write(&temp, content).and_then(|()| fs::rename(&temp, path));
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(failed(path, error));
+    }
+    Ok(())
 }
 
 /// `document`: its `text`, or the file at `path`, read now.
