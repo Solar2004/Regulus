@@ -53,6 +53,9 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Token aleatorio | **`getrandom`** | `0.4` | Bytes del sistema operativo para `<home>/token`, sin arrastrar `rand`. |
 | Config y manifiestos | **`toml`** | `1` | `config.toml` y `regulus-module.toml`. |
 | TUI | **`ratatui`** (trae **`crossterm`**) | `0.30.2` · crossterm `0.29.0` (verif. 2026-10-18) | El estándar en Rust para interfaces de terminal. `crossterm` se usa a través de `ratatui::crossterm`, así las dos versiones no se desincronizan. [`04-client.md`](04-client.md) §7. |
+| Expresiones regulares | **`regex`** | `1.13` (1.13.1, verif. 2026-11-07) | Reglas `regex` de `switch` y `loop` en `flow`. Ya estaba en el lock por otras dependencias. |
+| Globs | **`glob`** | `0.3.4` (verif. 2026-11-07) | `read` de `files` con `specs/*.md`. Del equipo de Rust, sin dependencias. |
+| Observar ficheros | **`notify`** | `8.2` (8.2.1, verif. 2026-11-07; licencia CC0-1.0) | `watch` de `files`: inotify, FSEvents y ReadDirectoryChanges detrás de una API. La 9 sigue en `rc`. |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,

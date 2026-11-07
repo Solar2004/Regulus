@@ -53,3 +53,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   (`scripts/secrets-scan.sh`) e instalador (`scripts/install-hooks.sh`). Reglas en
   `docs/09-git.md`.
 - `.gitignore` y plantilla de mensaje de commit (`.gitmessage`).
+- **Lógica: `flow` y `files`** (`docs/13-blocks.md` §3.2): `flow` suma `switch`, `loop`,
+  `join`, `fanout`, `wait`, `variable` y `convert`; el módulo nuevo `files` trae `read`,
+  `write`, `document` (un documento que el agente ve cada turno, por su entrada `hooks`) y
+  `watch`. Capacidades `text@1`, `json@1` y `path@1` en `regulus-proto`. Ejemplos en
+  `crates/modules/flow/examples/logic.toml` y `crates/modules/files/examples/`.
