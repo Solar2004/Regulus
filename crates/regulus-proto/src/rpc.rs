@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`;
 /// 1.2 adds `execution.start` and `execution.stop`; 1.3 adds `secret.set`, `secret.list`
-/// and `secret.delete`; 1.4 adds `profile_id` to executions; 1.5 adds `event.list`.
-pub const PROTOCOL: &str = "1.5";
+/// and `secret.delete`; 1.4 adds `profile_id` to executions; 1.5 adds `event.list`; 1.6
+/// adds the `interrupted` state and `NodeStart` for nodes resumed from a checkpoint.
+pub const PROTOCOL: &str = "1.6";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -119,6 +120,16 @@ pub struct NodeCall {
     pub node: crate::Node,
     #[serde(default)]
     pub args: serde_json::Value,
+}
+
+/// `NodeCall.args` of a `node/start` that resumes an execution after a restart of the
+/// core, when the node saved a checkpoint (`ModuleCtx::checkpoint`). A fresh start sends
+/// `null`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NodeStart {
+    /// The last state the node saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

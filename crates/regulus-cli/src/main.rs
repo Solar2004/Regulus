@@ -502,6 +502,7 @@ fn print_execution(execution: &Execution) {
         ExecutionState::Running => "running".to_string(),
         ExecutionState::Stopped => "stopped".to_string(),
         ExecutionState::Failed { reason } => format!("failed: {reason}"),
+        ExecutionState::Interrupted { reason } => format!("interrupted: {reason}"),
     };
     println!("{:<12} {:<16} {state}", execution.id, execution.workflow_id);
     for node in &execution.disabled {

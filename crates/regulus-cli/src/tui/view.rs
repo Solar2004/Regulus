@@ -133,6 +133,7 @@ fn execution_state(state: &ExecutionState, p: &Palette) -> Span<'static> {
         ExecutionState::Running => state_span("✓", "running".into(), p.success),
         ExecutionState::Stopped => state_span("○", "stopped".into(), p.text_muted),
         ExecutionState::Failed { .. } => state_span("✗", "failed".into(), p.danger),
+        ExecutionState::Interrupted { .. } => state_span("◌", "interrupted".into(), p.warning),
     }
 }
 

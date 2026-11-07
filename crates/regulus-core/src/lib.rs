@@ -25,7 +25,7 @@ pub use profiles::ProfileStore;
 pub use registry::Registry;
 pub use secrets::Secrets;
 pub use service::{Core, RpcError, Storage};
-pub use store::{ModuleStore, Store, StoreError};
+pub use store::{ModuleStore, Store, StoreError, StoredExecution};
 
 /// Builds a core from its configuration and the modules its host links in. Returns the
 /// warnings found while loading, which never stop the start.
@@ -59,14 +59,26 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
     )
 }
 
+/// The thread that recovers what the previous core left running.
+const RECOVER_THREAD: &str = "regulus-recover";
+
 /// Starts serving: creates the home directory, the token and the default profiles
 /// directory on the first run, binds, and writes the chosen port to `<home>/port` so
-/// clients can find the core.
+/// clients can find the core. Then recovers, in the background, the executions the
+/// previous core left running (`Core::recover`).
 pub async fn serve(config: &Config, core: Arc<Core>) -> io::Result<server::Running> {
     fs::create_dir_all(config.default_profiles_dir())?;
     let token = server::load_or_create_token(&config.token_path())?;
-    let running = server::start(core, &config.server, &token).await?;
+    let running = server::start(core.clone(), &config.server, &token).await?;
     write_port(config, running.addr)?;
+    // Resuming can start agents and take seconds: it happens behind the open socket.
+    std::thread::Builder::new()
+        .name(RECOVER_THREAD.into())
+        .spawn(move || {
+            for line in core.recover() {
+                eprintln!("regulus: {line}");
+            }
+        })?;
     Ok(running)
 }
 

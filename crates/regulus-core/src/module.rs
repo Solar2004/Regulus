@@ -105,6 +105,14 @@ impl ModuleCtx {
         self.core()?.node_dir(&self.module_id, node)
     }
 
+    /// Saves `state` as the checkpoint of `node`, one of this module's nodes; only the
+    /// latest is kept. If the core goes down while the execution runs, the next one
+    /// resumes it and hands the state back in `node/start` (`NodeStart`), as `[store]
+    /// resume` says (docs/02-architecture.md §6).
+    pub fn checkpoint(&self, node: &NodeRef, state: Value) -> Result<(), ModuleError> {
+        self.core()?.checkpoint(&self.module_id, node, &state)
+    }
+
     /// This module's own key-value space in the store, keyed by its id without version: it
     /// cannot name another module's (docs/02-architecture.md §6). With a node, the space
     /// lives in that node's project database; without one, in the global database.

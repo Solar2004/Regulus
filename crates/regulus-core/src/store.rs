@@ -2,18 +2,20 @@
 //! project and one per project. It keeps executions, their checkpoints, the bus journal,
 //! and a key-value space per module. It never calls back into the core.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use regulus_proto::{Execution, ExecutionState, Workflow};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::{json, Value};
 
-use crate::config::{StoreConfig, Synchronous};
+use crate::config::{Resume, StoreConfig, Synchronous};
 use crate::module::ModuleError;
 use crate::registry::now_ms;
 use crate::service::path_segment;
@@ -73,6 +75,65 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (namespace, key)
     ) WITHOUT ROWID;",
 ];
+
+/// An execution as the store keeps it: with its number (the `N` of `exec-N`, unique in a
+/// home) and the copy of the workflow it runs.
+#[derive(Debug, Clone)]
+pub struct StoredExecution {
+    pub number: u64,
+    pub execution: Execution,
+    pub workflow: Workflow,
+}
+
+/// The `status` column and the `reason` column of a state, as the protocol spells them.
+fn status_of(state: &ExecutionState) -> (String, Option<String>) {
+    let value = serde_json::to_value(state).unwrap_or_default();
+    let status = value["status"].as_str().unwrap_or_default().to_string();
+    let reason = value
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(String::from);
+    (status, reason)
+}
+
+fn state_of(status: String, reason: Option<String>) -> rusqlite::Result<ExecutionState> {
+    let mut value = json!({ "status": status });
+    if let Some(reason) = reason {
+        value["reason"] = reason.into();
+    }
+    serde_json::from_value(value).map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
+}
+
+fn json_column<T: DeserializeOwned>(row: &Row, index: usize) -> rusqlite::Result<T> {
+    let text: String = row.get(index)?;
+    serde_json::from_str(&text).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, e.into())
+    })
+}
+
+fn to_json(value: &impl Serialize) -> rusqlite::Result<String> {
+    serde_json::to_string(value).map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
+}
+
+/// The columns `stored_execution` reads, in order.
+const EXECUTION_COLUMNS: &str =
+    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow";
+
+fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
+    let number: i64 = row.get(0)?;
+    Ok(StoredExecution {
+        number: number.max(0) as u64,
+        execution: Execution {
+            id: row.get(1)?,
+            project_id: row.get(2)?,
+            profile_id: row.get(3)?,
+            workflow_id: row.get(4)?,
+            state: state_of(row.get(5)?, row.get(6)?)?,
+            disabled: json_column(row, 7)?,
+        },
+        workflow: json_column(row, 8)?,
+    })
+}
 
 /// SQLite integers are `i64`; ours are unsigned and never get near the top.
 fn int(n: impl TryInto<i64>) -> i64 {
@@ -323,6 +384,190 @@ impl Store {
         })
     }
 
+    /// The global database and every project database open now.
+    fn all(&self) -> Vec<Arc<Db>> {
+        let mut all = vec![self.global.clone()];
+        all.extend(self.projects().values().cloned());
+        all
+    }
+
+    /// The databases a `project_id` filter reaches: that project's, or all of them.
+    fn reached_by(&self, project: Option<&str>) -> Vec<Arc<Db>> {
+        match project {
+            None => self.all(),
+            Some(project) => self.projects().get(project).cloned().into_iter().collect(),
+        }
+    }
+
+    /// What happens on start to executions left running.
+    pub fn resume(&self) -> Resume {
+        self.config.resume
+    }
+
+    /// The number for the next execution: one past the highest in any database.
+    pub fn next_execution(&self) -> Result<u64, StoreError> {
+        let mut highest = 0;
+        for db in self.all() {
+            let found: i64 = db.with(|conn| {
+                conn.query_row("SELECT COALESCE(MAX(number), 0) FROM executions", [], |r| {
+                    r.get(0)
+                })
+            })?;
+            highest = highest.max(found.max(0) as u64);
+        }
+        Ok(highest + 1)
+    }
+
+    /// Records a new execution with the workflow copy it runs.
+    pub fn insert_execution(
+        &self,
+        number: u64,
+        execution: &Execution,
+        workflow: &Workflow,
+    ) -> Result<(), StoreError> {
+        let (status, reason) = status_of(&execution.state);
+        self.db(execution.project_id.as_deref())?.with(|conn| {
+            conn.execute(
+                "INSERT INTO executions (id, number, project_id, profile_id, workflow_id,
+                     workflow, status, reason, disabled, parent, started)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                params![
+                    execution.id,
+                    int(number),
+                    execution.project_id,
+                    execution.profile_id,
+                    execution.workflow_id,
+                    to_json(workflow)?,
+                    status,
+                    reason,
+                    to_json(&execution.disabled)?,
+                    int(now_ms()),
+                ],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Records the state and disabled nodes of an execution; `finished` is stamped the
+    /// first time it stops being live.
+    pub fn update_execution(&self, execution: &Execution) -> Result<(), StoreError> {
+        let (status, reason) = status_of(&execution.state);
+        self.db(execution.project_id.as_deref())?.with(|conn| {
+            conn.execute(
+                "UPDATE executions SET status = ?2, reason = ?3, disabled = ?4,
+                     finished = CASE WHEN ?5 THEN NULL ELSE COALESCE(finished, ?6) END
+                 WHERE id = ?1",
+                params![
+                    execution.id,
+                    status,
+                    reason,
+                    to_json(&execution.disabled)?,
+                    execution.state.is_live(),
+                    int(now_ms()),
+                ],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Every execution in the databases `project` reaches, by number.
+    pub fn executions(&self, project: Option<&str>) -> Result<Vec<StoredExecution>, StoreError> {
+        self.select_executions(project, "")
+    }
+
+    /// The executions left starting or running, by number.
+    pub fn unfinished(&self) -> Result<Vec<StoredExecution>, StoreError> {
+        let (starting, _) = status_of(&ExecutionState::Starting);
+        let (running, _) = status_of(&ExecutionState::Running);
+        self.select_executions(
+            None,
+            &format!("WHERE status IN ('{starting}', '{running}')"),
+        )
+    }
+
+    pub fn execution(&self, id: &str) -> Result<Option<StoredExecution>, StoreError> {
+        for db in self.all() {
+            let found = db.with(|conn| {
+                conn.query_row(
+                    &format!("SELECT {EXECUTION_COLUMNS} FROM executions WHERE id = ?1"),
+                    [id],
+                    stored_execution,
+                )
+                .optional()
+            })?;
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
+    }
+
+    fn select_executions(
+        &self,
+        project: Option<&str>,
+        filter: &str,
+    ) -> Result<Vec<StoredExecution>, StoreError> {
+        let sql = format!("SELECT {EXECUTION_COLUMNS} FROM executions {filter} ORDER BY number");
+        let mut all = Vec::new();
+        for db in self.reached_by(project) {
+            let rows = db.with(|conn| {
+                conn.prepare_cached(&sql)?
+                    .query_map([], stored_execution)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })?;
+            all.extend(rows);
+        }
+        all.sort_by_key(|e| e.number);
+        Ok(all)
+    }
+
+    /// Saves the state of a node of an execution; only its latest is kept.
+    pub fn checkpoint(
+        &self,
+        project: Option<&str>,
+        execution_id: &str,
+        node_id: &str,
+        state: &Value,
+    ) -> Result<(), StoreError> {
+        let state = serde_json::to_vec(state).map_err(|e| StoreError::Data(e.to_string()))?;
+        self.db(project)?.with(|conn| {
+            conn.execute(
+                "INSERT INTO checkpoints (execution_id, seq, node_id, state, created)
+                 SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4
+                 FROM checkpoints WHERE execution_id = ?1",
+                params![execution_id, node_id, state, int(now_ms())],
+            )?;
+            conn.execute(
+                "DELETE FROM checkpoints WHERE execution_id = ?1 AND node_id = ?2
+                 AND seq < (SELECT MAX(seq) FROM checkpoints WHERE execution_id = ?1)",
+                params![execution_id, node_id],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// The latest checkpoint of each node of an execution.
+    pub fn checkpoints(
+        &self,
+        project: Option<&str>,
+        execution_id: &str,
+    ) -> Result<HashMap<String, Value>, StoreError> {
+        let rows: Vec<(String, Vec<u8>)> = self.db(project)?.with(|conn| {
+            conn.prepare_cached(
+                "SELECT node_id, state FROM checkpoints WHERE execution_id = ?1 ORDER BY seq",
+            )?
+            .query_map([execution_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+        })?;
+        rows.into_iter()
+            .map(|(node, state)| {
+                serde_json::from_slice(&state)
+                    .map(|state| (node, state))
+                    .map_err(|e| StoreError::Data(format!("checkpoint of `{execution_id}`: {e}")))
+            })
+            .collect()
+    }
+
     /// The schema version every database is at.
     pub fn schema_version(&self) -> Result<u32, StoreError> {
         self.global.schema_version()
@@ -495,7 +740,87 @@ mod tests {
         drop(store);
         assert!(dir.join(PROJECTS_DIR).join("alpha.db").is_file());
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
-        assert_eq!(store.projects().len(), 1);
+        assert_eq!(store.all().len(), 2);
+    }
+
+    fn execution(id: &str, project: Option<&str>, state: ExecutionState) -> Execution {
+        Execution {
+            id: id.into(),
+            profile_id: "p".into(),
+            workflow_id: "main".into(),
+            project_id: project.map(String::from),
+            state,
+            disabled: Vec::new(),
+        }
+    }
+
+    fn workflow() -> Workflow {
+        serde_json::from_value(json!({ "id": "main", "kind": "main" })).unwrap()
+    }
+
+    #[test]
+    fn executions_round_trip_and_number_on_across_databases() {
+        let dir = temp_dir("executions");
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        assert_eq!(store.next_execution().unwrap(), 1);
+        let mut one = execution("exec-1", None, ExecutionState::Running);
+        store.insert_execution(1, &one, &workflow()).unwrap();
+        let two = execution("exec-2", Some("proj"), ExecutionState::Starting);
+        store.insert_execution(2, &two, &workflow()).unwrap();
+        one.state = ExecutionState::Failed {
+            reason: "boom".into(),
+        };
+        store.update_execution(&one).unwrap();
+        drop(store);
+
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        assert_eq!(store.next_execution().unwrap(), 3);
+        let all: Vec<Execution> = store
+            .executions(None)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.execution)
+            .collect();
+        assert_eq!(all, [one, two.clone()]);
+        let in_project = store.executions(Some("proj")).unwrap();
+        assert_eq!(in_project.len(), 1);
+        let unfinished = store.unfinished().unwrap();
+        assert_eq!(unfinished.len(), 1);
+        assert_eq!(unfinished[0].execution, two);
+        assert_eq!(unfinished[0].workflow, workflow());
+        assert!(store.execution("exec-2").unwrap().is_some());
+        assert!(store.execution("exec-9").unwrap().is_none());
+        let finished: Option<i64> = store
+            .global
+            .with(|c| c.query_row("SELECT finished FROM executions", [], |r| r.get(0)))
+            .unwrap();
+        assert!(finished.is_some(), "a failed execution is finished");
+    }
+
+    #[test]
+    fn only_the_latest_checkpoint_of_each_node_is_kept() {
+        let dir = temp_dir("checkpoints");
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        let running = execution("exec-1", Some("proj"), ExecutionState::Running);
+        store.insert_execution(1, &running, &workflow()).unwrap();
+        let project = Some("proj");
+        store.checkpoint(project, "exec-1", "a", &json!(1)).unwrap();
+        store
+            .checkpoint(project, "exec-1", "b", &json!("b1"))
+            .unwrap();
+        store.checkpoint(project, "exec-1", "a", &json!(2)).unwrap();
+        let saved = store.checkpoints(project, "exec-1").unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved["a"], json!(2));
+        assert_eq!(saved["b"], json!("b1"));
+        let rows: u32 = store
+            .db(project)
+            .unwrap()
+            .with(|c| c.query_row("SELECT COUNT(*) FROM checkpoints", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(rows, 2);
+        // A checkpoint needs its execution.
+        assert!(store.checkpoint(project, "exec-9", "a", &json!(0)).is_err());
     }
 
     #[test]
