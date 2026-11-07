@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use regulus_proto::{BusEvent, EventListParams, Execution, ExecutionState, PortRef, Workflow};
@@ -328,41 +330,54 @@ fn migrate(path: &Path, conn: &mut Connection, migrations: &[&str]) -> Result<()
 }
 
 /// All the databases of one home: the global one, and one per project, opened as they are
-/// found on start or first used.
+/// found on start or first used. Shared by the store and its writer thread.
 #[derive(Debug)]
-pub struct Store {
+struct Databases {
     dir: PathBuf,
     config: StoreConfig,
     global: Arc<Db>,
     projects: Mutex<BTreeMap<String, Arc<Db>>>,
 }
 
-impl Store {
-    /// Opens (or creates) the store in `dir`, with every project database already there,
-    /// and migrates them all.
-    pub fn open(dir: &Path, config: &StoreConfig) -> Result<Self, StoreError> {
-        let global = Arc::new(Db::open(&dir.join(GLOBAL_FILE), config)?);
-        let mut projects = BTreeMap::new();
-        let projects_dir = dir.join(PROJECTS_DIR);
-        if let Ok(entries) = fs::read_dir(&projects_dir) {
-            for path in entries.flatten().map(|entry| entry.path()) {
-                if path.extension().and_then(|e| e.to_str()) != Some(DB_EXTENSION) {
-                    continue;
-                }
-                let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                projects.insert(id.to_string(), Arc::new(Db::open(&path, config)?));
-            }
-        }
-        Ok(Self {
-            dir: dir.to_path_buf(),
-            config: config.clone(),
-            global,
-            projects: Mutex::new(projects),
-        })
-    }
+/// What the writer thread is asked to do, in the order it was asked.
+enum Write {
+    Insert {
+        number: u64,
+        execution: Execution,
+        workflow: String,
+        at: u64,
+    },
+    Update {
+        execution: Execution,
+        at: u64,
+    },
+    Event(BusEvent),
+    Checkpoint {
+        project: Option<String>,
+        execution_id: String,
+        node_id: String,
+        state: Vec<u8>,
+        at: u64,
+        done: SyncSender<Result<(), StoreError>>,
+    },
+    /// Answers once everything asked before it is written.
+    Flush(SyncSender<()>),
+}
 
+/// The name of the thread that writes to the store.
+const WRITER_THREAD: &str = "regulus-store";
+
+/// The store: reads answer from the databases; writes of executions and bus events are
+/// queued, in order, to one writer thread, so whoever writes never waits for the disk or
+/// for a database another connection holds.
+#[derive(Debug)]
+pub struct Store {
+    dbs: Arc<Databases>,
+    writer: Mutex<Option<Sender<Write>>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Databases {
     fn projects(&self) -> MutexGuard<'_, BTreeMap<String, Arc<Db>>> {
         self.projects
             .lock()
@@ -370,7 +385,7 @@ impl Store {
     }
 
     /// The database of `project`, or the global one; a project's is created on first use.
-    pub(crate) fn db(&self, project: Option<&str>) -> Result<Arc<Db>, StoreError> {
+    fn db(&self, project: Option<&str>) -> Result<Arc<Db>, StoreError> {
         let Some(project) = project else {
             return Ok(self.global.clone());
         };
@@ -390,18 +405,6 @@ impl Store {
         Ok(db)
     }
 
-    /// The key-value space `namespace` in the database of `project` (or the global one).
-    pub(crate) fn module_store(
-        &self,
-        project: Option<&str>,
-        namespace: &str,
-    ) -> Result<ModuleStore, StoreError> {
-        Ok(ModuleStore {
-            db: self.db(project)?,
-            namespace: namespace.into(),
-        })
-    }
-
     /// The global database and every project database open now.
     fn all(&self) -> Vec<Arc<Db>> {
         let mut all = vec![self.global.clone()];
@@ -417,31 +420,46 @@ impl Store {
         }
     }
 
-    /// What happens on start to executions left running.
-    pub fn resume(&self) -> Resume {
-        self.config.resume
-    }
-
-    /// The number for the next execution: one past the highest in any database.
-    pub fn next_execution(&self) -> Result<u64, StoreError> {
-        let mut highest = 0;
-        for db in self.all() {
-            let found: i64 = db.with(|conn| {
-                conn.query_row("SELECT COALESCE(MAX(number), 0) FROM executions", [], |r| {
-                    r.get(0)
-                })
-            })?;
-            highest = highest.max(found.max(0) as u64);
+    fn apply(&self, write: Write) {
+        let result = match write {
+            Write::Insert {
+                number,
+                execution,
+                workflow,
+                at,
+            } => self.insert_execution(number, &execution, &workflow, at),
+            Write::Update { execution, at } => self.update_execution(&execution, at),
+            Write::Event(event) => self.append_event(&event),
+            Write::Checkpoint {
+                project,
+                execution_id,
+                node_id,
+                state,
+                at,
+                done,
+            } => {
+                let written =
+                    self.checkpoint(project.as_deref(), &execution_id, &node_id, &state, at);
+                // The module waiting for it may have given up; nothing to report then.
+                let _ = done.send(written);
+                Ok(())
+            }
+            Write::Flush(done) => {
+                let _ = done.send(());
+                Ok(())
+            }
+        };
+        if let Err(error) = result {
+            eprintln!("regulus: store: {error}");
         }
-        Ok(highest + 1)
     }
 
-    /// Records a new execution with the workflow copy it runs.
-    pub fn insert_execution(
+    fn insert_execution(
         &self,
         number: u64,
         execution: &Execution,
-        workflow: &Workflow,
+        workflow: &str,
+        at: u64,
     ) -> Result<(), StoreError> {
         let (status, reason) = status_of(&execution.state);
         self.db(execution.project_id.as_deref())?.with(|conn| {
@@ -455,20 +473,18 @@ impl Store {
                     execution.project_id,
                     execution.profile_id,
                     execution.workflow_id,
-                    to_json(workflow)?,
+                    workflow,
                     status,
                     reason,
                     to_json(&execution.disabled)?,
-                    int(now_ms()),
+                    int(at),
                 ],
             )
         })?;
         Ok(())
     }
 
-    /// Records the state and disabled nodes of an execution; `finished` is stamped the
-    /// first time it stops being live.
-    pub fn update_execution(&self, execution: &Execution) -> Result<(), StoreError> {
+    fn update_execution(&self, execution: &Execution, at: u64) -> Result<(), StoreError> {
         let (status, reason) = status_of(&execution.state);
         self.db(execution.project_id.as_deref())?.with(|conn| {
             conn.execute(
@@ -481,79 +497,27 @@ impl Store {
                     reason,
                     to_json(&execution.disabled)?,
                     execution.state.is_live(),
-                    int(now_ms()),
+                    int(at),
                 ],
             )
         })?;
         Ok(())
     }
 
-    /// Every execution in the databases `project` reaches, by number.
-    pub fn executions(&self, project: Option<&str>) -> Result<Vec<StoredExecution>, StoreError> {
-        self.select_executions(project, "")
-    }
-
-    /// The executions left starting or running, by number.
-    pub fn unfinished(&self) -> Result<Vec<StoredExecution>, StoreError> {
-        let (starting, _) = status_of(&ExecutionState::Starting);
-        let (running, _) = status_of(&ExecutionState::Running);
-        self.select_executions(
-            None,
-            &format!("WHERE status IN ('{starting}', '{running}')"),
-        )
-    }
-
-    pub fn execution(&self, id: &str) -> Result<Option<StoredExecution>, StoreError> {
-        for db in self.all() {
-            let found = db.with(|conn| {
-                conn.query_row(
-                    &format!("SELECT {EXECUTION_COLUMNS} FROM executions WHERE id = ?1"),
-                    [id],
-                    stored_execution,
-                )
-                .optional()
-            })?;
-            if found.is_some() {
-                return Ok(found);
-            }
-        }
-        Ok(None)
-    }
-
-    fn select_executions(
-        &self,
-        project: Option<&str>,
-        filter: &str,
-    ) -> Result<Vec<StoredExecution>, StoreError> {
-        let sql = format!("SELECT {EXECUTION_COLUMNS} FROM executions {filter} ORDER BY number");
-        let mut all = Vec::new();
-        for db in self.reached_by(project) {
-            let rows = db.with(|conn| {
-                conn.prepare_cached(&sql)?
-                    .query_map([], stored_execution)?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })?;
-            all.extend(rows);
-        }
-        all.sort_by_key(|e| e.number);
-        Ok(all)
-    }
-
-    /// Saves the state of a node of an execution; only its latest is kept.
-    pub fn checkpoint(
+    fn checkpoint(
         &self,
         project: Option<&str>,
         execution_id: &str,
         node_id: &str,
-        state: &Value,
+        state: &[u8],
+        at: u64,
     ) -> Result<(), StoreError> {
-        let state = serde_json::to_vec(state).map_err(|e| StoreError::Data(e.to_string()))?;
         self.db(project)?.with(|conn| {
             conn.execute(
                 "INSERT INTO checkpoints (execution_id, seq, node_id, state, created)
                  SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4
                  FROM checkpoints WHERE execution_id = ?1",
-                params![execution_id, node_id, state, int(now_ms())],
+                params![execution_id, node_id, state, int(at)],
             )?;
             conn.execute(
                 "DELETE FROM checkpoints WHERE execution_id = ?1 AND node_id = ?2
@@ -564,43 +528,7 @@ impl Store {
         Ok(())
     }
 
-    /// The latest checkpoint of each node of an execution.
-    pub fn checkpoints(
-        &self,
-        project: Option<&str>,
-        execution_id: &str,
-    ) -> Result<HashMap<String, Value>, StoreError> {
-        let rows: Vec<(String, Vec<u8>)> = self.db(project)?.with(|conn| {
-            conn.prepare_cached(
-                "SELECT node_id, state FROM checkpoints WHERE execution_id = ?1 ORDER BY seq",
-            )?
-            .query_map([execution_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
-        })?;
-        rows.into_iter()
-            .map(|(node, state)| {
-                serde_json::from_slice(&state)
-                    .map(|state| (node, state))
-                    .map_err(|e| StoreError::Data(format!("checkpoint of `{execution_id}`: {e}")))
-            })
-            .collect()
-    }
-
-    /// The `seq` for the next bus event: one past the highest kept in any database.
-    pub fn next_seq(&self) -> Result<u64, StoreError> {
-        let mut highest = 0;
-        for db in self.all() {
-            let found: i64 = db.with(|conn| {
-                conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
-            })?;
-            highest = highest.max(found.max(0) as u64);
-        }
-        Ok(highest + 1)
-    }
-
-    /// Keeps a bus event in its project's database; past `2 × max_events` there, the
-    /// oldest go.
-    pub fn append_event(&self, event: &BusEvent) -> Result<(), StoreError> {
+    fn append_event(&self, event: &BusEvent) -> Result<(), StoreError> {
         let kind =
             serde_json::to_value(&event.kind).map_err(|e| StoreError::Data(e.to_string()))?;
         let db = self.db(event.project_id.as_deref())?;
@@ -630,12 +558,247 @@ impl Store {
         Ok(())
     }
 
+    /// One past the highest value `sql` finds in any database.
+    fn next_after(&self, sql: &str) -> Result<u64, StoreError> {
+        let mut highest = 0;
+        for db in self.all() {
+            let found: i64 = db.with(|conn| conn.query_row(sql, [], |r| r.get(0)))?;
+            highest = highest.max(found.max(0) as u64);
+        }
+        Ok(highest + 1)
+    }
+
+    fn select_executions(
+        &self,
+        project: Option<&str>,
+        filter: &str,
+    ) -> Result<Vec<StoredExecution>, StoreError> {
+        let sql = format!("SELECT {EXECUTION_COLUMNS} FROM executions {filter} ORDER BY number");
+        let mut all = Vec::new();
+        for db in self.reached_by(project) {
+            let rows = db.with(|conn| {
+                conn.prepare_cached(&sql)?
+                    .query_map([], stored_execution)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })?;
+            all.extend(rows);
+        }
+        all.sort_by_key(|e| e.number);
+        Ok(all)
+    }
+}
+
+impl Store {
+    /// Opens (or creates) the store in `dir`, with every project database already there,
+    /// migrates them all and starts the writer thread.
+    pub fn open(dir: &Path, config: &StoreConfig) -> Result<Self, StoreError> {
+        let global = Arc::new(Db::open(&dir.join(GLOBAL_FILE), config)?);
+        let mut projects = BTreeMap::new();
+        let projects_dir = dir.join(PROJECTS_DIR);
+        if let Ok(entries) = fs::read_dir(&projects_dir) {
+            for path in entries.flatten().map(|entry| entry.path()) {
+                if path.extension().and_then(|e| e.to_str()) != Some(DB_EXTENSION) {
+                    continue;
+                }
+                let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                projects.insert(id.to_string(), Arc::new(Db::open(&path, config)?));
+            }
+        }
+        let dbs = Arc::new(Databases {
+            dir: dir.to_path_buf(),
+            config: config.clone(),
+            global,
+            projects: Mutex::new(projects),
+        });
+        let (sender, queue) = mpsc::channel::<Write>();
+        let writing = dbs.clone();
+        let thread = std::thread::Builder::new()
+            .name(WRITER_THREAD.into())
+            .spawn(move || {
+                for write in queue {
+                    writing.apply(write);
+                }
+            })
+            .map_err(|source| StoreError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+        Ok(Self {
+            dbs,
+            writer: Mutex::new(Some(sender)),
+            thread: Mutex::new(Some(thread)),
+        })
+    }
+
+    fn send(&self, write: Write) -> Result<(), StoreError> {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        writer
+            .as_ref()
+            .and_then(|sender| sender.send(write).ok())
+            .ok_or_else(|| StoreError::Data("the store writer is gone".into()))
+    }
+
+    /// Waits until everything queued so far is written.
+    pub fn flush(&self) {
+        let (done, wait) = mpsc::sync_channel(1);
+        if self.send(Write::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+
+    pub(crate) fn db(&self, project: Option<&str>) -> Result<Arc<Db>, StoreError> {
+        self.dbs.db(project)
+    }
+
+    /// The key-value space `namespace` in the database of `project` (or the global one).
+    pub(crate) fn module_store(
+        &self,
+        project: Option<&str>,
+        namespace: &str,
+    ) -> Result<ModuleStore, StoreError> {
+        Ok(ModuleStore {
+            db: self.db(project)?,
+            namespace: namespace.into(),
+        })
+    }
+
+    /// What happens on start to executions left running.
+    pub fn resume(&self) -> Resume {
+        self.dbs.config.resume
+    }
+
+    /// The number for the next execution: one past the highest in any database.
+    pub fn next_execution(&self) -> Result<u64, StoreError> {
+        self.dbs
+            .next_after("SELECT COALESCE(MAX(number), 0) FROM executions")
+    }
+
+    /// Queues a new execution with the workflow copy it runs.
+    pub fn insert_execution(
+        &self,
+        number: u64,
+        execution: &Execution,
+        workflow: &Workflow,
+    ) -> Result<(), StoreError> {
+        let workflow =
+            serde_json::to_string(workflow).map_err(|e| StoreError::Data(e.to_string()))?;
+        self.send(Write::Insert {
+            number,
+            execution: execution.clone(),
+            workflow,
+            at: now_ms(),
+        })
+    }
+
+    /// Queues the state and disabled nodes of an execution; `finished` is stamped the
+    /// first time it stops being live.
+    pub fn update_execution(&self, execution: &Execution) -> Result<(), StoreError> {
+        self.send(Write::Update {
+            execution: execution.clone(),
+            at: now_ms(),
+        })
+    }
+
+    /// Every execution in the databases `project` reaches, by number.
+    pub fn executions(&self, project: Option<&str>) -> Result<Vec<StoredExecution>, StoreError> {
+        self.dbs.select_executions(project, "")
+    }
+
+    /// The executions left starting or running, by number.
+    pub fn unfinished(&self) -> Result<Vec<StoredExecution>, StoreError> {
+        let (starting, _) = status_of(&ExecutionState::Starting);
+        let (running, _) = status_of(&ExecutionState::Running);
+        self.dbs.select_executions(
+            None,
+            &format!("WHERE status IN ('{starting}', '{running}')"),
+        )
+    }
+
+    pub fn execution(&self, id: &str) -> Result<Option<StoredExecution>, StoreError> {
+        for db in self.dbs.all() {
+            let found = db.with(|conn| {
+                conn.query_row(
+                    &format!("SELECT {EXECUTION_COLUMNS} FROM executions WHERE id = ?1"),
+                    [id],
+                    stored_execution,
+                )
+                .optional()
+            })?;
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Saves the state of a node of an execution; only its latest is kept. It goes
+    /// through the writer, after the execution it belongs to, and waits until written.
+    pub fn checkpoint(
+        &self,
+        project: Option<&str>,
+        execution_id: &str,
+        node_id: &str,
+        state: &Value,
+    ) -> Result<(), StoreError> {
+        let state = serde_json::to_vec(state).map_err(|e| StoreError::Data(e.to_string()))?;
+        let (done, wait) = mpsc::sync_channel(1);
+        self.send(Write::Checkpoint {
+            project: project.map(String::from),
+            execution_id: execution_id.into(),
+            node_id: node_id.into(),
+            state,
+            at: now_ms(),
+            done,
+        })?;
+        wait.recv()
+            .map_err(|_| StoreError::Data("the store writer is gone".into()))?
+    }
+
+    /// The latest checkpoint of each node of an execution.
+    pub fn checkpoints(
+        &self,
+        project: Option<&str>,
+        execution_id: &str,
+    ) -> Result<HashMap<String, Value>, StoreError> {
+        let rows: Vec<(String, Vec<u8>)> = self.db(project)?.with(|conn| {
+            conn.prepare_cached(
+                "SELECT node_id, state FROM checkpoints WHERE execution_id = ?1 ORDER BY seq",
+            )?
+            .query_map([execution_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+        })?;
+        rows.into_iter()
+            .map(|(node, state)| {
+                serde_json::from_slice(&state)
+                    .map(|state| (node, state))
+                    .map_err(|e| StoreError::Data(format!("checkpoint of `{execution_id}`: {e}")))
+            })
+            .collect()
+    }
+
+    /// The `seq` for the next bus event: one past the highest kept in any database.
+    pub fn next_seq(&self) -> Result<u64, StoreError> {
+        self.dbs
+            .next_after("SELECT COALESCE(MAX(seq), 0) FROM events")
+    }
+
+    /// Queues a bus event for its project's database; past `2 × max_events` there, the
+    /// oldest go.
+    pub fn append_event(&self, event: &BusEvent) -> Result<(), StoreError> {
+        self.send(Write::Event(event.clone()))
+    }
+
     /// The kept bus events `params` asks for, oldest first, from every database it
     /// reaches.
     pub fn events(&self, params: &EventListParams) -> Result<Vec<BusEvent>, StoreError> {
         let limit = params.limit.map_or(-1, int);
         let mut all = Vec::new();
-        for db in self.reached_by(params.project_id.as_deref()) {
+        for db in self.dbs.reached_by(params.project_id.as_deref()) {
             let rows = db.with(|conn| {
                 conn.prepare_cached(
                     "SELECT seq, at, execution_id, project_id, event, from_node, from_port,
@@ -667,7 +830,19 @@ impl Store {
 
     /// The schema version every database is at.
     pub fn schema_version(&self) -> Result<u32, StoreError> {
-        self.global.schema_version()
+        self.dbs.global.schema_version()
+    }
+}
+
+/// Dropping the store writes what is still queued before it goes.
+impl Drop for Store {
+    fn drop(&mut self) {
+        let writer = self.writer.get_mut().map(Option::take);
+        drop(writer);
+        let thread = self.thread.get_mut().ok().and_then(Option::take);
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -774,6 +949,7 @@ mod tests {
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
         assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len() as u32);
         let rows: u32 = store
+            .dbs
             .global
             .with(|c| c.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0)))
             .unwrap();
@@ -837,7 +1013,7 @@ mod tests {
         drop(store);
         assert!(dir.join(PROJECTS_DIR).join("alpha.db").is_file());
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
-        assert_eq!(store.all().len(), 2);
+        assert_eq!(store.dbs.all().len(), 2);
     }
 
     fn execution(id: &str, project: Option<&str>, state: ExecutionState) -> Execution {
@@ -888,6 +1064,7 @@ mod tests {
         assert!(store.execution("exec-2").unwrap().is_some());
         assert!(store.execution("exec-9").unwrap().is_none());
         let finished: Option<i64> = store
+            .dbs
             .global
             .with(|c| c.query_row("SELECT finished FROM executions", [], |r| r.get(0)))
             .unwrap();
@@ -991,8 +1168,10 @@ mod tests {
         for seq in 1..=5 {
             store.append_event(&event(seq, "exec-1", None)).unwrap();
         }
+        store.flush();
         assert_eq!(store.events(&EventListParams::default()).unwrap().len(), 5);
         store.append_event(&event(6, "exec-1", None)).unwrap();
+        store.flush();
         let left: Vec<u64> = store
             .events(&EventListParams::default())
             .unwrap()

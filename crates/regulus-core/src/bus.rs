@@ -89,6 +89,7 @@ impl Journal {
                 params.since + 1 >= first.seq
             });
         if let (false, Some(store)) = (in_memory, &self.store) {
+            store.flush();
             match store.events(params) {
                 Ok(events) => {
                     let next = events.last().map_or(params.since, |e| e.seq);

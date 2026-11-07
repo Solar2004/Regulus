@@ -628,6 +628,10 @@ impl Core {
             self.stop(&id, false);
         }
         self.registry.shutdown();
+        // A clean shutdown loses nothing that was queued for the store.
+        if let Some(store) = &self.storage.store {
+            store.flush();
+        }
     }
 
     /// What a module gets for one of its nodes: the node with its secrets resolved.

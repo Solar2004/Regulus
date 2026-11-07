@@ -316,3 +316,43 @@ fn bus_events_outlive_the_core_and_their_seq_goes_on() {
         "read from memory"
     );
 }
+
+#[test]
+fn a_busy_database_does_not_hold_up_the_bus() {
+    let home = temp_home("busy");
+    let log = Log::default();
+    let config = StoreConfig {
+        busy_timeout_ms: 2000,
+        ..StoreConfig::default()
+    };
+    let speaker = profile(vec![json!({
+        "id": "x", "type": "k", "module_id": "t/a@1.0.0", "config": { "say": "hi" },
+        "ports": [{ "id": "out", "capability": "text@1", "direction": "output", "kind": "then" }]
+    })]);
+    let core = core_on(&home, &config, speaker, &log);
+    // Another connection holds the project database for writing.
+    std::fs::create_dir_all(home.join("store/projects")).unwrap();
+    let holder = rusqlite::Connection::open(home.join("store/projects/proj.db")).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let began = std::time::Instant::now();
+    assert_eq!(start(&core)["state"]["status"], "running");
+    let page = core
+        .dispatch(method::EVENT_LIST, json!({ "since": 0 }))
+        .unwrap();
+    assert_eq!(page["events"].as_array().unwrap().len(), 1, "{page}");
+    assert!(
+        began.elapsed() < std::time::Duration::from_millis(1000),
+        "start and emit waited {:?} for the database",
+        began.elapsed()
+    );
+    holder.execute_batch("COMMIT").unwrap();
+    drop(holder);
+    drop(core);
+    let store = Store::open(&home.join("store"), &config).unwrap();
+    assert_eq!(
+        store.executions(None).unwrap().len(),
+        1,
+        "written once free"
+    );
+    assert_eq!(store.next_seq().unwrap(), 2);
+}
