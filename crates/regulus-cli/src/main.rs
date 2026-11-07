@@ -440,8 +440,8 @@ enum Follow {
     Always,
 }
 
-/// Prints bus events from the oldest kept, polling every `client.refresh_ms` while
-/// following.
+/// Prints bus events from the oldest kept, page after page, polling every
+/// `client.refresh_ms` once caught up while following.
 async fn events(
     client: &Client<'_>,
     ws: &WsClient,
@@ -459,14 +459,19 @@ async fn events(
         for event in &page.events {
             print_event(event);
         }
+        // A page that does not move the cursor means there is nothing more for now.
+        let caught_up = page.next == since;
         since = page.next;
         let done = match follow {
-            Follow::No => true,
-            Follow::UntilIdle => page.pending == 0,
+            Follow::No => caught_up,
+            Follow::UntilIdle => caught_up && page.pending == 0,
             Follow::Always => false,
         };
         if done {
             return Ok(());
+        }
+        if !caught_up {
+            continue;
         }
         if follow == Follow::UntilIdle && Instant::now() >= deadline {
             bail!(

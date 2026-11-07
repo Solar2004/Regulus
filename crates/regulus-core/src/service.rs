@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::bus::{self, Journal, Pending};
+use crate::bus::{self, Journal, Listing, Pending};
 use crate::config::{BusConfig, Resume};
 use crate::graph::{check_profile, start_order};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
@@ -256,7 +256,7 @@ impl Core {
                 }
                 Ok(Value::Null)
             }
-            method::EVENT_LIST => json(self.events(&parse(params)?)),
+            method::EVENT_LIST => json(self.events(&parse(params)?)?),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",
@@ -825,7 +825,7 @@ impl Core {
 
     /// `event.list`: the kept bus events `params` asks for, and how many deliveries are
     /// still queued for the executions it names.
-    fn events(&self, params: &EventListParams) -> EventPage {
+    fn events(&self, params: &EventListParams) -> Result<EventPage, RpcError> {
         let pending = self
             .executions()
             .iter()
@@ -841,12 +841,29 @@ impl Core {
             })
             .map(|live| live.queue.len() + usize::from(live.draining))
             .sum();
-        let (events, next) = self.journal().list(params);
-        EventPage {
+        let limit = match (params.limit, self.bus.max_page) {
+            (limit, 0) => limit,
+            (None, max) => Some(max),
+            (Some(limit), max) => Some(limit.min(max)),
+        };
+        let listing = self.journal().list(params, limit);
+        let (events, next) = match listing {
+            Listing::Ready(events, next) => (events, next),
+            Listing::Store { store, upto } => {
+                // Everything up to `upto` was queued before; wait until it is written.
+                store.flush();
+                let events = store
+                    .events(params, upto, limit)
+                    .map_err(|e| RpcError::new(code::MODULE_FAILED, e.to_string()))?;
+                let next = bus::next_cursor(&events, limit, params.since, upto);
+                (events, next)
+            }
+        };
+        Ok(EventPage {
             events,
             next,
             pending,
-        }
+        })
     }
 
     /// Puts a value on a "then" output (`ModuleCtx::emit`) and queues it for every input

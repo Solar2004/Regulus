@@ -122,6 +122,9 @@ pub struct BusConfig {
     /// Bus events kept in memory so `event.list` answers recent ones without reading the
     /// store; the oldest go first. Without a store, they are all there is.
     pub history: usize,
+    /// Most events one `event.list` answers, whatever `limit` asks; the client follows
+    /// with `next`. 0 means no limit.
+    pub max_page: usize,
 }
 
 impl Default for BusConfig {
@@ -130,6 +133,7 @@ impl Default for BusConfig {
             max_depth: 64,
             max_queue: 4096,
             history: 1024,
+            max_page: 1000,
         }
     }
 }

@@ -28,6 +28,24 @@ pub(crate) struct Pending {
     pub to: PortRef,
 }
 
+/// Where the answer to an `event.list` comes from.
+pub(crate) enum Listing {
+    /// Memory holds everything after the cursor: the events and the next cursor.
+    Ready(Vec<BusEvent>, u64),
+    /// The cursor is older than memory: read the store, up to `upto`, without holding
+    /// the journal.
+    Store { store: Arc<Store>, upto: u64 },
+}
+
+/// The cursor after a page: its last event when the page is full (there may be more),
+/// otherwise everything up to `upto` was looked at, matched or not.
+pub(crate) fn next_cursor(events: &[BusEvent], limit: Option<usize>, since: u64, upto: u64) -> u64 {
+    match (events.last(), limit) {
+        (Some(last), Some(limit)) if events.len() >= limit => last.seq,
+        _ => upto.max(since),
+    }
+}
+
 /// Every bus event, in the store when there is one, and the latest `capacity` of them in
 /// memory, oldest first.
 pub(crate) struct Journal {
@@ -79,24 +97,19 @@ impl Journal {
         seq
     }
 
-    /// The events `params` asks for and the cursor to follow from. Memory answers when it
-    /// holds everything after `since`; otherwise the store does.
-    pub fn list(&self, params: &EventListParams) -> (Vec<BusEvent>, u64) {
+    /// At most `limit` of the events `params` asks for. Memory answers when it holds
+    /// everything after `since`; otherwise the caller reads the store.
+    pub fn list(&self, params: &EventListParams, limit: Option<usize>) -> Listing {
+        let upto = self.next_seq - 1;
         let in_memory = self
             .events
             .front()
-            .map_or(params.since + 1 >= self.next_seq, |first| {
-                params.since + 1 >= first.seq
-            });
+            .map_or(params.since >= upto, |first| params.since + 1 >= first.seq);
         if let (false, Some(store)) = (in_memory, &self.store) {
-            store.flush();
-            match store.events(params) {
-                Ok(events) => {
-                    let next = events.last().map_or(params.since, |e| e.seq);
-                    return (events, next);
-                }
-                Err(error) => eprintln!("regulus: store: {error}"),
-            }
+            return Listing::Store {
+                store: store.clone(),
+                upto,
+            };
         }
         let events: Vec<BusEvent> = self
             .events
@@ -114,11 +127,11 @@ impl Journal {
                     .as_deref()
                     .is_none_or(|id| e.project_id.as_deref() == Some(id))
             })
-            .take(params.limit.unwrap_or(usize::MAX))
+            .take(limit.unwrap_or(usize::MAX))
             .cloned()
             .collect();
-        let next = events.last().map_or(params.since, |e| e.seq);
-        (events, next)
+        let next = next_cursor(&events, limit, params.since, upto);
+        Listing::Ready(events, next)
     }
 }
 

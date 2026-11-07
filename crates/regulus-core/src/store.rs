@@ -793,10 +793,16 @@ impl Store {
         self.send(Write::Event(event.clone()))
     }
 
-    /// The kept bus events `params` asks for, oldest first, from every database it
-    /// reaches.
-    pub fn events(&self, params: &EventListParams) -> Result<Vec<BusEvent>, StoreError> {
-        let limit = params.limit.map_or(-1, int);
+    /// At most `limit` of the kept bus events `params` asks for with `seq` up to `upto`,
+    /// oldest first, from every database it reaches. `params.limit` is the caller's to
+    /// clamp and pass as `limit`.
+    pub fn events(
+        &self,
+        params: &EventListParams,
+        upto: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<BusEvent>, StoreError> {
+        let sql_limit = limit.map_or(-1, int);
         let mut all = Vec::new();
         for db in self.dbs.reached_by(params.project_id.as_deref()) {
             let rows = db.with(|conn| {
@@ -804,7 +810,7 @@ impl Store {
                     "SELECT seq, at, execution_id, project_id, event, from_node, from_port,
                          capability, depth, data
                      FROM events
-                     WHERE seq > ?1 AND (?2 IS NULL OR execution_id = ?2)
+                     WHERE seq > ?1 AND seq <= ?5 AND (?2 IS NULL OR execution_id = ?2)
                          AND (?3 IS NULL OR project_id = ?3)
                      ORDER BY seq LIMIT ?4",
                 )?
@@ -813,7 +819,8 @@ impl Store {
                         int(params.since),
                         params.execution_id,
                         params.project_id,
-                        limit
+                        sql_limit,
+                        int(upto)
                     ],
                     bus_event,
                 )?
@@ -822,7 +829,7 @@ impl Store {
             all.extend(rows);
         }
         all.sort_by_key(|e| e.seq);
-        if let Some(limit) = params.limit {
+        if let Some(limit) = limit {
             all.truncate(limit);
         }
         Ok(all)
@@ -1133,28 +1140,43 @@ mod tests {
         drop(store);
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
         assert_eq!(store.next_seq().unwrap(), 5);
-        let all = store.events(&EventListParams::default()).unwrap();
+        let all = store
+            .events(&EventListParams::default(), u64::MAX, None)
+            .unwrap();
         assert_eq!(all, written);
         let page = EventListParams {
             since: 1,
             limit: Some(2),
             ..EventListParams::default()
         };
-        let seqs: Vec<u64> = store.events(&page).unwrap().iter().map(|e| e.seq).collect();
+        let seqs: Vec<u64> = store
+            .events(&page, u64::MAX, page.limit)
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
         assert_eq!(seqs, [2, 3]);
         let of_project = EventListParams {
             project_id: Some("p".into()),
             ..EventListParams::default()
         };
         assert_eq!(
-            store.events(&of_project).unwrap(),
+            store
+                .events(&of_project, u64::MAX, of_project.limit)
+                .unwrap(),
             [written[1].clone(), written[3].clone()]
         );
         let of_execution = EventListParams {
             execution_id: Some("exec-1".into()),
             ..EventListParams::default()
         };
-        assert_eq!(store.events(&of_execution).unwrap().len(), 2);
+        assert_eq!(
+            store
+                .events(&of_execution, u64::MAX, of_execution.limit)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -1169,11 +1191,17 @@ mod tests {
             store.append_event(&event(seq, "exec-1", None)).unwrap();
         }
         store.flush();
-        assert_eq!(store.events(&EventListParams::default()).unwrap().len(), 5);
+        assert_eq!(
+            store
+                .events(&EventListParams::default(), u64::MAX, None)
+                .unwrap()
+                .len(),
+            5
+        );
         store.append_event(&event(6, "exec-1", None)).unwrap();
         store.flush();
         let left: Vec<u64> = store
-            .events(&EventListParams::default())
+            .events(&EventListParams::default(), u64::MAX, None)
             .unwrap()
             .iter()
             .map(|e| e.seq)

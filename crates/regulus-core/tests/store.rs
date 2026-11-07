@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use regulus_core::config::{Resume, StoreConfig};
-use regulus_core::{Core, Module, ModuleCtx, ModuleError, NodeRef, ProfileStore, Storage, Store};
+use regulus_core::{
+    BusConfig, Core, Module, ModuleCtx, ModuleError, NodeRef, ProfileStore, Storage, Store,
+};
 use regulus_proto::{method, Manifest, ModuleInfo, NodeCall, Profile};
 use serde_json::{json, Value};
 
@@ -105,6 +107,16 @@ fn profile(nodes: Vec<Value>) -> Profile {
 }
 
 fn core_on(home: &Path, config: &StoreConfig, profile: Profile, log: &Log) -> Arc<Core> {
+    core_with_bus(home, config, BusConfig::default(), profile, log)
+}
+
+fn core_with_bus(
+    home: &Path,
+    config: &StoreConfig,
+    bus: BusConfig,
+    profile: Profile,
+    log: &Log,
+) -> Arc<Core> {
     let store = Store::open(&home.join("store"), config).unwrap();
     let mut profiles = ProfileStore::default();
     profiles.insert(profile).unwrap();
@@ -113,7 +125,7 @@ fn core_on(home: &Path, config: &StoreConfig, profile: Profile, log: &Log) -> Ar
         store: Some(Arc::new(store)),
         ..Storage::default()
     };
-    Core::build_with(modules, &[], profiles, storage)
+    Core::build_with_bus(modules, &[], profiles, storage, bus)
 }
 
 #[test]
@@ -355,4 +367,56 @@ fn a_busy_database_does_not_hold_up_the_bus() {
         "written once free"
     );
     assert_eq!(store.next_seq().unwrap(), 2);
+}
+
+#[test]
+fn pages_behind_memory_come_from_the_store_without_gaps_and_the_cursor_moves() {
+    let home = temp_home("pages");
+    let log = Log::default();
+    let speaker = profile(vec![json!({
+        "id": "x", "type": "k", "module_id": "t/a@1.0.0", "config": { "say": "hi" },
+        "ports": [{ "id": "out", "capability": "text@1", "direction": "output", "kind": "then" }]
+    })]);
+    // Memory keeps 2 events, a page holds 2: four runs push the first two out of memory.
+    let bus = BusConfig {
+        history: 2,
+        max_page: 2,
+        ..BusConfig::default()
+    };
+    let core = core_with_bus(&home, &StoreConfig::default(), bus, speaker, &log);
+    for _ in 0..4 {
+        start(&core);
+    }
+    let page = |filter: Value, since: u64| -> (Vec<u64>, u64) {
+        let mut params = filter;
+        params["since"] = since.into();
+        let page = core.dispatch(method::EVENT_LIST, params).unwrap();
+        let seqs = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["seq"].as_u64().unwrap())
+            .collect();
+        (seqs, page["next"].as_u64().unwrap())
+    };
+    let follow = |filter: Value| -> Vec<u64> {
+        let (mut since, mut seen) = (0, Vec::new());
+        loop {
+            let (seqs, next) = page(filter.clone(), since);
+            assert!(next >= since, "the cursor never goes back");
+            seen.extend(seqs);
+            if next == since {
+                return seen;
+            }
+            since = next;
+        }
+    };
+    // The first page is behind memory: the store answers, clamped to max_page.
+    assert_eq!(page(json!({ "limit": 100 }), 0), (vec![1, 2], 2));
+    assert_eq!(follow(json!({})), [1, 2, 3, 4]);
+    assert_eq!(follow(json!({ "execution_id": "exec-1" })), [1]);
+    assert_eq!(follow(json!({ "execution_id": "exec-3" })), [3]);
+    // Nothing matches: the cursor still moves past what was looked at.
+    assert_eq!(page(json!({ "execution_id": "nope" }), 0), (vec![], 4));
+    assert_eq!(page(json!({ "project_id": "other" }), 1), (vec![], 4));
 }
