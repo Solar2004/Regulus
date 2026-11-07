@@ -1,10 +1,12 @@
 //! The flow nodes against a real core: values go in through `workflow.send` and what
 //! leaves the workflow's own outputs is read back from the bus.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use regulus_core::{Core, Module, ProfileStore, Storage};
+use regulus_core::config::StoreConfig;
+use regulus_core::{Core, Module, ProfileStore, Storage, Store};
 use regulus_module_flow::Flow;
 use regulus_proto::{method, BusEventKind, EventPage, Profile};
 use serde_json::{json, Value};
@@ -94,6 +96,19 @@ fn settled(core: &Core, id: &str, port: &str) -> Vec<Value> {
     emitted(core, id, &format!("self.{port}"))
 }
 
+/// Polls until `self.<port>` has `count` values.
+fn until(core: &Core, id: &str, port: &str, count: usize) -> Vec<Value> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let got = emitted(core, id, &format!("self.{port}"));
+        if got.len() >= count {
+            return got;
+        }
+        assert!(Instant::now() < deadline, "self.{port} got {got:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn no_failures(core: &Core, id: &str) {
     for event in page(core, id).events {
         if let BusEventKind::Failed { error, .. } = &event.kind {
@@ -102,7 +117,67 @@ fn no_failures(core: &Core, id: &str) {
     }
 }
 
+const T: &str = "text@1";
 const J: &str = "json@1";
+
+#[test]
+fn a_loop_turns_until_its_rule_or_stops_at_its_cap() {
+    let loop_node = |config| {
+        node(
+            "loop",
+            "loop",
+            config,
+            vec![
+                port("in", T, "input"),
+                port("back", T, "input"),
+                port("body", T, "output"),
+                port("done", T, "output"),
+                port("exhausted", T, "output"),
+            ],
+        )
+    };
+    // The body is a template that marks each turn; `back` brings it round.
+    let body = node(
+        "mark",
+        "convert",
+        json!({ "template": "{{.}}+" }),
+        vec![port("in", T, "input"), port("out", T, "output")],
+    );
+    let ports = vec![
+        port("go", T, "input"),
+        port("done", T, "output"),
+        port("exhausted", T, "output"),
+    ];
+    let wires = vec![
+        wire("self.go", "loop.in"),
+        wire("loop.body", "mark.in"),
+        wire("mark.out", "loop.back"),
+        wire("loop.done", "self.done"),
+        wire("loop.exhausted", "self.exhausted"),
+    ];
+    let make = |config| {
+        profile(
+            ports.clone(),
+            vec![loop_node(config), body.clone()],
+            wires.clone(),
+        )
+    };
+
+    let core = core(make(json!({ "max": 3 })), Storage::default());
+    let id = start(&core);
+    send(&core, &id, "go", json!("x"));
+    assert_eq!(settled(&core, &id, "exhausted"), [json!("x+++")]);
+    assert_eq!(emitted(&core, &id, "loop.body").len(), 3, "exactly N turns");
+    assert!(emitted(&core, &id, "self.done").is_empty());
+
+    let until = json!({ "max": 10, "until": { "op": "contains", "value": "++" } });
+    let core = self::core(make(until), Storage::default());
+    let id = start(&core);
+    send(&core, &id, "go", json!("y"));
+    assert_eq!(settled(&core, &id, "done"), [json!("y++")]);
+    assert_eq!(emitted(&core, &id, "loop.body").len(), 2);
+    no_failures(&core, &id);
+}
 
 #[test]
 fn switch_routes_by_rule_and_by_enum() {
@@ -153,4 +228,174 @@ fn switch_routes_by_rule_and_by_enum() {
     assert_eq!(settled(&core, &id, "high"), [json!({ "to": "high" })]);
     assert_eq!(settled(&core, &id, "other"), [json!({ "to": "nowhere" })]);
     no_failures(&core, &id);
+}
+
+#[test]
+fn a_join_barrier_waits_for_every_branch_and_fanout_splits_arrays() {
+    let p = profile(
+        vec![
+            port("a", T, "input"),
+            port("b", T, "input"),
+            port("list", J, "input"),
+            port("out", J, "output"),
+            port("each", J, "output"),
+        ],
+        vec![
+            node(
+                "join",
+                "join",
+                json!({}),
+                vec![
+                    port("a", T, "input"),
+                    port("b", T, "input"),
+                    port("out", J, "output"),
+                ],
+            ),
+            node(
+                "fan",
+                "fanout",
+                json!({ "mode": "split" }),
+                vec![port("in", J, "input"), port("out", J, "output")],
+            ),
+        ],
+        vec![
+            wire("self.a", "join.a"),
+            wire("self.b", "join.b"),
+            wire("join.out", "self.out"),
+            wire("self.list", "fan.in"),
+            wire("fan.out", "self.each"),
+        ],
+    );
+    let core = core(p, Storage::default());
+    let id = start(&core);
+    send(&core, &id, "a", json!("first"));
+    send(&core, &id, "a", json!("second"));
+    assert!(settled(&core, &id, "out").is_empty(), "b has not come yet");
+    send(&core, &id, "b", json!("B"));
+    assert_eq!(settled(&core, &id, "out"), [json!(["first", "B"])]);
+    send(&core, &id, "b", json!("B2"));
+    assert_eq!(settled(&core, &id, "out").len(), 2, "the queued `a` met it");
+
+    send(&core, &id, "list", json!([1, 2, 3]));
+    assert_eq!(settled(&core, &id, "each"), [json!(1), json!(2), json!(3)]);
+    no_failures(&core, &id);
+}
+
+#[test]
+fn wait_does_not_hold_the_bus_and_a_stop_drops_what_it_holds() {
+    let p = profile(
+        vec![
+            port("slow", T, "input"),
+            port("fast", T, "input"),
+            port("late", T, "output"),
+            port("quick", J, "output"),
+        ],
+        vec![
+            node(
+                "wait",
+                "wait",
+                json!({ "ms": 400 }),
+                vec![port("in", T, "input"), port("out", T, "output")],
+            ),
+            node(
+                "conv",
+                "convert",
+                json!({}),
+                vec![port("in", T, "input"), port("out", J, "output")],
+            ),
+        ],
+        vec![
+            wire("self.slow", "wait.in"),
+            wire("wait.out", "self.late"),
+            wire("self.fast", "conv.in"),
+            wire("conv.out", "self.quick"),
+        ],
+    );
+    let core = core(p, Storage::default());
+    let id = start(&core);
+    let sent = Instant::now();
+    send(&core, &id, "slow", json!("held"));
+    send(&core, &id, "fast", json!("{\"n\":1}"));
+    assert_eq!(until(&core, &id, "quick", 1), [json!({ "n": 1 })]);
+    assert!(
+        emitted(&core, &id, "self.late").is_empty(),
+        "the quick value went past the held one"
+    );
+    assert_eq!(until(&core, &id, "late", 1), [json!("held")]);
+    assert!(sent.elapsed() >= Duration::from_millis(400));
+
+    send(&core, &id, "slow", json!("dropped"));
+    let stopped = Instant::now();
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    assert!(
+        stopped.elapsed() < Duration::from_millis(400),
+        "stop did not wait"
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(
+        emitted(&core, &id, "wait.out").len(),
+        1,
+        "nothing after the stop"
+    );
+}
+
+fn temp_home(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("regulus-flow-it-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[test]
+fn a_variable_outlives_a_restart_that_resumes_its_execution() {
+    let make = || {
+        profile(
+            vec![
+                port("set", T, "input"),
+                port("get", T, "input"),
+                port("value", T, "output"),
+            ],
+            vec![
+                node(
+                    "keep",
+                    "variable",
+                    json!({ "name": "plan" }),
+                    vec![port("set", T, "input"), port("value", T, "output")],
+                ),
+                // Another node with the same name reads the same value.
+                node(
+                    "read",
+                    "variable",
+                    json!({ "name": "plan", "initial": "none yet" }),
+                    vec![port("get", T, "input"), port("value", T, "output")],
+                ),
+            ],
+            vec![
+                wire("self.set", "keep.set"),
+                wire("self.get", "read.get"),
+                wire("read.value", "self.value"),
+            ],
+        )
+    };
+    let home = temp_home("variable");
+    let storage = || Storage {
+        store: Some(Arc::new(
+            Store::open(&home.join("store"), &StoreConfig::default()).unwrap(),
+        )),
+        ..Storage::default()
+    };
+    let core = core(make(), storage());
+    let id = start(&core);
+    send(&core, &id, "get", json!("?"));
+    assert_eq!(settled(&core, &id, "value"), [json!("none yet")]);
+    send(&core, &id, "set", json!("step 2"));
+    settled(&core, &id, "value");
+    core.shutdown();
+    drop(core);
+
+    let core = self::core(make(), storage());
+    assert_eq!(core.recover(), [format!("{id} resumed (1 checkpoints)")]);
+    send(&core, &id, "get", json!("?"));
+    let values = settled(&core, &id, "value");
+    assert_eq!(values.last(), Some(&json!("step 2")), "{values:?}");
 }

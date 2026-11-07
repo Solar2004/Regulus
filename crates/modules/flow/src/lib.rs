@@ -1,14 +1,23 @@
 //! Flow logic (docs/13-blocks.md §3.2): the nodes that decide where a value goes next.
 //! `call` runs a workflow as a child execution per value; `switch` routes by rules;
-//! `fanout` copies or splits; `convert` changes what a value is between capabilities.
+//! `loop` repeats a body until a rule or a cap; `join` waits for several branches;
+//! `fanout` copies or splits; `wait` delays without holding the bus; `variable` keeps a
+//! value in the store; `convert` changes what a value is between capabilities.
 //!
 //! None of them is a flow engine: each takes values over "then" wires and emits on its
 //! outputs, and the bus does the rest. Ports are declared on each node in the profile;
 //! nothing here assumes a capability except `convert`, whose job it is.
 
 mod convert;
+mod join;
+mod repeat;
 mod route;
 mod rule;
+mod variable;
+mod wait;
+
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{
@@ -30,16 +39,34 @@ const EVENTS: &[(&str, OnEvent)] = &[
     ("call", call_event),
     ("switch", route::switch),
     ("fanout", route::fanout),
+    ("loop", repeat::event),
+    ("join", join::event),
+    ("wait", wait::event),
+    ("variable", variable::event),
     ("convert", convert::event),
 ];
 
 pub struct Flow {
     manifest: Manifest,
     ctx: ModuleCtx,
+    /// The turn each running `loop` is on.
+    loops: Mutex<HashMap<NodeRef, u64>>,
+    /// What each `join` holds until its barrier opens.
+    joins: Mutex<HashMap<NodeRef, join::Gate>>,
+    /// The values each `wait` holds.
+    timers: wait::Timers,
+    /// `variable`s of a core without a store live here, for as long as the core does.
+    memory: Mutex<HashMap<String, Value>>,
 }
 
 pub(crate) fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ModuleError> {
     serde_json::from_value(params).map_err(|e| ModuleError::InvalidParams(e.to_string()))
+}
+
+/// A lock that a panic elsewhere does not poison for good: the state it guards is
+/// always whole between statements.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// One call to one node: the node with its settings, and how to act as it.
@@ -58,6 +85,15 @@ impl Here<'_> {
     /// A setting as text: a string as is, anything else as JSON, nothing as empty.
     pub fn text(&self, field: &str) -> String {
         self.setting(field).map(rule::text).unwrap_or_default()
+    }
+
+    /// A setting as a whole number; text that reads as one counts.
+    pub fn number(&self, field: &str) -> u64 {
+        match self.setting(field) {
+            Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+            Some(Value::String(s)) => s.trim().parse().unwrap_or(0),
+            _ => 0,
+        }
     }
 
     pub fn emit(&self, port: &str, value: Value) -> Result<(), ModuleError> {
@@ -83,6 +119,13 @@ impl Here<'_> {
             .filter(|p| p.kind == WireKind::Then && p.direction == direction)
             .map(|p| p.id.clone())
             .collect()
+    }
+
+    pub fn has_output(&self, port: &str) -> bool {
+        self.call
+            .node
+            .port(port)
+            .is_some_and(|p| p.kind == WireKind::Then && p.direction == Direction::Output)
     }
 
     /// The capability of one of the node's ports, if it has it.
@@ -119,6 +162,10 @@ impl Flow {
         Self {
             manifest: parse_manifest(MANIFEST).expect("flow manifest is valid"),
             ctx: ModuleCtx::default(),
+            loops: Mutex::default(),
+            joins: Mutex::default(),
+            timers: wait::Timers::default(),
+            memory: Mutex::default(),
         }
     }
 
@@ -146,6 +193,15 @@ impl Flow {
                 ))
             })?;
         handle(&self.here(call), event)
+    }
+
+    /// Whatever a node held dies with it: turns, half-open barriers, delayed values.
+    fn stop(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let me = self.here(call).me;
+        lock(&self.loops).remove(&me);
+        lock(&self.joins).remove(&me);
+        self.timers.cancel(&me);
+        Ok(Value::Null)
     }
 
     /// The child's answer leaves on the output of the same id; its end, on `done` if the
@@ -198,12 +254,14 @@ impl Module for Flow {
         match method {
             method::NODE_EVENT => self.event(parse(params)?),
             method::NODE_CHILD => self.child(parse(params)?),
-            method::NODE_START | method::NODE_STOP => Ok(Value::Null),
+            method::NODE_STOP => self.stop(parse(params)?),
+            method::NODE_START => Ok(Value::Null),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }
     }
 
     fn shutdown(&mut self) -> Result<(), ModuleError> {
+        self.timers.cancel_all();
         Ok(())
     }
 }

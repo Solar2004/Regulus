@@ -102,6 +102,16 @@ fn number(value: Option<&Value>) -> Option<f64> {
 }
 
 impl Rule {
+    /// Reads a rule from a node's setting. `{}` or nothing: no rule.
+    pub(crate) fn optional(setting: Option<&Value>) -> Result<Option<Self>, ModuleError> {
+        match setting {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Object(map)) if map.is_empty() => Ok(None),
+            Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+            Some(value) => Ok(Some(Self::parse(value.clone())?)),
+        }
+    }
+
     /// Reads a list of rules from a node's setting. Nothing: none.
     pub(crate) fn list(setting: Option<&Value>) -> Result<Vec<Self>, ModuleError> {
         match setting {
@@ -201,6 +211,7 @@ mod tests {
         assert!(Rule::parse(json!({ "op": "like" })).is_err());
         let rule = Rule::parse(json!({ "op": "regex", "value": "(" })).unwrap();
         assert!(rule.test(&json!("x")).is_err());
+        assert!(Rule::optional(Some(&json!({}))).unwrap().is_none());
         assert!(Rule::list(Some(&json!("x"))).is_err());
     }
 }

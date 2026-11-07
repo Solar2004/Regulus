@@ -104,6 +104,105 @@ name = "Switch"
   type    = "text"
   default = "other"
 
+# Repeats a body: `in` starts it, `body` goes out each turn, `back` brings the turn's
+# result. It ends when `back` meets `until` or after `max` turns, on `done`; a cap reached
+# goes out on `exhausted` if the node has it. The core's `[bus] max_depth` stays the
+# safety net under it, except across nodes that emit from threads of their own (`wait`).
+[[node]]
+type = "loop"
+name = "Loop"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "back"
+  name        = "back"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "body"
+  name       = "body"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "done"
+  name       = "done"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Most turns. 0: no cap of its own.
+  [[node.field]]
+  id      = "max"
+  type    = "number"
+  default = 10
+
+  # A rule, as one case of `switch` without `port`: `{ op = "contains", value = "DONE" }`.
+  # Empty: only `max` ends it.
+  [[node.field]]
+  id      = "until"
+  type    = "rule"
+  default = {}
+
+# Fan-in. any: every value goes on. barrier: waits for one value on each "then" input
+# declared on the node (or for `count` values on any) and sends them together.
+[[node]]
+type = "join"
+name = "Join"
+
+  [[node.port]]
+  id          = "a"
+  name        = "a"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "b"
+  name        = "b"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "barrier"
+  options = ["barrier", "any"]
+
+  # barrier: 0 waits for each input; N waits for N values on any of them.
+  [[node.field]]
+  id      = "count"
+  type    = "number"
+  default = 0
+
+  # array: in the order inputs are declared (or arrived, with `count`). object: by input.
+  [[node.field]]
+  id      = "shape"
+  type    = "select"
+  default = "array"
+  options = ["array", "object"]
+
 # Fan-out: one value to every "then" output of the node, or, with `split`, each element
 # of an array, one after another.
 [[node]]
@@ -130,6 +229,84 @@ name = "Fan-out"
   type    = "select"
   default = "copy"
   options = ["copy", "split"]
+
+# Holds each value `ms` milliseconds, on a thread of its own, then sends it on. Stopping
+# the node drops what it holds.
+[[node]]
+type = "wait"
+name = "Wait"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "ms"
+  type    = "number"
+  default = 1000
+
+  # Values one node may hold at once; past it, new ones are refused. 0: no limit.
+  [[node.field]]
+  id      = "max_pending"
+  type    = "number"
+  default = 64
+
+# A named value kept in the store: `set` writes it, any value on `get` sends it out on
+# `value`. Kept per execution (it survives a restart that resumes it) or per project.
+[[node]]
+type = "variable"
+name = "Variable"
+
+  [[node.port]]
+  id          = "set"
+  name        = "set"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "get"
+  name        = "get"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "value"
+  name       = "value"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Nodes with the same name share the value. Empty: the node's id.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "execution"
+  options = ["execution", "project"]
+
+  # What `get` sends before anything was set. Unset: nothing.
+  [[node.field]]
+  id   = "initial"
+  type = "json"
 
 # Changes what a value is, between capabilities: the compatibility box that goes in a
 # wire whose ends do not fit. `auto` picks the conversion by the input and output
