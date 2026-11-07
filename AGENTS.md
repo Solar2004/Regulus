@@ -19,9 +19,11 @@ proveedores (plantillas, ranuras, suscripción de Claude), skills, perfil aislad
 secretos, un canal de Comunicación entre agentes, y una TUI (`regulus` sin comando)
 con la vista Operar; los agentes ya se envían mensajes por una herramienta MCP; el core
 de la lógica de IA está (bus con dato, store SQLite, workflow como caja, `Call`), y la
-caja Agente tiene la ranura `hooks` (puente `regulus hook`, módulo `hooks`). **Lo
-siguiente:** los módulos y plantillas de [`docs/13-blocks.md`](docs/13-blocks.md).
-La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+caja Agente tiene la ranura `hooks` (puente `regulus hook`, módulo `hooks`); los doce
+módulos de serie de [`docs/13-blocks.md`](docs/13-blocks.md) §3 están construidos
+(lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers`; entorno:
+`workspace` · `tasks` · `memory` · `web` · `human` · `service`). **Lo siguiente:** las
+plantillas de `13-blocks.md` §5, en orden. La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -63,7 +65,7 @@ construir todas las habitaciones hoy.**
 | **`docs/00-principles.md`** | ~2k | **Manda sobre todos los demás.** "Como el agua", **la caja líquida**, los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
 | **`docs/11-composition.md`** | ~2.6k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). |
 | **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido. |
-| **`docs/13-blocks.md`** | ~3.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom), límites honestos y fuentes. |
+| **`docs/13-blocks.md`** | ~3.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom), límites honestos y fuentes. |
 | **`docs/02-architecture.md`** | ~2.5k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
 | **`docs/04-client.md`** | ~0.9k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema. |
@@ -165,7 +167,7 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Bloques** (`13-blocks.md` §7): ~~core~~ → ~~ranura `hooks`~~ → módulos de lógica y entorno → plantillas | nada |
+| 1 | **Bloques** (`13-blocks.md` §7): ~~core~~ → ~~ranura `hooks`~~ → ~~módulos de lógica y entorno~~ → plantillas | nada |
 | 2 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
