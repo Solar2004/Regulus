@@ -79,7 +79,12 @@ impl Pool {
                             work(value, &stop)
                         }));
                         let mut nodes = lock(&pool.nodes);
-                        let Some(state) = nodes.get_mut(&key) else {
+                        // A node stopped and started again under the same key has a new
+                        // state: this thread belongs to the old one and leaves it alone.
+                        let Some(state) = nodes
+                            .get_mut(&key)
+                            .filter(|state| Arc::ptr_eq(&state.stop, &stop))
+                        else {
                             return;
                         };
                         match state.queue.pop_front() {

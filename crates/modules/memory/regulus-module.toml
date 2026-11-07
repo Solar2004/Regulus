@@ -11,7 +11,7 @@ methods        = ["memory.entries", "memory.tools"]
 # database of the node's project, or the global one outside any project. Every node that
 # reads or writes names a `memory` (nodes with the same name share it) and a `scope`:
 # `project` (every execution of the project) or `execution` (this run only). The limits
-# `max_entries` and `max_bytes` (the sum of the texts) hold per memory and scope; they are
+# `max_entries` and `max_bytes` (the sum of keys and texts) hold per memory and scope; they are
 # fields of the node that writes, so give every writer of one memory the same ones. Past
 # them, `evict = oldest` drops the oldest entries, `refuse` refuses the write.
 
@@ -78,13 +78,13 @@ name = "Memory"
   type    = "number"
   default = 200
 
-  # The texts of all entries together, in bytes.
+  # The keys and texts of all entries together, in bytes.
   [[node.field]]
   id      = "max_bytes"
   type    = "number"
   default = 262144
 
-  # Above 0.
+  # 0 means the default, 128: keys are never unbounded.
   [[node.field]]
   id      = "max_key_chars"
   type    = "number"

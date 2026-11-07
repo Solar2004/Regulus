@@ -219,6 +219,10 @@ pub fn send<T>(
                 method = "GET".into();
                 body = None;
             }
+            // Like the headers, the body is for the first origin only.
+            if url.origin() != origin {
+                body = None;
+            }
             continue;
         }
         let content_type = response

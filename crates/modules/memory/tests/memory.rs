@@ -330,3 +330,42 @@ fn agents_write_read_search_and_forget_through_the_tools() {
     );
     assert_eq!(refused["error"], true);
 }
+
+#[test]
+fn project_memory_survives_a_restart_of_the_core() {
+    let home = temp("restart");
+    let core = core(&home);
+    let id = start(&core);
+    send(
+        &core,
+        &id,
+        "remember",
+        json!({ "key": "deploy", "text": "Tag before you ship" }),
+    );
+    until(&core, &id, "written", 1);
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    core.shutdown();
+    drop(core);
+
+    // A new core on the same store: the entry is in SQLite, not in the old process.
+    let core = self::core(&home);
+    let id = start(&core);
+    let entries = core
+        .dispatch(
+            "memory.entries",
+            json!({ "execution_id": id, "node_id": "notes" }),
+        )
+        .unwrap();
+    assert_eq!(entries[0]["key"], "deploy", "{entries}");
+    assert_eq!(entries[0]["text"], "Tag before you ship");
+    send(&core, &id, "ask", json!("when do we ship?"));
+    let recall = until(&core, &id, "recall", 1);
+    assert!(
+        recall[0]
+            .as_str()
+            .unwrap()
+            .contains("- deploy: Tag before you ship"),
+        "{recall:?}"
+    );
+}

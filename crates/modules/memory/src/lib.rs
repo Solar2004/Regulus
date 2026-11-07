@@ -52,6 +52,8 @@ const TOOL_READ: &str = "memory_read";
 const TOOL_SEARCH: &str = "memory_search";
 const TOOL_WRITE: &str = "memory_write";
 const TOOL_DELETE: &str = "memory_delete";
+/// `max_key_chars` when a node sets 0: keys are never unbounded.
+const DEFAULT_KEY_CHARS: usize = 128;
 /// How many characters of an entry `memory_list` shows.
 const PREVIEW_CHARS: usize = 80;
 /// The fields of a failure that say what went wrong (`error@1` and the like).
@@ -195,7 +197,7 @@ impl Here<'_> {
             max_entries: self.number("max_entries"),
             max_bytes: self.number("max_bytes"),
             max_key_chars: match self.number("max_key_chars") {
-                0 => usize::MAX,
+                0 => DEFAULT_KEY_CHARS,
                 n => n,
             },
             evict_oldest: self.text("evict") != "refuse",
@@ -204,8 +206,9 @@ impl Here<'_> {
 
     /// Writes one entry within the node's limits.
     fn write(&self, key: Option<String>, text: String, by: String) -> Result<Entry, String> {
-        let _writing = lock(&self.memory.writing);
+        // Resolved before the lock: a bad name reports (and emits) without holding it.
         let place = self.place().map_err(|e| e.to_string())?;
+        let _writing = lock(&self.memory.writing);
         let now = now_ms();
         let key = match key.filter(|k| !k.trim().is_empty()) {
             Some(key) => key,
@@ -342,16 +345,18 @@ impl Memory {
             &failure_text(value),
             here.number("max_failure_chars").max(1),
         );
-        let size = {
+        let saved = {
             let mut pending = lock(&self.pending);
             let pile = pending.entry(key).or_default();
             pile.failures.push(failure);
             let keep = here.number("max_pending").max(1);
             let extra = pile.failures.len().saturating_sub(keep);
             pile.failures.drain(..extra);
-            let _ = self.ctx.checkpoint(&here.me, json!(pile));
-            pile.failures.len()
+            pile.clone()
         };
+        // Saved after the lock is released: the store is not waited on under it.
+        let _ = self.ctx.checkpoint(&here.me, json!(saved));
+        let size = saved.failures.len();
         if size >= here.number("count").max(1) {
             return self.flush(here);
         }
@@ -364,10 +369,9 @@ impl Memory {
         let failures = {
             let mut pending = lock(&self.pending);
             let pile = pending.entry(key).or_default();
-            let failures = std::mem::take(&mut pile.failures);
-            let _ = self.ctx.checkpoint(&here.me, json!(pile));
-            failures
+            std::mem::take(&mut pile.failures)
         };
+        let _ = self.ctx.checkpoint(&here.me, json!(Pending::default()));
         if failures.is_empty() {
             return Ok(json!({ "sent": 0 }));
         }

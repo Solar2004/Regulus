@@ -477,3 +477,51 @@ fn redirects_limits_posts_search_and_pdf() {
         "{error:?}"
     );
 }
+
+#[test]
+fn a_templated_pdf_path_stays_under_the_node_folder() {
+    let home = temp("pdf-path");
+    let lib = home.join("pdfs");
+    std::fs::create_dir_all(lib.join("docs")).unwrap();
+    std::fs::write(lib.join("docs/a.pdf"), pdf()).unwrap();
+    std::fs::write(home.join("secret.pdf"), pdf()).unwrap();
+    let config = json!({ "dir": lib, "path": "docs/{{input}}" });
+    let nodes = vec![node(
+        "doc",
+        "pdf",
+        config,
+        &[IN, ("out", "text@1", "output"), ERR],
+    )];
+    let core = core(profile(nodes, vec![]), &home);
+    let id = start(&core, "p");
+
+    send(&core, &id, "doc", json!("a.pdf"));
+    let text = until(&core, &id, "doc", "out", 1);
+    assert!(
+        text[0].as_str().unwrap().contains("Hello from a PDF"),
+        "{text:?}"
+    );
+
+    // Out through `..`: refused alike whether the file outside exists or not.
+    send(&core, &id, "doc", json!("../../secret.pdf"));
+    send(&core, &id, "doc", json!("../../nothing.pdf"));
+    let errors = until(&core, &id, "doc", "error", 2);
+    let tail = |e: &Value| {
+        let e = e.as_str().unwrap();
+        e[e.rfind(" is not").unwrap()..].to_string()
+    };
+    for error in &errors {
+        assert!(
+            error
+                .as_str()
+                .unwrap()
+                .contains("not a file under the node's folder"),
+            "{error}"
+        );
+    }
+    assert_eq!(tail(&errors[0]), tail(&errors[1]));
+    assert!(
+        emitted(&core, &id, "doc", "out").len() == 1,
+        "nothing outside was read"
+    );
+}

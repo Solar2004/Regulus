@@ -67,6 +67,7 @@ impl Kv {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Limits {
     pub max_entries: usize,
+    /// Keys and texts of all entries together.
     pub max_bytes: usize,
     pub max_key_chars: usize,
     /// Drop the oldest entries to make room, instead of refusing the write.
@@ -151,7 +152,8 @@ impl Place {
     /// evicted to make room. The caller holds the module's write lock.
     pub fn write(&self, entry: &Entry, limits: Limits) -> Result<Vec<String>, String> {
         check_key(&entry.key, limits.max_key_chars)?;
-        let size = entry.text.len();
+        // An entry costs its key and its text.
+        let size = entry.key.len() + entry.text.len();
         if size > limits.max_bytes {
             return Err(format!(
                 "the entry has {size} bytes, more than the memory holds (`max_bytes` {})",
@@ -164,7 +166,7 @@ impl Place {
             .into_iter()
             .filter(|e| e.key != entry.key)
             .collect();
-        let mut bytes: usize = others.iter().map(|e| e.text.len()).sum();
+        let mut bytes: usize = others.iter().map(|e| e.key.len() + e.text.len()).sum();
         let mut evicted = Vec::new();
         while others.len() + 1 > limits.max_entries.max(1) || bytes + size > limits.max_bytes {
             if !limits.evict_oldest || others.is_empty() {
@@ -177,7 +179,7 @@ impl Place {
                 ));
             }
             let oldest = others.remove(0);
-            bytes -= oldest.text.len();
+            bytes -= oldest.key.len() + oldest.text.len();
             evicted.push(oldest.key);
         }
         for key in &evicted {
@@ -285,7 +287,7 @@ mod tests {
         assert_eq!(keys, ["c", "d"]);
         // Rewriting a key replaces it without counting it twice.
         assert!(place
-            .write(&entry("d", "1234567", 5), LIMITS)
+            .write(&entry("d", "123456", 5), LIMITS)
             .unwrap()
             .is_empty());
         let refuse = Limits {

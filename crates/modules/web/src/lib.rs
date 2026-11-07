@@ -120,9 +120,7 @@ pub fn template(source: &str, input: &Value, url: bool) -> Result<String, String
     while let Some(open) = rest.find("{{") {
         out.push_str(&rest[..open]);
         let after = &rest[open + 2..];
-        let close = after
-            .find("}}")
-            .ok_or_else(|| format!("`{{{{` without `}}}}` in `{source}`"))?;
+        let close = after.find("}}").ok_or("a `{{` without its `}}`")?;
         let name = after[..close].trim();
         let value = match name {
             "input" => as_text(input),
@@ -455,8 +453,10 @@ fn searxng(job: &Job, args: SearchArgs) -> Result<SearchAnswer, String> {
 /// `pdf`: the text of a PDF at a URL or a path.
 fn pdf_text(job: &Job, input: &Value) -> Result<Emits, String> {
     let field = job.text("path");
-    let from_value = field.is_empty();
-    let source = if from_value {
+    // A path the value shaped, whole or through a placeholder, may come from anything
+    // upstream: it stays under the base folder.
+    let shaped = field.is_empty() || field.contains("{{");
+    let source = if field.is_empty() {
         as_text(input).trim().to_string()
     } else {
         template(&field, input, false)?
@@ -487,9 +487,9 @@ fn pdf_text(job: &Job, input: &Value) -> Result<Emits, String> {
         if !path.is_absolute() {
             path = base.join(path);
         }
-        if from_value && !job.yes("allow_outside") {
+        if shaped && !job.yes("allow_outside") {
             fs::create_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
-            path = place::confine(&base, &path)?;
+            path = confined(&base, &path)?;
         }
         read_bounded(&path, max)?
     };
@@ -501,8 +501,23 @@ fn pdf_text(job: &Job, input: &Value) -> Result<Emits, String> {
     Ok(vec![(OUT.into(), json!(text))])
 }
 
+/// `path` resolved under `base`, or one refusal that says the same whether or not
+/// something exists outside, so a value cannot probe the disk.
+fn confined(base: &Path, path: &Path) -> Result<PathBuf, String> {
+    place::confine(base, path).map_err(|_| {
+        format!(
+            "{} is not a file under the node's folder (`allow_outside`)",
+            path.display()
+        )
+    })
+}
+
 fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    // Checked before opening: opening a FIFO with no writer would hold the thread.
+    if !fs::metadata(path).map_err(|e| failed(&e))?.is_file() {
+        return Err(failed(&"not a regular file"));
+    }
     let file = fs::File::open(path).map_err(|e| failed(&e))?;
     if !file.metadata().map_err(|e| failed(&e))?.is_file() {
         return Err(failed(&"not a regular file"));
@@ -570,7 +585,7 @@ fn download(job: &Job, input: &Value, stop: &AtomicBool) -> Result<Emits, String
             let target = if job.yes("allow_outside") {
                 target
             } else {
-                place::confine(&base, &target)?
+                confined(&base, &target)?
             };
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -671,7 +686,10 @@ impl Web {
             max_in_flight,
             max_queue,
             move |value, stop| {
-                let outcome = run(&worker, &value, stop);
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(&worker, &value, stop)
+                }))
+                .unwrap_or_else(|_| Err("failed unexpectedly on this value (a panic)".into()));
                 if stop.load(Ordering::SeqCst) {
                     return;
                 }
@@ -783,6 +801,26 @@ mod tests {
         assert_eq!(chunks("aaaa\nbbbb\ncc", 6), ["aaaa\n", "bbbb\n", "cc"]);
         assert_eq!(chunks("abcdefgh", 3), ["abc", "def", "gh"]);
         assert!(chunks("", 3).is_empty());
+    }
+
+    #[test]
+    fn only_regular_files_are_read() {
+        let dir = std::env::temp_dir().join(format!("regulus-web-read-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(read_bounded(&dir, 10).is_err(), "a folder");
+        #[cfg(unix)]
+        {
+            let fifo = dir.join("fifo");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                // Opening it with no writer would block for ever.
+                assert!(read_bounded(&fifo, 10).is_err());
+            }
+        }
+        fs::write(dir.join("f"), "12345").unwrap();
+        assert!(read_bounded(&dir.join("f"), 4).is_err());
+        assert_eq!(read_bounded(&dir.join("f"), 5).unwrap(), b"12345");
     }
 
     #[test]
