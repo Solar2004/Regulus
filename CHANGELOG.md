@@ -81,3 +81,22 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   privados rechazados tras DNS salvo `allow_private`, User-Agent fijo `regulus/<versión>`; una
   ruta de `pdf` formada por el valor no sale de la carpeta del nodo.
   Ejemplo en `crates/modules/web/examples/web.toml`.
+- Módulo `human` (`docs/13-blocks.md` §3.3): **Aprobación** (`approval`: el valor espera bajo
+  un id, formulario opcional como JSON schema, `merge_fields`, `timeout_ms` con salida
+  `timeout`) y **Revisión** (`review`: el texto se edita antes de seguir). Se decide con
+  `regulus human list|show|answer <id> approve|reject [--field k=v] [--text|--file]` o con un
+  valor en `decide`. Lo pendiente vive en el store y sobrevive a reiniciar el core (también a
+  `kill -9`). Ejemplo en `crates/modules/human/examples/approval.toml`.
+- Módulo `service` (`docs/13-blocks.md` §3.3): un workflow con puertos propios se ofrece a
+  sistemas de fuera. Llaves `rgk_` (`regulus service key new|list|revoke`) guardadas como
+  SHA-256 con ámbito `<proyecto>[/<workflow>]`; políticas (cooldown, ventana, concurrencia,
+  presupuesto) por llave, por workflow y por llave×workflow; log en el store (`regulus service
+  log`); motor intercambiable `service.engine@1` con el HTTP de serie (síncrono y por job).
+  `regulus service expose <workflow>` imprime los nodos. Ejemplo en
+  `crates/modules/service/examples/expose.toml`. Nueva dependencia: `sha2`.
+- `service` y `human`, tras revisión: el listener HTTP acota el tiempo total de escribir y de
+  vaciar una conexión, y responde 503 sin bloquear el hilo que acepta; parar un endpoint libera
+  lo que tenía en vuelo (plazas, presupuesto, jobs, log 503); `budget_requests` reserva las
+  peticiones en vuelo; las 401 ya no van al log; una llamada síncrona que caduca pasa a job sin
+  perder la respuesta. `human` borra lo pendiente solo cuando el valor ya salió y un plazo que
+  venció con el core caído salta al reanudar.

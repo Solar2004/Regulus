@@ -1,0 +1,144 @@
+[module]
+id             = "regulus/service@0.1.0"
+name           = "Service"
+requires_proto = "^1.8"
+# Keys: `service.key.new` { scope: ["<project>[/<workflow>]"], name?, policy? } → the key,
+# shown this once; `service.key.list` {} → keys without their secret; `service.key.revoke`
+# { id }. `service.log` { last?, key?, workflow? } → requests, oldest first.
+# `service.endpoints` {} → where each `http` engine listens. CLI: `regulus service …`.
+methods        = ["service.key.new", "service.key.list", "service.key.revoke", "service.log", "service.endpoints"]
+
+# Regulus outwards (docs/13-blocks.md §3.3). An `endpoint` offers workflows of its profile
+# that have their own ports (§2 #3) to outside systems. A request carries a key
+# (`Authorization: Bearer rgk_…`): unknown or revoked is 401, outside its scope 403, a
+# policy that says no 429 with `Retry-After`. Then it runs as a child execution of the
+# workflow (`Call`, §2 #4): each key of the JSON body goes to the input port of that name
+# and the first value that reaches an output is the answer, `{ execution_id, outputs:
+# { <port>: value } }`. Every request goes to the log in the module's store.
+#
+# Keys are global: generated here (`rgk_` + 256 random bits), kept as their SHA-256 only,
+# with a scope of projects (`global` for a profile with none) and workflows, `*` for any.
+
+# The box: keys, scope, policies, log, and the child. The engine that speaks to the
+# outside is whatever serves `service.engine@1` on `engine`: two methods,
+# `service.engine.next` { wait_ms } → the next neutral request or null, and
+# `service.engine.reply` { id, status, body, retry_after_s? }. `http` below is one; a
+# WebSocket, MCP or OpenAI-compatible engine is another node, in another module.
+[[node]]
+type = "endpoint"
+name = "Endpoint"
+
+  # Without an engine nothing reaches the endpoint: it does not start.
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "service.engine@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  # Optional, declare it to use it: every request as its log line (`json@1`).
+  # [[node.port]] id = "requests", capability = "json@1", direction = "output"
+
+  # The workflows offered, by id. Each needs "then" ports of its own.
+  [[node.field]]
+  id      = "workflows"
+  type    = "list"
+  default = []
+
+  # How long a request waits for the workflow's answer. Past it, 504 with a job id: the
+  # workflow goes on and the job says how it ended.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 30000
+
+  # The policy of every exposed workflow, counted per workflow over all keys:
+  # { cooldown_ms, requests, window_ms, concurrency, budget_requests, budget_ms }, 0 or
+  # missing is no limit. Budgets are kept in the store: a restart does not refill them.
+  [[node.field]]
+  id      = "policy"
+  type    = "map"
+  default = {}
+
+  # More policies, by name: `<workflow>` (replaces `policy` for that workflow),
+  # `key:<key id>` (that key at this endpoint) and `key:<key id>/<workflow>`. A key's own
+  # policy (`regulus service key new --policy`) applies everywhere. Every one that applies
+  # is checked.
+  [[node.field]]
+  id      = "policies"
+  type    = "map"
+  default = {}
+
+  # How long one wait for the next request lasts (at most 1000).
+  [[node.field]]
+  id      = "pull_ms"
+  type    = "number"
+  default = 250
+
+  # Requests handled at once; more get 503.
+  [[node.field]]
+  id      = "workers"
+  type    = "number"
+  default = 16
+
+  # How long a finished job can still be polled.
+  [[node.field]]
+  id      = "job_ttl_ms"
+  type    = "number"
+  default = 3600000
+
+  # Log lines kept, over every endpoint.
+  [[node.field]]
+  id      = "log_max"
+  type    = "number"
+  default = 1000
+
+# The HTTP engine: `POST /v1/workflows/<id>` (`?async=1` or `Prefer: respond-async`
+# answers 202 `{ job }` at once) and `GET /v1/jobs/<job>`. A thread and a deadline per
+# connection, `content-length` bodies only, closing waits on no client.
+[[node]]
+type = "http"
+name = "HTTP engine"
+
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "service.engine@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # Loopback by default. Every request needs a key, so another address is allowed.
+  [[node.field]]
+  id      = "bind"
+  type    = "text"
+  default = "127.0.0.1:7792"
+
+  [[node.field]]
+  id      = "max_body_bytes"
+  type    = "number"
+  default = 1048576
+
+  # The whole request, head and body, must arrive within this; then 408.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 5000
+
+  # How long a request waits for an endpoint to take it; then 503.
+  [[node.field]]
+  id      = "accept_ms"
+  type    = "number"
+  default = 5000
+
+  # The longest a connection waits for the endpoint's answer; then 504.
+  [[node.field]]
+  id      = "max_wait_ms"
+  type    = "number"
+  default = 600000
+
+  # Connections open at once; more get 503.
+  [[node.field]]
+  id      = "max_connections"
+  type    = "number"
+  default = 64

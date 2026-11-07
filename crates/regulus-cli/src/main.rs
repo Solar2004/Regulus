@@ -161,6 +161,97 @@ enum Command {
         #[command(subcommand)]
         command: SecretCommand,
     },
+    /// Decisions that wait for a person (Approval and Review nodes of `human`).
+    Human {
+        #[command(subcommand)]
+        command: HumanCommand,
+    },
+    /// Workflows offered to outside systems: keys, endpoints and the request log.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Keys that outside systems call with (`Authorization: Bearer rgk_…`).
+    Key {
+        #[command(subcommand)]
+        command: ServiceKeyCommand,
+    },
+    /// Print the nodes that expose a workflow, to paste into a profile's main workflow.
+    Expose {
+        workflow: String,
+        /// Limits for the workflow: `requests=5,window_ms=60000,cooldown_ms=…,
+        /// concurrency=…,budget_requests=…,budget_ms=…`.
+        #[arg(long)]
+        policy: Option<String>,
+        #[arg(long, default_value = "127.0.0.1:7792")]
+        bind: String,
+        /// How long a request waits for the answer.
+        #[arg(long, default_value_t = 30000)]
+        timeout_ms: u64,
+    },
+    /// The latest requests: who, what, when, how long, result.
+    Log {
+        #[arg(long, default_value_t = 20)]
+        last: usize,
+        /// Only this key id.
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long)]
+        workflow: Option<String>,
+    },
+    /// Where each running HTTP engine listens.
+    Endpoints,
+}
+
+#[derive(Subcommand)]
+enum ServiceKeyCommand {
+    /// Create a key. It is shown this once; Regulus keeps only its hash.
+    New {
+        /// What it may call: `<project>[/<workflow>]`, `global` for a profile without
+        /// project, `*` for any. Repeatable.
+        #[arg(long, required = true)]
+        scope: Vec<String>,
+        #[arg(long, default_value = "")]
+        name: String,
+        /// Limits of this key everywhere, as for `expose --policy`.
+        #[arg(long)]
+        policy: Option<String>,
+    },
+    /// Every key, without its secret.
+    List,
+    /// Revoke one key; the others keep working.
+    Revoke { id: String },
+}
+
+#[derive(Subcommand)]
+enum HumanCommand {
+    /// Decisions waiting in running executions, oldest first.
+    List {
+        /// Only this execution.
+        #[arg(long)]
+        execution: Option<String>,
+    },
+    /// One pending decision in full: what waits (raw, to edit for a review) and the form.
+    Show { id: String },
+    /// Decide: `approve` or `reject`. With --file or --text a review sends that text on;
+    /// the decision may then be left out (approve).
+    Answer {
+        id: String,
+        decision: Option<String>,
+        /// A form field, `name=value`. Repeatable; text is read as the type the form says.
+        #[arg(long = "field", value_name = "NAME=VALUE")]
+        fields: Vec<String>,
+        /// A review's edited text, or an approval's comment.
+        #[arg(long)]
+        text: Option<String>,
+        /// A review's edited text, read from this file.
+        #[arg(long, conflicts_with = "text")]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -492,6 +583,235 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Command::Human { command } => human(&client, command).await,
+        Command::Service { command } => service(&client, command).await,
+    }
+}
+
+fn policy_arg(text: Option<&str>) -> Result<regulus_module_service::policy::Policy> {
+    match text {
+        None => Ok(Default::default()),
+        Some(text) => regulus_module_service::parse_policy(text).map_err(anyhow::Error::msg),
+    }
+}
+
+fn print_key(key: &Value) {
+    let revoked = if key["revoked_ms"].is_null() {
+        ""
+    } else {
+        "  revoked"
+    };
+    let scope: Vec<&str> = key["scope"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let policy = match &key["policy"] {
+        Value::Object(map) if !map.is_empty() => format!("  policy {}", key["policy"]),
+        _ => String::new(),
+    };
+    println!(
+        "{:<12} {:<16} {}…  {}{policy}{revoked}",
+        key["id"].as_str().unwrap_or_default(),
+        key["name"].as_str().unwrap_or_default(),
+        key["hint"].as_str().unwrap_or_default(),
+        scope.join(" "),
+    );
+}
+
+/// `regulus service`: the `service.*` methods of the running core; `expose` only prints.
+async fn service(client: &Client<'_>, command: ServiceCommand) -> Result<()> {
+    match command {
+        ServiceCommand::Key { command } => match command {
+            ServiceKeyCommand::New {
+                scope,
+                name,
+                policy,
+            } => {
+                let policy = policy_arg(policy.as_deref())?;
+                let params = serde_json::json!({ "scope": scope, "name": name, "policy": policy });
+                let key: Value = client.request("service.key.new", params).await?;
+                print_key(&key);
+                println!("{}", key["key"].as_str().unwrap_or_default());
+                eprintln!(
+                    "regulus: this is the only time the key is shown; Regulus keeps its hash"
+                );
+                Ok(())
+            }
+            ServiceKeyCommand::List => {
+                let keys: Vec<Value> = client.request("service.key.list", Value::Null).await?;
+                keys.iter().for_each(print_key);
+                Ok(())
+            }
+            ServiceKeyCommand::Revoke { id } => {
+                let params = serde_json::json!({ "id": id });
+                let key: Value = client.request("service.key.revoke", params).await?;
+                print_key(&key);
+                Ok(())
+            }
+        },
+        ServiceCommand::Expose {
+            workflow,
+            policy,
+            bind,
+            timeout_ms,
+        } => {
+            let policy = regulus_module_service::policy_toml(&policy_arg(policy.as_deref())?);
+            print!(
+                "{}",
+                EXPOSE_TOML
+                    .replace("{workflow}", &workflow)
+                    .replace("{policy}", &policy)
+                    .replace("{bind}", &bind)
+                    .replace("{timeout_ms}", &timeout_ms.to_string())
+            );
+            Ok(())
+        }
+        ServiceCommand::Log {
+            last,
+            key,
+            workflow,
+        } => {
+            let params = serde_json::json!({ "last": last, "key": key, "workflow": workflow });
+            let entries: Vec<Value> = client.request("service.log", params).await?;
+            for e in entries {
+                let at = e["at_ms"].as_u64().unwrap_or(0);
+                println!(
+                    "{}.{:03} {:<12} {:<10} {}/{:<12} {:<5} {} {:>6} ms  {}",
+                    at / 1000,
+                    at % 1000,
+                    e["key_id"].as_str().unwrap_or("-"),
+                    e["key_name"].as_str().unwrap_or("-"),
+                    e["project"].as_str().unwrap_or_default(),
+                    e["workflow"].as_str().unwrap_or("-"),
+                    e["mode"].as_str().unwrap_or_default(),
+                    e["status"],
+                    e["ms"],
+                    e["result"].as_str().unwrap_or_default(),
+                );
+            }
+            Ok(())
+        }
+        ServiceCommand::Endpoints => {
+            let list: Vec<Value> = client.request("service.endpoints", Value::Null).await?;
+            for e in list {
+                println!(
+                    "{} {}/{}",
+                    e["url"].as_str().unwrap_or_default(),
+                    e["execution_id"].as_str().unwrap_or_default(),
+                    e["node_id"].as_str().unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+/// What `regulus service expose` prints: an HTTP engine and an endpoint, wired.
+const EXPOSE_TOML: &str = r#"# Paste into the main workflow of the profile that has `{workflow}`, then run it.
+  [[workflows.nodes]]
+  id = "service-http"
+  name = "HTTP engine"
+  type = "http"
+  module_id = "regulus/service@0.1.0"
+  config = { bind = "{bind}" }
+  ports = [{ id = "engine", capability = "service.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "service-{workflow}"
+  name = "Endpoint {workflow}"
+  type = "endpoint"
+  module_id = "regulus/service@0.1.0"
+  config = { workflows = ["{workflow}"], timeout_ms = {timeout_ms}, policy = {policy} }
+  ports = [{ id = "engine", capability = "service.engine@1", direction = "input", kind = "uses", required = true }]
+
+  [[workflows.wires]]
+  id = "service-engine-{workflow}"
+  kind = "uses"
+  from = { node_id = "service-http", port_id = "engine" }
+  to = { node_id = "service-{workflow}", port_id = "engine" }
+"#;
+
+/// `regulus human`: talks to the `human.*` methods of the running core.
+async fn human(client: &Client<'_>, command: HumanCommand) -> Result<()> {
+    match command {
+        HumanCommand::List { execution } => {
+            let params = serde_json::json!({ "execution_id": execution });
+            let pending: Vec<Value> = client.request("human.list", params).await?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            for p in pending {
+                let age = now.saturating_sub(p["created_ms"].as_u64().unwrap_or(now)) / 1000;
+                let deadline = p["deadline_ms"]
+                    .as_u64()
+                    .map(|d| format!(" · timeout in {} s", d.saturating_sub(now) / 1000))
+                    .unwrap_or_default();
+                println!(
+                    "{:<16} {:<9} {}/{}  {age} s ago{deadline}  {}",
+                    p["id"].as_str().unwrap_or_default(),
+                    p["kind"].as_str().unwrap_or_default(),
+                    p["execution_id"].as_str().unwrap_or_default(),
+                    p["node_id"].as_str().unwrap_or_default(),
+                    p["prompt"].as_str().unwrap_or_default(),
+                );
+            }
+            Ok(())
+        }
+        HumanCommand::Show { id } => {
+            let p: Value = client
+                .request("human.get", serde_json::json!({ "id": id }))
+                .await?;
+            match &p["value"] {
+                Value::String(text) => println!("{text}"),
+                other => println!("{}", serde_json::to_string_pretty(other)?),
+            }
+            if !p["form"].is_null() {
+                eprintln!("form: {}", p["form"]);
+            }
+            Ok(())
+        }
+        HumanCommand::Answer {
+            id,
+            decision,
+            fields,
+            text,
+            file,
+        } => {
+            let text = match file {
+                Some(path) => Some(
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?,
+                ),
+                None => text,
+            };
+            let decision = match decision {
+                Some(decision) => decision,
+                None if text.is_some() => "approve".into(),
+                None => bail!("say `approve` or `reject`"),
+            };
+            let mut map = serde_json::Map::new();
+            for field in fields {
+                let (name, value) = field
+                    .split_once('=')
+                    .with_context(|| format!("`{field}` is not NAME=VALUE"))?;
+                map.insert(name.trim().into(), Value::String(value.into()));
+            }
+            let params = serde_json::json!({
+                "id": id, "decision": decision, "fields": map, "text": text,
+            });
+            let done: Value = client.request("human.answer", params).await?;
+            println!(
+                "{} {} → {} {}.{}",
+                done["id"].as_str().unwrap_or_default(),
+                done["decision"].as_str().unwrap_or_default(),
+                done["execution_id"].as_str().unwrap_or_default(),
+                done["node_id"].as_str().unwrap_or_default(),
+                done["port"].as_str().unwrap_or_default(),
+            );
+            Ok(())
+        }
     }
 }
 

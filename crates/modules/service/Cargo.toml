@@ -1,0 +1,19 @@
+[package]
+name = "regulus-module-service"
+description = "Regulus service: workflows with ports offered to outside systems as endpoints, with keys, policies and a request log"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+httparse.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+regulus-module-hello = { path = "../hello" }
+regulus-module-human = { path = "../human" }

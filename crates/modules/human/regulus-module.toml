@@ -1,0 +1,174 @@
+[module]
+id             = "regulus/human@0.1.0"
+name           = "Human"
+requires_proto = "^1.8"
+# `human.list` → every decision waiting in a live execution; `human.get` { id } → one in
+# full; `human.answer` { id, decision, fields?, text? } → decides it. The CLI is
+# `regulus human list|show|answer`.
+methods        = ["human.list", "human.get", "human.answer"]
+
+# A person in the loop (docs/13-blocks.md §3.3). A value that arrives waits for a
+# decision: the node keeps it in the module's store under an id and says so on `pending`.
+# Someone decides by id, from the CLI (`regulus human answer <id> approve|reject`), or
+# from the workflow itself through `decide` (a webhook of `triggers`, an agent, a judge).
+# Pending decisions survive a restart of the core: the execution resumes from its
+# checkpoint and the node reloads them; timeouts run on wall clock, so the time the core
+# was down counts. Nothing waits on the bus thread.
+
+# Approval: the value goes on unchanged to `approved` or `rejected`. With a `form` (a
+# JSON schema of the fields the person fills in) the answer must fill it, and with
+# `merge_fields = "yes"` the fields are merged into what leaves on `approved` (an object
+# gets them as keys; anything else leaves as `{ value, ...fields }`). The capability
+# below is only the template's: a node declares `in`, `approved`, `rejected` and
+# `timeout` with the capability of its wire, any one, and `node/start` refuses a node
+# whose ports do not share it.
+[[node]]
+type = "approval"
+name = "Approval"
+
+  # What waits for the decision.
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # A decision from inside the workflow: { id, decision: approve | reject, fields?, text? }.
+  # Only this node's own pending decisions; a string is read as that JSON.
+  [[node.port]]
+  id          = "decide"
+  name        = "decide"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Something waits: { id, kind, prompt, form, value, deadline_ms }. Wire it to whatever
+  # tells a person (a channel, a webhook out, a file).
+  [[node.port]]
+  id         = "pending"
+  name       = "pending"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "approved"
+  name       = "approved"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "rejected"
+  name       = "rejected"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The value, when nobody decided within `timeout_ms`. Without this port it goes to
+  # `rejected`.
+  [[node.port]]
+  id         = "timeout"
+  name       = "timeout"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Optional, declare it to use it: every decision as { id, decision, fields, text, at }.
+  # [[node.port]] id = "decision", capability = "json@1", direction = "output"
+
+  # What the person is asked. Shown by `regulus human list` and sent on `pending`.
+  [[node.field]]
+  id      = "prompt"
+  type    = "text"
+  default = ""
+
+  # A JSON schema (object with `properties` and `required`) of the fields an approval
+  # must fill in. Values typed on the CLI are text: they are read as the type the schema
+  # gives them (number, integer, boolean, object, array). Empty: no form.
+  [[node.field]]
+  id      = "form"
+  type    = "text"
+  default = ""
+
+  # Milliseconds a decision may wait; then the value leaves on `timeout`. 0: forever.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 0
+
+  # Merge the form fields (and `text`, as `comment`) into the approved value.
+  [[node.field]]
+  id      = "merge_fields"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+# Review between phases: the value is text a person may edit before it goes on. Approving
+# with an edited text (`regulus human answer <id> --file edited.md`, or `--text`) sends
+# the edited text on `out`; approving without one sends the text as it came. Rejecting
+# sends the original on `rejected`. `regulus human show <id>` prints the text to edit.
+[[node]]
+type = "review"
+name = "Review"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # { id, decision: approve | reject, text? }, as for Approval.
+  [[node.port]]
+  id          = "decide"
+  name        = "decide"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "pending"
+  name       = "pending"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The reviewed text: edited, or as it came.
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "rejected"
+  name       = "rejected"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The text, when nobody reviewed it within `timeout_ms`. Without this port it goes to
+  # `rejected`.
+  [[node.port]]
+  id         = "timeout"
+  name       = "timeout"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "prompt"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 0

@@ -4352,10 +4352,12 @@ dependencies = [
  "regulus-module-guards",
  "regulus-module-hello",
  "regulus-module-hooks",
+ "regulus-module-human",
  "regulus-module-judge",
  "regulus-module-memory",
  "regulus-module-process",
  "regulus-module-providers",
+ "regulus-module-service",
  "regulus-module-skills",
  "regulus-module-tools",
  "regulus-module-tools-mcp",
@@ -4541,6 +4543,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regulus-module-human"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "regulus-module-judge"
 version = "0.1.0"
 dependencies = [
@@ -4591,6 +4605,21 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "regulus-module-service"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "httparse",
+ "regulus-core",
+ "regulus-module-hello",
+ "regulus-module-human",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

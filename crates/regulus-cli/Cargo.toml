@@ -30,6 +30,8 @@ regulus-module-judge = { path = "../modules/judge" }
 regulus-module-triggers = { path = "../modules/triggers" }
 regulus-module-memory = { path = "../modules/memory" }
 regulus-module-web = { path = "../modules/web" }
+regulus-module-human = { path = "../modules/human" }
+regulus-module-service = { path = "../modules/service" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true
