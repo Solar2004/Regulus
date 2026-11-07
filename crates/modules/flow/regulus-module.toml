@@ -104,6 +104,13 @@ name = "Switch"
   type    = "text"
   default = "other"
 
+  # Bytes a compiled `regex` pattern may take, above 0; a larger one is refused. Each
+  # pattern is compiled once and kept.
+  [[node.field]]
+  id      = "regex_size_limit"
+  type    = "number"
+  default = 1048576
+
 # Repeats a body: `in` starts it, `body` goes out each turn, `back` brings the turn's
 # result. It ends when `back` meets `until` or after `max` turns, on `done`; a cap reached
 # goes out on `exhausted` if the node has it. The core's `[bus] max_depth` stays the
@@ -158,6 +165,13 @@ name = "Loop"
   id      = "until"
   type    = "rule"
   default = {}
+
+  # Bytes a compiled `regex` pattern may take, above 0; a larger one is refused. Each
+  # pattern is compiled once and kept.
+  [[node.field]]
+  id      = "regex_size_limit"
+  type    = "number"
+  default = 1048576
 
 # Fan-in. any: every value goes on. barrier: waits for one value on each "then" input
 # declared on the node (or for `count` values on any) and sends them together.

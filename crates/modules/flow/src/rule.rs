@@ -1,6 +1,9 @@
 //! One test on a value: what `switch` routes by and what ends a `loop`.
 
-use regex::Regex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use regex::{Regex, RegexBuilder};
 use regulus_core::ModuleError;
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,20 +24,52 @@ pub(crate) struct Rule {
     pub port: String,
 }
 
-type Test = fn(Option<&Value>, &Value) -> Result<bool, String>;
+/// Compiled patterns, kept across events: a pattern is compiled once per size limit, not
+/// on every value. Patterns come from profiles, so the set stays as small as they are.
+#[derive(Default)]
+pub(crate) struct Regexes {
+    cache: Mutex<HashMap<(String, usize), Arc<Regex>>>,
+}
+
+impl Regexes {
+    fn get(&self, pattern: &str, limit: usize) -> Result<Arc<Regex>, String> {
+        let key = (pattern.to_string(), limit);
+        if let Some(found) = crate::lock(&self.cache).get(&key) {
+            return Ok(found.clone());
+        }
+        // `size_limit` bounds the compiled program: a pattern that would take more memory
+        // than the node allows is refused rather than built.
+        let compiled = RegexBuilder::new(pattern)
+            .size_limit(limit)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let compiled = Arc::new(compiled);
+        crate::lock(&self.cache).insert(key, compiled.clone());
+        Ok(compiled)
+    }
+}
+
+/// What a rule needs to run besides the value: the module's compiled patterns and the
+/// node's size limit for new ones.
+pub(crate) struct Matcher<'a> {
+    pub regexes: &'a Regexes,
+    pub limit: usize,
+}
+
+type Test = fn(Option<&Value>, &Value, &Matcher) -> Result<bool, String>;
 
 /// Every operator by name. A new one is a row here and nowhere else.
 const OPS: &[(&str, Test)] = &[
-    ("equals", |s, v| Ok(s.is_some_and(|s| same(s, v)))),
-    ("not_equals", |s, v| Ok(!s.is_some_and(|s| same(s, v)))),
+    ("equals", |s, v, _| Ok(s.is_some_and(|s| same(s, v)))),
+    ("not_equals", |s, v, _| Ok(!s.is_some_and(|s| same(s, v)))),
     ("contains", contains),
     ("regex", regex),
-    ("exists", |s, _| Ok(s.is_some_and(|s| !s.is_null()))),
-    ("empty", |s, _| Ok(s.is_none_or(is_empty))),
-    ("greater", |s, v| {
+    ("exists", |s, _, _| Ok(s.is_some_and(|s| !s.is_null()))),
+    ("empty", |s, _, _| Ok(s.is_none_or(is_empty))),
+    ("greater", |s, v, _| {
         Ok(number(s).zip(number(Some(v))).is_some_and(|(a, b)| a > b))
     }),
-    ("less", |s, v| {
+    ("less", |s, v, _| {
         Ok(number(s).zip(number(Some(v))).is_some_and(|(a, b)| a < b))
     }),
 ];
@@ -69,7 +104,7 @@ fn same(subject: &Value, value: &Value) -> bool {
     subject == value || text(subject) == text(value)
 }
 
-fn contains(subject: Option<&Value>, value: &Value) -> Result<bool, String> {
+fn contains(subject: Option<&Value>, value: &Value, _: &Matcher) -> Result<bool, String> {
     Ok(match subject {
         Some(Value::Array(items)) => items.iter().any(|item| same(item, value)),
         Some(Value::Object(map)) => map.contains_key(&text(value)),
@@ -78,8 +113,8 @@ fn contains(subject: Option<&Value>, value: &Value) -> Result<bool, String> {
     })
 }
 
-fn regex(subject: Option<&Value>, value: &Value) -> Result<bool, String> {
-    let pattern = Regex::new(&text(value)).map_err(|e| e.to_string())?;
+fn regex(subject: Option<&Value>, value: &Value, matcher: &Matcher) -> Result<bool, String> {
+    let pattern = matcher.regexes.get(&text(value), matcher.limit)?;
     Ok(subject.is_some_and(|s| pattern.is_match(&text(s))))
 }
 
@@ -138,23 +173,52 @@ impl Rule {
     }
 
     /// Whether `value` meets the rule.
-    pub(crate) fn test(&self, value: &Value) -> Result<bool, ModuleError> {
+    pub(crate) fn test(&self, value: &Value, matcher: &Matcher) -> Result<bool, ModuleError> {
         let (_, test) = OPS
             .iter()
             .find(|(name, _)| *name == self.op)
             .ok_or_else(|| ModuleError::InvalidParams(format!("unknown op `{}`", self.op)))?;
-        test(at(value, &self.path), &self.value)
+        test(at(value, &self.path), &self.value, matcher)
             .map_err(|e| ModuleError::InvalidParams(format!("rule `{}`: {e}", self.op)))
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A matcher with the manifest's default size limit.
+    pub fn matcher(regexes: &Regexes) -> Matcher<'_> {
+        Matcher {
+            regexes,
+            limit: 1 << 20,
+        }
+    }
+
     fn check(rule: Value, value: Value) -> bool {
-        Rule::parse(rule).unwrap().test(&value).unwrap()
+        let regexes = Regexes::default();
+        Rule::parse(rule)
+            .unwrap()
+            .test(&value, &matcher(&regexes))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_pattern_is_compiled_once_and_refused_past_its_size_limit() {
+        let regexes = Regexes::default();
+        let first = regexes.get("^v\\d+$", 1 << 20).unwrap();
+        let again = regexes.get("^v\\d+$", 1 << 20).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "cached");
+        assert!(
+            regexes.get("\\w{1000}", 1000).is_err(),
+            "too large to build"
+        );
+        assert_eq!(
+            crate::lock(&regexes.cache).len(),
+            1,
+            "a refused one is not kept"
+        );
     }
 
     #[test]
@@ -210,7 +274,8 @@ mod tests {
     fn a_bad_op_or_pattern_is_refused() {
         assert!(Rule::parse(json!({ "op": "like" })).is_err());
         let rule = Rule::parse(json!({ "op": "regex", "value": "(" })).unwrap();
-        assert!(rule.test(&json!("x")).is_err());
+        let regexes = Regexes::default();
+        assert!(rule.test(&json!("x"), &matcher(&regexes)).is_err());
         assert!(Rule::optional(Some(&json!({}))).unwrap().is_none());
         assert!(Rule::list(Some(&json!("x"))).is_err());
     }

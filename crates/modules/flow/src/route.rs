@@ -4,7 +4,7 @@ use regulus_core::ModuleError;
 use regulus_proto::{Direction, NodeEvent};
 use serde_json::Value;
 
-use crate::rule::{self, Rule};
+use crate::rule::{self, Matcher, Rule};
 use crate::Here;
 
 /// `switch` modes.
@@ -26,7 +26,9 @@ pub(crate) fn switch(here: &Here, event: NodeEvent) -> Result<Value, ModuleError
         ),
         RULES | "" => {
             let cases = Rule::list(here.setting("cases"))?;
-            by_rules(&event.value, &cases, here.text("match") == ALL, &outputs)?
+            let matcher = here.matcher()?;
+            let all = here.text("match") == ALL;
+            by_rules(&event.value, &cases, all, &outputs, &matcher)?
         }
         other => {
             return Err(ModuleError::InvalidParams(format!(
@@ -62,6 +64,7 @@ fn by_rules(
     cases: &[Rule],
     all: bool,
     outputs: &[String],
+    matcher: &Matcher,
 ) -> Result<Vec<String>, ModuleError> {
     let mut ports = Vec::new();
     for case in cases {
@@ -71,7 +74,7 @@ fn by_rules(
                 case.port
             )));
         }
-        if case.test(value)? && !ports.contains(&case.port) {
+        if case.test(value, matcher)? && !ports.contains(&case.port) {
             ports.push(case.port.clone());
             if !all {
                 break;
@@ -109,6 +112,8 @@ mod tests {
 
     #[test]
     fn rules_route_to_the_first_match_or_to_all() {
+        let regexes = rule::Regexes::default();
+        let m = rule::tests::matcher(&regexes);
         let cases = Rule::list(Some(&json!([
             { "port": "pass", "op": "contains", "value": "PASS" },
             { "port": "long", "op": "regex", "value": ".{10,}" },
@@ -116,15 +121,18 @@ mod tests {
         .unwrap();
         let outs = ports(&["pass", "long", "other"]);
         let value = json!("tests PASS fine");
-        assert_eq!(by_rules(&value, &cases, false, &outs).unwrap(), ["pass"]);
         assert_eq!(
-            by_rules(&value, &cases, true, &outs).unwrap(),
+            by_rules(&value, &cases, false, &outs, &m).unwrap(),
+            ["pass"]
+        );
+        assert_eq!(
+            by_rules(&value, &cases, true, &outs, &m).unwrap(),
             ["pass", "long"]
         );
-        assert!(by_rules(&json!("x"), &cases, true, &outs)
+        assert!(by_rules(&json!("x"), &cases, true, &outs, &m)
             .unwrap()
             .is_empty());
-        let missing = by_rules(&value, &cases, false, &ports(&["long"]));
+        let missing = by_rules(&value, &cases, false, &ports(&["long"]), &m);
         assert!(missing.is_err());
     }
 

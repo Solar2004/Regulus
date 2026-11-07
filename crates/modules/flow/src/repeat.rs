@@ -5,7 +5,7 @@ use regulus_proto::{NodeEvent, NodeStart};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::rule::Rule;
+use crate::rule::{Matcher, Rule};
 use crate::{lock, Here};
 
 const IN: &str = "in";
@@ -26,9 +26,15 @@ enum Next {
     Exhausted,
 }
 
-fn next(turn: u64, max: u64, until: Option<&Rule>, value: &Value) -> Result<Next, ModuleError> {
+fn next(
+    turn: u64,
+    max: u64,
+    until: Option<&Rule>,
+    value: &Value,
+    matcher: &Matcher,
+) -> Result<Next, ModuleError> {
     if let Some(rule) = until {
-        if rule.test(value)? {
+        if rule.test(value, matcher)? {
             return Ok(Next::Done);
         }
     }
@@ -107,7 +113,14 @@ pub(crate) fn event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError>
                     ))
                 })?;
             let until = Rule::optional(here.setting("until"))?;
-            match next(current, here.number("max"), until.as_ref(), &event.value)? {
+            let matcher = here.matcher()?;
+            match next(
+                current,
+                here.number("max"),
+                until.as_ref(),
+                &event.value,
+                &matcher,
+            )? {
                 Next::Turn(number) => turn(
                     here,
                     Run {
@@ -140,16 +153,24 @@ mod tests {
 
     #[test]
     fn a_loop_turns_until_its_rule_or_its_cap() {
+        let regexes = crate::rule::Regexes::default();
+        let m = crate::rule::tests::matcher(&regexes);
         let rule = Rule::optional(Some(&json!({ "op": "contains", "value": "DONE" })))
             .unwrap()
             .unwrap();
         assert_eq!(
-            next(1, 3, Some(&rule), &json!("go")).unwrap(),
+            next(1, 3, Some(&rule), &json!("go"), &m).unwrap(),
             Next::Turn(2)
         );
-        assert_eq!(next(2, 3, Some(&rule), &json!("DONE")).unwrap(), Next::Done);
-        assert_eq!(next(3, 3, None, &json!("go")).unwrap(), Next::Exhausted);
+        assert_eq!(
+            next(2, 3, Some(&rule), &json!("DONE"), &m).unwrap(),
+            Next::Done
+        );
+        assert_eq!(next(3, 3, None, &json!("go"), &m).unwrap(), Next::Exhausted);
         // max 0: no cap of its own; the core's depth cut is what is left.
-        assert_eq!(next(500, 0, None, &json!("go")).unwrap(), Next::Turn(501));
+        assert_eq!(
+            next(500, 0, None, &json!("go"), &m).unwrap(),
+            Next::Turn(501)
+        );
     }
 }

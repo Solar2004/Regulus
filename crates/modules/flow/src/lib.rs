@@ -55,6 +55,8 @@ pub struct Flow {
     joins: Mutex<HashMap<NodeRef, join::Gate>>,
     /// The values each `wait` holds.
     timers: wait::Timers,
+    /// The regex patterns rules use, compiled once.
+    regexes: rule::Regexes,
     /// `variable`s of a core without a store live here, for as long as the core does.
     memory: Mutex<HashMap<String, Value>>,
 }
@@ -133,6 +135,24 @@ impl Here<'_> {
         self.call.node.port(port).map(|p| p.capability.as_str())
     }
 
+    /// How this node's rules run: the module's compiled patterns and the node's
+    /// `regex_size_limit`, above 0.
+    pub fn matcher(&self) -> Result<rule::Matcher<'_>, ModuleError> {
+        let limit = match self.number("regex_size_limit") {
+            0 => {
+                return Err(ModuleError::InvalidParams(format!(
+                    "`regex_size_limit` of `{}` must be above 0",
+                    self.me.node_id
+                )))
+            }
+            n => usize::try_from(n).unwrap_or(usize::MAX),
+        };
+        Ok(rule::Matcher {
+            regexes: &self.flow.regexes,
+            limit,
+        })
+    }
+
     pub fn ctx(&self) -> &ModuleCtx {
         &self.flow.ctx
     }
@@ -166,6 +186,7 @@ impl Flow {
             joins: Mutex::default(),
             timers: wait::Timers::default(),
             memory: Mutex::default(),
+            regexes: rule::Regexes::default(),
         }
     }
 
