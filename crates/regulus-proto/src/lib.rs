@@ -5,6 +5,7 @@
 //! names match the client model in `crates/regulus-tauri/frontend/src/composition/model.ts`.
 
 pub mod bus;
+pub mod capability;
 pub mod graph;
 pub mod hook;
 pub mod manifest;
