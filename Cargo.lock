@@ -4070,6 +4070,7 @@ name = "regulus-module-guards"
 version = "0.1.0"
 dependencies = [
  "regulus-core",
+ "regulus-module-process",
  "regulus-proto",
  "serde",
  "serde_json",

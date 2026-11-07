@@ -325,3 +325,15 @@ fn a_terminal_runs_what_it_is_typed_and_dies_with_the_execution() {
     stop(&core, &id);
     let _ = std::fs::remove_dir_all(&data);
 }
+
+#[test]
+fn the_job_example_checks_clean() {
+    let profile: Profile = toml::from_str(include_str!("../examples/job.toml")).unwrap();
+    let mut profiles = ProfileStore::default();
+    profiles.insert(profile).unwrap();
+    let core = Core::build(vec![Box::new(Process::new())], &[], profiles);
+    let check = core
+        .dispatch(method::PROFILE_CHECK, json!({ "id": "job" }))
+        .unwrap();
+    assert_eq!(check, json!([]));
+}
