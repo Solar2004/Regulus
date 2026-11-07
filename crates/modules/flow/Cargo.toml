@@ -1,0 +1,16 @@
+[package]
+name = "regulus-module-flow"
+description = "Regulus flow logic: Call, a node that runs a workflow as a child execution and waits for its answer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+regulus-module-hello = { path = "../hello" }
+toml.workspace = true

@@ -54,8 +54,13 @@ pub struct NodeType {
     pub fields: Vec<Field>,
 }
 
+/// A field type the core checks: the id of a workflow of the same profile with at least one
+/// "then" output, which the node runs as a child (`ModuleCtx::call_workflow`).
+pub const FIELD_WORKFLOW: &str = "workflow";
+
 /// An option of a node type. `field_type` is open (`text`, `number`, `select`…): a client
-/// that does not know a type falls back to showing the raw value.
+/// that does not know a type falls back to showing the raw value. The core only checks
+/// [`FIELD_WORKFLOW`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub id: String,

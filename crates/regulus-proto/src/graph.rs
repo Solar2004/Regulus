@@ -238,6 +238,10 @@ pub struct Execution {
     /// rest of the execution runs without them (docs/03-modules.md §1.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled: Vec<DisabledNode>,
+    /// The execution that started this one as a child (`ModuleCtx::call_workflow`): it
+    /// stops with it and its result goes back to the node that called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

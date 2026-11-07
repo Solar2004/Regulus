@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use regulus_proto::{
-    Cardinality, Diagnostic, Direction, Node, Port, PortRef, Profile, Severity, Wire, WireKind,
-    Workflow, BOX_SEPARATOR, WORKFLOW_SELF,
+    Cardinality, Diagnostic, Direction, Manifest, Node, Port, PortRef, Profile, Severity, Wire,
+    WireKind, Workflow, BOX_SEPARATOR, FIELD_WORKFLOW, WORKFLOW_SELF,
 };
 
 struct Report<'a> {
@@ -62,6 +62,119 @@ pub fn check_profile(profile: &Profile, is_installed: impl Fn(&str) -> bool) -> 
         check_workflow(profile, workflow, &is_installed, &mut report);
     }
     report.list
+}
+
+/// Checks the fields of module nodes the core understands, from what their module's
+/// manifest declares (`manifest_of`; a module that is not loaded is skipped): a
+/// [`FIELD_WORKFLOW`] field must name a workflow of the profile with a "then" output. Unset
+/// is a warning: the node has nothing to run. So is a node whose "then" ports do not line
+/// up with that workflow's: the node feeds its inputs by id and gives back on the output
+/// of the same id, so each of its "then" inputs must be one of the workflow's and each of
+/// the workflow's "then" outputs one of its own, with the same capability.
+pub fn check_fields<'m>(
+    profile: &Profile,
+    manifest_of: impl Fn(&str) -> Option<&'m Manifest>,
+) -> Vec<Diagnostic> {
+    let mut report = Report {
+        list: Vec::new(),
+        workflow: None,
+    };
+    for workflow in &profile.workflows {
+        report.workflow = Some(&workflow.id);
+        for node in &workflow.nodes {
+            for (severity, code, message) in field_findings(profile, node, &manifest_of) {
+                report.push(severity, code, message, Some(&node.id), None);
+            }
+        }
+    }
+    report.list
+}
+
+/// The first node of a running copy whose [`FIELD_WORKFLOW`] field names a workflow the
+/// profile does not have: `execution.start` refuses it, the node could never run.
+pub fn missing_workflow<'m>(
+    profile: &Profile,
+    plan: &Workflow,
+    manifest_of: impl Fn(&str) -> Option<&'m Manifest>,
+) -> Option<String> {
+    plan.nodes.iter().find_map(|node| {
+        field_findings(profile, node, &manifest_of)
+            .into_iter()
+            .find(|(_, code, _)| *code == FIELD_WORKFLOW_MISSING)
+            .map(|(_, _, message)| format!("node `{}`: {message}", node.id))
+    })
+}
+
+const FIELD_WORKFLOW_MISSING: &str = "field.workflow_missing";
+
+fn field_findings<'m>(
+    profile: &Profile,
+    node: &Node,
+    manifest_of: &impl Fn(&str) -> Option<&'m Manifest>,
+) -> Vec<(Severity, &'static str, String)> {
+    let mut found = Vec::new();
+    let Some(manifest) = node.module_id.as_deref().and_then(manifest_of) else {
+        return found;
+    };
+    let Some(node_type) = manifest.node_type(&node.node_type) else {
+        return found;
+    };
+    for field in node_type
+        .fields
+        .iter()
+        .filter(|f| f.field_type == FIELD_WORKFLOW)
+    {
+        let value = manifest.setting(node, &field.id).and_then(|v| v.as_str());
+        let Some(target) = value.filter(|v| !v.is_empty()) else {
+            let message = format!("`{}` names no workflow; the node runs none", field.id);
+            found.push((Severity::Warning, "field.workflow_unset", message));
+            continue;
+        };
+        let Some(called) = profile.workflow(target) else {
+            let message = format!("`{}`: workflow `{target}` does not exist", field.id);
+            found.push((Severity::Error, FIELD_WORKFLOW_MISSING, message));
+            continue;
+        };
+        let then = |ports: &[Port], direction| -> Vec<(String, String)> {
+            ports
+                .iter()
+                .filter(|p| p.direction == direction && p.kind == WireKind::Then)
+                .map(|p| (p.id.clone(), p.capability.clone()))
+                .collect()
+        };
+        let outputs = then(&called.ports, Direction::Output);
+        if outputs.is_empty() {
+            let message = format!(
+                "`{}`: workflow `{target}` declares no \"then\" output, so nothing would \
+                 come back from it",
+                field.id
+            );
+            found.push((Severity::Error, "field.workflow_no_output", message));
+            continue;
+        }
+        let inputs = then(&called.ports, Direction::Input);
+        let own_outputs = then(&node.ports, Direction::Output);
+        let mut unmatched: Vec<String> = then(&node.ports, Direction::Input)
+            .into_iter()
+            .filter(|port| !inputs.contains(port))
+            .map(|(id, capability)| format!("input `{id}` ({capability})"))
+            .collect();
+        unmatched.extend(
+            outputs
+                .iter()
+                .filter(|port| !own_outputs.contains(port))
+                .map(|(id, capability)| format!("output `{id}` ({capability})")),
+        );
+        if !unmatched.is_empty() {
+            let message = format!(
+                "the \"then\" ports of the node and of workflow `{target}` do not line up \
+                 by id and capability: {}",
+                unmatched.join(", ")
+            );
+            found.push((Severity::Warning, "field.workflow_ports_mismatch", message));
+        }
+    }
+    found
 }
 
 fn check_workflow(

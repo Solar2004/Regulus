@@ -138,6 +138,28 @@ impl Default for BusConfig {
     }
 }
 
+/// Child executions (`ModuleCtx::call_workflow`): a node starts a workflow of its profile
+/// and hears back its result (docs/02-architecture.md §4).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CallConfig {
+    /// How deep children may nest: a top execution is at 0, its children at 1. Past it a
+    /// call is refused: the safety net against a workflow that calls itself for ever.
+    pub max_nesting: u32,
+    /// Most live children one execution may have at once; past it a call is refused.
+    /// 0 means no limit.
+    pub max_children: usize,
+}
+
+impl Default for CallConfig {
+    fn default() -> Self {
+        Self {
+            max_nesting: 8,
+            max_children: 32,
+        }
+    }
+}
+
 /// What happens on start to the executions that were running when the core went down
 /// (docs/02-architecture.md §6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -230,6 +252,7 @@ pub struct Config {
     pub secrets: SecretsConfig,
     pub data: DataConfig,
     pub bus: BusConfig,
+    pub call: CallConfig,
     pub store: StoreConfig,
     pub client: ClientConfig,
 }

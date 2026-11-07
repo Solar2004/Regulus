@@ -1,0 +1,103 @@
+# Call and wait (docs/13-blocks.md §2 #4): `ask`, the main workflow, hands every value it
+# gets on its input `ask` to the node `call` (module flow), which runs the workflow
+# `greeter` as a child execution with that value on greeter's own `ask`. The child's
+# answer comes back on `call.reply` and leaves `ask` on its `reply`; when the child is
+# over, `call.done` says how it ended. One `call` node, N values in → N children.
+# Copy it to <home>/profiles/, start `regulus serve`, then:
+#
+#   regulus run call --detach            # exec-1  ask  running
+#   regulus send exec-1 ask Alexander    # follows exec-1 until the child is over:
+#     self.ask emitted text@1 "Alexander" (depth 0)
+#     self.ask → call.ask delivered
+#     call.reply emitted text@1 "Hello, Alexander!" (depth 2)
+#     exec-2/self.reply → call.reply delivered       ← the child returned
+#     call.done emitted execution.end@1 {"execution_id":"exec-2","workflow_id":"greeter",
+#                                        "state":{"status":"stopped"}} (depth 2)
+#     call.reply → self.reply delivered
+#     self.reply emitted text@1 "Hello, Alexander!" (depth 3)
+#     call.done → self.done delivered · self.done emitted …
+#   regulus ps                           # exec-1  ask      running
+#                                        # exec-2  greeter  stopped  (child of exec-1)
+#   regulus events                       # adds exec-2's own events: self.ask →
+#                                        # hello.echo → hello.reply → self.reply
+#
+# Every `regulus send exec-1 ask <name>` starts one more child. Stopping exec-1 stops any
+# child still running. `greeter` is the inner workflow of hello/examples/greeter.toml.
+id = "call"
+name = "Call and wait"
+main_workflow_id = "ask"
+
+[[workflows]]
+id = "ask"
+name = "Ask"
+kind = "main"
+ports = [
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "done", capability = "execution.end@1", direction = "output", kind = "then" },
+]
+
+  # Its ports are declared here, not copied from greeter: the same ids and capabilities as
+  # greeter's, plus `done`. If greeter renames `reply`, `regulus profile check` warns.
+  [[workflows.nodes]]
+  id = "call"
+  name = "Call greeter"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 100 }
+  config = { workflow = "greeter" }
+  ports = [
+    { id = "ask", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "execution.end@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "ask-call"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "call", port_id = "ask" }
+
+  [[workflows.wires]]
+  id = "call-reply"
+  kind = "then"
+  from = { node_id = "call", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "call-done"
+  kind = "then"
+  from = { node_id = "call", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+[[workflows]]
+id = "greeter"
+name = "Greeter"
+kind = "extra"
+ports = [
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "hello"
+  name = "Hello"
+  type = "greeter"
+  module_id = "regulus/hello@0.1.0"
+  position = { x = 200, y = 100 }
+  ports = [
+    { id = "echo", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "ask-hello"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "hello", port_id = "echo" }
+
+  [[workflows.wires]]
+  id = "hello-reply"
+  kind = "then"
+  from = { node_id = "hello", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }

@@ -141,6 +141,12 @@ impl ModuleCtx {
     /// Guarda el estado de un nodo suyo. Si el core cae, el siguiente reanuda la
     /// ejecución y se lo devuelve en `node/start` (`02-architecture.md` §6).
     pub fn checkpoint(&self, node: &NodeRef, state: Value) -> Result<()>;
+
+    /// Arranca una ejecución hija de un workflow del mismo perfil con esas entradas y
+    /// devuelve su id. Su primera salida y su final le llegan al nodo como `node/child`
+    /// (`02-architecture.md` §4 regla 5).
+    pub fn call_workflow(&self, node: &NodeRef, workflow: &str,
+                         inputs: Vec<(String, Value)>) -> Result<String>;
 }
 ```
 
@@ -154,7 +160,9 @@ alcanzan a través de un `Endpoint`, nunca por nombre global.
 directorios de otro módulo ni de otro proyecto. Si el usuario quiere el perfil en otro
 sitio, lo dice en un campo del nodo. Es la parte en ficheros del namespace del store
 (`02-architecture.md` §6); la parte en base de datos es `store`, que pidieron `human`,
-`tasks` y `memory` (`13-blocks.md` §2, 2026-11-07).
+`tasks` y `memory` (`13-blocks.md` §2, 2026-11-07). ✅ `call_workflow` lo pidió `flow`
+(`call`) y las plantillas con subagentes (`13-blocks.md` §2 #4, 2026-11-07); no bloquea:
+la respuesta viaja por el bus del padre como cualquier evento.
 
 **Si un módulo necesita algo que `ModuleCtx` no da, es una conversación de diseño, no un
 `pub` nuevo.** Esta superficie es deliberadamente pequeña: cada método que se le añade
@@ -193,7 +201,8 @@ core un nodo.** El trait no cambia.
    llama a `node/stop` en orden inverso. Un cable que entra en una entrada `lazy` no
    cuenta para el orden: el nodo solo la lee en marcha, nunca al arrancar, y así puede
    cerrar un ciclo (Alexander, 2026-10-18).
-2. `node/start`, `node/stop` y `node/event` son nombres reservados: el core los envía al módulo dueño
+2. `node/start`, `node/stop`, `node/event` y `node/child` (lo que devuelve una hija) son
+   nombres reservados: el core los envía al módulo dueño
    del nodo y no se pueden declarar en `methods`. Un módulo que no los implementa
    (`UnknownMethod`) simplemente no tiene ciclo de vida.
 3. Toda llamada dirigida a un nodo lleva `NodeCall { execution_id, node, args }`: el nodo

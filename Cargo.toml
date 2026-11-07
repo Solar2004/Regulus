@@ -12,6 +12,7 @@ members = [
     "crates/contracts/tool",
     "crates/contracts/toolset",
     "crates/modules/hello",
+    "crates/modules/flow",
     "crates/modules/agent",
     "crates/modules/engine-opencode",
     "crates/modules/engine-claude",

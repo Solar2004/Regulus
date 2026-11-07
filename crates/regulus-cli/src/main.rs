@@ -554,7 +554,14 @@ fn print_execution(execution: &Execution) {
         ExecutionState::Failed { reason } => format!("failed: {reason}"),
         ExecutionState::Interrupted { reason } => format!("interrupted: {reason}"),
     };
-    println!("{:<12} {:<16} {state}", execution.id, execution.workflow_id);
+    let parent = match &execution.parent {
+        Some(parent) => format!("  (child of {parent})"),
+        None => String::new(),
+    };
+    println!(
+        "{:<12} {:<16} {state}{parent}",
+        execution.id, execution.workflow_id
+    );
     for node in &execution.disabled {
         println!(
             "{:<12} disabled {}: nothing usable wired into {}",

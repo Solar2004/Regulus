@@ -224,6 +224,20 @@ impl Registry {
         self.routes.keys().map(String::as_str)
     }
 
+    /// The manifest of a loaded module, by id (any version if the exact one is not
+    /// loaded), whatever its state.
+    pub fn manifest(&self, id: &str) -> Option<&Manifest> {
+        self.entries
+            .iter()
+            .find(|e| e.manifest.module.id == id)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|e| base_id(&e.manifest.module.id) == base_id(id))
+            })
+            .map(|e| &e.manifest)
+    }
+
     /// Whether a module with this id (any version) is loaded, whatever its state.
     pub fn is_installed(&self, id: &str) -> bool {
         let wanted = base_id(id);
