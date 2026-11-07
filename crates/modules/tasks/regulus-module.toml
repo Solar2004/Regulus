@@ -1,0 +1,316 @@
+[module]
+id             = "regulus/tasks@0.1.0"
+name           = "Tasks"
+requires_proto = "^1.9"
+# tasks.list: a queue's tasks and counts. tasks.ledger: a ledger's entries and its text.
+methods        = ["tasks.list", "tasks.ledger"]
+
+# Work as a queue (docs/13-blocks.md §3.3): Gas Town beads, Claude Code agent teams, Spec
+# Kit tasks. A queue is a name in the store of the node's project (`queue`, "tasks" by
+# default): every `queue` and `claim` node with the same name, in any execution of that
+# project, works on the same tasks, and they survive a restart of the core.
+#
+# A task is `{ id, title, state, deps, owner?, lease_until?, attempts, data?, result?,
+# error?, seq, created, updated }` (json@1; times in ms since the epoch). States: `todo`,
+# `claimed`, `done`, `failed` and `blocked`, which is a `todo` with a dependency (an id in
+# `deps`) not `done` yet; one that does not exist yet also blocks.
+
+# Adds tasks and shows them. `add` takes a task (`{ id?, title, deps?, data? }`), an array
+# of them, or text: one task per non-empty line, a line that is a JSON object read as a
+# task and any other line as its title. A node may declare `add` as `text@1`. An `id`
+# left out is `t<seq>`; one already in the queue is refused.
+[[node]]
+type = "queue"
+name = "Task queue"
+
+  [[node.port]]
+  id          = "add"
+  name        = "add"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value: sends the whole queue on `tasks`.
+  [[node.port]]
+  id          = "list"
+  name        = "list"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The tasks just added, as an array.
+  [[node.port]]
+  id         = "added"
+  name       = "added"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `{ tasks, counts }`: every task in order, and how many there are in each state.
+  [[node.port]]
+  id         = "tasks"
+  name       = "tasks"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The queue's name: one word, no `/`.
+  [[node.field]]
+  id      = "queue"
+  type    = "text"
+  default = "tasks"
+
+  # Tasks one queue may hold; an `add` that would pass it is refused whole.
+  [[node.field]]
+  id      = "max_tasks"
+  type    = "number"
+  default = 10000
+
+# Takes the next free task: the oldest `todo` whose dependencies are all `done`. While a
+# task is `claimed` only its owner may complete or fail it. A claim lasts `lease_ms`;
+# past it the task goes back to `todo` (and out on `expired`), so a dead worker does not
+# hold it for ever.
+#
+# `next` asks for one task; with `wait = yes` a request that finds none waits until one is
+# free (added, unblocked or given back). With `auto = yes` the node asks by itself: on
+# start and whenever it holds fewer than `hold` tasks.
+#
+# `complete` and `fail` say which task: a value with an `id` (a task, `{ id, result? }`
+# or `{ id, error? }`), a text that is the id of a task the node holds, or anything else,
+# which goes to the oldest task it holds and is kept as its result or error.
+[[node]]
+type = "claim"
+name = "Claim task"
+
+  [[node.port]]
+  id          = "next"
+  name        = "next"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "complete"
+  name        = "complete"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "fail"
+  name        = "fail"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The task claimed. Declared `text@1`, its title only.
+  [[node.port]]
+  id         = "task"
+  name       = "task"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "done"
+  name       = "done"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # A task that failed for good (`max_attempts` reached).
+  [[node.port]]
+  id         = "failed"
+  name       = "failed"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # A task that failed and went back to `todo` for another attempt.
+  [[node.port]]
+  id         = "retry"
+  name       = "retry"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # A task of this node whose lease ran out; it is `todo` again.
+  [[node.port]]
+  id         = "expired"
+  name       = "expired"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `next` found nothing free and `wait = no`: the counts per state.
+  [[node.port]]
+  id         = "empty"
+  name       = "empty"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # After a complete or a fail, nothing is `todo` or `claimed` any more: the counts per
+  # state (tasks still `blocked` depend on one that failed or does not exist).
+  [[node.port]]
+  id         = "drained"
+  name       = "drained"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "queue"
+  type    = "text"
+  default = "tasks"
+
+  # Who holds what this node claims. Empty: `<execution>/<node>`. Two nodes with the same
+  # owner share their tasks.
+  [[node.field]]
+  id      = "owner"
+  type    = "text"
+  default = ""
+
+  # How long a claim lasts, in ms. 0: for ever.
+  [[node.field]]
+  id      = "lease_ms"
+  type    = "number"
+  default = 600000
+
+  [[node.field]]
+  id      = "wait"
+  type    = "select"
+  default = "yes"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "auto"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # With `auto`: how many tasks the node holds at once.
+  [[node.field]]
+  id      = "hold"
+  type    = "number"
+  default = 1
+
+  # Claims a task may have; a fail before the last sends it back to `todo`.
+  [[node.field]]
+  id      = "max_attempts"
+  type    = "number"
+  default = 1
+
+  # On `node/stop`: release, its tasks go back to `todo` at once; keep, they wait for
+  # their lease.
+  [[node.field]]
+  id      = "on_stop"
+  type    = "select"
+  default = "release"
+  options = ["release", "keep"]
+
+# What a run knows (Magentic-One's ledgers): facts, the plan and progress, appended in
+# order and never changed. `read` sends it on `out`: as text (one section per kind), or as
+# the entries if `out` is declared `json@1`. On `hook` it is a hook@1 for the Agent box's
+# `hooks` input: on its `event` the agent gets the ledger as context.
+[[node]]
+type = "ledger"
+name = "Ledger"
+
+  [[node.port]]
+  id          = "fact"
+  name        = "fact"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "plan"
+  name        = "plan"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "progress"
+  name        = "progress"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "read"
+  name        = "read"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "hook"
+  name       = "hook"
+  capability = "hook@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # execution: one ledger per execution. node: one for the node, shared by every
+  # execution of its workflow in the project.
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "execution"
+  options = ["execution", "node"]
+
+  # Entries one ledger may hold; past it, appends are refused.
+  [[node.field]]
+  id      = "max_entries"
+  type    = "number"
+  default = 1000
+
+  [[node.field]]
+  id      = "event"
+  type    = "select"
+  default = "prompt"
+  options = ["prompt", "session_start", "pre_compact", "stop"]
+
+  # The heading of each kind's section in the text.
+  [[node.field]]
+  id      = "headings"
+  type    = "map"
+  default = { fact = "Facts", plan = "Plan", progress = "Progress" }

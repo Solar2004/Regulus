@@ -4107,6 +4107,7 @@ dependencies = [
  "regulus-module-process",
  "regulus-module-providers",
  "regulus-module-skills",
+ "regulus-module-tasks",
  "regulus-module-tools",
  "regulus-module-tools-mcp",
  "regulus-module-triggers",
@@ -4336,6 +4337,17 @@ dependencies = [
  "regulus-core",
  "regulus-proto",
  "serde_json",
+]
+
+[[package]]
+name = "regulus-module-tasks"
+version = "0.1.0"
+dependencies = [
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
