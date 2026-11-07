@@ -53,6 +53,14 @@ mod port {
     pub const RESTART: &str = "restart";
 }
 
+/// The field of a failure (`error@1`) with the value that failed: what `retry` resends.
+const VALUE_FIELD: &str = "value";
+
+/// A node that is not between its `node/start` and `node/stop` takes nothing.
+fn not_running(at: &At) -> ModuleError {
+    ModuleError::Failed(format!("node `{}` is not running", at.node.node_id))
+}
+
 /// Fields of a value that may say what went wrong, in the order the `error` node tries them.
 const MESSAGE_FIELDS: &[&str] = &["message", "error", "reason", "stderr"];
 
@@ -88,13 +96,16 @@ struct Spent {
 enum State {
     Budget(Spent),
     Retry {
+        /// The last value on `in`: what a `fail` without its own `value` retries.
         last: Option<Value>,
-        retries: u64,
-        /// The token of the retry waiting for its backoff.
-        waiting: Option<u64>,
+        /// Retries so far per value, newest last, at most `max_pending` of them.
+        tries: VecDeque<(Value, u64)>,
+        /// Retries waiting for their backoff, by token.
+        waiting: HashMap<u64, Value>,
     },
     Timeout {
-        clocks: VecDeque<(u64, Value)>,
+        /// Running clocks, oldest first: token, the key `ack` matches, the value.
+        clocks: VecDeque<(u64, Option<Value>, Value)>,
     },
     Watchdog {
         busy: Option<Value>,
@@ -241,22 +252,46 @@ impl Guards {
             .unwrap_or_default()
     }
 
+    /// A wait in milliseconds, at least 1 ms.
     fn millis(&self, node: &Node, field: &str) -> Duration {
-        Duration::from_millis(self.whole(node, field))
+        Duration::from_millis(self.whole(node, field).max(1))
+    }
+
+    fn text<'a>(&'a self, node: &'a Node, field: &str) -> &'a str {
+        self.manifest
+            .setting(node, field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
     }
 
     fn start(&self, call: NodeCall) -> Result<Value, ModuleError> {
         same_capability(&call.node)?;
-        if call.node.node_type == BUDGET {
-            let resumed: Option<NodeStart> = serde_json::from_value(call.args.clone()).ok();
-            let spent = resumed
-                .and_then(|start| start.checkpoint)
-                .and_then(|state| serde_json::from_value(state).ok())
-                .unwrap_or_default();
-            self.inner
-                .states()
-                .insert(At::of(&call).node, State::Budget(spent));
-        }
+        let state = match call.node.node_type.as_str() {
+            BUDGET => {
+                let resumed: Option<NodeStart> = serde_json::from_value(call.args.clone()).ok();
+                State::Budget(
+                    resumed
+                        .and_then(|start| start.checkpoint)
+                        .and_then(|state| serde_json::from_value(state).ok())
+                        .unwrap_or_default(),
+                )
+            }
+            RETRY => State::Retry {
+                last: None,
+                tries: VecDeque::new(),
+                waiting: HashMap::new(),
+            },
+            TIMEOUT => State::Timeout {
+                clocks: VecDeque::new(),
+            },
+            WATCHDOG => State::Watchdog {
+                busy: None,
+                clock: 0,
+                restarts: 0,
+            },
+            _ => return Ok(Value::Null),
+        };
+        self.inner.states().insert(At::of(&call).node, state);
         Ok(Value::Null)
     }
 
@@ -272,9 +307,9 @@ impl Guards {
         let out = match call.node.node_type.as_str() {
             BUDGET => self.budget(&call.node, &at, event)?,
             RETRY => self.retry(&call.node, &at, event)?,
-            TIMEOUT => self.timeout(&call.node, &at, event),
+            TIMEOUT => self.timeout(&call.node, &at, event)?,
             ERROR => vec![(port::ERROR, self.error(event))],
-            WATCHDOG => self.watchdog(&call.node, &at, event),
+            WATCHDOG => self.watchdog(&call.node, &at, event)?,
             other => {
                 return Err(ModuleError::InvalidParams(format!(
                     "`{other}` is not a node of this module"
@@ -289,11 +324,8 @@ impl Guards {
 
     fn budget(&self, node: &Node, at: &At, event: NodeEvent) -> Result<Out, ModuleError> {
         let mut states = self.inner.states();
-        let state = states
-            .entry(at.node.clone())
-            .or_insert_with(|| State::Budget(Spent::default()));
-        let State::Budget(spent) = state else {
-            return Err(ModuleError::Failed("budget state lost".into()));
+        let Some(State::Budget(spent)) = states.get_mut(&at.node) else {
+            return Err(not_running(at));
         };
         if event.port == port::RESET {
             *spent = Spent::default();
@@ -301,11 +333,7 @@ impl Guards {
             let max_items = self.whole(node, "max_items");
             let max_ms = self.whole(node, "max_ms");
             let max_cost = self.number(node, "max_cost");
-            let pointer = self
-                .manifest
-                .setting(node, "cost_path")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let pointer = self.text(node, "cost_path");
             let cost = if pointer.is_empty() {
                 0.0
             } else {
@@ -314,6 +342,7 @@ impl Guards {
                     .pointer(pointer)
                     .and_then(Value::as_f64)
                     .unwrap_or_default()
+                    .max(0.0)
             };
             let now = now_ms();
             let first = *spent.first.get_or_insert(now);
@@ -340,75 +369,109 @@ impl Guards {
     }
 
     fn retry(&self, node: &Node, at: &At, event: NodeEvent) -> Result<Out, ModuleError> {
+        let max_pending =
+            usize::try_from(self.whole(node, "max_pending").max(1)).unwrap_or(usize::MAX);
         let mut states = self.inner.states();
-        let state = states.entry(at.node.clone()).or_insert(State::Retry {
-            last: None,
-            retries: 0,
-            waiting: None,
-        });
-        let State::Retry {
+        let Some(State::Retry {
             last,
-            retries,
+            tries,
             waiting,
-        } = state
+        }) = states.get_mut(&at.node)
         else {
-            return Err(ModuleError::Failed("retry state lost".into()));
+            return Err(not_running(at));
         };
         if event.port != port::FAIL {
+            // A new value starts over; a retry still waiting for another one goes ahead.
             *last = Some(event.value.clone());
-            *retries = 0;
-            *waiting = None;
+            tries.retain(|(value, _)| *value != event.value);
+            tries.push_back((event.value.clone(), 0));
+            while tries.len() > max_pending {
+                tries.pop_front();
+            }
             return Ok(vec![(port::OUT, event.value)]);
         }
-        // Nothing to retry, or a retry already waiting: this failure changes nothing.
-        let Some(value) = last.clone().filter(|_| waiting.is_none()) else {
+        // What failed: the `value` the failure carries (`error@1`), else the last value.
+        let target = event
+            .value
+            .as_object()
+            .and_then(|failure| failure.get(VALUE_FIELD))
+            .cloned()
+            .or_else(|| last.clone());
+        // Nothing to retry, or this one already waits: the failure changes nothing.
+        let Some(value) = target.filter(|v| !waiting.values().any(|w| w == v)) else {
             return Ok(Vec::new());
         };
-        if *retries >= self.whole(node, "max_retries") {
-            *last = None;
+        let retries = tries
+            .iter()
+            .find(|(v, _)| *v == value)
+            .map_or(0, |(_, n)| *n);
+        if retries >= self.whole(node, "max_retries") {
+            tries.retain(|(v, _)| *v != value);
+            if last.as_ref() == Some(&value) {
+                *last = None;
+            }
             return Ok(vec![(port::GAVE_UP, value)]);
+        }
+        if waiting.len() >= max_pending {
+            return Err(ModuleError::Failed(format!(
+                "retry `{}` already waits on {max_pending} values (`max_pending`)",
+                at.node.node_id
+            )));
+        }
+        tries.retain(|(v, _)| *v != value);
+        tries.push_back((value.clone(), retries + 1));
+        while tries.len() > max_pending {
+            tries.pop_front();
         }
         let first = self.number(node, "backoff_ms");
         let factor = self.number(node, "backoff_factor");
         let longest = self.number(node, "max_backoff_ms");
-        let exponent = i32::try_from(*retries).unwrap_or(i32::MAX);
+        let exponent = i32::try_from(retries).unwrap_or(i32::MAX);
         let delay = (first * factor.powi(exponent)).min(longest).max(0.0);
-        *retries += 1;
+        let delay = Duration::try_from_secs_f64(delay / 1000.0).unwrap_or(Duration::MAX);
         let token = self.inner.token();
-        *waiting = Some(token);
+        waiting.insert(token, value);
         drop(states);
         let (inner, at) = (self.inner.clone(), at.clone());
-        self.inner
-            .timers
-            .after(Duration::from_secs_f64(delay / 1000.0), move || {
-                let mut states = inner.states();
-                let Some(State::Retry { waiting, .. }) = states.get_mut(&at.node) else {
-                    return;
-                };
-                if *waiting != Some(token) {
-                    return;
-                }
-                *waiting = None;
-                drop(states);
-                inner.emit(&at, vec![(port::OUT, value)]);
-            });
+        self.inner.timers.after(delay, move || {
+            let mut states = inner.states();
+            let Some(State::Retry { waiting, .. }) = states.get_mut(&at.node) else {
+                return;
+            };
+            let Some(value) = waiting.remove(&token) else {
+                return;
+            };
+            drop(states);
+            inner.emit(&at, vec![(port::OUT, value)]);
+        });
         Ok(Vec::new())
     }
 
-    fn timeout(&self, node: &Node, at: &At, event: NodeEvent) -> Out {
+    fn timeout(&self, node: &Node, at: &At, event: NodeEvent) -> Result<Out, ModuleError> {
+        let pointer = self.text(node, "key_path");
+        let key = |value: &Value| {
+            if pointer.is_empty() {
+                Some(value.clone())
+            } else {
+                value.pointer(pointer).cloned()
+            }
+        };
         let mut states = self.inner.states();
-        let state = states.entry(at.node.clone()).or_insert(State::Timeout {
-            clocks: VecDeque::new(),
-        });
-        let State::Timeout { clocks } = state else {
-            return Vec::new();
+        let Some(State::Timeout { clocks }) = states.get_mut(&at.node) else {
+            return Err(not_running(at));
         };
         if event.port == port::ACK {
-            clocks.pop_front();
-            return Vec::new();
+            // The clock of the value it names, if any; else the oldest.
+            let named = key(&event.value);
+            let index = clocks
+                .iter()
+                .position(|(_, k, _)| named.is_some() && *k == named)
+                .unwrap_or(0);
+            clocks.remove(index);
+            return Ok(Vec::new());
         }
         let token = self.inner.token();
-        clocks.push_back((token, event.value.clone()));
+        clocks.push_back((token, key(&event.value), event.value.clone()));
         drop(states);
         let (inner, timed) = (self.inner.clone(), at.clone());
         self.inner
@@ -418,16 +481,16 @@ impl Guards {
                 let Some(State::Timeout { clocks }) = states.get_mut(&timed.node) else {
                     return;
                 };
-                let Some(index) = clocks.iter().position(|(t, _)| *t == token) else {
+                let Some(index) = clocks.iter().position(|(t, _, _)| *t == token) else {
                     return;
                 };
-                let late = clocks.remove(index).map(|(_, value)| value);
+                let late = clocks.remove(index).map(|(_, _, value)| value);
                 drop(states);
                 if let Some(value) = late {
                     inner.emit(&timed, vec![(port::TIMEOUT, value)]);
                 }
             });
-        vec![(port::OUT, event.value)]
+        Ok(vec![(port::OUT, event.value)])
     }
 
     fn error(&self, event: NodeEvent) -> Value {
@@ -439,27 +502,22 @@ impl Guards {
         })
     }
 
-    fn watchdog(&self, node: &Node, at: &At, event: NodeEvent) -> Out {
+    fn watchdog(&self, node: &Node, at: &At, event: NodeEvent) -> Result<Out, ModuleError> {
         let mut states = self.inner.states();
-        let state = states.entry(at.node.clone()).or_insert(State::Watchdog {
-            busy: None,
-            clock: 0,
-            restarts: 0,
-        });
-        let State::Watchdog {
+        let Some(State::Watchdog {
             busy,
             clock,
             restarts,
-        } = state
+        }) = states.get_mut(&at.node)
         else {
-            return Vec::new();
+            return Err(not_running(at));
         };
         let out = match event.port.as_str() {
             port::DONE => {
                 *busy = None;
-                return Vec::new();
+                return Ok(Vec::new());
             }
-            port::PROGRESS if busy.is_none() => return Vec::new(),
+            port::PROGRESS if busy.is_none() => return Ok(Vec::new()),
             port::PROGRESS => Vec::new(),
             _ => {
                 *busy = Some(event.value.clone());
@@ -471,18 +529,13 @@ impl Guards {
         let token = *clock;
         drop(states);
         self.arm(node, at, token);
-        out
+        Ok(out)
     }
 
     /// Starts the watchdog's clock `token`; a newer clock, `done` or a stop disarms it.
     fn arm(&self, node: &Node, at: &At, token: u64) {
         let stall = self.millis(node, "stall_ms");
-        let restart = self
-            .manifest
-            .setting(node, "restart")
-            .and_then(Value::as_str)
-            == Some(YES)
-            && at.has(port::RESTART);
+        let restart = self.text(node, "restart") == YES && at.has(port::RESTART);
         let max_restarts = self.whole(node, "max_restarts");
         let (inner, at) = (self.inner.clone(), at.clone());
         self.inner.timers.after(stall, move || {
@@ -579,14 +632,22 @@ mod tests {
             .unwrap()
     }
 
-    fn node(node_type: &str, config: Value) -> Value {
-        json!({ "id": "g", "type": node_type, "config": config })
+    /// A started node: events reach only those between `node/start` and `node/stop`.
+    fn node_in(guards: &Guards, node_type: &str, config: Value) -> Value {
+        let node = json!({ "id": "g", "type": node_type, "config": config });
+        guards
+            .call(
+                method::NODE_START,
+                json!({ "execution_id": "e", "node": node, "args": null }),
+            )
+            .unwrap();
+        node
     }
 
     #[test]
     fn a_budget_lets_through_what_fits_and_then_refuses() {
         let guards = Guards::new();
-        let budget = node(BUDGET, json!({ "max_items": 2 }));
+        let budget = node_in(&guards, BUDGET, json!({ "max_items": 2 }));
         let ports = |v: Value| v["emitted"].clone();
         assert_eq!(
             ports(call(&guards, &budget, "in", json!("a"))),
@@ -605,11 +666,12 @@ mod tests {
             ports(call(&guards, &budget, "in", json!("d"))),
             json!(["out"])
         );
-        let costly = node(
+        let guards = Guards::new();
+        let costly = node_in(
+            &guards,
             BUDGET,
             json!({ "max_items": 0, "max_cost": 1.0, "cost_path": "/cost" }),
         );
-        let guards = Guards::new();
         assert_eq!(
             ports(call(&guards, &costly, "in", json!({ "cost": 0.6 }))),
             json!(["out"])
@@ -623,12 +685,24 @@ mod tests {
             ports(call(&guards, &costly, "in", json!({}))),
             json!(["exceeded"])
         );
+        // A negative cost buys no room: it counts as 0.
+        let guards = Guards::new();
+        let costly = node_in(
+            &guards,
+            BUDGET,
+            json!({ "max_items": 0, "max_cost": 1.0,
+            "cost_path": "/cost" }),
+        );
+        for (cost, port) in [(-5.0, "out"), (0.6, "out"), (0.6, "exceeded")] {
+            let value = json!({ "cost": cost });
+            assert_eq!(ports(call(&guards, &costly, "in", value)), json!([port]));
+        }
     }
 
     #[test]
     fn a_retry_gives_up_after_its_retries() {
         let guards = Guards::new();
-        let retry = node(RETRY, json!({ "max_retries": 0 }));
+        let retry = node_in(&guards, RETRY, json!({ "max_retries": 0 }));
         assert_eq!(
             call(&guards, &retry, "fail", json!(1))["emitted"],
             json!([])
@@ -642,6 +716,37 @@ mod tests {
             json!(["gave_up"])
         );
         // Given up: nothing left to retry.
+        assert_eq!(
+            call(&guards, &retry, "fail", json!(1))["emitted"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn a_stopped_node_takes_nothing_and_keeps_no_state() {
+        let guards = Guards::new();
+        let retry = node_in(&guards, RETRY, json!({}));
+        let stop = json!({ "execution_id": "e", "node": retry, "args": null });
+        guards.call(method::NODE_STOP, stop).unwrap();
+        let event = json!({ "port": "in", "capability": "text@1", "value": "late",
+            "from": { "node_id": "src", "port_id": "out" }, "event": 1 });
+        let late = guards.call(
+            method::NODE_EVENT,
+            json!({ "execution_id": "e", "node": retry, "args": event }),
+        );
+        assert!(late.unwrap_err().to_string().contains("not running"));
+        assert!(guards.inner.states().is_empty());
+    }
+
+    #[test]
+    fn a_huge_backoff_does_not_panic() {
+        let guards = Guards::new();
+        let retry = node_in(
+            &guards,
+            RETRY,
+            json!({ "backoff_ms": 1e300, "max_backoff_ms": 1e300 }),
+        );
+        call(&guards, &retry, "in", json!("x"));
         assert_eq!(
             call(&guards, &retry, "fail", json!(1))["emitted"],
             json!([])

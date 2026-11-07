@@ -142,8 +142,25 @@ fn a_retry_sends_the_value_again_then_gives_up() {
 }
 
 #[test]
+fn a_retry_resends_what_failed_and_a_new_value_does_not_cancel_it() {
+    let config = json!({ "max_retries": 3, "backoff_ms": 200, "backoff_factor": 1 });
+    let outs = [("out", "text@1"), ("gave_up", "text@1")];
+    let (core, id) = start(profile("retry", config, &["in", "fail"], &outs));
+    send(&core, &id, "in", json!("a"));
+    send(&core, &id, "fail", json!("broken"));
+    // `b` comes while `a` waits for its retry: both go out.
+    send(&core, &id, "in", json!("b"));
+    let got = wait_for(&core, &id, &["out"], 3);
+    assert_eq!(got, [pair("out", "a"), pair("out", "b"), pair("out", "a")]);
+    // A failure that says what failed (`error@1`) retries that, not the last value.
+    send(&core, &id, "fail", json!({ "message": "no", "value": "a" }));
+    let got = wait_for(&core, &id, &["out"], 4);
+    assert_eq!(got[3], pair("out", "a"));
+}
+
+#[test]
 fn a_timeout_fires_without_holding_anything_up() {
-    let config = json!({ "timeout_ms": 300 });
+    let config = json!({ "timeout_ms": 600 });
     let outs = [("out", "text@1"), ("timeout", "text@1")];
     let (core, id) = start(profile("timeout", config, &["in", "ack"], &outs));
     let sent = Instant::now();
@@ -151,18 +168,24 @@ fn a_timeout_fires_without_holding_anything_up() {
     send(&core, &id, "in", json!("answered"));
     // Both are forwarded at once, long before any clock runs out.
     wait_for(&core, &id, &["out"], 2);
-    assert!(sent.elapsed() < Duration::from_millis(300));
-    // The ack stops the oldest clock: `late`'s. `answered` is the one that times out.
-    send(&core, &id, "ack", json!("ok"));
+    assert!(sent.elapsed() < Duration::from_millis(600));
+    // The ack names `answered`: its clock stops, and `late` is the one that times out.
+    send(&core, &id, "ack", json!("answered"));
     let got = wait_for(&core, &id, &["out", "timeout"], 3);
-    assert_eq!(got[2], pair("timeout", "answered"));
-    std::thread::sleep(Duration::from_millis(400));
-    assert_eq!(emitted(&core, &id, &["timeout"]).len(), 1);
+    assert_eq!(got[2], pair("timeout", "late"));
+    // An ack that names nothing stops the oldest clock.
+    send(&core, &id, "in", json!("first"));
+    send(&core, &id, "in", json!("second"));
+    send(&core, &id, "ack", json!("unknown"));
+    let got = wait_for(&core, &id, &["out", "timeout"], 6);
+    assert_eq!(got[5], pair("timeout", "second"));
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(emitted(&core, &id, &["timeout"]).len(), 2);
 }
 
 #[test]
 fn a_watchdog_reports_a_stall_restarts_once_and_progress_keeps_it_quiet() {
-    let config = json!({ "stall_ms": 150, "restart": "yes", "max_restarts": 1 });
+    let config = json!({ "stall_ms": 300, "restart": "yes", "max_restarts": 1 });
     let outs = [
         ("out", "text@1"),
         ("stuck", "text@1"),
@@ -185,14 +208,14 @@ fn a_watchdog_reports_a_stall_restarts_once_and_progress_keeps_it_quiet() {
             pair("stuck", "step")
         ]
     );
-    // Busy with progress every 30 ms: never stuck; done, and it stays quiet.
+    // Busy with progress every 30 ms (stall: 300 ms): never stuck; done, and it stays quiet.
     send(&core, &id, "in", json!("alive"));
     for _ in 0..8 {
         std::thread::sleep(Duration::from_millis(30));
         send(&core, &id, "progress", json!("."));
     }
     send(&core, &id, "done", json!("."));
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(600));
     let stuck = emitted(&core, &id, &["stuck"]);
     assert_eq!(stuck.len(), 2, "{stuck:?}");
 }

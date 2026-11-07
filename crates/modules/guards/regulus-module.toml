@@ -13,7 +13,9 @@ requires_proto = "^1.8"
 
 # Lets values through until a limit: how many, for how long since the first, or how much
 # they cost. Past it, the value goes to `exceeded` instead, and so does every later one
-# until `reset`. Several in a row compose. Counters survive a restart (checkpoint).
+# until `reset`. Several in a row compose. Counters survive a restart (checkpoint), and
+# `max_ms` is wall clock: the time the core was down counts. Limits are checked only when
+# a value arrives; nothing fires on its own.
 [[node]]
 type = "budget"
 name = "Budget"
@@ -69,15 +71,18 @@ name = "Budget"
   type    = "number"
   default = 0
 
-  # JSON pointer to a number in the value (`/usage/cost`). Empty or missing: costs 0.
+  # JSON pointer to a number in the value (`/usage/cost`). Empty, missing or negative:
+  # costs 0.
   [[node.field]]
   id      = "cost_path"
   type    = "text"
   default = ""
 
-# Forwards `in` to `out` and remembers it. A value on `fail` sends the last one out again
-# after a backoff, up to `max_retries` times; one more and it goes to `gave_up`. A new
-# value on `in` starts over.
+# Forwards `in` to `out` and remembers it. A value on `fail` sends one out again after a
+# backoff, up to `max_retries` times; one more and it goes to `gave_up`. Which one: the
+# `value` field of the failure if it has one (`error@1`), else the last on `in`, which
+# assumes one value in flight at a time. A new value on `in` starts its own count and
+# does not cancel retries already waiting; at most `max_pending` wait at once.
 [[node]]
 type = "retry"
 name = "Retry"
@@ -98,7 +103,7 @@ name = "Retry"
   direction  = "output"
   kind       = "then"
 
-  # The step failed: try the last value again. What arrives is not used.
+  # The step failed: try again its `value`, or the last value.
   [[node.port]]
   id          = "fail"
   name        = "fail"
@@ -139,9 +144,16 @@ name = "Retry"
   type    = "number"
   default = 60000
 
-# Forwards `in` to `out` and starts a clock for it. A value on `ack` stops the oldest
-# clock still running; one that runs out sends its value to `timeout`. Nothing waits on
-# the bus thread: one timer thread serves every guard.
+  # Values waiting for a retry at once; one more failure is refused.
+  [[node.field]]
+  id      = "max_pending"
+  type    = "number"
+  default = 8
+
+# Forwards `in` to `out` and starts a clock for it. A value on `ack` stops the clock of
+# the value it names (by `key_path`, or equal as a whole), else the oldest; one that runs
+# out sends its value to `timeout`. Nothing waits on the bus thread: one timer thread
+# serves every guard. Times below 1 ms count as 1 ms.
 [[node]]
 type = "timeout"
 name = "Timeout"
@@ -162,7 +174,7 @@ name = "Timeout"
   direction  = "output"
   kind       = "then"
 
-  # The step answered. What arrives is not used.
+  # The step answered: for the value it names, or the oldest.
   [[node.port]]
   id          = "ack"
   name        = "ack"
@@ -184,6 +196,13 @@ name = "Timeout"
   id      = "timeout_ms"
   type    = "number"
   default = 60000
+
+  # JSON pointer to what identifies a value (`/id`), in what comes in and in the ack.
+  # Empty: the whole value.
+  [[node.field]]
+  id      = "key_path"
+  type    = "text"
+  default = ""
 
 # The explicit fail branch made uniform: whatever arrives on `fail` (a command's exit, a
 # gate's value, a guard's refusal) leaves on `error` as `error@1`:
