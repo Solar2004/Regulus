@@ -201,6 +201,13 @@ Se ven y editan de tres formas que son lo mismo: el canvas, el fichero
 (`regulus.toml`) y el CLI (`regulus connect a.out b.in`, `regulus graph`). Principio
 Infraestructura.
 
+**Puertos propios y hablarle** ✅ (2026-11-07). Un workflow declara entradas y salidas
+(`ports`, mismos `Port` que un nodo); dentro se cablean como `self.<puerto>`. Así se
+enchufa en otro workflow del perfil como una caja (§6) y funciona igual solo, sin nadie
+fuera. A uno que corre se le habla con `workflow.send` / `regulus send <ejecución>
+<puerto> <valor>`, y la respuesta sale en `regulus events` emitida desde `self.<salida>`.
+Ejemplo: `crates/modules/hello/examples/greeter.toml`.
+
 ---
 
 ## 6. El workflow de cada módulo
@@ -213,6 +220,12 @@ ejemplo, Comunicación: recibir → encolar → entregar → reintentar.
   ajustable; el resto se ve pero no se toca. Como los grupos de nodos de Blender.
 - Se pueden **importar nodos** de otros módulos dentro de ese workflow, por los mismos
   cables.
+
+Lo mismo vale para un workflow del usuario: un nodo **sin módulo** cuyo
+`internal_workflow_id` apunta a un workflow con puertos es una **caja**; el core la
+ejecuta en línea (sus nodos corren como `caja/nodo`) y el bus cruza sus puertos en ambos
+sentidos, a cualquier profundidad (`02-architecture.md` §4 regla 4, §6). Un nodo con
+módulo y workflow interno sigue siendo del módulo.
 
 ---
 

@@ -40,14 +40,14 @@ de §3 piden, y cada pieza tiene quien la pide:
 |---|---|---|
 | 1 | **Cable "luego" con dato**, tipado por capacidad (`text@1`, `image@1`…), sobre el bus. `WireKind::Then` ya existe como tipo y el validador lo acepta (`regulus-proto/src/graph.rs`), pero no hay bus y ningún dato viaja entre cajas | `flow`, `triggers`, `process`, todo lo de §3 |
 | 2 | ✅ *Construido* (2026-11-07, paso 1b). **Store** (SQLite, uno por proyecto y uno global, `02-architecture.md` §6): ejecuciones que sobreviven al reinicio, arrancan con `serve` y se reanudan desde checkpoint | `human` (pausar y reanudar), `tasks`, `memory`, bucles largos |
-| 3 | **Workflow como caja**: puertos propios de entrada y salida en un workflow del usuario. Ya existen `Node.internal_workflow` y `WorkflowKind::Module` (`11-composition.md` §6) y el "luego" que cruza de canvas (§5); lo nuevo es que un workflow declare sus puertos, se enchufe en otro y se le hable (`chat`) desde la TUI o la app | el "CLI custom", `Call` |
+| 3 | ✅ *Construido* (2026-11-07, paso 1c). **Workflow como caja**: puertos propios de entrada y salida en un workflow del usuario (`self.<puerto>` dentro, nodo sin módulo con `internal_workflow_id` fuera, `workflow.send` / `regulus send` para hablarle; `02-architecture.md` §4 regla 4, §6). Ya existen `Node.internal_workflow` y `WorkflowKind::Module` (`11-composition.md` §6) y el "luego" que cruza de canvas (§5); lo nuevo es que un workflow declare sus puertos, se enchufe en otro y se le hable (`chat`) desde la TUI o la app | el "CLI custom", `Call` |
 | 4 | **Sub-ejecución "llama y espera"**: `parent` en `Execution`; un nodo `Call` instancia una plantilla con entradas y devuelve su resultado. El agente lo usa como herramienta | subagentes N, handoff, orquestador-workers, Roo `new_task` |
 
 Lo que **no** entra en el core: hooks (ranura de la caja Agente, §4), disparadores,
 scripts, jueces, memoria, workspaces, colas. Todo módulo, todo se quita uno a uno.
 
-**Qué enmienda en otros docs** (como hizo `11-composition.md` §11; la primera aplicada,
-las otras pendientes de sus pasos):
+**Qué enmienda en otros docs** (como hizo `11-composition.md` §11; aplicadas salvo
+`parent`, pendiente de su paso):
 
 - ✅ *Aplicada* (2026-11-07, paso 1a; el bus en `02-architecture.md` §6).
   `11-composition.md` §4 y `02-architecture.md` §4: el "luego" **lleva dato** tipado por
@@ -55,8 +55,9 @@ las otras pendientes de sus pasos):
   Bucle o un Switch son nodos de `flow` que reciben y emiten por "luego". El corte por
   profundidad configurable del core se mantiene como red de seguridad; el tope N del
   Bucle es del nodo. `Port.lazy` y `cardinality` ya existen y se usan tal cual.
-- `02-architecture.md` §4: `Workflow` gana puertos propios y `Execution` gana `parent`.
-  Son abstracciones genéricas, no conceptos de IA.
+- `02-architecture.md` §4: `Workflow` gana puertos propios ✅ (*aplicada* 2026-11-07,
+  paso 1c) y `Execution` gana `parent` (pendiente, paso 1d). Son abstracciones genéricas,
+  no conceptos de IA.
 - ✅ *Aplicada* (2026-11-07, paso 1b). `02-architecture.md` §6: el esquema del store,
   escrito; este doc decidía **qué** guarda (ejecuciones, checkpoints), aquel dice cómo.
 
