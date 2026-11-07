@@ -34,8 +34,9 @@ negociar un major compatible.
 | `secret.set` *(1.3)* | `name`, `value` | `null` |
 | `secret.list` *(1.3)* | — | Nombres de los secretos, nunca los valores |
 | `secret.delete` *(1.3)* | `name` | `null` |
+| `event.list` *(1.5)* | `since?`, `execution_id?`, `project_id?`, `limit?` | `events` del bus (`emitted`, `delivered`, `failed`, `cut`), `next` (cursor) y `pending` |
 
-El core real (`regulus serve`) habla el protocolo `1.4`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.5`, compatible con el `1.0` del mock.
 Los métodos de los módulos se suman a estos (p. ej. `agent.prompt`, `claude.detect`).
 Errores propios: `-32001` falta `hello`, `-32002` módulo no disponible, `-32003` el módulo
 falló o entró en pánico. Además pide el token de `<home>/token` en el upgrade

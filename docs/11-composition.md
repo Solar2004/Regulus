@@ -174,9 +174,14 @@ procesos.
 
 - **Usa** une una salida con una entrada del mismo tipo (`llm.vision` no entra en
   `llm.chat`). Las entradas declaran `required` (`03-modules.md` §1.1).
-- **Luego** es una suscripción al bus: no hay motor de flujo nuevo. **Riesgo:** bucles
-  (A dispara B, B dispara A). El core corta una cadena al pasar de una profundidad
-  configurable y lo reporta.
+- **Luego** lleva un **dato tipado por capacidad** (`text@1`, `image@1`…) y lo entrega el
+  bus, a cada entrada "luego" cableada con la misma capacidad y versión
+  (`02-architecture.md` §6). No hay motor de flujo aparte: un Bucle o un Switch son nodos
+  de `flow` que reciben y emiten por "luego" (`13-blocks.md` §2). `lazy` y `cardinality`
+  valen tal cual.
+- **Riesgo:** bucles (A dispara B, B dispara A). Red de seguridad del core: corta la cadena
+  al pasar de `[bus] max_depth` entregas (por defecto 64) y lo reporta en el bus. El tope N
+  de un Bucle es del nodo, no del core.
 - **Autoconexión:** si para una entrada "usa" hay exactamente una salida compatible, se
   conecta sola. Recién instalado, todo funciona sin cablear.
 
