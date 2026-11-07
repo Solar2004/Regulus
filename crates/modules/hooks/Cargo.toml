@@ -1,0 +1,12 @@
+[package]
+name = "regulus-module-hooks"
+description = "Regulus hooks: Rule, a hook@1 node that vetoes or adds context on an agent event"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true

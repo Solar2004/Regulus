@@ -3881,6 +3881,7 @@ dependencies = [
  "regulus-module-engine-opencode",
  "regulus-module-flow",
  "regulus-module-hello",
+ "regulus-module-hooks",
  "regulus-module-providers",
  "regulus-module-skills",
  "regulus-module-tools",
@@ -4019,6 +4020,16 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-hello"
+version = "0.1.0"
+dependencies = [
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-hooks"
 version = "0.1.0"
 dependencies = [
  "regulus-core",

@@ -43,6 +43,7 @@ pub fn hosted(host: Host) -> Vec<Box<dyn Module>> {
     vec![
         Box::new(regulus_module_hello::Hello::new()),
         Box::new(regulus_module_flow::Flow::new()),
+        Box::new(regulus_module_hooks::Hooks::new()),
         Box::new(regulus_module_agent::Agent::with_bridge(hooks)),
         Box::new(regulus_module_engine_opencode::module()),
         Box::new(regulus_module_engine_claude::module()),

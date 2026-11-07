@@ -1,0 +1,58 @@
+[module]
+id             = "regulus/hooks@0.1.0"
+name           = "Hooks"
+requires_proto = "^1.9"
+
+# A fixed rule for the Agent box's `hooks` input (docs/13-blocks.md §4): on one event,
+# for the tools its matcher names, it vetoes with a reason or adds context. No scripts
+# and no models here: a hook that decides by running something or asking an agent is
+# another node offering the same hook@1 (`process`, `judge`).
+[[node]]
+type = "rule"
+name = "Rule"
+
+  [[node.port]]
+  id         = "hook"
+  name       = "hook"
+  capability = "hook@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The agent event, engine-neutral; each engine says which ones it has.
+  [[node.field]]
+  id      = "event"
+  type    = "select"
+  default = "pre_tool"
+  options = ["pre_tool", "post_tool", "stop", "session_start", "prompt", "pre_compact"]
+
+  # For pre_tool and post_tool: tool names separated by `|` (`Bash|Write`). Empty or `*`:
+  # every tool. Ignored on other events.
+  [[node.field]]
+  id      = "matcher"
+  type    = "text"
+  default = ""
+
+  # yes: veto with `reason`. no: add `context`, if any; with neither, the rule does nothing.
+  [[node.field]]
+  id      = "deny"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # What the agent is told when the rule vetoes.
+  [[node.field]]
+  id      = "reason"
+  type    = "text"
+  default = ""
+
+  # The text added to what the agent sees, when the rule does not veto.
+  [[node.field]]
+  id      = "context"
+  type    = "text"
+  default = ""
+
+  # Milliseconds the core waits for this rule. 0: the core's `[hooks] timeout_ms`.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 0

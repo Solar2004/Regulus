@@ -1,0 +1,92 @@
+# An Agent box (Claude Code, isolated profile) with two rules in its `hooks` input
+# (docs/13-blocks.md §4): one vetoes every Bash call with a reason, the other adds
+# context when the session starts. Hooks are written only into an isolated profile, so
+# the box needs a provider to log in with. Copy it to ~/.regulus/profiles/, then:
+#
+#   regulus secret set claude-sub      # what `claude setup-token` prints
+#   regulus run guarded --detach
+#   regulus agent prompt exec-N dev "Run `echo hi` with the Bash tool."
+#
+# The isolated profile's settings.json, under ~/.regulus/data/global/regulus/
+# engine-claude/main/claude/profile/, shows the hooks pointing at `regulus hook`.
+id = "guarded"
+name = "Guarded agent"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Guarded agent"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "dev"
+  name = "Dev agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 380, y = 165 }
+  config = { workdir = "", permissions = "allow" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "provider", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+    { id = "hooks", capability = "hook@1", direction = "input", kind = "uses", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "claude"
+  name = "Claude Code"
+  type = "engine-claude"
+  module_id = "regulus/engine-claude@0.1.0"
+  position = { x = 50, y = 65 }
+  config = { profile = "isolated" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "login"
+  name = "Claude subscription"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 50, y = 165 }
+  config = { preset = "claude-subscription", credential = "secret:claude-sub" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "no-bash"
+  name = "No shell"
+  type = "rule"
+  module_id = "regulus/hooks@0.1.0"
+  position = { x = 50, y = 265 }
+  config = { event = "pre_tool", matcher = "Bash", deny = "yes", reason = "Bash is off for this agent: answer without running commands." }
+  ports = [{ id = "hook", capability = "hook@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "house-rules"
+  name = "House rules"
+  type = "rule"
+  module_id = "regulus/hooks@0.1.0"
+  position = { x = 50, y = 365 }
+  config = { event = "session_start", context = "House rule: end every answer with the word REGULUS." }
+  ports = [{ id = "hook", capability = "hook@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "dev-engine"
+  kind = "uses"
+  from = { node_id = "claude", port_id = "engine" }
+  to = { node_id = "dev", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "dev-provider"
+  kind = "uses"
+  from = { node_id = "login", port_id = "endpoint" }
+  to = { node_id = "dev", port_id = "provider" }
+
+  [[workflows.wires]]
+  id = "dev-no-bash"
+  kind = "uses"
+  from = { node_id = "no-bash", port_id = "hook" }
+  to = { node_id = "dev", port_id = "hooks" }
+
+  [[workflows.wires]]
+  id = "dev-house-rules"
+  kind = "uses"
+  from = { node_id = "house-rules", port_id = "hook" }
+  to = { node_id = "dev", port_id = "hooks" }

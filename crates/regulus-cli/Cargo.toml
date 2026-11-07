@@ -14,6 +14,7 @@ regulus-proto.workspace = true
 regulus-core.workspace = true
 regulus-module-hello = { path = "../modules/hello" }
 regulus-module-flow = { path = "../modules/flow" }
+regulus-module-hooks = { path = "../modules/hooks" }
 regulus-module-agent = { path = "../modules/agent" }
 regulus-module-engine-opencode = { path = "../modules/engine-opencode" }
 regulus-module-engine-claude = { path = "../modules/engine-claude" }

@@ -261,3 +261,22 @@ async fn the_bridge_answers_claude_code_and_plain_json() {
     let _ = std::fs::remove_dir_all(&home);
     checks.unwrap();
 }
+
+#[test]
+fn the_example_checks_clean_with_every_module() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../modules/hooks/examples/guarded.toml");
+    let (profiles, warnings) = ProfileStore::load(&[path]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let core = Core::build(regulus_cli::modules::installed(), &[], profiles);
+    let found = core
+        .dispatch(method::PROFILE_CHECK, json!({ "id": "guarded" }))
+        .unwrap();
+    let errors: Vec<&Value> = found
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["severity"] == "error")
+        .collect();
+    assert!(errors.is_empty(), "{found}");
+}
