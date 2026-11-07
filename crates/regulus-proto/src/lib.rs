@@ -6,10 +6,12 @@
 
 pub mod bus;
 pub mod graph;
+pub mod hook;
 pub mod manifest;
 pub mod rpc;
 
 pub use bus::*;
 pub use graph::*;
+pub use hook::*;
 pub use manifest::*;
 pub use rpc::*;
