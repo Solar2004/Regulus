@@ -14,13 +14,13 @@
 #   regulus send exec-1 add '[{"id":"build","title":"Build","deps":["setup"]},
 #                             {"id":"setup","title":"Set up"},"Write the docs"]'
 #   regulus send exec-1 plan "Set up, then build; docs any time"
-#   regulus send exec-1 next      # self.task emitted json@1 {"id":"setup",…,"state":"claimed"}
+#   regulus send exec-1 next go   # self.task emitted json@1 {"id":"setup",…,"state":"claimed"}
 #   regulus send exec-1 complete ok          # self.done … "setup" "done" "result":"ok"
-#   regulus send exec-1 next      # "build" was blocked by "setup", now free: oldest first
+#   regulus send exec-1 next go   # "build" was blocked by "setup", now free: oldest first
 #   regulus send exec-1 complete built
-#   regulus send exec-1 next      # t3, "Write the docs"
+#   regulus send exec-1 next go   # t3, "Write the docs"
 #   regulus send exec-1 complete written     # … and self.drained {"done":3,…}
-#   regulus send exec-1 read      # self.ledger emitted text@1 "## Plan\n- Set up, …"
+#   regulus send exec-1 read now  # self.ledger emitted text@1 "## Plan\n- Set up, …"
 #   regulus call tasks.list '{"execution_id":"exec-1","node_id":"claim"}'
 #   regulus call tasks.ledger '{"execution_id":"exec-1","node_id":"ledger"}'
 #
