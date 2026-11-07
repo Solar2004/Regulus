@@ -423,3 +423,17 @@ fn the_anthropic_protocol_gets_a_forced_tool_use() {
     );
     assert!(headers.iter().any(|h| h.starts_with("anthropic-version:")));
 }
+
+#[test]
+fn the_example_checks_clean() {
+    let example: Profile = toml::from_str(include_str!("../examples/judge.toml")).unwrap();
+    let id = example.id.clone();
+    let mut profiles = ProfileStore::default();
+    profiles.insert(example).unwrap();
+    let modules: Vec<Box<dyn Module>> = vec![Box::new(Judge::new()), Box::new(Providers::new())];
+    let core = Core::build(modules, &[], profiles);
+    let check = core
+        .dispatch(method::PROFILE_CHECK, json!({ "id": id }))
+        .unwrap();
+    assert_eq!(check, json!([]));
+}

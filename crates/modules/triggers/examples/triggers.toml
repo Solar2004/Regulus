@@ -1,0 +1,98 @@
+# Triggers (docs/13-blocks.md §3.2), no agent needed: `cron` ticks every 2 seconds, `hook`
+# takes HTTP POSTs on 127.0.0.1:7791/hook (loopback, so no token), and `quiet` says when
+# nothing reached the hook for 5 seconds. Each output leaves the workflow as its own port.
+#
+# Run (2026-11-07, debug build):
+#
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/triggers/examples/triggers.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run triggers --detach        # exec-1  watch  running
+#   regulus call triggers.webhooks '{}'
+#     [{"execution_id":"exec-1","node_id":"hook","token":false,"url":"http://127.0.0.1:7791/hook"}]
+#   curl -s -X POST --data '{"deploy":"v2"}' http://127.0.0.1:7791/hook   # {"accepted":true}
+#   regulus events --execution exec-1
+#     #1  cron.tick emitted text@1 "2026-11-07T22:48:38+00:00" (depth 0)
+#     #3  self.tick emitted text@1 "2026-11-07T22:48:38+00:00" (depth 1)
+#     #4  hook.body emitted text@1 "{\"deploy\":\"v2\"}" (depth 0)
+#     #5  hook.json emitted json@1 {"deploy":"v2"} (depth 0)
+#     #6  hook.body → quiet.in delivered
+#     #8  self.hook emitted json@1 {"deploy":"v2"} (depth 1)
+#     #9  cron.tick emitted text@1 "2026-11-07T22:48:40+00:00" (depth 0)   … :42, :44
+#     #18 quiet.idle emitted text@1 "2026-11-07T22:48:44.655462115+00:00" (depth 0)
+#                                        ← 5 s after the POST (22:48:39.6)
+#     #20 self.idle emitted text@1 "2026-11-07T22:48:44.655462115+00:00" (depth 1)
+#     #21 cron.tick emitted text@1 "2026-11-07T22:48:46+00:00" (depth 0)
+#   (the "→ … delivered" lines between them are left out; `serve` said "in 14 ms")
+#   regulus stop exec-1                  # the listener closes and the timers stop:
+#   curl -s -X POST --data x http://127.0.0.1:7791/hook   # curl: (7) Failed to connect
+id = "triggers"
+name = "Triggers"
+main_workflow_id = "watch"
+
+[[workflows]]
+id = "watch"
+name = "Watch"
+kind = "main"
+ports = [
+  { id = "tick", capability = "text@1", direction = "output", kind = "then" },
+  { id = "hook", capability = "json@1", direction = "output", kind = "then" },
+  { id = "idle", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "cron"
+  name = "Every 2 s"
+  type = "cron"
+  module_id = "regulus/triggers@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { schedule = "*/2 * * * * *" }
+  ports = [{ id = "tick", capability = "text@1", direction = "output", kind = "then" }]
+
+  [[workflows.nodes]]
+  id = "hook"
+  name = "Webhook"
+  type = "webhook"
+  module_id = "regulus/triggers@0.1.0"
+  position = { x = 50, y = 150 }
+  config = { bind = "127.0.0.1:7791", path = "/hook" }
+  ports = [
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "json", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "quiet"
+  name = "5 s without calls"
+  type = "idle"
+  module_id = "regulus/triggers@0.1.0"
+  position = { x = 300, y = 150 }
+  config = { after_ms = 5000 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "idle", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "tick"
+  kind = "then"
+  from = { node_id = "cron", port_id = "tick" }
+  to = { node_id = "self", port_id = "tick" }
+
+  [[workflows.wires]]
+  id = "hook"
+  kind = "then"
+  from = { node_id = "hook", port_id = "json" }
+  to = { node_id = "self", port_id = "hook" }
+
+  [[workflows.wires]]
+  id = "activity"
+  kind = "then"
+  from = { node_id = "hook", port_id = "body" }
+  to = { node_id = "quiet", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "idle"
+  kind = "then"
+  from = { node_id = "quiet", port_id = "idle" }
+  to = { node_id = "self", port_id = "idle" }

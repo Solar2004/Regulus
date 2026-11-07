@@ -363,3 +363,14 @@ fn the_core_shutting_down_stops_timers_and_listeners() {
     std::thread::sleep(Duration::from_millis(1200));
     assert_eq!(emitted(&core, &id, "cron", "tick").len(), ticks);
 }
+
+#[test]
+fn the_example_checks_clean() {
+    let example: Profile = toml::from_str(include_str!("../examples/triggers.toml")).unwrap();
+    let id = example.id.clone();
+    let core = core(example, None);
+    let check = core
+        .dispatch(method::PROFILE_CHECK, json!({ "id": id }))
+        .unwrap();
+    assert_eq!(check, json!([]));
+}

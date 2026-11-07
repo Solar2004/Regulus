@@ -1,0 +1,110 @@
+# Judge a value (docs/13-blocks.md §3.2): `review` hands what it gets on `ask` to the node
+# `judge` (module judge), which asks the model behind `model` for `{ verdict, feedback }`
+# under a strict JSON schema and sends the value out on `pass` or `fail`, and the
+# feedback on `feedback`. No agent needed. The model is any OpenAI-compatible endpoint:
+# here a fake one (examples/fake-model.py) on 127.0.0.1:11435; with Ollama, drop
+# `base_url` and set `model` to a model you pulled.
+#
+# Run (2026-11-07, debug build; `regulus serve` said "in 15 ms"):
+#
+#   python3 crates/modules/judge/examples/fake-model.py 11435 &
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/judge/examples/judge.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run review --detach          # exec-1  review  running
+#   regulus send exec-1 ask "fn add(a, b) { a + b }"
+#     #1 exec-1 self.ask emitted text@1 "fn add(a, b) { a + b }" (depth 0)
+#     #2 exec-1 self.ask → judge.in delivered
+#   regulus events --execution exec-1    # the verdict comes from the judge's own thread:
+#     #3 exec-1 judge.feedback emitted text@1 "add a test that exercises it" (depth 0)
+#     #4 exec-1 judge.fail emitted text@1 "fn add(a, b) { a + b }" (depth 0)
+#     #5 exec-1 judge.feedback → self.feedback delivered
+#     #6 exec-1 self.feedback emitted text@1 "add a test that exercises it" (depth 1)
+#     #7 exec-1 judge.fail → self.fail delivered
+#     #8 exec-1 self.fail emitted text@1 "fn add(a, b) { a + b }" (depth 1)
+#   regulus send exec-1 ask "fn add(a, b) { a + b } #[test] fn adds() { … }"
+#     … #11 judge.feedback emitted text@1 "has a test" · #12 judge.pass emitted text@1 "…"
+#     … #16 self.pass emitted text@1 "fn add(a, b) { a + b } #[test] fn adds() { … }"
+#
+# Ollama was installed but had no model pulled, so this ran against the fake.
+#
+# A model that answers out of schema is asked once more with the reason (`retries`);
+# then the reason leaves on `error`. A judge is never the only check (§6): wire a
+# deterministic gate before it.
+id = "review"
+name = "Review with a judge"
+main_workflow_id = "review"
+
+[[workflows]]
+id = "review"
+name = "Review"
+kind = "main"
+ports = [
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+  { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+  { id = "feedback", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  # The Ollama template with the fake server's address. For real Ollama: remove base_url.
+  [[workflows.nodes]]
+  id = "model"
+  name = "Local model"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { preset = "ollama", base_url = "http://127.0.0.1:11435/v1", model = "fake-judge" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "judge"
+  name = "Has tests?"
+  type = "judge"
+  module_id = "regulus/judge@0.1.0"
+  position = { x = 300, y = 50 }
+  config = { criteria = "The code comes with at least one test that exercises it.", verdicts = "pass, fail" }
+  ports = [
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+    { id = "feedback", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "model"
+  kind = "uses"
+  from = { node_id = "model", port_id = "endpoint" }
+  to = { node_id = "judge", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "ask"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "judge", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pass"
+  kind = "then"
+  from = { node_id = "judge", port_id = "pass" }
+  to = { node_id = "self", port_id = "pass" }
+
+  [[workflows.wires]]
+  id = "fail"
+  kind = "then"
+  from = { node_id = "judge", port_id = "fail" }
+  to = { node_id = "self", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "feedback"
+  kind = "then"
+  from = { node_id = "judge", port_id = "feedback" }
+  to = { node_id = "self", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "error"
+  kind = "then"
+  from = { node_id = "judge", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
