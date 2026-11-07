@@ -70,3 +70,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   `judge.engine@1`. Módulo `triggers` con Cron, Webhook (`regulus call triggers.webhooks`),
   Evento del bus, Chat con transcript (`triggers.transcript`), Inactividad y Umbral. Ejemplos en
   `crates/modules/judge/examples/judge.toml` y `crates/modules/triggers/examples/triggers.toml`.
+- **Entorno: `workspace` y `tasks`** (`docs/13-blocks.md` §3.3): módulo `workspace` con una
+  carpeta por ejecución con cuota (`quota_exceeded`), motor git worktree (rama propia,
+  `.worktreeinclude`, merge y archivo) o carpeta simple sin git, o el `workspace.engine@1` que
+  se enchufe; cola de merge que solo mergea tras pasar sus gates; artefactos
+  (`regulus call workspace.artifacts`). Módulo `tasks` con cola de tareas persistente con
+  estados y dependencias, Reclamar con lock y lease, y Ledger de hechos, plan y progreso que
+  también se inyecta como hook (`tasks.list`, `tasks.ledger`). Ejemplos en
+  `crates/modules/workspace/examples/worktree.toml` y `crates/modules/tasks/examples/queue.toml`.

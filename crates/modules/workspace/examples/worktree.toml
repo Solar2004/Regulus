@@ -22,7 +22,11 @@
 #     self.merged emitted json@1 {"entry":1,"merged":{"branch":"regulus/exec-1",
 #       "base":"master","commit":"…","committed_changes":true,"id":"exec-1"}}
 #   git -C <home>/data/global/regulus/workspace/worktree/ws/demo-repo log --oneline
-#     … Merge branch 'regulus/exec-1' · … regulus: exec-1 · … regulus: init
+#     fbf3523 regulus: exec-1   (the merge)  · 50f7926 regulus: init
+#     fc1ce57 regulus: exec-1   (the worktree's changes, committed before merging)
+#   git -C …/demo-repo show HEAD:hello.txt          # hello from regulus
+#
+# (Observed 2026-11-07 with `regulus serve --port 0`, debug build.)
 id = "worktree"
 name = "Worktree"
 main_workflow_id = "worktree"

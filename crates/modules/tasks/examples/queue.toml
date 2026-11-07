@@ -23,6 +23,11 @@
 #   regulus send exec-1 read      # self.ledger emitted text@1 "## Plan\n- Set up, …"
 #   regulus call tasks.list '{"execution_id":"exec-1","node_id":"claim"}'
 #   regulus call tasks.ledger '{"execution_id":"exec-1","node_id":"ledger"}'
+#
+# (Observed 2026-11-07 with `regulus serve --port 0`, debug build: claims setup, build,
+# t3 in that order; self.drained {"todo":0,"claimed":0,"done":3,"failed":0,"blocked":0};
+# self.ledger "## Plan\n- Set up, then build; …\n\n## Progress\n- Set up [done]: ok\n
+# - Build [done]: built\n- Write the docs [done]: written".)
 id = "queue"
 name = "Task queue"
 main_workflow_id = "queue"
