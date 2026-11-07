@@ -139,7 +139,14 @@ de arriba:
 - Eventos neutros: `pre_tool`, `post_tool`, `stop`, `session_start`, `prompt`,
   `pre_compact`. El matcher son nombres exactos con `|`, solo en eventos de herramienta.
 - El puente lleva `--hook <nodo>`: una entrada por hook en la config del CLI, con su
-  matcher y su tiempo.
+  matcher y su tiempo, y `--returns`: una respuesta que el hook no declaró se descarta.
+- **Falla abierto: si el hook no contesta, el agente sigue.** Tarde, con error, con una
+  respuesta no declarada o con el core caído cuentan como "nada". Un hook puede pedir
+  `fail = closed` (campo opcional de `hook@1`; el nodo `rule` lo tiene): entonces
+  cualquiera de esos casos es un veto que dice por qué.
+- Límites en `[hooks]`: `timeout_ms` (10 s), `max_timeout_ms` (600 s; el tiempo que pida
+  una petición queda entre 1 ms y este) y `max_in_flight` (4 peticiones sin contestar por
+  nodo hook; con más, se salta el nodo y se dice).
 - opencode no lo soporta todavía (aviso al arrancar); ver `12-agents.md` §3.1.
 - Primer módulo: `hooks`, nodo `rule` (veto o contexto fijos). Ejemplo en
   `crates/modules/hooks/examples/guarded.toml`.

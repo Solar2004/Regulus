@@ -89,13 +89,22 @@ comando del puente en nombre de la caja,
 puente falla al arrancar una caja con hooks.
 
 El motor los escribe como las skills: **solo en perfil aislado**, quitando lo de la vez
-anterior; en el del usuario no escribe nada y avisa. El puente lee el evento por stdin,
+anterior; en el del usuario no escribe nada y avisa. Sin hooks conectados solo quita una
+clave `hooks` vieja, y un `settings.json` que no entiende es un aviso, no un fallo.
+
+**Si el hook no contesta, el agente sigue** (falla abierto): tarde, con error, con una
+respuesta que no declaró en `returns` o sin core, es "nada". Con `fail = closed` en el
+hook, cualquiera de esos casos es un veto.
+
+**Acoplamiento conocido:** el puente (`regulus-cli`) enlaza `engine-claude` para hablar
+el formato `claude`, igual que enlaza `tools-mcp` para MCP. Un registro de formatos llega
+cuando un segundo motor tenga hooks. El puente lee el evento por stdin,
 pregunta al core (`hook.dispatch`, que reenvía `node/hook` a los nodos conectados con su
 tiempo límite) y responde como el CLI lee los hooks.
 
 | Motor | Hooks |
 |---|---|
-| Claude Code | Regulus es dueño de la clave `hooks` del `settings.json` del perfil aislado (el que lee con `settingSources: ["user"]`). Eventos: `pre_tool` → `PreToolUse`, `post_tool` → `PostToolUse`, `stop` → `Stop`, `session_start` → `SessionStart`, `prompt` → `UserPromptSubmit`, `pre_compact` → `PreCompact`; uno desconocido queda fuera con aviso. Matcher solo en herramientas y solo en su forma literal (`Bash\|Write`); si no, Claude pregunta por todas y decide el nodo. `timeout` = el del hook + 1 s. Puente: veto → exit 2 con el motivo en stderr; contexto → `hookSpecificOutput.additionalContext` (en `PreCompact`, stdout plano: instrucciones del resumen); nada → exit 0; core inalcanzable → exit 1 (error no bloqueante). Un veto en `post_tool` o `session_start` no para nada (Claude solo lo muestra): aviso al arrancar. Esquema: https://code.claude.com/docs/en/hooks |
+| Claude Code | Regulus es dueño de la clave `hooks` del `settings.json` del perfil aislado (el que lee con `settingSources: ["user"]`). Eventos: `pre_tool` → `PreToolUse`, `post_tool` → `PostToolUse`, `stop` → `Stop`, `session_start` → `SessionStart`, `prompt` → `UserPromptSubmit`, `pre_compact` → `PreCompact`; uno desconocido queda fuera con aviso. Matcher solo en herramientas: los nombres se recortan y se unen con `\|` (`Bash \| Write` → `Bash\|Write`); un nombre que Claude leería como regex (con `.`, `*`…) se queda sin matcher, con aviso, y filtra el nodo. `timeout` = el del hook + 1 s. Puente: veto → exit 2 con el motivo en stderr; contexto → `hookSpecificOutput.additionalContext` (en `PreCompact`, stdout plano: instrucciones del resumen); nada → exit 0; core inalcanzable → exit 1 (error no bloqueante). Un veto en `post_tool` o `session_start` no para nada (Claude solo lo muestra): aviso al arrancar. Contexto en `stop` hace que Claude siga trabajando ("Stop hook feedback"): también avisa. `settings.json` se escribe entero y se renombra encima. Esquema: https://code.claude.com/docs/en/hooks |
 | opencode | **No soportado**, aviso al arrancar. No tiene config de hooks, solo plugins en JS. Su API (`@opencode-ai/plugin` 1.17.18, leída en local) trae `tool.execute.before`/`after`, `chat.message`, `experimental.chat.system.transform` y `experimental.session.compacting`, pero nada que equivalga a `Stop` (seguir trabajando), el veto no está documentado (lanzar un error, por verificar) y el contexto va por hooks `experimental`. Hace falta un plugin puente, no un fichero. https://opencode.ai/docs/plugins no trae la referencia de hooks |
 
 **Probado en vivo (2026-11-07)** con `claude` 2.1.319 de `~/.local/bin`, perfil aislado y
