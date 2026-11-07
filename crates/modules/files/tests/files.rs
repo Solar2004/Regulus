@@ -185,3 +185,122 @@ fn read_sends_each_globbed_file_and_write_lands_in_the_node_dir() {
     assert!(last.starts_with(&data), "{last:?} is under the node dir");
     assert_eq!(fs::read_to_string(&last).unwrap(), "spec b", "overwritten");
 }
+
+/// The errors of deliveries that failed in `id`.
+fn failures(core: &Core, id: &str) -> Vec<String> {
+    page(core, id)
+        .events
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            BusEventKind::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A workflow `go` → `read` (path from the value) and `put` → `write`, both at `base`.
+fn reader_and_writer(base: &Path, read: Value, write: Value) -> Profile {
+    let port = |id: &str, capability: &str, direction: &str| json!({ "id": id, "capability": capability, "direction": direction, "kind": "then" });
+    let mut read_config = json!({ "dir": base });
+    read_config
+        .as_object_mut()
+        .unwrap()
+        .extend(read.as_object().unwrap().clone());
+    let mut write_config = json!({ "dir": base });
+    write_config
+        .as_object_mut()
+        .unwrap()
+        .extend(write.as_object().unwrap().clone());
+    let wire = |id: &str, from: (&str, &str), to: (&str, &str)| {
+        json!({ "id": id, "kind": "then",
+                "from": { "node_id": from.0, "port_id": from.1 },
+                "to": { "node_id": to.0, "port_id": to.1 } })
+    };
+    serde_json::from_value(json!({
+        "id": "p", "main_workflow_id": "main",
+        "workflows": [{ "id": "main", "kind": "main",
+            "ports": [port("go", "text@1", "input"), port("put", "text@1", "input"),
+                      port("text", "text@1", "output")],
+            "nodes": [
+                { "id": "read", "type": "read", "module_id": "regulus/files@0.1.0",
+                  "config": read_config,
+                  "ports": [port("in", "text@1", "input"), port("out", "text@1", "output")] },
+                { "id": "write", "type": "write", "module_id": "regulus/files@0.1.0",
+                  "config": write_config,
+                  "ports": [port("in", "text@1", "input")] },
+            ],
+            "wires": [
+                wire("1", ("self", "go"), ("read", "in")),
+                wire("2", ("read", "out"), ("self", "text")),
+                wire("3", ("self", "put"), ("write", "in")),
+            ] }]
+    }))
+    .unwrap()
+}
+
+/// Waits for the bus of `id` to go idle.
+fn idle(core: &Core, id: &str) {
+    let deadline = Instant::now() + WAIT;
+    while page(core, id).pending > 0 {
+        assert!(Instant::now() < deadline, "the bus never went idle");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_path_that_comes_as_a_value_stays_inside_the_base_unless_allowed() {
+    let root = temp("boundary");
+    let base = root.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(root.join("secret"), "do not read").unwrap();
+    fs::write(base.join("ok.md"), "fine").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("secret"), base.join("link")).unwrap();
+
+    let profile = reader_and_writer(&base, json!({}), json!({ "path": "../escaped.md" }));
+    let core = core(profile, &root.join("data"));
+    let id = start(&core, "p");
+    let secret = root.join("secret");
+    for path in [
+        json!("ok.md"),
+        json!("../secret"),
+        json!(secret),
+        json!("link"),
+    ] {
+        send(&core, &id, "go", path);
+    }
+    send(&core, &id, "put", json!("out"));
+    idle(&core, &id);
+    let texts: Vec<Value> = page(&core, &id)
+        .events
+        .into_iter()
+        .filter(|e| e.from.node_id == "self" && e.from.port_id == "text")
+        .filter_map(|e| match e.kind {
+            BusEventKind::Emitted { value } => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, [json!("fine")], "nothing outside was read");
+    let refused = failures(&core, &id);
+    let outside = refused
+        .iter()
+        .filter(|e| e.contains("allow_outside"))
+        .count();
+    assert_eq!(outside, if cfg!(unix) { 4 } else { 3 }, "{refused:?}");
+    assert!(
+        !root.join("escaped.md").exists(),
+        "nothing outside was written"
+    );
+
+    let allowed = reader_and_writer(
+        &base,
+        json!({ "allow_outside": "yes" }),
+        json!({ "path": "../escaped.md", "allow_outside": "yes" }),
+    );
+    let core = self::core(allowed, &root.join("data"));
+    let id = start(&core, "p");
+    send(&core, &id, "go", json!("../secret"));
+    send(&core, &id, "put", json!("out"));
+    assert_eq!(until(&core, &id, "self", "text", 1), [json!("do not read")]);
+    assert_eq!(fs::read_to_string(root.join("escaped.md")).unwrap(), "out");
+}

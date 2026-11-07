@@ -5,6 +5,7 @@
 //! Relative paths resolve against the node's `dir`, or, if it is empty, against the
 //! node's own directory (`ModuleCtx::node_dir`).
 
+mod place;
 mod watch;
 
 use std::fs;
@@ -84,21 +85,33 @@ impl Here<'_> {
         self.files.ctx.emit(&self.me, port, value)
     }
 
-    /// `path` as an absolute path: as is if it is one, else under `dir`, else under the
+    /// The folder relative paths hang from: `dir` if it is absolute, else `dir` under the
     /// node's own directory.
+    fn base(&self) -> Result<PathBuf, ModuleError> {
+        let dir = self.text("dir");
+        let dir = Path::new(dir.trim());
+        if dir.is_absolute() {
+            return Ok(dir.to_path_buf());
+        }
+        Ok(self.files.ctx.node_dir(&self.me)?.join(dir))
+    }
+
+    /// `path` as an absolute path: as is if it is one, else under [`Here::base`]. Not
+    /// bounded: for paths the profile names.
     fn resolve(&self, path: &str) -> Result<PathBuf, ModuleError> {
         let path = Path::new(path.trim());
         if path.is_absolute() {
             return Ok(path.to_path_buf());
         }
-        let dir = self.text("dir");
-        let dir = Path::new(dir.trim());
-        let base = if dir.is_absolute() {
-            dir.to_path_buf()
-        } else {
-            self.files.ctx.node_dir(&self.me)?.join(dir)
-        };
-        Ok(base.join(path))
+        Ok(self.base()?.join(path))
+    }
+
+    /// `path` resolved, if it is under [`Here::base`] or the node has `allow_outside`.
+    fn inside(&self, path: &Path) -> Result<PathBuf, ModuleError> {
+        if self.text("allow_outside") == YES {
+            return Ok(path.to_path_buf());
+        }
+        place::confine(&self.base()?, path)
     }
 
     /// The text of a file, refused if it is larger than `max_bytes` (0: no limit).
@@ -197,8 +210,10 @@ impl Files {
 
 /// `read`: the file, or each file of a glob, on `out`.
 fn read(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
+    // A path from the profile is the user's word; one that came on `in` stays inside.
     let mut path = here.text("path");
-    if path.trim().is_empty() {
+    let from_value = path.trim().is_empty();
+    if from_value {
         path = event.value.as_str().unwrap_or_default().to_string();
     }
     if path.trim().is_empty() {
@@ -207,7 +222,13 @@ fn read(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
             here.me.node_id, event.port
         )));
     }
-    let files = matches(&here.resolve(&path)?)?;
+    let mut files = matches(&here.resolve(&path)?)?;
+    if from_value {
+        files = files
+            .iter()
+            .map(|file| here.inside(file))
+            .collect::<Result<_, _>>()?;
+    }
     let texts = files
         .iter()
         .map(|file| here.read(file))
@@ -225,7 +246,11 @@ fn read(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
 
 /// `write`: the value into the file, then its path on `written`.
 fn write(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
-    let path = here.resolve(&here.text("path"))?;
+    // Writes stay under the base whatever names the path: a link in it cannot send them
+    // out. The base itself is the profile's, so it may be created.
+    let base = here.base()?;
+    fs::create_dir_all(&base).map_err(|e| failed(&base, e))?;
+    let path = here.inside(&here.resolve(&here.text("path"))?)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| failed(parent, e))?;
     }
