@@ -238,6 +238,51 @@ async fn the_bridge_answers_claude_code_and_plain_json() {
             answer,
             json!({ "decision": "veto", "reason": "no Bash here" })
         );
+        // An answer the hook did not declare is dropped and said on stderr.
+        let undeclared = claude("veto", "pre_tool", PRE_TOOL);
+        assert_eq!(undeclared.status.code(), Some(2));
+        let undeclared = bridge(
+            &served,
+            &[
+                "--hook",
+                "veto",
+                "--event",
+                "pre_tool",
+                "--returns",
+                "context",
+                "--format",
+                "claude",
+            ],
+            PRE_TOOL,
+        );
+        assert_eq!(undeclared.status.code(), Some(0));
+        assert!(
+            text(&undeclared.stderr).contains("does not declare"),
+            "{}",
+            text(&undeclared.stderr)
+        );
+        // Fail closed: no answer in time is a veto that says why.
+        let closed = bridge(
+            &served,
+            &[
+                "--hook",
+                "slow",
+                "--event",
+                "pre_tool",
+                "--timeout-ms",
+                "100",
+                "--fail",
+                "closed",
+                "--format",
+                "claude",
+            ],
+            PRE_TOOL,
+        );
+        assert_eq!(closed.status.code(), Some(2));
+        assert_eq!(
+            text(&closed.stderr),
+            "hook `slow` gave no answer, so no: no answer within 100 ms"
+        );
         // No such execution: a non-blocking error, never a veto.
         let gone = Served {
             home: served.home.clone(),
@@ -253,6 +298,15 @@ async fn the_bridge_answers_claude_code_and_plain_json() {
             text(&lost.stderr).contains("regulus hook:"),
             "{}",
             text(&lost.stderr)
+        );
+        let closed = [
+            "--event", "pre_tool", "--fail", "closed", "--format", "claude",
+        ];
+        let lost = bridge(&gone, &closed, PRE_TOOL);
+        assert_eq!(
+            lost.status.code(),
+            Some(2),
+            "fail closed holds without an answer"
         );
     })
     .await;

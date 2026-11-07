@@ -53,6 +53,33 @@ pub enum HookEffect {
     Context,
 }
 
+impl HookEffect {
+    /// Its name in JSON.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Veto => "veto",
+            Self::Context => "context",
+        }
+    }
+}
+
+/// What the agent does when a hook does not answer: in time, at all, or with an answer
+/// it declared. `open` (the default) goes on as if there were no hook; `closed` treats it
+/// as a veto, for a rule that must hold even when whatever decides it is down.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookFailure {
+    #[default]
+    Open,
+    Closed,
+}
+
+impl HookFailure {
+    pub fn is_open(&self) -> bool {
+        *self == Self::Open
+    }
+}
+
 /// A hook as it describes itself to the node it is wired into.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hook {
@@ -69,6 +96,9 @@ pub struct Hook {
     /// that event. Empty: unknown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub returns: Vec<HookEffect>,
+    /// What a missing answer means. Optional, so it extends `@1`.
+    #[serde(default, skip_serializing_if = "HookFailure::is_open")]
+    pub fail: HookFailure,
 }
 
 /// What the engine reported, normalized just enough to decide on without knowing the
@@ -111,6 +141,15 @@ pub enum HookAnswer {
 }
 
 impl HookAnswer {
+    /// The effect this answer has, if any.
+    pub fn effect(&self) -> Option<HookEffect> {
+        match self {
+            Self::Nothing => None,
+            Self::Veto { .. } => Some(HookEffect::Veto),
+            Self::Context { .. } => Some(HookEffect::Context),
+        }
+    }
+
     /// A module's answer: `null` is nothing.
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         if value.is_null() {
@@ -130,9 +169,14 @@ pub struct HookDispatchParams {
     /// Only this hook node, which must be wired into `node_id`. None: all of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_id: Option<String>,
-    /// How long each hook may take. None: `[hooks] timeout_ms`.
+    /// How long each hook may take. None: `[hooks] timeout_ms`. The core keeps it
+    /// between 1 ms and `[hooks] max_timeout_ms`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// What the hooks asked declared they may answer (`Hook::returns`). An answer outside
+    /// it counts as no answer, with the reason. Empty: anything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returns: Vec<HookEffect>,
     pub request: HookRequest,
 }
 

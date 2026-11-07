@@ -157,7 +157,8 @@ fn hooks_wired_into_the_box_land_in_the_isolated_profile() {
         pre["hooks"][0]["command"],
         format!(
             "'/usr/bin/regulus' '--home' '/h' 'hook' '--execution' '{id}' '--node' 'agent' \
-             '--hook' 'no-bash' '--event' 'pre_tool' '--timeout-ms' '3000' '--format' 'claude'"
+             '--hook' 'no-bash' '--event' 'pre_tool' '--timeout-ms' '3000' '--returns' 'veto' \
+             '--format' 'claude'"
         )
     );
     let start = &settings["hooks"]["SessionStart"][0]["hooks"][0]["command"];

@@ -5,8 +5,8 @@
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError};
 use regulus_proto::{
-    hook_event, matches_tool, method, Hook, HookAnswer, HookEffect, HookRequest, Manifest,
-    NodeCall, HOOK_DESCRIBE,
+    hook_event, matches_tool, method, Hook, HookAnswer, HookEffect, HookFailure, HookRequest,
+    Manifest, NodeCall, HOOK_DESCRIBE,
 };
 use serde_json::Value;
 
@@ -32,6 +32,7 @@ struct Rule {
     matcher: Option<String>,
     answer: HookAnswer,
     timeout_ms: Option<u64>,
+    fail: HookFailure,
 }
 
 impl Hooks {
@@ -66,11 +67,21 @@ impl Hooks {
             .setting(&call.node, "timeout_ms")
             .and_then(Value::as_u64)
             .filter(|ms| *ms > 0);
+        let fail = match text("fail").as_deref() {
+            None => HookFailure::Open,
+            Some(fail) => serde_json::from_value(Value::String(fail.into())).map_err(|_| {
+                ModuleError::InvalidParams(format!(
+                    "rule `{}`: `fail` is open or closed, not `{fail}`",
+                    call.node.id
+                ))
+            })?,
+        };
         Ok(Rule {
             event,
             matcher: text("matcher"),
             answer,
             timeout_ms,
+            fail,
         })
     }
 
@@ -87,6 +98,7 @@ impl Hooks {
             event: rule.event,
             timeout_ms: rule.timeout_ms,
             returns,
+            fail: rule.fail,
         })
     }
 
@@ -191,6 +203,15 @@ mod tests {
             call(HOOK_DESCRIBE, rule, Value::Null),
             json!({ "event": "session_start", "timeout_ms": 500, "returns": ["context"] })
         );
+        let closed = call(
+            HOOK_DESCRIBE,
+            json!({ "deny": "yes", "fail": "closed" }),
+            Value::Null,
+        );
+        assert_eq!(closed["fail"], "closed");
+        let node = json!({ "id": "r", "type": "rule", "config": { "fail": "maybe" } });
+        let bad = Hooks::new().call(HOOK_DESCRIBE, json!({ "execution_id": "e", "node": node }));
+        assert!(bad.is_err());
         assert_eq!(
             ask(json!({}), "pre_tool", Some("Bash")),
             json!({ "decision": "none" })

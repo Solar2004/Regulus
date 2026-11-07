@@ -174,6 +174,8 @@ pub struct Core {
     bus: BusConfig,
     call: CallConfig,
     hooks: HooksConfig,
+    /// Unanswered `node/hook` requests per hook node (`[hooks] max_in_flight`).
+    hooks_in_flight: Mutex<HashMap<NodeRef, usize>>,
     /// Lock order: `executions` before `journal`, never the other way round.
     executions: Mutex<Vec<Live>>,
     journal: Mutex<Journal>,
@@ -263,6 +265,7 @@ impl Core {
             bus,
             call,
             hooks,
+            hooks_in_flight: Mutex::default(),
             next_execution: AtomicU64::new(next_execution),
             recovering: Mutex::new(recovering),
         })
@@ -1045,25 +1048,38 @@ impl Core {
                 params.node_id
             )));
         }
-        let limit =
-            std::time::Duration::from_millis(params.timeout_ms.unwrap_or(self.hooks.timeout_ms));
+        let limit = params
+            .timeout_ms
+            .unwrap_or(self.hooks.timeout_ms)
+            .clamp(1, self.hooks.max_timeout_ms.max(1));
+        let limit = std::time::Duration::from_millis(limit);
         let request = json(&params.request)?;
         let (sender, answers) = std::sync::mpsc::channel();
         let mut got: Vec<Option<Result<Value, ModuleError>>> =
             targets.iter().map(|_| None).collect();
         for (index, target) in targets.iter().enumerate() {
+            if let Err(busy) = self.hook_enter(&target.node) {
+                got[index] = Some(Err(busy));
+                continue;
+            }
             let (core, tx, target) = (self.me.clone(), sender.clone(), target.clone());
             let request = request.clone();
+            let node = target.node.clone();
             let spawned = std::thread::Builder::new()
                 .name(HOOK_THREAD.into())
                 .spawn(move || {
                     let answer = match core.upgrade() {
-                        Some(core) => core.call_node(&target, method::NODE_HOOK, request),
+                        Some(core) => {
+                            let answer = core.call_node(&target, method::NODE_HOOK, request);
+                            core.hook_leave(&target.node);
+                            answer
+                        }
                         None => Err(ModuleError::Failed("the core is not running".into())),
                     };
                     let _ = tx.send((index, answer));
                 });
             if let Err(error) = spawned {
+                self.hook_leave(&node);
                 got[index] = Some(Err(ModuleError::Failed(error.to_string())));
             }
         }
@@ -1087,7 +1103,22 @@ impl Core {
                     ),
                     Some(Err(error)) => (HookAnswer::Nothing, Some(error.to_string())),
                     Some(Ok(value)) => match HookAnswer::from_value(value) {
-                        Ok(answer) => (answer, None),
+                        Ok(answer) => match answer
+                            .effect()
+                            .filter(|e| !params.returns.is_empty() && !params.returns.contains(e))
+                        {
+                            None => (answer, None),
+                            Some(undeclared) => {
+                                let declared: Vec<&str> =
+                                    params.returns.iter().map(|e| e.name()).collect();
+                                let error = format!(
+                                    "answered `{}`, which it does not declare ({}): dropped",
+                                    undeclared.name(),
+                                    declared.join(", ")
+                                );
+                                (HookAnswer::Nothing, Some(error))
+                            }
+                        },
                         Err(error) => (HookAnswer::Nothing, Some(format!("bad answer: {error}"))),
                     },
                 };
@@ -1099,6 +1130,37 @@ impl Core {
             })
             .collect();
         Ok(HookDispatched { replies })
+    }
+
+    /// Counts one more request in flight to a hook node, unless it is at
+    /// `[hooks] max_in_flight`.
+    fn hook_enter(&self, node: &NodeRef) -> Result<(), ModuleError> {
+        let mut in_flight = self
+            .hooks_in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = in_flight.entry(node.clone()).or_default();
+        let max = self.hooks.max_in_flight;
+        if max > 0 && *count >= max {
+            return Err(ModuleError::Failed(format!(
+                "skipped: {max} requests to it are still unanswered"
+            )));
+        }
+        *count += 1;
+        Ok(())
+    }
+
+    fn hook_leave(&self, node: &NodeRef) {
+        let mut in_flight = self
+            .hooks_in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = in_flight.get_mut(node) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                in_flight.remove(node);
+            }
+        }
     }
 
     // --- child executions -----------------------------------------------------------

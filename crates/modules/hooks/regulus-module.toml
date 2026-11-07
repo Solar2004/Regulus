@@ -51,6 +51,13 @@ name = "Rule"
   type    = "text"
   default = ""
 
+  # open: if the rule does not answer, the agent goes on. closed: it is a veto.
+  [[node.field]]
+  id      = "fail"
+  type    = "select"
+  default = "open"
+  options = ["open", "closed"]
+
   # Milliseconds the core waits for this rule. 0: the core's `[hooks] timeout_ms`.
   [[node.field]]
   id      = "timeout_ms"

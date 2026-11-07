@@ -229,7 +229,10 @@ fn every_hook_wired_in_is_asked_and_one_out_of_time_counts_as_no_answer() {
 
 #[test]
 fn one_hook_can_be_asked_alone_and_the_default_limit_comes_from_config() {
-    let core = core(HooksConfig { timeout_ms: 50 });
+    let core = core(HooksConfig {
+        timeout_ms: 50,
+        ..HooksConfig::default()
+    });
     let id = start(&core);
     let only = |hook: &str| {
         dispatch(
@@ -305,4 +308,85 @@ fn the_default_limit_is_read_from_the_config_file() {
         1234
     );
     std::fs::remove_dir_all(&home).unwrap();
+}
+
+fn reply_error(got: &HookDispatched) -> String {
+    got.replies[0].error.clone().unwrap_or_default()
+}
+
+#[test]
+fn a_hook_that_hangs_holds_at_most_max_in_flight_threads() {
+    let core = core(HooksConfig {
+        max_in_flight: 2,
+        ..HooksConfig::default()
+    });
+    let id = start(&core);
+    let slow = json!({ "execution_id": id, "node_id": "agent", "hook_id": "slow",
+                       "timeout_ms": 20, "request": request() });
+    for _ in 0..2 {
+        assert!(reply_error(&dispatch(&core, slow.clone())).contains("no answer within 20 ms"));
+    }
+    let third = dispatch(&core, slow);
+    assert_eq!(third.replies[0].answer, regulus_proto::HookAnswer::Nothing);
+    assert!(
+        reply_error(&third).contains("2 requests to it are still unanswered"),
+        "{third:?}"
+    );
+    // Other hooks of the same agent are not held by it.
+    let veto = dispatch(
+        &core,
+        json!({ "execution_id": id, "node_id": "agent", "hook_id": "veto", "request": request() }),
+    );
+    assert_eq!(veto.replies[0].error, None);
+}
+
+#[test]
+fn time_limits_are_kept_between_one_ms_and_the_configured_most() {
+    let core = core(HooksConfig {
+        max_timeout_ms: 100,
+        max_in_flight: 0,
+        ..HooksConfig::default()
+    });
+    let id = start(&core);
+    let ask = |timeout: u64| {
+        dispatch(
+            &core,
+            json!({ "execution_id": id, "node_id": "agent", "hook_id": "slow",
+                    "timeout_ms": timeout, "request": request() }),
+        )
+    };
+    assert!(reply_error(&ask(0)).contains("no answer within 1 ms"));
+    let began = Instant::now();
+    assert!(reply_error(&ask(3_600_000)).contains("no answer within 100 ms"));
+    assert!(began.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn an_answer_the_hook_did_not_declare_is_dropped() {
+    let core = core(HooksConfig::default());
+    let id = start(&core);
+    let ask = |returns: Value| {
+        dispatch(
+            &core,
+            json!({ "execution_id": id, "node_id": "agent", "hook_id": "veto",
+                    "returns": returns, "request": request() }),
+        )
+    };
+    let dropped = ask(json!(["context"]));
+    assert_eq!(
+        dropped.replies[0].answer,
+        regulus_proto::HookAnswer::Nothing
+    );
+    assert_eq!(
+        reply_error(&dropped),
+        "answered `veto`, which it does not declare (context): dropped"
+    );
+    let kept = ask(json!(["veto"]));
+    assert_eq!(
+        kept.combined(),
+        regulus_proto::HookAnswer::Veto {
+            reason: "no Bash".into()
+        }
+    );
+    assert_eq!(ask(json!([])).replies[0].error, None);
 }

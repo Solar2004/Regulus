@@ -336,6 +336,7 @@ mod tests {
                 matcher: matcher.map(String::from),
                 timeout_ms,
                 returns: vec![HookEffect::Veto],
+                fail: Default::default(),
             },
             command: "/opt/it's/regulus".into(),
             args: vec!["--home".into(), "/h".into(), "hook".into()],

@@ -168,11 +168,21 @@ pub struct HooksConfig {
     /// Milliseconds a hook may take to answer; past it, it counts as no answer and the
     /// agent goes on. A hook's own `timeout_ms` overrides it.
     pub timeout_ms: u64,
+    /// The longest a request may ask a hook to take, in milliseconds.
+    pub max_timeout_ms: u64,
+    /// Requests one hook node may have unanswered at once. Each waits on a thread of its
+    /// own, which outlives a hook that hangs; past this, the node is skipped and counts as
+    /// no answer. 0 means no limit.
+    pub max_in_flight: usize,
 }
 
 impl Default for HooksConfig {
     fn default() -> Self {
-        Self { timeout_ms: 10_000 }
+        Self {
+            timeout_ms: 10_000,
+            max_timeout_ms: 600_000,
+            max_in_flight: 4,
+        }
     }
 }
 

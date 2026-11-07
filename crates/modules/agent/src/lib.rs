@@ -25,7 +25,15 @@ const SKILLS_PORT: &str = "skills";
 const TOOLS_PORT: &str = "tools";
 const HOOKS_PORT: &str = "hooks";
 /// The flags of the hook bridge (`regulus hook`) the box fills in for each hook.
-const HOOK_FLAGS: [&str; 5] = ["--execution", "--node", "--hook", "--event", "--timeout-ms"];
+const HOOK_FLAGS: [&str; 7] = [
+    "--execution",
+    "--node",
+    "--hook",
+    "--event",
+    "--timeout-ms",
+    "--returns",
+    "--fail",
+];
 const NAME_FIELD: &str = "name";
 /// What the box says it is to channels.
 const KIND: &str = "agent";
@@ -124,7 +132,7 @@ impl Agent {
                     Value::Null,
                 )?)?;
                 let node = endpoint.node().node_id.clone();
-                let [execution, at, only, event, timeout] = HOOK_FLAGS;
+                let [execution, at, only, event, timeout, returns, fail] = HOOK_FLAGS;
                 let mut args = self.bridge.args.clone();
                 for (flag, value) in [
                     (execution, me.execution_id.as_str()),
@@ -136,6 +144,13 @@ impl Agent {
                 }
                 if let Some(ms) = hook.timeout_ms {
                     args.extend([timeout.to_string(), ms.to_string()]);
+                }
+                if !hook.returns.is_empty() {
+                    let names: Vec<&str> = hook.returns.iter().map(|e| e.name()).collect();
+                    args.extend([returns.to_string(), names.join(",")]);
+                }
+                if !hook.fail.is_open() {
+                    args.extend([fail.to_string(), "closed".to_string()]);
                 }
                 Ok(engine::HookMount {
                     node,

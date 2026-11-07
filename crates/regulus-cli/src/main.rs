@@ -145,6 +145,12 @@ enum Command {
         /// How long the hooks may take. Without it, the core's `[hooks] timeout_ms`.
         #[arg(long)]
         timeout_ms: Option<u64>,
+        /// What the hook declared it may answer (`veto,context`); anything else is dropped.
+        #[arg(long, value_delimiter = ',')]
+        returns: Vec<String>,
+        /// `open`: a hook that does not answer is nothing. `closed`: it is a veto.
+        #[arg(long, default_value = "open")]
+        fail: String,
         /// How stdin and the answer are written: `json` (a `HookRequest` in, the combined
         /// `HookAnswer` out) or the name of an engine's hook protocol (`claude`).
         #[arg(long, default_value = HOOK_JSON)]
@@ -245,6 +251,8 @@ async fn main() -> Result<()> {
             hook,
             event,
             timeout_ms,
+            returns,
+            fail,
             format,
         } => {
             let ask = HookAsk {
@@ -253,6 +261,8 @@ async fn main() -> Result<()> {
                 hook,
                 event,
                 timeout_ms,
+                returns,
+                fail,
             };
             let code = hook_bridge(&client, ask, &format).await;
             std::process::exit(code);
@@ -689,6 +699,8 @@ const HOOK_JSON: &str = "json";
 /// What the hook bridge exits with when it cannot get an answer: a non-blocking error
 /// for Claude Code, which goes on as if there were no hook.
 const HOOK_FAILED: i32 = 1;
+/// What the hook bridge exits with to stop the agent when it has no answer to translate.
+const HOOK_VETO: i32 = 2;
 
 struct HookAsk {
     execution: String,
@@ -696,15 +708,34 @@ struct HookAsk {
     hook: Option<String>,
     event: String,
     timeout_ms: Option<u64>,
+    returns: Vec<String>,
+    fail: String,
 }
 
 /// Reads the event, asks the core and answers in `format`. Returns the exit code.
+///
+/// Fail-open by default: a hook that does not answer in time, fails, answers what it did
+/// not declare, or cannot be reached counts as no answer and the agent goes on. With
+/// `--fail closed` any of those is a veto instead.
 async fn hook_bridge(client: &Client<'_>, ask: HookAsk, format: &str) -> i32 {
-    match hook_answer(client, ask, format).await {
+    let closed = match serde_json::from_value(Value::String(ask.fail.clone())) {
+        Ok(regulus_proto::HookFailure::Closed) => true,
+        Ok(regulus_proto::HookFailure::Open) => false,
+        Err(_) => {
+            eprintln!("regulus hook: unknown --fail `{}` (open, closed)", ask.fail);
+            return HOOK_FAILED;
+        }
+    };
+    match hook_answer(client, ask, format, closed).await {
         Ok((code, stdout, stderr)) => {
             print!("{stdout}");
             eprint!("{stderr}");
             code
+        }
+        Err(error) if closed => {
+            // Not even an answer from the core: closed means the agent does not go on.
+            eprint!("regulus hook: no answer, so no: {error:#}");
+            HOOK_VETO
         }
         Err(error) => {
             eprintln!("regulus hook: {error:#}");
@@ -717,6 +748,7 @@ async fn hook_answer(
     client: &Client<'_>,
     ask: HookAsk,
     format: &str,
+    closed: bool,
 ) -> Result<(i32, String, String)> {
     use regulus_module_engine_claude::hook as claude;
     let mut stdin = String::new();
@@ -745,14 +777,21 @@ async fn hook_answer(
             claude::FORMAT
         ),
     };
+    let returns = ask
+        .returns
+        .iter()
+        .map(|name| serde_json::from_value(Value::String(name.clone())))
+        .collect::<Result<Vec<regulus_proto::HookEffect>, _>>()
+        .context("--returns takes veto, context")?;
     let params = regulus_proto::HookDispatchParams {
         execution_id: ask.execution,
         node_id: ask.node,
         hook_id: ask.hook,
         timeout_ms: ask.timeout_ms,
+        returns,
         request,
     };
-    let got: regulus_proto::HookDispatched = client
+    let mut got: regulus_proto::HookDispatched = client
         .request(method::HOOK_DISPATCH, serde_json::to_value(params)?)
         .await?;
     // Hooks that failed or ran out of time count as no answer; say so where a person
@@ -761,6 +800,15 @@ async fn hook_answer(
     for reply in &got.replies {
         if let Some(error) = &reply.error {
             notes.push_str(&format!("regulus hook: `{}`: {error}\n", reply.node_id));
+        }
+    }
+    if closed {
+        for reply in &mut got.replies {
+            if let Some(error) = &reply.error {
+                reply.answer = regulus_proto::HookAnswer::Veto {
+                    reason: format!("hook `{}` gave no answer, so no: {error}", reply.node_id),
+                };
+            }
         }
     }
     let answer = got.combined();
