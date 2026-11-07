@@ -70,3 +70,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   `judge.engine@1`. Módulo `triggers` con Cron, Webhook (`regulus call triggers.webhooks`),
   Evento del bus, Chat con transcript (`triggers.transcript`), Inactividad y Umbral. Ejemplos en
   `crates/modules/judge/examples/judge.toml` y `crates/modules/triggers/examples/triggers.toml`.
+- Módulo `human` (`docs/13-blocks.md` §3.3): **Aprobación** (`approval`: el valor espera bajo
+  un id, formulario opcional como JSON schema, `merge_fields`, `timeout_ms` con salida
+  `timeout`) y **Revisión** (`review`: el texto se edita antes de seguir). Se decide con
+  `regulus human list|show|answer <id> approve|reject [--field k=v] [--text|--file]` o con un
+  valor en `decide`. Lo pendiente vive en el store y sobrevive a reiniciar el core (también a
+  `kill -9`). Ejemplo en `crates/modules/human/examples/approval.toml`.
+- Módulo `service` (`docs/13-blocks.md` §3.3): un workflow con puertos propios se ofrece a
+  sistemas de fuera. Llaves `rgk_` (`regulus service key new|list|revoke`) guardadas como
+  SHA-256 con ámbito `<proyecto>[/<workflow>]`; políticas (cooldown, ventana, concurrencia,
+  presupuesto) por llave, por workflow y por llave×workflow; log en el store (`regulus service
+  log`); motor intercambiable `service.engine@1` con el HTTP de serie (síncrono y por job).
+  `regulus service expose <workflow>` imprime los nodos. Ejemplo en
+  `crates/modules/service/examples/expose.toml`. Nueva dependencia: `sha2`.
