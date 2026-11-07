@@ -35,7 +35,10 @@ pub use store::{ModuleStore, Store, StoreError, StoredExecution};
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
     let (profiles, mut warnings) = ProfileStore::load(&config.profiles.paths);
     let store = match Store::open(&config.store_dir(), &config.store) {
-        Ok(store) => Some(Arc::new(store)),
+        Ok(store) => {
+            warnings.extend(store.warnings().iter().cloned());
+            Some(Arc::new(store))
+        }
         Err(error) => {
             warnings.push(format!(
                 "store unavailable, keeping state in memory: {error}"

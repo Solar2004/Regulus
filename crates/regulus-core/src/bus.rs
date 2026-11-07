@@ -59,12 +59,7 @@ impl Journal {
     /// `seq` goes on from the highest the store keeps, so cursors stay valid across
     /// restarts.
     pub fn new(capacity: usize, store: Option<Arc<Store>>) -> Self {
-        let next_seq = store.as_ref().map_or(1, |store| {
-            store.next_seq().unwrap_or_else(|e| {
-                eprintln!("regulus: store: {e}");
-                1
-            })
-        });
+        let next_seq = store.as_ref().map_or(1, |store| store.first_seq());
         Self {
             events: VecDeque::new(),
             next_seq,

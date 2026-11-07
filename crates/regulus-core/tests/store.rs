@@ -366,7 +366,7 @@ fn a_busy_database_does_not_hold_up_the_bus() {
         1,
         "written once free"
     );
-    assert_eq!(store.next_seq().unwrap(), 2);
+    assert_eq!(store.first_seq(), 2);
 }
 
 #[test]
@@ -419,4 +419,20 @@ fn pages_behind_memory_come_from_the_store_without_gaps_and_the_cursor_moves() {
     // Nothing matches: the cursor still moves past what was looked at.
     assert_eq!(page(json!({ "execution_id": "nope" }), 0), (vec![], 4));
     assert_eq!(page(json!({ "project_id": "other" }), 1), (vec![], 4));
+}
+
+#[test]
+fn a_store_that_cannot_open_leaves_the_core_in_memory() {
+    let home = temp_home("unavailable");
+    drop(Store::open(&home.join("store"), &StoreConfig::default()).unwrap());
+    let raw = rusqlite::Connection::open(home.join("store/global.db")).unwrap();
+    raw.execute_batch("DROP TABLE executions").unwrap();
+    drop(raw);
+    let config = regulus_core::Config::load(&home).unwrap();
+    let (core, warnings) = regulus_core::assemble(&config, Vec::new());
+    assert!(
+        warnings.iter().any(|w| w.starts_with("store unavailable")),
+        "{warnings:?}"
+    );
+    assert_eq!(list(&core).len(), 0);
 }

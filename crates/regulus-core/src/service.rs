@@ -177,17 +177,7 @@ impl Core {
         // Numbers go on from the last run; what it left running waits for `recover`.
         let (next_execution, recovering) = match &storage.store {
             None => (1, Vec::new()),
-            Some(store) => {
-                let next = store.next_execution().unwrap_or_else(|e| {
-                    eprintln!("regulus: store: {e}");
-                    1
-                });
-                let unfinished = store.unfinished().unwrap_or_else(|e| {
-                    eprintln!("regulus: store: {e}");
-                    Vec::new()
-                });
-                (next, unfinished)
-            }
+            Some(store) => (store.first_execution(), store.left_running()),
         };
         let journal = Journal::new(bus.history, storage.store.clone());
         Arc::new_cyclic(|core| Self {

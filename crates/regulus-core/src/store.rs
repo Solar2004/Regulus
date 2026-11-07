@@ -375,6 +375,12 @@ pub struct Store {
     dbs: Arc<Databases>,
     writer: Mutex<Option<Sender<Write>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// Read on open: the numbers to go on from and what the last core left running.
+    first_execution: u64,
+    first_seq: u64,
+    left_running: Vec<StoredExecution>,
+    /// What open skipped: project databases it could not open, rows it could not read.
+    warnings: Vec<String>,
 }
 
 impl Databases {
@@ -568,23 +574,35 @@ impl Databases {
         Ok(highest + 1)
     }
 
+    /// The executions `filter` selects, by number, and a line for each row that could
+    /// not be read (an unknown status, broken JSON): those are skipped, not fatal.
     fn select_executions(
         &self,
         project: Option<&str>,
         filter: &str,
-    ) -> Result<Vec<StoredExecution>, StoreError> {
+    ) -> Result<(Vec<StoredExecution>, Vec<String>), StoreError> {
         let sql = format!("SELECT {EXECUTION_COLUMNS} FROM executions {filter} ORDER BY number");
-        let mut all = Vec::new();
+        let (mut all, mut skipped) = (Vec::new(), Vec::new());
         for db in self.reached_by(project) {
             let rows = db.with(|conn| {
                 conn.prepare_cached(&sql)?
-                    .query_map([], stored_execution)?
+                    .query_map([], |row| {
+                        Ok(stored_execution(row).map_err(|e| {
+                            let id: String = row.get(1).unwrap_or_default();
+                            format!("{}: skipping execution `{id}`: {e}", db.path.display())
+                        }))
+                    })?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })?;
-            all.extend(rows);
+            for row in rows {
+                match row {
+                    Ok(execution) => all.push(execution),
+                    Err(line) => skipped.push(line),
+                }
+            }
         }
         all.sort_by_key(|e| e.number);
-        Ok(all)
+        Ok((all, skipped))
     }
 }
 
@@ -593,6 +611,7 @@ impl Store {
     /// migrates them all and starts the writer thread.
     pub fn open(dir: &Path, config: &StoreConfig) -> Result<Self, StoreError> {
         let global = Arc::new(Db::open(&dir.join(GLOBAL_FILE), config)?);
+        let mut warnings = Vec::new();
         let mut projects = BTreeMap::new();
         let projects_dir = dir.join(PROJECTS_DIR);
         if let Ok(entries) = fs::read_dir(&projects_dir) {
@@ -603,7 +622,13 @@ impl Store {
                 let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                projects.insert(id.to_string(), Arc::new(Db::open(&path, config)?));
+                // One broken project must not take the others down: it is skipped.
+                match Db::open(&path, config) {
+                    Ok(db) => {
+                        projects.insert(id.to_string(), Arc::new(db));
+                    }
+                    Err(error) => warnings.push(format!("store: skipping project `{id}`: {error}")),
+                }
             }
         }
         let dbs = Arc::new(Databases {
@@ -612,6 +637,16 @@ impl Store {
             global,
             projects: Mutex::new(projects),
         });
+        // Without numbers to go on from, ids and cursors would repeat: no store then.
+        let first_execution = dbs.next_after("SELECT COALESCE(MAX(number), 0) FROM executions")?;
+        let first_seq = dbs.next_after("SELECT COALESCE(MAX(seq), 0) FROM events")?;
+        let (starting, _) = status_of(&ExecutionState::Starting);
+        let (running, _) = status_of(&ExecutionState::Running);
+        let (left_running, skipped) = dbs.select_executions(
+            None,
+            &format!("WHERE status IN ('{starting}', '{running}')"),
+        )?;
+        warnings.extend(skipped);
         let (sender, queue) = mpsc::channel::<Write>();
         let writing = dbs.clone();
         let thread = std::thread::Builder::new()
@@ -629,7 +664,31 @@ impl Store {
             dbs,
             writer: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
+            first_execution,
+            first_seq,
+            left_running,
+            warnings,
         })
+    }
+
+    /// What open skipped, one line each.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The number for the first execution of this core: one past the highest stored.
+    pub fn first_execution(&self) -> u64 {
+        self.first_execution
+    }
+
+    /// The `seq` for the first bus event of this core: one past the highest stored.
+    pub fn first_seq(&self) -> u64 {
+        self.first_seq
+    }
+
+    /// The executions the last core left starting or running, by number.
+    pub fn left_running(&self) -> Vec<StoredExecution> {
+        self.left_running.clone()
     }
 
     fn send(&self, write: Write) -> Result<(), StoreError> {
@@ -672,12 +731,6 @@ impl Store {
         self.dbs.config.resume
     }
 
-    /// The number for the next execution: one past the highest in any database.
-    pub fn next_execution(&self) -> Result<u64, StoreError> {
-        self.dbs
-            .next_after("SELECT COALESCE(MAX(number), 0) FROM executions")
-    }
-
     /// Queues a new execution with the workflow copy it runs.
     pub fn insert_execution(
         &self,
@@ -704,19 +757,14 @@ impl Store {
         })
     }
 
-    /// Every execution in the databases `project` reaches, by number.
+    /// Every execution in the databases `project` reaches, by number. Rows that cannot
+    /// be read are reported and left out.
     pub fn executions(&self, project: Option<&str>) -> Result<Vec<StoredExecution>, StoreError> {
-        self.dbs.select_executions(project, "")
-    }
-
-    /// The executions left starting or running, by number.
-    pub fn unfinished(&self) -> Result<Vec<StoredExecution>, StoreError> {
-        let (starting, _) = status_of(&ExecutionState::Starting);
-        let (running, _) = status_of(&ExecutionState::Running);
-        self.dbs.select_executions(
-            None,
-            &format!("WHERE status IN ('{starting}', '{running}')"),
-        )
+        let (executions, skipped) = self.dbs.select_executions(project, "")?;
+        for line in skipped {
+            eprintln!("regulus: {line}");
+        }
+        Ok(executions)
     }
 
     pub fn execution(&self, id: &str) -> Result<Option<StoredExecution>, StoreError> {
@@ -779,12 +827,6 @@ impl Store {
                     .map_err(|e| StoreError::Data(format!("checkpoint of `{execution_id}`: {e}")))
             })
             .collect()
-    }
-
-    /// The `seq` for the next bus event: one past the highest kept in any database.
-    pub fn next_seq(&self) -> Result<u64, StoreError> {
-        self.dbs
-            .next_after("SELECT COALESCE(MAX(seq), 0) FROM events")
     }
 
     /// Queues a bus event for its project's database; past `2 × max_events` there, the
@@ -1042,7 +1084,7 @@ mod tests {
     fn executions_round_trip_and_number_on_across_databases() {
         let dir = temp_dir("executions");
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
-        assert_eq!(store.next_execution().unwrap(), 1);
+        assert_eq!(store.first_execution(), 1);
         let mut one = execution("exec-1", None, ExecutionState::Running);
         store.insert_execution(1, &one, &workflow()).unwrap();
         let two = execution("exec-2", Some("proj"), ExecutionState::Starting);
@@ -1054,7 +1096,7 @@ mod tests {
         drop(store);
 
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
-        assert_eq!(store.next_execution().unwrap(), 3);
+        assert_eq!(store.first_execution(), 3);
         let all: Vec<Execution> = store
             .executions(None)
             .unwrap()
@@ -1064,7 +1106,7 @@ mod tests {
         assert_eq!(all, [one, two.clone()]);
         let in_project = store.executions(Some("proj")).unwrap();
         assert_eq!(in_project.len(), 1);
-        let unfinished = store.unfinished().unwrap();
+        let unfinished = store.left_running();
         assert_eq!(unfinished.len(), 1);
         assert_eq!(unfinished[0].execution, two);
         assert_eq!(unfinished[0].workflow, workflow());
@@ -1127,7 +1169,7 @@ mod tests {
     fn bus_events_are_kept_per_database_and_read_back_in_order() {
         let dir = temp_dir("events");
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
-        assert_eq!(store.next_seq().unwrap(), 1);
+        assert_eq!(store.first_seq(), 1);
         let written = [
             event(1, "exec-1", None),
             event(2, "exec-2", Some("p")),
@@ -1139,7 +1181,7 @@ mod tests {
         }
         drop(store);
         let store = Store::open(&dir, &StoreConfig::default()).unwrap();
-        assert_eq!(store.next_seq().unwrap(), 5);
+        assert_eq!(store.first_seq(), 5);
         let all = store
             .events(&EventListParams::default(), u64::MAX, None)
             .unwrap();
@@ -1207,6 +1249,71 @@ mod tests {
             .map(|e| e.seq)
             .collect();
         assert_eq!(left, [4, 5, 6]);
+    }
+
+    #[test]
+    fn unreadable_rows_are_skipped_with_a_warning() {
+        let dir = temp_dir("broken-rows");
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        let good = execution("exec-1", None, ExecutionState::Running);
+        store.insert_execution(1, &good, &workflow()).unwrap();
+        drop(store);
+        let raw = Connection::open(dir.join(GLOBAL_FILE)).unwrap();
+        raw.execute_batch(
+            "INSERT INTO executions (id, number, profile_id, workflow_id, workflow, status,
+                 disabled, started)
+             VALUES ('exec-2', 2, 'p', 'main', '{broken', 'running', '[]', 0),
+                    ('exec-3', 3, 'p', 'main', '{}', 'bogus', '[]', 0)",
+        )
+        .unwrap();
+        drop(raw);
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        let left: Vec<String> = store
+            .left_running()
+            .into_iter()
+            .map(|e| e.execution.id)
+            .collect();
+        assert_eq!(left, ["exec-1"]);
+        assert_eq!(store.warnings().len(), 1, "{:?}", store.warnings());
+        assert!(store.warnings()[0].contains("exec-2"));
+        let listed = store.executions(None).unwrap();
+        assert_eq!(listed.len(), 1, "the bogus status is left out too");
+        assert_eq!(
+            store.first_execution(),
+            4,
+            "broken rows still count for numbering"
+        );
+    }
+
+    #[test]
+    fn a_broken_project_database_is_skipped_not_fatal() {
+        let dir = temp_dir("broken-project");
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        store.db(Some("good")).unwrap();
+        drop(store);
+        fs::write(
+            dir.join(PROJECTS_DIR).join("bad.db"),
+            b"not a database at all",
+        )
+        .unwrap();
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        assert_eq!(store.dbs.all().len(), 2, "global and `good`");
+        assert_eq!(store.warnings().len(), 1);
+        assert!(
+            store.warnings()[0].contains("`bad`"),
+            "{:?}",
+            store.warnings()
+        );
+    }
+
+    #[test]
+    fn a_store_that_cannot_number_does_not_open() {
+        let dir = temp_dir("no-numbers");
+        drop(Store::open(&dir, &StoreConfig::default()).unwrap());
+        let raw = Connection::open(dir.join(GLOBAL_FILE)).unwrap();
+        raw.execute_batch("DROP TABLE events").unwrap();
+        drop(raw);
+        assert!(Store::open(&dir, &StoreConfig::default()).is_err());
     }
 
     #[test]
