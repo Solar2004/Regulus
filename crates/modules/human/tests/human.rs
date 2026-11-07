@@ -244,3 +244,28 @@ fn a_pending_decision_outlives_a_restart_of_the_core() {
         .unwrap();
     assert_eq!(out(&second, &id, "approved", 1), [json!({ "n": 1 })]);
 }
+
+#[test]
+fn a_deadline_that_passed_while_the_core_was_down_fires_on_resume() {
+    let home = temp_home("downtime");
+    let make = || {
+        profile(
+            "approval",
+            J,
+            json!({ "timeout_ms": 300 }),
+            &["pending", "timeout"],
+        )
+    };
+    let first = core(make(), storage(&home));
+    let id = start(&first);
+    send(&first, &id, "in", json!({ "late": true }));
+    out(&first, &id, "pending", 1);
+    first.shutdown();
+    drop(first);
+    std::thread::sleep(Duration::from_millis(500));
+
+    let second = core(make(), storage(&home));
+    assert_eq!(second.recover(), [format!("{id} resumed (1 checkpoints)")]);
+    assert_eq!(out(&second, &id, "timeout", 1), [json!({ "late": true })]);
+    assert!(list(&second).is_empty());
+}

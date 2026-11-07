@@ -444,7 +444,6 @@ impl Inner {
             execution_id: pending.execution_id.clone(),
             node_id: pending.node_id.clone(),
         };
-        self.persist(&me, &pending, false);
         let merge = self.text(&node, "merge_fields") == YES;
         let (port, value) = match (pending.kind.as_str(), answer.decision) {
             (REVIEW, Decision::Approve) => (
@@ -474,7 +473,15 @@ impl Inner {
             (_, Decision::Approve) => (port::APPROVED, pending.value.clone()),
             (_, Decision::Reject) => (port::REJECTED, pending.value.clone()),
         };
-        self.ctx.emit(&me, port, value)?;
+        // The decision is claimed (out of the map, so nobody else takes it) but its row is
+        // deleted only once the value is out: a failed emit leaves it pending.
+        if let Err(error) = self.ctx.emit(&me, port, value) {
+            lock(&self.state)
+                .pending
+                .insert(pending.id.clone(), pending.clone());
+            return Err(error);
+        }
+        self.persist(&me, &pending, false);
         let decision = match answer.decision {
             Decision::Approve => "approve",
             Decision::Reject => "reject",
@@ -491,13 +498,16 @@ impl Inner {
     }
 
     /// Nobody decided in time: the value leaves on `timeout`, or `rejected` without it.
-    fn expire(&self, id: &str) {
+    /// Called early (the clock moved), it waits again for what is left.
+    fn expire(self: &Arc<Self>, id: &str) {
         let (pending, node) = {
             let mut state = lock(&self.state);
             let Some(pending) = state.pending.get(id).cloned() else {
                 return;
             };
             if pending.deadline_ms.is_none_or(|d| d > now_ms()) {
+                drop(state);
+                self.arm(&pending);
                 return;
             }
             let Some(node) = state
@@ -514,14 +524,20 @@ impl Inner {
             execution_id: pending.execution_id.clone(),
             node_id: pending.node_id.clone(),
         };
-        self.persist(&me, &pending, false);
         let port = if node.port(port::TIMEOUT).is_some() {
             port::TIMEOUT
         } else {
             port::REJECTED
         };
-        if let Err(error) = self.ctx.emit(&me, port, pending.value) {
-            eprintln!("regulus: human: `{id}` timed out: {error}");
+        match self.ctx.emit(&me, port, pending.value.clone()) {
+            Ok(()) => self.persist(&me, &pending, false),
+            Err(error) => {
+                // Still pending, row and all: a person can decide it, a restart retries.
+                eprintln!("regulus: human: `{id}` timed out but did not leave: {error}");
+                lock(&self.state)
+                    .pending
+                    .insert(pending.id.clone(), pending);
+            }
         }
     }
 
