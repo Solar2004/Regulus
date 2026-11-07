@@ -49,8 +49,8 @@ const EVENTS: &[(&str, OnEvent)] = &[
 pub struct Flow {
     manifest: Manifest,
     ctx: ModuleCtx,
-    /// The turn each running `loop` is on.
-    loops: Mutex<HashMap<NodeRef, u64>>,
+    /// The run each `loop` has going.
+    loops: Mutex<HashMap<NodeRef, repeat::Run>>,
     /// What each `join` holds until its barrier opens.
     joins: Mutex<HashMap<NodeRef, join::Gate>>,
     /// The values each `wait` holds.
@@ -201,6 +201,7 @@ impl Flow {
         match here.call.node.node_type.as_str() {
             "wait" => wait::start(&here),
             "join" => join::start(&here),
+            "loop" => repeat::start(&here),
             _ => Ok(Value::Null),
         }
     }

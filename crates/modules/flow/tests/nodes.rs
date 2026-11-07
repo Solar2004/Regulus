@@ -469,3 +469,60 @@ fn a_barrier_with_nothing_to_wait_for_does_not_start() {
         .unwrap()
         .contains("barrier needs"));
 }
+
+#[test]
+fn a_loop_has_one_run_that_a_new_start_cuts_and_a_restart_keeps() {
+    let make = || {
+        let ports = vec![
+            port("in", T, "input"),
+            port("back", T, "input"),
+            port("body", T, "output"),
+            port("done", T, "output"),
+            port("exhausted", T, "output"),
+        ];
+        let wires = ["in", "back"]
+            .iter()
+            .map(|p| wire(&format!("self.{p}"), &format!("loop.{p}")))
+            .chain(
+                ["body", "done", "exhausted"]
+                    .iter()
+                    .map(|p| wire(&format!("loop.{p}"), &format!("self.{p}"))),
+            )
+            .collect();
+        profile(
+            ports.clone(),
+            vec![node("loop", "loop", json!({ "max": 3 }), ports)],
+            wires,
+        )
+    };
+    let home = temp_home("loop");
+    let storage = || Storage {
+        store: Some(Arc::new(
+            Store::open(&home.join("store"), &StoreConfig::default()).unwrap(),
+        )),
+        ..Storage::default()
+    };
+    let core = core(make(), storage());
+    let id = start(&core);
+    send(&core, &id, "in", json!("first"));
+    send(&core, &id, "in", json!("second"));
+    assert_eq!(settled(&core, &id, "exhausted"), [json!("first")], "cut");
+    send(&core, &id, "back", json!("turn 2"));
+    settled(&core, &id, "body");
+    core.shutdown();
+    drop(core);
+
+    let core = self::core(make(), storage());
+    assert_eq!(core.recover(), [format!("{id} resumed (1 checkpoints)")]);
+    send(&core, &id, "back", json!("turn 3"));
+    send(&core, &id, "back", json!("over"));
+    assert_eq!(
+        settled(&core, &id, "exhausted").last(),
+        Some(&json!("over"))
+    );
+    assert!(
+        failures(&core, &id).is_empty(),
+        "{:?}",
+        failures(&core, &id)
+    );
+}
