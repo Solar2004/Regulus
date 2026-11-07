@@ -215,3 +215,31 @@ fn the_users_profile_gets_no_hooks_and_a_warning() {
         .unwrap();
     std::fs::remove_dir_all(&profile_dir).unwrap();
 }
+
+#[test]
+fn an_empty_settings_file_only_stops_an_isolated_agent_that_has_hooks() {
+    let profile_dir = dir("empty");
+    std::fs::write(profile_dir.join("settings.json"), "").unwrap();
+    let engine = EngineModule::new(parse_manifest(ENGINE).unwrap(), Fake);
+    let node = json!({ "id": "engine", "type": "engine-fake", "module_id": "test/engine-fake@0.1.0",
+                       "config": { "profile": "isolated", "config_dir": profile_dir } });
+    let start = |hooks: Value| {
+        engine.call(
+            "engine.session.start",
+            json!({ "execution_id": "exec-1", "node": node,
+                    "args": { "cwd": "/tmp", "hooks": hooks } }),
+        )
+    };
+    let started = start(json!([])).unwrap();
+    engine
+        .call(
+            "engine.session.stop",
+            json!({ "execution_id": "exec-1", "node": node,
+                    "args": { "session_id": started["session_id"] } }),
+        )
+        .unwrap();
+    let hook = json!({ "node": "no-bash", "event": "pre_tool", "command": "/usr/bin/regulus" });
+    let error = start(json!([hook])).unwrap_err().to_string();
+    assert!(error.contains("is not a JSON object"), "{error}");
+    std::fs::remove_dir_all(&profile_dir).unwrap();
+}
