@@ -53,3 +53,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   (`scripts/secrets-scan.sh`) e instalador (`scripts/install-hooks.sh`). Reglas en
   `docs/09-git.md`.
 - `.gitignore` y plantilla de mensaje de commit (`.gitmessage`).
+- **Jueces y disparadores** (`docs/13-blocks.md` §3.2): módulo `judge` con Juez, Clasificador,
+  Extractor y Rúbrica en árbol sobre un proveedor `openai` o `anthropic` (Ollama, LM Studio o
+  nube) con schema estricto, reintento y salida `error`; el motor se cambia por cualquier
+  `judge.engine@1`. Módulo `triggers` con Cron, Webhook (`regulus call triggers.webhooks`),
+  Evento del bus, Chat con transcript (`triggers.transcript`), Inactividad y Umbral. Ejemplos en
+  `crates/modules/judge/examples/judge.toml` y `crates/modules/triggers/examples/triggers.toml`.
