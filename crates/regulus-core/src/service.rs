@@ -1,22 +1,25 @@
 //! What the core answers, independent of the transport.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use regulus_proto::{
-    code, method, Direction, DisabledNode, Execution, ExecutionStartParams, ExecutionState,
-    IdParams, NameParams, Node, NodeCall, ProjectFilter, SecretSetParams, WireKind, Workflow,
+    code, method, BusEvent, BusEventKind, Direction, DisabledNode, EventListParams, EventPage,
+    Execution, ExecutionStartParams, ExecutionState, IdParams, NameParams, Node, NodeCall,
+    NodeEvent, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::bus::{self, Journal, Pending};
+use crate::config::BusConfig;
 use crate::graph::{check_profile, start_order};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
-use crate::registry::{CallError, Registry};
+use crate::registry::{base_id, CallError, Registry};
 use crate::secrets::{SecretError, Secrets};
 
 /// JSON-RPC "method not found".
@@ -105,15 +108,24 @@ struct Live {
     /// Nodes that take part: their module is loaded and their required inputs are met.
     /// Wires from any other node lead nowhere.
     active: HashSet<String>,
+    /// Values on their way over "then" wires, delivered in order once the execution runs.
+    queue: VecDeque<Pending>,
+    /// A thread is delivering from `queue`.
+    draining: bool,
 }
 
 /// The base: the module registry, the profiles and the executions. It has no functions of
 /// its own; it only answers about the pieces and routes calls to the modules.
 pub struct Core {
+    /// This core, for the threads that drain the bus.
+    me: Weak<Core>,
     registry: Registry,
     profiles: ProfileStore,
     storage: Storage,
+    bus: BusConfig,
+    /// Lock order: `executions` before `journal`, never the other way round.
     executions: Mutex<Vec<Live>>,
+    journal: Mutex<Journal>,
     next_execution: AtomicU64,
 }
 
@@ -144,11 +156,25 @@ impl Core {
         profiles: ProfileStore,
         storage: Storage,
     ) -> Arc<Self> {
+        Self::build_with_bus(modules, without, profiles, storage, BusConfig::default())
+    }
+
+    /// [`Core::build_with`] with the settings of the event bus.
+    pub fn build_with_bus(
+        modules: Vec<Box<dyn Module>>,
+        without: &[String],
+        profiles: ProfileStore,
+        storage: Storage,
+        bus: BusConfig,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|core| Self {
+            me: core.clone(),
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
             profiles,
             storage,
             executions: Mutex::default(),
+            journal: Mutex::new(Journal::new(bus.history)),
+            bus,
             next_execution: AtomicU64::new(1),
         })
     }
@@ -213,6 +239,7 @@ impl Core {
                 }
                 Ok(Value::Null)
             }
+            method::EVENT_LIST => json(self.events(&parse(params)?)),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",
@@ -229,6 +256,12 @@ impl Core {
 
     fn executions(&self) -> MutexGuard<'_, Vec<Live>> {
         self.executions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn journal(&self) -> MutexGuard<'_, Journal> {
+        self.journal
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -284,6 +317,8 @@ impl Core {
             workflow: workflow.clone(),
             started: Vec::new(),
             active: HashSet::new(),
+            queue: VecDeque::new(),
+            draining: false,
         });
 
         // Resources (no module) take part as they are; a module node needs its module.
@@ -364,8 +399,12 @@ impl Core {
                 }
             }
         }
-        self.set_state(&id, ExecutionState::Running)
-            .ok_or_else(|| RpcError::invalid_params("Unknown execution"))
+        let running = self
+            .set_state(&id, ExecutionState::Running)
+            .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?;
+        // What the nodes emitted while starting is delivered now that all of them run.
+        self.kick(&id);
+        Ok(running)
     }
 
     /// Stops an execution: `node/stop` on its started nodes, in reverse order. Stopping
@@ -382,6 +421,8 @@ impl Core {
             ) {
                 live.execution.state = ExecutionState::Stopped;
             }
+            // Values still on their way are dropped: their targets are about to stop.
+            live.queue.clear();
             (std::mem::take(&mut live.started), live.workflow.clone())
         };
         for node_ref in started.iter().rev() {
@@ -544,5 +585,289 @@ impl Core {
             Err(CallError::Module(error)) => Err(error),
             Err(error) => Err(ModuleError::Failed(error.to_string())),
         }
+    }
+
+    // --- bus ----------------------------------------------------------------------------
+
+    /// `event.list`: the kept bus events `params` asks for, and how many deliveries are
+    /// still queued for the executions it names.
+    fn events(&self, params: &EventListParams) -> EventPage {
+        let pending = self
+            .executions()
+            .iter()
+            .filter(|live| {
+                params
+                    .execution_id
+                    .as_deref()
+                    .is_none_or(|id| live.execution.id == id)
+                    && params
+                        .project_id
+                        .as_deref()
+                        .is_none_or(|id| live.execution.project_id.as_deref() == Some(id))
+            })
+            .map(|live| live.queue.len() + usize::from(live.draining))
+            .sum();
+        let (events, next) = self.journal().list(params);
+        EventPage {
+            events,
+            next,
+            pending,
+        }
+    }
+
+    /// Puts a value on a "then" output (`ModuleCtx::emit`) and queues it for every input
+    /// wired to that output. A value that cannot reach an input is reported on the bus;
+    /// a chain deeper than `bus.max_depth` is cut and reported.
+    pub(crate) fn emit(
+        &self,
+        module_id: &str,
+        node: &NodeRef,
+        port: &str,
+        value: Value,
+    ) -> Result<(), ModuleError> {
+        let depth = bus::handling_depth(&node.execution_id).map_or(0, |d| d + 1);
+        let mut executions = self.executions();
+        let live = executions
+            .iter_mut()
+            .find(|live| live.execution.id == node.execution_id)
+            .ok_or_else(|| {
+                ModuleError::Failed(format!("execution `{}` is gone", node.execution_id))
+            })?;
+        if !matches!(
+            live.execution.state,
+            ExecutionState::Starting | ExecutionState::Running
+        ) {
+            return Err(ModuleError::Failed(format!(
+                "execution `{}` is not running",
+                node.execution_id
+            )));
+        }
+        let workflow = live.workflow.clone();
+        let owner = workflow
+            .node(&node.node_id)
+            .filter(|n| n.module_id.as_deref().map(base_id) == Some(base_id(module_id)))
+            .ok_or_else(|| {
+                ModuleError::InvalidParams(format!(
+                    "node `{}` does not belong to this module",
+                    node.node_id
+                ))
+            })?;
+        if !live.active.contains(&node.node_id) {
+            return Err(ModuleError::Failed(format!(
+                "node `{}` is not running",
+                node.node_id
+            )));
+        }
+        let output = owner
+            .port(port)
+            .filter(|p| p.direction == Direction::Output && p.kind == WireKind::Then)
+            .ok_or_else(|| {
+                ModuleError::InvalidParams(format!(
+                    "`{port}` is not a \"then\" output of node `{}`",
+                    node.node_id
+                ))
+            })?;
+        let from = PortRef {
+            node_id: node.node_id.clone(),
+            port_id: port.into(),
+        };
+        let head = |kind| BusEvent {
+            seq: 0,
+            at: 0,
+            execution_id: node.execution_id.clone(),
+            project_id: live.execution.project_id.clone(),
+            event: 0,
+            from: from.clone(),
+            capability: output.capability.clone(),
+            depth,
+            kind,
+        };
+
+        let mut journal = self.journal();
+        if depth > self.bus.max_depth {
+            let max_depth = self.bus.max_depth;
+            let seq = journal.record(head(BusEventKind::Cut { max_depth }));
+            eprintln!(
+                "regulus: bus cut a chain in `{}` at `{}.{port}`: more than {max_depth} \
+                 deliveries deep (event #{seq})",
+                node.execution_id, node.node_id
+            );
+            return Ok(());
+        }
+        let event = journal.record(head(BusEventKind::Emitted {
+            value: value.clone(),
+        }));
+        let mut queued = VecDeque::new();
+        for wire in workflow
+            .wires
+            .iter()
+            .filter(|w| w.kind == WireKind::Then && w.from == from)
+        {
+            let input = workflow
+                .node(&wire.to.node_id)
+                .and_then(|n| n.port(&wire.to.port_id))
+                .filter(|p| p.direction == Direction::Input && p.kind == WireKind::Then);
+            let error = match input {
+                None => "no \"then\" input at the other end".to_string(),
+                Some(p) if p.capability != output.capability => {
+                    format!(
+                        "`{}` does not fit into `{}`",
+                        output.capability, p.capability
+                    )
+                }
+                Some(_) => {
+                    queued.push_back(Pending {
+                        event,
+                        depth,
+                        from: from.clone(),
+                        capability: output.capability.clone(),
+                        value: value.clone(),
+                        to: wire.to.clone(),
+                    });
+                    continue;
+                }
+            };
+            journal.record(BusEvent {
+                event,
+                ..head(BusEventKind::Failed {
+                    to: wire.to.clone(),
+                    error,
+                })
+            });
+        }
+        drop(journal);
+        live.queue.append(&mut queued);
+        drop(executions);
+        self.kick(&node.execution_id);
+        Ok(())
+    }
+
+    /// Starts draining the queue of a running execution unless a thread already does.
+    fn kick(&self, execution_id: &str) {
+        {
+            let mut executions = self.executions();
+            let Some(live) = executions
+                .iter_mut()
+                .find(|live| live.execution.id == execution_id)
+            else {
+                return;
+            };
+            if live.execution.state != ExecutionState::Running
+                || live.draining
+                || live.queue.is_empty()
+            {
+                return;
+            }
+            live.draining = true;
+        }
+        let core = self.me.clone();
+        let id = execution_id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name(bus::THREAD_NAME.into())
+            .spawn(move || Self::drain(core, &id));
+        if let Err(error) = spawned {
+            eprintln!("regulus: cannot start the bus of `{execution_id}`: {error}");
+            if let Some(live) = self
+                .executions()
+                .iter_mut()
+                .find(|live| live.execution.id == execution_id)
+            {
+                live.draining = false;
+            }
+        }
+    }
+
+    /// Delivers an execution's queue in order until it is empty or the execution stops.
+    fn drain(core: Weak<Core>, execution_id: &str) {
+        while let Some(core) = core.upgrade() {
+            let Some(next) = core.next_delivery(execution_id) else {
+                return;
+            };
+            core.deliver(execution_id, next);
+        }
+    }
+
+    fn next_delivery(&self, execution_id: &str) -> Option<Pending> {
+        let mut executions = self.executions();
+        let live = executions
+            .iter_mut()
+            .find(|live| live.execution.id == execution_id)?;
+        let next = if live.execution.state == ExecutionState::Running {
+            live.queue.pop_front()
+        } else {
+            live.queue.clear();
+            None
+        };
+        live.draining = next.is_some();
+        next
+    }
+
+    /// Hands one value to the module of its target node as `node/event`, and reports
+    /// whether it took it.
+    fn deliver(&self, execution_id: &str, pending: Pending) {
+        let found = {
+            let executions = self.executions();
+            executions
+                .iter()
+                .find(|live| live.execution.id == execution_id)
+                .map(|live| {
+                    (
+                        live.workflow.clone(),
+                        live.execution.project_id.clone(),
+                        live.active.contains(&pending.to.node_id),
+                    )
+                })
+        };
+        // The execution vanished meanwhile: nothing left to report into.
+        let Some((workflow, project_id, active)) = found else {
+            return;
+        };
+        let node = workflow
+            .node(&pending.to.node_id)
+            .filter(|n| active && n.module_id.is_some())
+            .cloned();
+        let result = match node {
+            None => Err(format!("node `{}` is not running", pending.to.node_id)),
+            Some(node) => {
+                let args = NodeEvent {
+                    port: pending.to.port_id.clone(),
+                    capability: pending.capability.clone(),
+                    value: pending.value,
+                    from: pending.from.clone(),
+                    event: pending.event,
+                };
+                let module_id = node.module_id.clone().unwrap_or_default();
+                serde_json::to_value(args)
+                    .map_err(|e| e.to_string())
+                    .and_then(|args| {
+                        self.node_call(execution_id, &node, args)
+                            .map_err(|e| e.to_string())
+                    })
+                    .and_then(|call| serde_json::to_value(call).map_err(|e| e.to_string()))
+                    .and_then(|params| {
+                        bus::while_handling(execution_id, pending.depth, || {
+                            self.registry
+                                .call_module(&module_id, method::NODE_EVENT, params)
+                        })
+                        .map_err(|e| e.to_string())
+                    })
+            }
+        };
+        let to = pending.to;
+        let kind = match result {
+            Ok(_) => BusEventKind::Delivered { to },
+            Err(error) => BusEventKind::Failed { to, error },
+        };
+        self.journal().record(BusEvent {
+            seq: 0,
+            at: 0,
+            execution_id: execution_id.into(),
+            project_id,
+            event: pending.event,
+            from: pending.from,
+            capability: pending.capability,
+            depth: pending.depth,
+            kind,
+        });
     }
 }

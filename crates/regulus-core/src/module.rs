@@ -41,8 +41,9 @@ impl Endpoint {
 /// The only view of the world a module gets (docs/03-modules.md §2.1). Cheap to clone:
 /// a module keeps a copy from `init` to use later.
 ///
-/// `emit`, `subscribe` and `store` arrive with the first module that needs them. Growing
-/// this surface is a design conversation, not a new `pub`.
+/// `store` arrives with the first module that needs it; there is no `subscribe`: the
+/// "then" wires say who receives what. Growing this surface is a design conversation, not
+/// a new `pub`.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleCtx {
     core: Weak<Core>,
@@ -84,6 +85,15 @@ impl ModuleCtx {
     /// configuration and `args`.
     pub fn call(&self, to: &Endpoint, method: &str, args: Value) -> Result<Value, ModuleError> {
         self.core()?.call_node(to, method, args)
+    }
+
+    /// Puts `value` on the "then" output `port` of `node`, one of this module's nodes. The
+    /// core delivers it, in order and without blocking the caller, as `node/event` to
+    /// every input wired to that port with the same capability. An emission made while
+    /// handling an event continues that chain; past `bus.max_depth` it is dropped and
+    /// reported (docs/11-composition.md §4).
+    pub fn emit(&self, node: &NodeRef, port: &str, value: Value) -> Result<(), ModuleError> {
+        self.core()?.emit(&self.module_id, node, port, value)
     }
 
     /// A directory of this module's own for `node`, created if missing. It belongs to the

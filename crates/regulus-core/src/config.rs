@@ -107,6 +107,26 @@ impl Default for DataConfig {
     }
 }
 
+/// The event bus that carries "then" wires (docs/02-architecture.md §6).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BusConfig {
+    /// Longest chain of deliveries before the core drops the value and reports a cut:
+    /// the safety net against loops such as A → B → A (docs/11-composition.md §4).
+    pub max_depth: u32,
+    /// Bus events kept in memory for `event.list`; the oldest go first.
+    pub history: usize,
+}
+
+impl Default for BusConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 64,
+            history: 1024,
+        }
+    }
+}
+
 /// How clients (the app, the terminal UI) find a core, or start one when none answers.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -145,6 +165,7 @@ pub struct Config {
     pub modules: ModulesConfig,
     pub secrets: SecretsConfig,
     pub data: DataConfig,
+    pub bus: BusConfig,
     pub client: ClientConfig,
 }
 

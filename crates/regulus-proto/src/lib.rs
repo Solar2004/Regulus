@@ -4,10 +4,12 @@
 //! generic pieces (nodes, ports, wires, workflows, profiles and executions). JSON field
 //! names match the client model in `crates/regulus-tauri/frontend/src/composition/model.ts`.
 
+pub mod bus;
 pub mod graph;
 pub mod manifest;
 pub mod rpc;
 
+pub use bus::*;
 pub use graph::*;
 pub use manifest::*;
 pub use rpc::*;

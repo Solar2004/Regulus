@@ -2,6 +2,7 @@
 //! model or a skill is. It loads modules, keeps the pieces and their wires, and answers
 //! clients over JSON-RPC (docs/plan.md §1).
 
+mod bus;
 pub mod config;
 pub mod graph;
 pub mod local;
@@ -17,7 +18,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-pub use config::Config;
+pub use config::{BusConfig, Config};
 pub use module::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 pub use profiles::ProfileStore;
 pub use registry::Registry;
@@ -29,7 +30,7 @@ pub use service::{Core, RpcError, Storage};
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
     let (profiles, warnings) = ProfileStore::load(&config.profiles.paths);
     (
-        Core::build_with(
+        Core::build_with_bus(
             modules,
             &config.modules.without,
             profiles,
@@ -37,6 +38,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
                 secrets: config.secrets(),
                 data_dir: Some(config.data_dir()),
             },
+            config.bus.clone(),
         ),
         warnings,
     )
