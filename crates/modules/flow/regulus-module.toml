@@ -203,6 +203,14 @@ name = "Join"
   default = "array"
   options = ["array", "object"]
 
+  # barrier: values one input may hold while it waits for the others, above 0. Past it, a
+  # new value is dropped and its delivery shows as `failed`. A barrier with no "then"
+  # inputs and no `count` is refused at start.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 64
+
 # Fan-out: one value to every "then" output of the node, or, with `split`, each element
 # of an array, one after another.
 [[node]]

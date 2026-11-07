@@ -449,3 +449,23 @@ fn wait_refuses_an_unbounded_hold_and_drops_what_does_not_fit() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn a_barrier_with_nothing_to_wait_for_does_not_start() {
+    let lonely = profile(
+        vec![port("out", J, "output")],
+        vec![node(
+            "join",
+            "join",
+            json!({}),
+            vec![port("out", J, "output")],
+        )],
+        vec![wire("join.out", "self.out")],
+    );
+    let refused = try_start(&core(lonely, Storage::default()));
+    assert_eq!(refused["state"]["status"], "failed", "{refused}");
+    assert!(refused["state"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("barrier needs"));
+}

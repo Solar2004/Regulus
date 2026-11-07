@@ -200,6 +200,7 @@ impl Flow {
         let here = self.here(call);
         match here.call.node.node_type.as_str() {
             "wait" => wait::start(&here),
+            "join" => join::start(&here),
             _ => Ok(Value::Null),
         }
     }
