@@ -31,6 +31,15 @@ impl Module for Keeper {
         Ok(())
     }
     fn call(&self, name: &str, params: Value) -> Result<Value, ModuleError> {
+        if name.ends_with(".reach") {
+            // Asks for the project space of any node it is told about.
+            let node = NodeRef {
+                execution_id: params["execution_id"].as_str().unwrap_or_default().into(),
+                node_id: params["node_id"].as_str().unwrap_or_default().into(),
+            };
+            self.ctx.store(Some(&node))?.list("")?;
+            return Ok(Value::Null);
+        }
         if name.ends_with(".peek") {
             let keys = |space: Vec<(String, Vec<u8>)>| -> Vec<String> {
                 space.into_iter().map(|(k, _)| k).collect()
@@ -81,7 +90,7 @@ fn keeper(id: &str, prefix: &str, log: &Log) -> Box<dyn Module> {
                 id: id.into(),
                 name: id.into(),
                 requires_proto: None,
-                methods: vec![format!("{prefix}.peek")],
+                methods: vec![format!("{prefix}.peek"), format!("{prefix}.reach")],
                 workflow_id: None,
                 origin: None,
             },
@@ -435,4 +444,45 @@ fn a_store_that_cannot_open_leaves_the_core_in_memory() {
         "{warnings:?}"
     );
     assert_eq!(list(&core).len(), 0);
+}
+
+#[test]
+fn a_module_cannot_open_a_project_space_through_another_modules_node() {
+    let home = temp_home("foreign-node");
+    let log = Log::default();
+    let nodes = vec![
+        json!({ "id": "x", "type": "k", "module_id": "t/a@1.0.0" }),
+        json!({ "id": "y", "type": "k", "module_id": "t/b@2.0.0" }),
+    ];
+    let core = core_on(&home, &StoreConfig::default(), profile(nodes), &log);
+    start(&core);
+    let own = json!({ "execution_id": "exec-1", "node_id": "y" });
+    assert!(core.dispatch("b.reach", own).is_ok());
+    let foreign = json!({ "execution_id": "exec-1", "node_id": "x" });
+    let error = core.dispatch("b.reach", foreign).unwrap_err();
+    assert!(error.message.contains("does not belong"), "{error:?}");
+}
+
+#[test]
+fn stopping_an_execution_before_recovery_reaches_it_keeps_it_stopped() {
+    let home = temp_home("stop-recovering");
+    let log = Log::default();
+    let config = with_resume(Resume::Always);
+    let core = core_on(&home, &config, one_node(json!({})), &log);
+    start(&core);
+    drop(core);
+
+    log.lock().unwrap().clear();
+    let core = core_on(&home, &config, one_node(json!({})), &log);
+    let stopped = core
+        .dispatch(method::EXECUTION_STOP, json!({ "id": "exec-1" }))
+        .unwrap();
+    assert_eq!(stopped["state"]["status"], "stopped");
+    assert!(core.recover().is_empty(), "recover skips it");
+    assert!(log.lock().unwrap().is_empty(), "no node was started");
+    assert_eq!(list(&core)[0]["state"]["status"], "stopped");
+    drop(core);
+    let core = core_on(&home, &config, one_node(json!({})), &log);
+    assert!(core.recover().is_empty());
+    assert_eq!(list(&core)[0]["state"]["status"], "stopped");
 }
