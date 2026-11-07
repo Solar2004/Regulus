@@ -246,6 +246,14 @@ interpreta: son del cliente.
    lo rechazan), que tenga alguna salida "luego" y, como aviso, que los puertos "luego" del
    nodo encajen por id y capacidad con los suyos. El nodo los declara; nada los copia.
 
+6. **Preguntar con tiempo límite** ✅ (2026-11-07, paso 2 de `13-blocks.md` §7). Lo pidió
+   la ranura `hooks`: `hook.dispatch` (desde fuera, el puente `regulus hook`) reenvía una
+   petición como `node/hook` a cada nodo conectado por "usa" a un nodo vivo con capacidad
+   `hook@1`, cada uno en su hilo, y espera como mucho `[hooks] timeout_ms` (10 s) o el
+   tiempo de la petición. El que no llega, falla o no lo implementa cuenta como "nada" y
+   se dice por qué; su hilo acaba solo. El core reenvía por capacidad y no interpreta la
+   respuesta.
+
 **Qué deja la base abierta a propósito** (`11` §12): cuántos cables admite cada entrada
 (el campo existe, por defecto `One`) y qué lleva cada tipo de puerto (el tipo tiene
 versión; el formato lo fija el primer módulo que lo use).

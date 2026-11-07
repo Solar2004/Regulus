@@ -15,6 +15,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Hooks del agente** (`docs/13-blocks.md` §4, protocolo `1.9`): la caja Agente tiene
+  la entrada `hooks`. Un nodo `rule` (módulo `hooks`) veta una herramienta o añade
+  contexto en un evento (`pre_tool`, `stop`, `session_start`…). Con Claude Code en perfil
+  aislado se escriben en su `settings.json` y llaman al puente `regulus hook`; el core los
+  reenvía con `hook.dispatch` y espera como mucho `[hooks] timeout_ms`. opencode aún no.
+  Ejemplo en `crates/modules/hooks/examples/guarded.toml`.
 - **Agentes** (`docs/12-agents.md`): la caja Agente y los motores Claude Code y opencode,
   que hablan con su CLI por ACP. Cada motor detecta las instalaciones del PC
   (`claude.detect`, `opencode.detect`) y usa la que elijas con tu perfil

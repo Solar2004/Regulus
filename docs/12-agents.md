@@ -63,6 +63,7 @@ proveedor o una suscripción conectados para poder autenticarse.
 | Proveedor (una ranura por propósito, §6.5) | `providers/set` de ACP: `anthropic`, `bedrock` o `vertex` + `baseUrl` | proveedor en su config |
 | Skills | enlace en `CLAUDE_CONFIG_DIR/skills/<nombre>` | enlace en `OPENCODE_CONFIG_DIR/skills/<nombre>` |
 | MCP | `mcpServers` al crear la sesión | igual |
+| Hooks (§3.1) | `hooks` en `CLAUDE_CONFIG_DIR/settings.json` → `regulus hook` | no soportado: aviso |
 
 **Skills, base construida (2026-10-17).** Una skill es un recurso: una carpeta con
 `SKILL.md`, el formato que leen Claude Code y opencode. El módulo `skills` tiene un nodo
@@ -76,6 +77,34 @@ un aviso. Probado: la skill aparece enlazada en el perfil de Claude, y con
 **Un proveedor que no habla el protocolo del motor** (p. ej. solo OpenAI hacia Claude)
 se resuelve con un **Traductor** en el cable "usa": Agente ⇢ Traductor ⇢ Proveedor. Es
 una envoltura (§6.4) y la lectura A de las cajas (`11-composition.md` §9.1).
+
+### 3.1 Ranura `hooks`
+
+✅ **Construida (2026-11-07)** — `13-blocks.md` §4. La caja tiene la entrada `hooks`
+(varias, `hook@1`). Al arrancar pregunta a cada hook qué escucha (método `hook`: `event`,
+`matcher?`, `timeout_ms?`, `returns`) y pasa al motor `StartArgs.hooks`: por hook, el
+comando del puente en nombre de la caja,
+`regulus --home <H> hook --execution <id> --node <caja> --hook <nodo> --event <evento>
+[--timeout-ms N]`. El host da el programa y su `--home`, como al puente MCP; un host sin
+puente falla al arrancar una caja con hooks.
+
+El motor los escribe como las skills: **solo en perfil aislado**, quitando lo de la vez
+anterior; en el del usuario no escribe nada y avisa. El puente lee el evento por stdin,
+pregunta al core (`hook.dispatch`, que reenvía `node/hook` a los nodos conectados con su
+tiempo límite) y responde como el CLI lee los hooks.
+
+| Motor | Hooks |
+|---|---|
+| Claude Code | Regulus es dueño de la clave `hooks` del `settings.json` del perfil aislado (el que lee con `settingSources: ["user"]`). Eventos: `pre_tool` → `PreToolUse`, `post_tool` → `PostToolUse`, `stop` → `Stop`, `session_start` → `SessionStart`, `prompt` → `UserPromptSubmit`, `pre_compact` → `PreCompact`; uno desconocido queda fuera con aviso. Matcher solo en herramientas y solo en su forma literal (`Bash\|Write`); si no, Claude pregunta por todas y decide el nodo. `timeout` = el del hook + 1 s. Puente: veto → exit 2 con el motivo en stderr; contexto → `hookSpecificOutput.additionalContext` (en `PreCompact`, stdout plano: instrucciones del resumen); nada → exit 0; core inalcanzable → exit 1 (error no bloqueante). Un veto en `post_tool` o `session_start` no para nada (Claude solo lo muestra): aviso al arrancar. Esquema: https://code.claude.com/docs/en/hooks |
+| opencode | **No soportado**, aviso al arrancar. No tiene config de hooks, solo plugins en JS. Su API (`@opencode-ai/plugin` 1.17.18, leída en local) trae `tool.execute.before`/`after`, `chat.message`, `experimental.chat.system.transform` y `experimental.session.compacting`, pero nada que equivalga a `Stop` (seguir trabajando), el veto no está documentado (lanzar un error, por verificar) y el contexto va por hooks `experimental`. Hace falta un plugin puente, no un fichero. https://opencode.ai/docs/plugins no trae la referencia de hooks |
+
+**Probado en vivo (2026-11-07)** con `claude` 2.1.319 de `~/.local/bin`, perfil aislado y
+un endpoint Anthropic falso que pide `Bash` una vez: el `settings.json` del perfil salió
+con `PreToolUse` (`matcher: Bash`) y `SessionStart` apuntando a `regulus hook`; la
+llamada a `Bash` no se ejecutó y el modelo recibió como resultado *"PreToolUse:Bash hook
+error: [...]: Bash is off for this agent: answer without running commands."*; y cada
+petición con herramientas llevó *"SessionStart hook additional context: House rule: end
+every answer with the word REGULUS."*. Al parar no quedó ningún proceso vivo.
 
 ## 4. El canal: ACP primero
 
@@ -401,7 +430,7 @@ Sustituye a las dos ramas de `plan.md` §2:
    2. ✅ Suscripción de Claude con `anthropic-oauth`, como plantilla (§6.6)
    3. ⏸ Pasarela con Plan B y Pool (§6.4): aplazada, la estructura basta por ahora
    4. ⏸ Router, Traductor, motor Local e imágenes por MCP
-4. ✅ **Skills**, base (§3)
+4. ✅ **Skills**, base (§3), y ✅ **hooks** (§3.1)
 5. **Comunicación** (hcom, sobre sesiones ACP: `old/07-ecosystem.md` §1.4)
 
 Precedente más cercano: vibe-kanban (Rust) mezcla canales por agente (stream-json,

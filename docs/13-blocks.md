@@ -124,6 +124,26 @@ ser una regla, un script (`process`) o un agente (`judge`): la caja conectada ma
 Cubre: ECC, Kiro (acción `agent`), Ralph con `Stop`, inyectar memoria o constitución cada
 turno, restringir herramientas por modo (Cline Plan/Act, Roo Orchestrator).
 
+✅ *Construido* (2026-11-07, paso 2; detalle en `12-agents.md` §3.1). Diferencias con lo
+de arriba:
+
+- **El core reenvía por capacidad, no conoce hooks.** Gana `hook.dispatch` (protocolo
+  1.9) y el método reservado `node/hook`: pregunta a los nodos `hook@1` conectados al
+  agente, cada uno en su hilo, y espera como mucho `[hooks] timeout_ms` (10 s). El que
+  tarda, falla o no responde cuenta como "nada": el agente nunca se queda colgado. No
+  sabe de eventos, matchers ni vetos; eso vive en los módulos.
+- `hook@1` (`regulus-proto/src/hook.rs`): el nodo dice `event`, `matcher?`,
+  `timeout_ms?` y `returns`; recibe `HookRequest` (`event`, `tool`, `input`, `text`… y
+  todo lo del motor en `raw`) y responde `none`, `veto` + `reason` o `context` + `text`.
+  Si hay varias respuestas, gana cualquier veto; si no, se suman los contextos.
+- Eventos neutros: `pre_tool`, `post_tool`, `stop`, `session_start`, `prompt`,
+  `pre_compact`. El matcher son nombres exactos con `|`, solo en eventos de herramienta.
+- El puente lleva `--hook <nodo>`: una entrada por hook en la config del CLI, con su
+  matcher y su tiempo.
+- opencode no lo soporta todavía (aviso al arrancar); ver `12-agents.md` §3.1.
+- Primer módulo: `hooks`, nodo `rule` (veto o contexto fijos). Ejemplo en
+  `crates/modules/hooks/examples/guarded.toml`.
+
 ---
 
 ## 5. Plantillas
@@ -172,7 +192,7 @@ de app, unas 5 semanas en total. Se corrigen con el tiempo real al lado.
 | # | Qué | Est. |
 |---|---|---|
 | 1 | ✅ Core: cable "luego" con dato + bus; store SQLite con ejecuciones persistentes; workflow con puertos propios; sub-ejecución `Call` (hecho 2026-11-07, 1 día) | ~5 días |
-| 2 | Caja Agente: ranura `hooks` con puente `regulus hook` | ~2 días |
+| 2 | ✅ Caja Agente: ranura `hooks` con puente `regulus hook` (hecho 2026-11-07, 1 día) | ~2 días |
 | 3 | Módulos de lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers` | ~6 días |
 | 4 | Módulos de entorno: `workspace` · `tasks` · `memory` · `web` · `human` · `service` | ~6 días |
 | 5 | Plantillas de §5, en orden, cada una corriendo por CLI/TUI | ~4 días |
