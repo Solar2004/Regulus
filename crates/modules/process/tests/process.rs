@@ -205,12 +205,55 @@ fn alive(pid: u64) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// Whether this system can tell which processes run: Linux with `pgrep`.
+fn can_look() -> bool {
+    cfg!(target_os = "linux")
+        && std::process::Command::new("pgrep")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+}
+
 fn pgrep(pattern: &str) -> String {
     let out = std::process::Command::new("pgrep")
         .args(["-f", pattern])
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A `sleep` argument no other process uses: this test's pid and a clock reading.
+fn mark() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    format!(
+        "4{}.{}{nanos}",
+        std::process::id() % 100,
+        std::process::id()
+    )
+}
+
+/// Waits until no process matches `pattern`.
+fn all_gone(pattern: &str, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while !pgrep(pattern).is_empty() {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Waits until `count` processes match `pattern`.
+fn running(pattern: &str, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pgrep(pattern).lines().count() < count {
+        assert!(Instant::now() < deadline, "`{pattern}` never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -235,26 +278,30 @@ fn a_job_times_out_and_logs_what_it_printed() {
     assert_eq!(exit["tail"], "second");
     let log = std::fs::read_to_string(exit["log"].as_str().unwrap()).unwrap();
     assert_eq!(log, "first\nsecond\n");
-    assert!(!alive(got[0].1["pid"].as_u64().unwrap()));
+    let pid = got[0].1["pid"].as_u64().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while cfg!(target_os = "linux") && alive(pid) {
+        assert!(Instant::now() < deadline, "the job was not reaped");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let _ = std::fs::remove_dir_all(&data);
 }
 
 #[test]
 fn stopping_the_execution_kills_a_job_and_all_it_started() {
+    if !can_look() {
+        return;
+    }
     let data = data_dir("job-stop");
     // A unique duration so pgrep finds only this test's sleeps: one is a grandchild.
-    let mark = format!("sleep 41.{}", std::process::id() % 1000);
+    let mark = format!("sleep {}", mark());
     let script = format!("{mark} & {mark}; wait");
     let config = json!({ "command": "sh", "args": ["-c", script], "grace_ms": 200 });
     let outs = [("started", "job@1"), ("done", "exit@1"), ("fail", "exit@1")];
     let (core, id) = start(profile("job", config, "text@1", &outs), &data);
     send(&core, &id, json!("go"));
     let pid = outputs(&core, &id, 1)[0].1["pid"].as_u64().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while pgrep(&mark).lines().count() < 2 {
-        assert!(Instant::now() < deadline, "the sleeps never started");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    running(&mark, 2);
     // A second value while it runs is refused: one job at a time by default.
     send(&core, &id, json!("again"));
     let refused = |page: &EventPage| {
@@ -277,8 +324,79 @@ fn stopping_the_execution_kills_a_job_and_all_it_started() {
         std::thread::sleep(Duration::from_millis(10));
     }
     stop(&core, &id);
-    assert_eq!(pgrep(&mark), "", "left behind");
-    assert!(!alive(pid), "the job was not reaped");
+    assert!(all_gone(&mark, Duration::from_secs(5)), "left behind");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(pid) {
+        assert!(Instant::now() < deadline, "the job was not reaped");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn stop_returns_at_once_and_kills_a_child_that_ignores_term_after_the_grace() {
+    if !can_look() {
+        return;
+    }
+    let data = data_dir("job-term");
+    let mark = format!("sleep {}", mark());
+    let script = format!("trap '' TERM; {mark}");
+    let config = json!({ "command": "sh", "args": ["-c", script], "grace_ms": 700 });
+    let (core, id) = start(
+        profile("job", config, "text@1", &[("started", "job@1")]),
+        &data,
+    );
+    send(&core, &id, json!("go"));
+    outputs(&core, &id, 1);
+    running(&mark, 1);
+    let asked = Instant::now();
+    stop(&core, &id);
+    assert!(
+        asked.elapsed() < Duration::from_millis(100),
+        "{:?}",
+        asked.elapsed()
+    );
+    // TERM is ignored: it lives through the grace, then SIGKILL takes it.
+    assert!(!pgrep(&mark).is_empty(), "gone before the grace");
+    assert!(all_gone(&mark, Duration::from_secs(5)), "left behind");
+    assert!(asked.elapsed() >= Duration::from_millis(700));
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_command_ends_with_its_leader_and_takes_what_it_left_behind() {
+    let data = data_dir("leftover");
+    let mark = format!("sleep {}", mark());
+    let script = format!("{mark} & echo hi; exit 0");
+    let config = json!({ "command": "sh", "args": ["-c", script], "pipe_grace_ms": 200 });
+    let outs = [("stdout", "text@1"), ("exit", "exit@1")];
+    let (core, id) = start(profile("command", config, "text@1", &outs), &data);
+    let sent = Instant::now();
+    send(&core, &id, json!("go"));
+    let got = outputs(&core, &id, 2);
+    // Not held for the 10-minute timeout by the sleep that keeps stdout open.
+    assert!(
+        sent.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        sent.elapsed()
+    );
+    assert_eq!(got[1], ("stdout".into(), json!("hi")));
+    if can_look() {
+        assert!(all_gone(&mark, Duration::from_secs(5)), "left behind");
+    }
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_job_that_times_out_without_a_timeout_port_says_so_on_fail() {
+    let data = data_dir("job-no-timeout-port");
+    let config = json!({ "command": "sleep", "args": ["30"], "timeout_ms": 200 });
+    let outs = [("done", "exit@1"), ("fail", "exit@1")];
+    let (core, id) = start(profile("job", config, "text@1", &outs), &data);
+    send(&core, &id, json!("go"));
+    let (port, exit) = outputs(&core, &id, 1).remove(0);
+    assert_eq!(port, "fail");
+    assert_eq!(exit["timed_out"], true);
     let _ = std::fs::remove_dir_all(&data);
 }
 

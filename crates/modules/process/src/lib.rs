@@ -3,8 +3,9 @@
 //! program with a log and a timeout, and `terminal` runs one in a pseudo-terminal.
 //!
 //! Every program runs on threads of this module, never on the bus thread: `node/event`
-//! spawns and returns. Each child leads its own process group; `node/stop` signals the
-//! group, waits for it to be reaped, and refuses anything that arrives afterwards.
+//! spawns and returns. Each child leads its own process group. `node/stop` signals the
+//! group and returns; a reaper thread kills what is left after `grace_ms`. A node runs
+//! programs only between its `node/start` and `node/stop`.
 
 mod exit;
 mod pty;
@@ -98,10 +99,14 @@ impl At {
         }
     }
 
+    fn has(&self, port: &str) -> bool {
+        self.outputs.iter().any(|p| p == port)
+    }
+
     /// Emits if the node has `port`. An execution that stopped meanwhile takes nothing,
     /// and that is fine: whoever stopped it no longer wants the answer.
     fn emit(&self, ctx: &ModuleCtx, port: &str, value: Value) {
-        if self.outputs.iter().any(|p| p == port) {
+        if self.has(port) {
             let _ = ctx.emit(&self.node, port, value);
         }
     }
@@ -216,7 +221,26 @@ impl Process {
         Duration::from_millis(self.fields(node).number("grace_ms"))
     }
 
+    /// A child is spawned and its waiter thread may not be: then nobody would reap it, so
+    /// it is killed and reaped here.
+    fn waiting(
+        &self,
+        waited: std::io::Result<thread::JoinHandle<()>>,
+        node: &NodeRef,
+        pid: u32,
+    ) -> Result<(), ModuleError> {
+        let Err(error) = waited else {
+            return Ok(());
+        };
+        run::abandon(pid);
+        self.runs.ended(node, pid);
+        Err(ModuleError::Failed(format!(
+            "no thread to wait on it: {error}"
+        )))
+    }
+
     fn start(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        self.runs.start(&At::of(&call).node);
         match call.node.node_type.as_str() {
             GATE => same_capability(&call.node, &[port::PASS, port::FAIL])?,
             JOB if self.fields(&call.node).yes("autostart") => {
@@ -266,6 +290,7 @@ impl Process {
         let limits = Limits {
             timeout: fields.millis("timeout_ms"),
             max_output: fields.usize("max_output"),
+            pipe_grace: Duration::from_millis(fields.number("pipe_grace_ms")),
         };
         let trim = fields.yes("trim");
         let gate = call.node.node_type == GATE;
@@ -313,14 +338,14 @@ impl Process {
         };
         let pid = child.id();
         let (ctx, runs) = (self.ctx.clone(), self.runs.clone());
-        thread::Builder::new()
-            .name(THREAD.into())
-            .spawn(move || {
-                let exit = run::collect(child, stdin, limits, started);
-                runs.ended(&node, pid);
-                finish(&ctx, exit);
-            })
-            .map_err(|e| ModuleError::Failed(e.to_string()))?;
+        let waiter = node.clone();
+        let waited = thread::Builder::new().name(THREAD.into()).spawn(move || {
+            let exit = run::collect(child, stdin, limits, started, || {
+                runs.ended(&waiter, pid);
+            });
+            finish(&ctx, exit);
+        });
+        self.waiting(waited, &node, pid)?;
         Ok(json!({ "pid": pid }))
     }
 
@@ -363,24 +388,25 @@ impl Process {
         };
         at.emit(&self.ctx, port::STARTED, to_value(&news));
         let (ctx, runs, at) = (self.ctx.clone(), self.runs.clone(), at.clone());
-        thread::Builder::new()
-            .name(THREAD.into())
-            .spawn(move || {
-                let mut exit = run::wait(child, timeout, started);
+        let node = at.node.clone();
+        let waited = thread::Builder::new().name(THREAD.into()).spawn(move || {
+            let mut exit = run::wait(child, timeout, started, || {
+                let stopped = !runs.is_running(&at.node);
                 runs.ended(&at.node, pid);
-                exit.job = Some(number);
-                exit.tail = Some(run::tail(&path, lines));
-                exit.log = Some(log);
-                let port = if exit.timed_out {
-                    port::TIMEOUT
-                } else if exit.ok() {
-                    port::DONE
-                } else {
-                    port::FAIL
-                };
-                at.emit(&ctx, port, to_value(&exit));
-            })
-            .map_err(|e| ModuleError::Failed(e.to_string()))?;
+                stopped
+            });
+            exit.job = Some(number);
+            exit.tail = Some(run::tail(&path, lines));
+            exit.log = Some(log);
+            // A node without `timeout` hears a timed-out job on `fail`, never nothing.
+            let port = match (exit.timed_out, exit.ok()) {
+                (true, _) if at.has(port::TIMEOUT) => port::TIMEOUT,
+                (false, true) => port::DONE,
+                _ => port::FAIL,
+            };
+            at.emit(&ctx, port, to_value(&exit));
+        });
+        self.waiting(waited, &node, pid)?;
         Ok(to_value(news))
     }
 
@@ -408,28 +434,38 @@ impl Process {
             .insert(at.node.clone(), opened.terminal);
         let (ctx, out) = (self.ctx.clone(), at.clone());
         let reader = opened.reader;
-        thread::Builder::new()
-            .name(THREAD.into())
-            .spawn(move || {
-                pty::pump(reader, chunk, |text| {
-                    out.emit(&ctx, port::OUT, Value::String(text))
-                })
-            })
-            .map_err(|e| ModuleError::Failed(e.to_string()))?;
+        let (pumped, pump_done) = std::sync::mpsc::channel::<()>();
+        let pump = thread::Builder::new().name(THREAD.into()).spawn(move || {
+            pty::pump(reader, chunk, |text| {
+                out.emit(&ctx, port::OUT, Value::String(text))
+            });
+            drop(pumped);
+        });
+        let grace = Duration::from_millis(fields.number("pipe_grace_ms"));
         let (ctx, runs, terminals) = (self.ctx.clone(), self.runs.clone(), self.terminals.clone());
         let child = opened.child;
-        thread::Builder::new()
-            .name(THREAD.into())
-            .spawn(move || {
-                let exit = pty::wait(child, started);
-                runs.ended(&at.node, pid);
-                terminals
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&at.node);
-                at.emit(&ctx, port::EXIT, to_value(&exit));
-            })
-            .map_err(|e| ModuleError::Failed(e.to_string()))?;
+        let node = at.node.clone();
+        let waited = thread::Builder::new().name(THREAD.into()).spawn(move || {
+            run::wait_exited(pid);
+            runs.ended(&at.node, pid);
+            let exit = pty::wait(child, started);
+            terminals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&at.node);
+            // What it printed last goes out before `exit`, unless something it left keeps
+            // the terminal open past the grace.
+            let _ = pump_done.recv_timeout(grace);
+            at.emit(&ctx, port::EXIT, to_value(&exit));
+        });
+        if let Err(error) = pump {
+            run::abandon(pid);
+            self.runs.ended(&node, pid);
+            return Err(ModuleError::Failed(format!(
+                "no thread to read the terminal: {error}"
+            )));
+        }
+        self.waiting(waited, &node, pid)?;
         Ok(())
     }
 

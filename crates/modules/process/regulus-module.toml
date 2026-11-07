@@ -4,10 +4,13 @@ name           = "Process"
 requires_proto = "^1.8"
 
 # Programs as nodes (docs/13-blocks.md §3.2). Every run is a child process in its own
-# process group, waited on by a thread of its own: `node/event` returns at once, and
-# `node/stop` kills the whole group and waits for it, so nothing is left behind.
+# process group, waited on by a thread of its own: `node/event` returns at once. When a
+# command or gate exits, what it left in its group is killed. `node/stop` returns at
+# once too: SIGTERM to the group, SIGKILL after `grace_ms` from a reaper thread.
 # `exit@1` is what a run ended with: `{ code, signal?, ms, stdout, stderr, timed_out }`
-# (code null when a signal killed it); a job adds `job`, `log` and `tail`.
+# (code null when a signal killed it); a job adds `job`, `log` and `tail`. Output travels
+# verbatim: a secret a program prints goes on the bus, into the store, and on to whoever
+# is wired (`guards` error@1 included).
 
 # Runs a program once per value received.
 [[node]]
@@ -54,14 +57,17 @@ name = "Command"
   default = ""
 
   # One argument per item; `{{input}}` in any of them is replaced by the value received
-  # (text as is, anything else as JSON). No shell parses them.
+  # (text as is, anything else as JSON). No shell parses them, so `{{input}}` stays one
+  # argument; put `--` before it if it may start with `-`. Inside `sh -c "…{{input}}…"`
+  # the value IS shell code: that is injection by design, for trusted inputs only.
   [[node.field]]
   id      = "args"
   type    = "list"
   default = []
 
   # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
-  # between executions. Relative: inside that directory.
+  # between executions. Relative: from that directory. The profile is trusted: `..` or
+  # an absolute path may point anywhere, and nothing stops it.
   [[node.field]]
   id      = "cwd"
   type    = "text"
@@ -113,6 +119,13 @@ name = "Command"
   id      = "max_running"
   type    = "number"
   default = 4
+
+  # After the program exits, milliseconds what it left running may keep its output open;
+  # then its process group is killed and the run ends.
+  [[node.field]]
+  id      = "pipe_grace_ms"
+  type    = "number"
+  default = 500
 
 # The deterministic check (docs/13-blocks.md §6): runs its program on each value and
 # forwards that same value on `pass` (exit 0) or `fail` (anything else). It goes in a
@@ -159,14 +172,17 @@ name = "Gate"
   default = ""
 
   # One argument per item; `{{input}}` in any of them is replaced by the value received
-  # (text as is, anything else as JSON). No shell parses them.
+  # (text as is, anything else as JSON). No shell parses them, so `{{input}}` stays one
+  # argument; put `--` before it if it may start with `-`. Inside `sh -c "…{{input}}…"`
+  # the value IS shell code: that is injection by design, for trusted inputs only.
   [[node.field]]
   id      = "args"
   type    = "list"
   default = []
 
   # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
-  # between executions. Relative: inside that directory.
+  # between executions. Relative: from that directory. The profile is trusted: `..` or
+  # an absolute path may point anywhere, and nothing stops it.
   [[node.field]]
   id      = "cwd"
   type    = "text"
@@ -218,6 +234,13 @@ name = "Gate"
   id      = "max_running"
   type    = "number"
   default = 4
+
+  # After the program exits, milliseconds what it left running may keep its output open;
+  # then its process group is killed and the run ends.
+  [[node.field]]
+  id      = "pipe_grace_ms"
+  type    = "number"
+  default = 500
 
 # A long-running program: started by a value on `in` (or with the execution, with
 # `autostart`), its stdout and stderr go to `<node dir>/<log_dir>/<n>.log`, a number per
@@ -272,14 +295,17 @@ name = "Job"
   default = ""
 
   # One argument per item; `{{input}}` in any of them is replaced by the value received
-  # (text as is, anything else as JSON). No shell parses them.
+  # (text as is, anything else as JSON). No shell parses them, so `{{input}}` stays one
+  # argument; put `--` before it if it may start with `-`. Inside `sh -c "…{{input}}…"`
+  # the value IS shell code: that is injection by design, for trusted inputs only.
   [[node.field]]
   id      = "args"
   type    = "list"
   default = []
 
   # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
-  # between executions. Relative: inside that directory.
+  # between executions. Relative: from that directory. The profile is trusted: `..` or
+  # an absolute path may point anywhere, and nothing stops it.
   [[node.field]]
   id      = "cwd"
   type    = "text"
@@ -305,7 +331,8 @@ name = "Job"
   type    = "number"
   default = 0
 
-  # Where the logs go, inside the node's directory (or absolute).
+  # Where the logs go, from the node's directory. Like `cwd`, `..` or an absolute path
+  # may point anywhere: the profile is trusted.
   [[node.field]]
   id      = "log_dir"
   type    = "text"
@@ -367,14 +394,17 @@ name = "Terminal"
   default = "sh"
 
   # One argument per item; `{{input}}` in any of them is replaced by the value received
-  # (text as is, anything else as JSON). No shell parses them.
+  # (text as is, anything else as JSON). No shell parses them, so `{{input}}` stays one
+  # argument; put `--` before it if it may start with `-`. Inside `sh -c "…{{input}}…"`
+  # the value IS shell code: that is injection by design, for trusted inputs only.
   [[node.field]]
   id      = "args"
   type    = "list"
   default = []
 
   # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
-  # between executions. Relative: inside that directory.
+  # between executions. Relative: from that directory. The profile is trusted: `..` or
+  # an absolute path may point anywhere, and nothing stops it.
   [[node.field]]
   id      = "cwd"
   type    = "text"
@@ -416,3 +446,10 @@ name = "Terminal"
   id      = "chunk"
   type    = "number"
   default = 4096
+
+  # After the program exits, milliseconds what it left running may keep its output open;
+  # then its process group is killed and the run ends.
+  [[node.field]]
+  id      = "pipe_grace_ms"
+  type    = "number"
+  default = 500
