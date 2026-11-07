@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 /// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`;
 /// 1.2 adds `execution.start` and `execution.stop`; 1.3 adds `secret.set`, `secret.list`
 /// and `secret.delete`; 1.4 adds `profile_id` to executions; 1.5 adds `event.list`; 1.6
-/// adds the `interrupted` state and `NodeStart` for nodes resumed from a checkpoint.
-pub const PROTOCOL: &str = "1.6";
+/// adds the `interrupted` state and `NodeStart` for nodes resumed from a checkpoint; 1.7
+/// adds workflow ports (`Workflow.ports`, inner wires to `self`) and `workflow.send`.
+pub const PROTOCOL: &str = "1.7";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -24,6 +25,7 @@ pub mod method {
     pub const SECRET_LIST: &str = "secret.list";
     pub const SECRET_DELETE: &str = "secret.delete";
     pub const EVENT_LIST: &str = "event.list";
+    pub const WORKFLOW_SEND: &str = "workflow.send";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -39,6 +41,7 @@ pub mod method {
         SECRET_LIST,
         SECRET_DELETE,
         EVENT_LIST,
+        WORKFLOW_SEND,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -95,6 +98,22 @@ pub struct ExecutionStartParams {
     pub profile_id: String,
     #[serde(default)]
     pub workflow_id: Option<String>,
+}
+
+/// `workflow.send`: puts `value` on the input `port` of the workflow a live execution
+/// runs, as if it came from outside. Its type is the port's capability.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowSendParams {
+    pub execution_id: String,
+    pub port: String,
+    pub value: serde_json::Value,
+}
+
+/// The answer of `workflow.send`: the `seq` of the `emitted` event, the one every event
+/// about this value points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowSent {
+    pub event: u64,
 }
 
 /// `secret.set`. The value never comes back: `secret.list` answers names only.

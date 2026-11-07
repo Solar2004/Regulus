@@ -94,7 +94,23 @@ impl Node {
     pub fn port(&self, id: &str) -> Option<&Port> {
         self.ports.iter().find(|port| port.id == id)
     }
+
+    /// A workflow placed as a node: no module runs it, its inside is the workflow it
+    /// points at and its ports are that workflow's ports. A module node with an internal
+    /// workflow is not one: its module runs it.
+    pub fn is_box(&self) -> bool {
+        self.module_id.is_none() && self.internal_workflow_id.is_some()
+    }
 }
+
+/// The node id an inner wire uses for the ports of its own workflow: `self.ask` is the
+/// input `ask` of the workflow the wire is in. Inside, a workflow input feeds nodes like
+/// an output would, and a workflow output takes values like an input would.
+pub const WORKFLOW_SELF: &str = "self";
+
+/// Joins the id of a box node and the id of a node inside it in a running copy of a
+/// workflow: `greet/hi` is node `hi` of the workflow placed as node `greet`.
+pub const BOX_SEPARATOR: char = '/';
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortRef {
@@ -135,6 +151,11 @@ pub struct Workflow {
     pub kind: WorkflowKind,
     #[serde(default)]
     pub module_id: Option<String>,
+    /// The workflow's own inputs and outputs, as seen from outside: what it takes when it
+    /// is placed as a node in another workflow or spoken to (`workflow.send`), and what it
+    /// gives back. Inner wires reach them as [`WORKFLOW_SELF`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<Port>,
     #[serde(default)]
     pub nodes: Vec<Node>,
     #[serde(default)]
@@ -146,6 +167,10 @@ pub struct Workflow {
 impl Workflow {
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.nodes.iter().find(|node| node.id == id)
+    }
+
+    pub fn port(&self, id: &str) -> Option<&Port> {
+        self.ports.iter().find(|port| port.id == id)
     }
 }
 
@@ -177,6 +202,18 @@ impl Profile {
 
     pub fn workflow(&self, id: &str) -> Option<&Workflow> {
         self.workflows.iter().find(|workflow| workflow.id == id)
+    }
+
+    /// The ports of a node: its own, or, for a box that declares none, those of the
+    /// workflow inside it.
+    pub fn ports_of<'a>(&'a self, node: &'a Node) -> &'a [Port] {
+        if !node.ports.is_empty() || !node.is_box() {
+            return &node.ports;
+        }
+        node.internal_workflow_id
+            .as_deref()
+            .and_then(|id| self.workflow(id))
+            .map_or(&node.ports, |workflow| &workflow.ports)
     }
 }
 

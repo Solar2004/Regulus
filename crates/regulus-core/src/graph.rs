@@ -5,7 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use regulus_proto::{Cardinality, Diagnostic, Direction, Profile, Severity, Workflow};
+use regulus_proto::{
+    Cardinality, Diagnostic, Direction, Node, Port, PortRef, Profile, Severity, Wire, WireKind,
+    Workflow, BOX_SEPARATOR, WORKFLOW_SELF,
+};
 
 struct Report<'a> {
     list: Vec<Diagnostic>,
@@ -106,6 +109,22 @@ fn check_workflow(
                 None,
             );
         }
+        if node.id == WORKFLOW_SELF || node.id.contains(BOX_SEPARATOR) {
+            let message = format!(
+                "node id `{}` is reserved: `{WORKFLOW_SELF}` names the workflow's own ports \
+                 and `{BOX_SEPARATOR}` joins a box to the nodes inside it",
+                node.id
+            );
+            report.push(Severity::Error, "node.reserved_id", message, id, None);
+        }
+        if let Some(inner) = node
+            .internal_workflow_id
+            .as_deref()
+            .filter(|_| node.is_box())
+            .and_then(|w| profile.workflow(w))
+        {
+            check_box(profile, workflow, node, inner, report);
+        }
         let mut ports = HashSet::new();
         for port in &node.ports {
             if !ports.insert(port.id.as_str()) {
@@ -117,6 +136,28 @@ fn check_workflow(
                     None,
                 );
             }
+        }
+    }
+
+    let mut own = HashSet::new();
+    for port in &workflow.ports {
+        if !own.insert(port.id.as_str()) {
+            let message = format!("workflow port id `{}` is used more than once", port.id);
+            report.push(
+                Severity::Error,
+                "workflow.port_duplicate",
+                message,
+                None,
+                None,
+            );
+        }
+        if port.kind == WireKind::Uses {
+            let message = format!(
+                "workflow port `{}` is a \"uses\" port: only \"then\" values cross a \
+                 workflow's boundary for now",
+                port.id
+            );
+            report.push(Severity::Warning, "workflow.port_uses", message, None, None);
         }
     }
 
@@ -133,12 +174,10 @@ fn check_workflow(
                 wire_id,
             );
         }
-        let endpoint = |end: &regulus_proto::PortRef| {
-            workflow
-                .node(&end.node_id)
-                .and_then(|node| node.port(&end.port_id))
-        };
-        let (Some(from), Some(to)) = (endpoint(&wire.from), endpoint(&wire.to)) else {
+        let (Some((from, from_dir)), Some((to, to_dir))) = (
+            endpoint(profile, workflow, &wire.from),
+            endpoint(profile, workflow, &wire.to),
+        ) else {
             let message = format!(
                 "wire joins `{}.{}` to `{}.{}`, but one of those ports does not exist",
                 wire.from.node_id, wire.from.port_id, wire.to.node_id, wire.to.port_id
@@ -155,7 +194,7 @@ fn check_workflow(
         *incoming
             .entry((&wire.to.node_id, &wire.to.port_id))
             .or_default() += 1;
-        if from.direction != Direction::Output || to.direction != Direction::Input {
+        if from_dir != Direction::Output || to_dir != Direction::Input {
             report.push(
                 Severity::Error,
                 "wire.direction",
@@ -188,9 +227,27 @@ fn check_workflow(
         }
     }
 
+    // Inside, the workflow's outputs take wires like inputs do.
+    for port in workflow
+        .ports
+        .iter()
+        .filter(|port| port.direction == Direction::Output)
+    {
+        let count = incoming
+            .get(&(WORKFLOW_SELF, port.id.as_str()))
+            .copied()
+            .unwrap_or(0);
+        if count > 1 && port.cardinality == Cardinality::One {
+            let message = format!(
+                "workflow output `{}` accepts one wire and has {count}",
+                port.id
+            );
+            report.push(Severity::Error, "port.too_many_wires", message, None, None);
+        }
+    }
     for node in &workflow.nodes {
-        for port in node
-            .ports
+        for port in profile
+            .ports_of(node)
             .iter()
             .filter(|port| port.direction == Direction::Input)
         {
@@ -223,6 +280,165 @@ fn check_workflow(
             }
         }
     }
+}
+
+/// One end of a wire in `workflow`: the port and the direction it has from inside the
+/// workflow. The workflow's own ports (`self`) face the other way inside: an input feeds
+/// nodes, an output takes values.
+fn endpoint<'a>(
+    profile: &'a Profile,
+    workflow: &'a Workflow,
+    end: &PortRef,
+) -> Option<(&'a Port, Direction)> {
+    if end.node_id == WORKFLOW_SELF {
+        let port = workflow.port(&end.port_id)?;
+        let inside = match port.direction {
+            Direction::Input => Direction::Output,
+            Direction::Output => Direction::Input,
+        };
+        return Some((port, inside));
+    }
+    let node = workflow.node(&end.node_id)?;
+    let port = profile
+        .ports_of(node)
+        .iter()
+        .find(|port| port.id == end.port_id)?;
+    Some((port, port.direction))
+}
+
+/// A workflow placed as a node: the ports it declares, if any, are the workflow's, and
+/// it never ends up inside itself.
+fn check_box(
+    profile: &Profile,
+    workflow: &Workflow,
+    node: &Node,
+    inner: &Workflow,
+    report: &mut Report,
+) {
+    let id = Some(node.id.as_str());
+    let same = |a: &Port, b: &Port| {
+        a.id == b.id
+            && a.capability == b.capability
+            && a.direction == b.direction
+            && a.kind == b.kind
+    };
+    let matches = node.ports.len() == inner.ports.len()
+        && node
+            .ports
+            .iter()
+            .all(|port| inner.ports.iter().any(|other| same(port, other)));
+    if !node.ports.is_empty() && !matches {
+        let message = format!(
+            "the ports of `{}` must be those of workflow `{}`, or none",
+            node.id, inner.id
+        );
+        report.push(
+            Severity::Error,
+            "node.box_ports_mismatch",
+            message,
+            id,
+            None,
+        );
+    }
+    if inner.id == workflow.id || embeds(profile, inner, &workflow.id, &mut HashSet::new()) {
+        let message = format!(
+            "workflow `{}` ends up inside itself through `{}`",
+            workflow.id, node.id
+        );
+        report.push(Severity::Error, "workflow.embeds_itself", message, id, None);
+    }
+}
+
+/// Whether `workflow` places `target` as a box, directly or deeper down.
+fn embeds<'a>(
+    profile: &'a Profile,
+    workflow: &'a Workflow,
+    target: &str,
+    seen: &mut HashSet<&'a str>,
+) -> bool {
+    workflow
+        .nodes
+        .iter()
+        .filter(|node| node.is_box())
+        .filter_map(|node| node.internal_workflow_id.as_deref())
+        .any(|inner| {
+            inner == target
+                || (seen.insert(inner)
+                    && profile
+                        .workflow(inner)
+                        .is_some_and(|w| embeds(profile, w, target, seen)))
+        })
+}
+
+/// The copy of `workflow` an execution runs: every box node keeps its place, with the
+/// ports of its workflow, and that workflow's nodes and wires join it under the box's id
+/// (`box/node`), as deep as boxes go. Inner wires to `self` end on the box node; the top
+/// workflow's own `self` stays as it is. A box whose workflow is missing stays empty.
+pub fn flatten(profile: &Profile, workflow: &Workflow) -> Result<Workflow, String> {
+    let mut plan = Workflow {
+        nodes: Vec::with_capacity(workflow.nodes.len()),
+        wires: Vec::with_capacity(workflow.wires.len()),
+        ..workflow.clone()
+    };
+    let mut path = vec![workflow.id.as_str()];
+    inline(profile, workflow, None, &mut path, &mut plan)?;
+    Ok(plan)
+}
+
+fn inline<'a>(
+    profile: &'a Profile,
+    workflow: &'a Workflow,
+    prefix: Option<&str>,
+    path: &mut Vec<&'a str>,
+    plan: &mut Workflow,
+) -> Result<(), String> {
+    let join = |id: &str| match prefix {
+        None => id.to_string(),
+        Some(prefix) => format!("{prefix}{BOX_SEPARATOR}{id}"),
+    };
+    for wire in &workflow.wires {
+        let end = |end: &PortRef| PortRef {
+            node_id: match prefix {
+                Some(prefix) if end.node_id == WORKFLOW_SELF => prefix.to_string(),
+                _ => join(&end.node_id),
+            },
+            port_id: end.port_id.clone(),
+        };
+        plan.wires.push(Wire {
+            id: join(&wire.id),
+            kind: wire.kind,
+            from: end(&wire.from),
+            to: end(&wire.to),
+        });
+    }
+    for node in &workflow.nodes {
+        let mut placed = node.clone();
+        placed.id = join(&node.id);
+        let inner = node
+            .internal_workflow_id
+            .as_deref()
+            .filter(|_| node.is_box())
+            .and_then(|id| profile.workflow(id));
+        let Some(inner) = inner else {
+            plan.nodes.push(placed);
+            continue;
+        };
+        if path.contains(&inner.id.as_str()) {
+            return Err(format!(
+                "workflow `{}` ends up inside itself through `{}`",
+                inner.id, placed.id
+            ));
+        }
+        if placed.ports.is_empty() {
+            placed.ports = inner.ports.clone();
+        }
+        let id = placed.id.clone();
+        plan.nodes.push(placed);
+        path.push(&inner.id);
+        inline(profile, inner, Some(&id), path, plan)?;
+        path.pop();
+    }
+    Ok(())
 }
 
 /// The order in which a workflow's nodes start: whatever a node uses over a "uses" wire

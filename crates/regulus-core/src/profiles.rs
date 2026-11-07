@@ -3,10 +3,11 @@
 //! The file format of `regulus.toml` is still open (docs/plan.md §3); JSON and TOML both
 //! map onto the same contract types, so choosing one later changes nothing here.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use regulus_proto::Profile;
+use regulus_proto::{Port, Profile};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -21,8 +22,16 @@ pub struct ProfileStore {
     profiles: Vec<Profile>,
 }
 
-/// Fills names a file left out, so every client gets something to show.
+/// Fills what a file left out, so every client gets something to show: names, and the
+/// ports of a box node that declares none, which are those of its workflow.
 fn normalize(profile: &mut Profile) {
+    fn name_ports(ports: &mut [Port]) {
+        for port in ports {
+            if port.name.is_empty() {
+                port.name = port.id.clone();
+            }
+        }
+    }
     if profile.name.is_empty() {
         profile.name = profile.id.clone();
     }
@@ -30,15 +39,28 @@ fn normalize(profile: &mut Profile) {
         if workflow.name.is_empty() {
             workflow.name = workflow.id.clone();
         }
+        name_ports(&mut workflow.ports);
         for node in &mut workflow.nodes {
             if node.name.is_empty() {
                 node.name = node.id.clone();
             }
-            for port in &mut node.ports {
-                if port.name.is_empty() {
-                    port.name = port.id.clone();
-                }
-            }
+            name_ports(&mut node.ports);
+        }
+    }
+    let ports: HashMap<String, Vec<Port>> = profile
+        .workflows
+        .iter()
+        .map(|w| (w.id.clone(), w.ports.clone()))
+        .collect();
+    for node in profile.workflows.iter_mut().flat_map(|w| &mut w.nodes) {
+        if let (true, true, Some(inner)) = (
+            node.is_box(),
+            node.ports.is_empty(),
+            node.internal_workflow_id
+                .as_ref()
+                .and_then(|id| ports.get(id)),
+        ) {
+            node.ports = inner.clone();
         }
     }
 }
