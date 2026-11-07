@@ -12,8 +12,8 @@ use jsonrpsee::ws_client::WsClient;
 use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
-    method, BusEvent, BusEventKind, EventPage, Execution, ExecutionState, ModuleSummary, Profile,
-    ProfileSummary, WireKind, PROTOCOL,
+    method, BusEvent, BusEventKind, Direction, EventPage, Execution, ExecutionState, ModuleSummary,
+    Profile, ProfileSummary, WireKind, WorkflowSent, PROTOCOL, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -89,6 +89,23 @@ enum Command {
         /// Only this project.
         #[arg(long)]
         project: Option<String>,
+    },
+    /// Send a value to an input port of the workflow a running execution runs, then
+    /// print the bus events it causes until they are delivered. What reaches the
+    /// workflow's outputs shows up as emitted from `self.<port>`.
+    Send {
+        execution: String,
+        port: String,
+        /// The value: JSON if it parses as JSON, otherwise text (a JSON string, as
+        /// `text@1` carries it).
+        #[arg(required = true, num_args = 1..)]
+        value: Vec<String>,
+        /// Always send it as text, even if it parses as JSON.
+        #[arg(long)]
+        text: bool,
+        /// Return as soon as it is queued, without waiting for the bus.
+        #[arg(long)]
+        detach: bool,
     },
     /// Stop a running execution.
     Stop { execution: String },
@@ -255,9 +272,37 @@ async fn main() -> Result<()> {
                     execution: Some(execution.id),
                     project: None,
                 };
-                events(&client, &ws, &filter, Follow::UntilIdle).await?;
+                events(&client, &ws, &filter, 0, Follow::UntilIdle).await?;
             }
             Ok(())
+        }
+        Command::Send {
+            execution,
+            port,
+            value,
+            text,
+            detach,
+        } => {
+            let value = value.join(" ");
+            let value = match serde_json::from_str::<Value>(&value) {
+                Ok(json) if !text => json,
+                _ => Value::String(value),
+            };
+            let params = serde_json::json!({
+                "execution_id": execution, "port": port, "value": value,
+            });
+            let ws = client.connect().await?;
+            let sent: WorkflowSent = rpc::call(&ws, method::WORKFLOW_SEND, params).await?;
+            if detach {
+                println!("#{} {execution} {WORKFLOW_SELF}.{port}", sent.event);
+                return Ok(());
+            }
+            let filter = EventFilter {
+                execution: Some(execution),
+                project: None,
+            };
+            let since = sent.event.saturating_sub(1);
+            events(&client, &ws, &filter, since, Follow::UntilIdle).await
         }
         Command::Events {
             follow,
@@ -267,7 +312,7 @@ async fn main() -> Result<()> {
             let ws = client.connect().await?;
             let filter = EventFilter { execution, project };
             let follow = if follow { Follow::Always } else { Follow::No };
-            events(&client, &ws, &filter, follow).await
+            events(&client, &ws, &filter, 0, follow).await
         }
         Command::Stop { execution } => {
             let params = serde_json::json!({ "id": execution });
@@ -440,17 +485,17 @@ enum Follow {
     Always,
 }
 
-/// Prints bus events from the oldest kept, page after page, polling every
-/// `client.refresh_ms` once caught up while following.
+/// Prints bus events after `since` (0 = from the oldest kept), page after page, polling
+/// every `client.refresh_ms` once caught up while following.
 async fn events(
     client: &Client<'_>,
     ws: &WsClient,
     filter: &EventFilter,
+    mut since: u64,
     follow: Follow,
 ) -> Result<()> {
     let poll = Duration::from_millis(client.config.client.refresh_ms);
     let deadline = Instant::now() + client.timeout;
-    let mut since = 0;
     loop {
         let params = serde_json::json!({
             "since": since, "execution_id": filter.execution, "project_id": filter.project,
@@ -628,6 +673,16 @@ fn print_graph(profile: &Profile) {
             ""
         };
         println!("\n{} ({}){main}", workflow.name, workflow.id);
+        for port in &workflow.ports {
+            let direction = match port.direction {
+                Direction::Input => "in",
+                Direction::Output => "out",
+            };
+            println!(
+                "  port {WORKFLOW_SELF}.{:<11} {direction:<14} {}",
+                port.id, port.capability
+            );
+        }
         for node in &workflow.nodes {
             let owner = node.module_id.as_deref().unwrap_or("-");
             println!("  node {:<16} {:<14} {owner}", node.id, node.node_type);

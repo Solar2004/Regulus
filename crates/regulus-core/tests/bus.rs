@@ -437,3 +437,77 @@ fn the_queue_bound_holds_across_the_boundary() {
     assert!(page.events.iter().any(|e| matches!(&e.kind,
         BusEventKind::Failed { to, error } if to.node_id == "outer" && error.contains("queue is full"))));
 }
+
+/// Waits until the bus of `id` is idle and returns its events.
+fn idle(core: &Core, id: &str) -> EventPage {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let page: EventPage = serde_json::from_value(
+            core.dispatch(method::EVENT_LIST, json!({ "execution_id": id }))
+                .unwrap(),
+        )
+        .unwrap();
+        if page.pending == 0 {
+            return page;
+        }
+        assert!(Instant::now() < deadline, "the bus never went idle");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn send_talks_to_a_running_workflow_and_its_reply_comes_from_self() {
+    // `main` itself has ports: what comes in on `ask` goes through box `outer` and back.
+    let mut profile = nested();
+    let main = &mut profile.workflows[0];
+    main.ports = serde_json::from_value(text_ports()).unwrap();
+    main.nodes.retain(|n| n.id == "outer");
+    main.wires = serde_json::from_value(json!([
+        wire("w1", ("self", "ask"), ("outer", "ask")),
+        wire("w2", ("outer", "reply"), ("self", "reply")),
+    ]))
+    .unwrap();
+    assert_eq!(check_profile(&profile, |_| true), []);
+    let (core, log) = core(profile, 64);
+    let (id, page) = run(&core);
+    assert!(page.events.is_empty());
+
+    let sent = core
+        .dispatch(
+            method::WORKFLOW_SEND,
+            json!({ "execution_id": id, "port": "ask", "value": "hello" }),
+        )
+        .unwrap();
+    let page = idle(&core, &id);
+    assert_eq!(sent["event"], page.events[0].seq);
+    assert_eq!(
+        log.lock().unwrap().as_slice(),
+        [r#"outer/inner/x.in <- outer/inner.ask "hello""#]
+    );
+    let reply = page.events.last().unwrap();
+    assert_eq!(
+        (reply.from.node_id.as_str(), reply.from.port_id.as_str()),
+        ("self", "reply")
+    );
+    assert_eq!(
+        reply.kind,
+        BusEventKind::Emitted {
+            value: json!("hello")
+        }
+    );
+    assert_eq!(reply.capability, "text@1");
+
+    let send = |params: Value| {
+        core.dispatch(method::WORKFLOW_SEND, params)
+            .unwrap_err()
+            .message
+    };
+    let output = send(json!({ "execution_id": id, "port": "reply", "value": "x" }));
+    assert!(output.contains(r#"is not a "then" input"#), "{output}");
+    let unknown = send(json!({ "execution_id": "exec-9", "port": "ask", "value": "x" }));
+    assert!(unknown.contains("Unknown execution"), "{unknown}");
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let stopped = send(json!({ "execution_id": id, "port": "ask", "value": "x" }));
+    assert!(stopped.contains("not running"), "{stopped}");
+}

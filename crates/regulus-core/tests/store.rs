@@ -486,3 +486,63 @@ fn stopping_an_execution_before_recovery_reaches_it_keeps_it_stopped() {
     assert!(core.recover().is_empty());
     assert_eq!(list(&core)[0]["state"]["status"], "stopped");
 }
+
+#[test]
+fn an_execution_whose_workflow_has_ports_survives_a_restart() {
+    // `main` asks the box `echo`, whose workflow passes `ask` straight to `reply`.
+    let ports = json!([
+        { "id": "ask", "capability": "text@1", "direction": "input", "kind": "then" },
+        { "id": "reply", "capability": "text@1", "direction": "output", "kind": "then" },
+    ]);
+    let wire = |id: &str, from: (&str, &str), to: (&str, &str)| {
+        json!({ "id": id, "kind": "then",
+                "from": { "node_id": from.0, "port_id": from.1 },
+                "to": { "node_id": to.0, "port_id": to.1 } })
+    };
+    let boxed = || -> Profile {
+        serde_json::from_value(json!({
+            "id": "p", "project_id": "proj", "main_workflow_id": "main",
+            "workflows": [
+                { "id": "main", "kind": "main", "ports": ports,
+                  "nodes": [{ "id": "echo", "type": "workflow", "internal_workflow_id": "pass" }],
+                  "wires": [wire("in", ("self", "ask"), ("echo", "ask")),
+                            wire("out", ("echo", "reply"), ("self", "reply"))] },
+                { "id": "pass", "kind": "extra", "ports": ports,
+                  "wires": [wire("through", ("self", "ask"), ("self", "reply"))] },
+            ]
+        }))
+        .unwrap()
+    };
+    let home = temp_home("ports");
+    let log = Log::default();
+    let config = with_resume(Resume::Always);
+    let core = core_on(&home, &config, boxed(), &log);
+    assert_eq!(start(&core)["state"]["status"], "running");
+    drop(core);
+
+    // The profile is gone from the new core: the stored copy is what resumes.
+    let core = core_on(&home, &config, one_node(json!({})), &log);
+    assert_eq!(core.recover(), ["exec-1 resumed (0 checkpoints)"]);
+    core.dispatch(
+        method::WORKFLOW_SEND,
+        json!({ "execution_id": "exec-1", "port": "ask", "value": "again" }),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let reply = loop {
+        let page = core
+            .dispatch(method::EVENT_LIST, json!({ "execution_id": "exec-1" }))
+            .unwrap();
+        let found = page["events"].as_array().unwrap().iter().find(|e| {
+            e["kind"] == "emitted" && e["from"] == json!({ "node_id": "self", "port_id": "reply" })
+        });
+        if let Some(event) = found {
+            break event.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "no reply: {page}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(reply["value"], "again");
+    // ask → echo.ask → (through) echo.reply → self.reply: three crossings deep.
+    assert_eq!(reply["depth"], 3);
+}

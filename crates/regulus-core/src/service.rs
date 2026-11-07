@@ -9,7 +9,7 @@ use regulus_proto::{
     code, method, BusEvent, BusEventKind, Direction, DisabledNode, EventListParams, EventPage,
     Execution, ExecutionStartParams, ExecutionState, IdParams, NameParams, Node, NodeCall,
     NodeEvent, NodeStart, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow,
-    BOX_SEPARATOR,
+    WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -252,6 +252,7 @@ impl Core {
                 Ok(Value::Null)
             }
             method::EVENT_LIST => json(self.events(&parse(params)?)?),
+            method::WORKFLOW_SEND => json(self.send(parse(params)?)?),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",
@@ -1053,6 +1054,42 @@ impl Core {
         drop(journal);
         live.queue.append(&mut queued);
         event
+    }
+
+    /// `workflow.send`: a value from outside on an input of the workflow a live execution
+    /// runs. It starts a chain of its own, at depth 0; what reaches the workflow's outputs
+    /// shows up in `event.list` as emitted from `self`.
+    fn send(&self, params: WorkflowSendParams) -> Result<WorkflowSent, RpcError> {
+        let mut executions = self.executions();
+        let live = executions
+            .iter_mut()
+            .find(|live| live.execution.id == params.execution_id)
+            .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?;
+        if !live.execution.state.is_live() {
+            return Err(RpcError::invalid_params(format!(
+                "execution `{}` is not running",
+                params.execution_id
+            )));
+        }
+        let capability = live
+            .workflow
+            .port(&params.port)
+            .filter(|p| p.direction == Direction::Input && p.kind == WireKind::Then)
+            .map(|p| p.capability.clone())
+            .ok_or_else(|| {
+                RpcError::invalid_params(format!(
+                    "`{}` is not a \"then\" input of workflow `{}`",
+                    params.port, live.execution.workflow_id
+                ))
+            })?;
+        let from = PortRef {
+            node_id: WORKFLOW_SELF.into(),
+            port_id: params.port,
+        };
+        let event = self.publish(live, from, capability, params.value, 0);
+        drop(executions);
+        self.kick(&params.execution_id);
+        Ok(WorkflowSent { event })
     }
 
     /// Starts draining the queue of a running execution unless a thread already does.
