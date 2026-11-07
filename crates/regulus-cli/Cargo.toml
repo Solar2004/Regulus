@@ -26,6 +26,8 @@ regulus-module-tools-mcp = { path = "../modules/tools-mcp" }
 regulus-module-files = { path = "../modules/files" }
 regulus-module-process = { path = "../modules/process" }
 regulus-module-guards = { path = "../modules/guards" }
+regulus-module-judge = { path = "../modules/judge" }
+regulus-module-triggers = { path = "../modules/triggers" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true

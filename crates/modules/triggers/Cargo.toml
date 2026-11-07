@@ -1,0 +1,19 @@
+[package]
+name = "regulus-module-triggers"
+description = "Regulus triggers: Cron, Webhook, BusEvent, Chat and Idle/Threshold nodes that start work in a workflow"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+croner.workspace = true
+httparse.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+regulus-module-hello = { path = "../hello" }

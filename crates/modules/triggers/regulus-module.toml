@@ -1,0 +1,257 @@
+[module]
+id             = "regulus/triggers@0.1.0"
+name           = "Triggers"
+requires_proto = "^1.7"
+# triggers.webhooks: where each live Webhook listens. triggers.transcript: a Chat's turns.
+methods        = ["triggers.webhooks", "triggers.transcript"]
+
+# What starts work in a workflow (docs/13-blocks.md §3.2): time, an HTTP call, something
+# on the bus, a chat message, silence or a count. Timers and listeners run on threads of
+# their own and stop with their node. "File changes" is not here: the `files` module
+# watches files.
+
+# Emits the time on `tick` on each match of a cron schedule.
+[[node]]
+type = "cron"
+name = "Cron"
+
+  # The time it fired, RFC 3339.
+  [[node.port]]
+  id         = "tick"
+  name       = "tick"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Five fields (minute granularity) or six (seconds first). Aliases such as @hourly work.
+  [[node.field]]
+  id      = "schedule"
+  type    = "text"
+  default = "* * * * *"
+
+  [[node.field]]
+  id      = "timezone"
+  type    = "select"
+  default = "local"
+  options = ["local", "utc"]
+
+# An HTTP endpoint: what is POSTed (or PUT) to its path leaves on `body` as text and, if
+# it is JSON, on `json`. Nodes with the same `bind` share one listener. One request per
+# connection; bodies need `content-length`. On a listener where any node has a token, an
+# unknown path answers 401 like a wrong token, so paths cannot be probed.
+[[node]]
+type = "webhook"
+name = "Webhook"
+
+  [[node.port]]
+  id         = "body"
+  name       = "body"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "json"
+  name       = "json"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # host:port. Without a token only a loopback address is accepted, and requests that
+  # carry `Origin` (web pages) or a `Host` other than this listener's are refused. Port 0
+  # picks a free one: `triggers.webhooks` says which.
+  [[node.field]]
+  id      = "bind"
+  type    = "text"
+  default = "127.0.0.1:7790"
+
+  # Empty: /<node id>.
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  # A bearer token callers must send, as a reference: secret:<name>. Empty: none.
+  [[node.field]]
+  id      = "token"
+  type    = "text"
+  default = ""
+
+  # Larger bodies get 413 before they are read.
+  [[node.field]]
+  id      = "max_body_bytes"
+  type    = "number"
+  default = 1048576
+
+  # Milliseconds a whole request may take to arrive; a stalled one gets 408. Each
+  # request has a thread of its own, so a slow client holds up nobody else.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 5000
+
+# Fires on what reaches it over "then" wires and matches its filter. It sees only what is
+# wired into it: the node declares `in` (or more inputs) with the capability it listens to.
+[[node]]
+type = "bus_event"
+name = "Bus event"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # `{ port, from: { node_id, port_id }, capability, value, event }`.
+  [[node.port]]
+  id         = "fired"
+  name       = "fired"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Each filter empty: anything. `contains` looks in the value as text (JSON if not text).
+  [[node.field]]
+  id      = "from_node"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "from_port"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "capability"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "contains"
+  type    = "text"
+  default = ""
+
+# The entry of a chattable workflow. Convention: the workflow takes `chat` (text@1) and
+# gives `reply` (text@1); `self.chat` goes into `user` and `out` into `self.reply`. What the
+# user says leaves on `message`, what comes back on `reply` leaves on `out`, and both are
+# kept per execution in the store (`triggers.transcript`).
+[[node]]
+type = "chat"
+name = "Chat"
+
+  [[node.port]]
+  id          = "user"
+  name        = "user"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "message"
+  name       = "message"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id          = "reply"
+  name        = "reply"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The whole transcript after each turn: `[{ role, text, at }]`.
+  [[node.port]]
+  id         = "transcript"
+  name       = "transcript"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Earlier turns put before each message, for what keeps no history of its own. 0: none.
+  [[node.field]]
+  id      = "history_turns"
+  type    = "number"
+  default = 0
+
+  # Turns kept per execution; the oldest go first.
+  [[node.field]]
+  id      = "max_turns"
+  type    = "number"
+  default = 500
+
+# Emits the time on `idle` when nothing reached `in` for `after_ms` (counting from the start).
+[[node]]
+type = "idle"
+name = "Idle"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "idle"
+  name       = "idle"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "after_ms"
+  type    = "number"
+  default = 60000
+
+  # yes: fires again every `after_ms` while it stays quiet. no: once per silence.
+  [[node.field]]
+  id      = "repeat"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+# Emits `{ count, value }` on `reached` when `count` values reached `in`. The count
+# survives a restart of the core (checkpoint).
+[[node]]
+type = "threshold"
+name = "Threshold"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "reached"
+  name       = "reached"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "count"
+  type    = "number"
+  default = 10
+
+  # yes: counts again from zero after firing. no: fires once.
+  [[node.field]]
+  id      = "reset"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]

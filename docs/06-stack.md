@@ -57,6 +57,10 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Globs | **`glob`** | `0.3.4` (verif. 2026-11-07) | `read` de `files` con `specs/*.md`. Del equipo de Rust, sin dependencias. |
 | Observar ficheros | **`notify`** | `8.2` (8.2.1, verif. 2026-11-07; licencia CC0-1.0) | `watch` de `files`: inotify, FSEvents y ReadDirectoryChanges detrás de una API. La 9 sigue en `rc`. |
 | Señales a grupos de procesos | **`libc`** | `0.2` (`0.2.191`, verif. 2026-11-07) | `killpg` para que `process` mate el grupo entero de un comando o job; solo Unix. Ya venía por `portable-pty`. |
+| Cliente HTTP de los módulos | **`ureq`** (features `json`; TLS `rustls` sobre `ring`) | `3.5.1` (upd 2026-11-02, verif. 2026-11-07) | Síncrono, sin runtime de tokio por cliente: encaja con módulos de hilos. Lo usa el motor LLM de `judge`. `reqwest` solo estaba en el árbol por Tauri, sin `blocking` y con TLS `aws-lc-rs`. |
+| Parser HTTP de los módulos | **`httparse`** | `1.10.1` (2025-03-03, verif. 2026-11-07) · 870M descargas | Cabecera de las peticiones del Webhook de `triggers`, que sirve sobre `std::net` con un hilo y un plazo por conexión: un cliente que se para no bloquea a nadie y cerrar no espera a ningún cliente. Ya estaba en el árbol (`hyper`). `tiny_http` se descartó: no tiene plazo de lectura. |
+| Cron | **`croner`** | `4.0.3` (upd 2026-11-04, verif. 2026-11-07) | Cinco o seis campos, `L`, `#`, `W`, alias (`@hourly`), zonas. El Cron de `triggers`. |
+| Fechas | **`chrono`** (sin default; `clock`, `std`) | `0.4.45` (verif. 2026-11-07) | Lo pide `croner`; ya estaba en el árbol. |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,

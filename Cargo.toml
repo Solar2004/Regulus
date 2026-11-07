@@ -26,6 +26,8 @@ members = [
     "crates/regulus-tauri/src-tauri",
     "crates/modules/process",
     "crates/modules/guards",
+    "crates/modules/judge",
+    "crates/modules/triggers",
 ]
 resolver = "2"
 
@@ -62,6 +64,10 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 toml = "1"
 tower = "0.5"
+ureq = { version = "3.5", features = ["json"] }
+httparse = "1.10"
+croner = "4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Perfil release (en un workspace solo la raíz define profiles).
 # Ver https://tauri.app/concept/size/#cargo-configuration
