@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use jsonrpsee::ws_client::WsClient;
+use regulus_cli::modules::TOOLS_MCP_COMMAND;
 use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
@@ -128,7 +129,7 @@ enum Command {
     /// The bridge an agent's CLI runs for each hook event. Not for people: it reads the
     /// event on stdin, asks the hooks wired into the agent through the core, and answers
     /// the way that CLI reads hooks (docs/13-blocks.md §4).
-    #[command(hide = true)]
+    #[command(name = "hook", hide = true)]
     Hook {
         #[arg(long)]
         execution: String,
@@ -620,16 +621,12 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.server.port = port;
     }
     config.modules.without.extend(without);
-    // Agents start the tools bridge as this same program, pointed at this same home.
-    let bridge = regulus_cli::modules::Bridge {
+    // Agents start the bridges as this same program, pointed at this same home.
+    let host = regulus_cli::modules::Host {
         program: std::env::current_exe().context("cannot find this program's path")?,
-        args: vec![
-            "--home".into(),
-            config.home.to_string_lossy().into_owned(),
-            TOOLS_MCP_COMMAND.into(),
-        ],
+        args: vec!["--home".into(), config.home.to_string_lossy().into_owned()],
     };
-    let (core, warnings) = regulus_core::assemble(&config, regulus_cli::modules::hosted(bridge));
+    let (core, warnings) = regulus_core::assemble(&config, regulus_cli::modules::hosted(host));
     for warning in warnings {
         eprintln!("regulus: {warning}");
     }
@@ -645,8 +642,6 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
     core.shutdown();
     Ok(())
 }
-
-const TOOLS_MCP_COMMAND: &str = "tools-mcp";
 
 /// The tools box, reached through the core with the binding the agent was mounted with.
 struct ToolsBackend<'a> {

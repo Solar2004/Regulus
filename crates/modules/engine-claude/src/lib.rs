@@ -66,6 +66,14 @@ impl AcpEngine for Claude {
         Some(SKILLS_DIR)
     }
 
+    fn place_hooks(
+        &self,
+        dir: &std::path::Path,
+        hooks: &[regulus_contract_agent_engine::HookMount],
+    ) -> Option<Result<Vec<String>, String>> {
+        Some(hook::place(dir, hooks))
+    }
+
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {
         let settings = &start.settings;
         let executable = settings
