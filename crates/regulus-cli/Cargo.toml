@@ -32,6 +32,8 @@ regulus-module-memory = { path = "../modules/memory" }
 regulus-module-web = { path = "../modules/web" }
 regulus-module-human = { path = "../modules/human" }
 regulus-module-service = { path = "../modules/service" }
+regulus-module-tasks = { path = "../modules/tasks" }
+regulus-module-workspace = { path = "../modules/workspace" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true

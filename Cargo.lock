@@ -4359,10 +4359,12 @@ dependencies = [
  "regulus-module-providers",
  "regulus-module-service",
  "regulus-module-skills",
+ "regulus-module-tasks",
  "regulus-module-tools",
  "regulus-module-tools-mcp",
  "regulus-module-triggers",
  "regulus-module-web",
+ "regulus-module-workspace",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -4633,6 +4635,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "regulus-module-tasks"
+version = "0.1.0"
+dependencies = [
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "regulus-module-tools"
 version = "0.1.0"
 dependencies = [
@@ -4684,6 +4697,19 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "regulus-module-workspace"
+version = "0.1.0"
+dependencies = [
+ "glob",
+ "regulus-core",
+ "regulus-module-process",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

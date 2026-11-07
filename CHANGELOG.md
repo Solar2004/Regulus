@@ -100,3 +100,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   peticiones en vuelo; las 401 ya no van al log; una llamada síncrona que caduca pasa a job sin
   perder la respuesta. `human` borra lo pendiente solo cuando el valor ya salió y un plazo que
   venció con el core caído salta al reanudar.
+- **Entorno: `workspace` y `tasks`** (`docs/13-blocks.md` §3.3): módulo `workspace` con una
+  carpeta por ejecución con cuota (`quota_exceeded`), motor git worktree (rama propia,
+  `.worktreeinclude`, merge y archivo) o carpeta simple sin git, o el `workspace.engine@1` que
+  se enchufe; cola de merge que solo mergea workspaces propios (o de su `repo` y `root`) tras pasar sus gates, con el checkout de la base limpio; artefactos
+  (`regulus call workspace.artifacts`). Módulo `tasks` con cola de tareas persistente con
+  estados y dependencias, Reclamar con lock y lease (un lease vencido cuenta como intento; `max_attempts`, 3), y Ledger de hechos, plan y progreso que
+  también se inyecta como hook (`tasks.list`, `tasks.ledger`). Ejemplos en
+  `crates/modules/workspace/examples/worktree.toml` y `crates/modules/tasks/examples/queue.toml`.

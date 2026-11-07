@@ -32,6 +32,8 @@ members = [
     "crates/modules/web",
     "crates/modules/human",
     "crates/modules/service",
+    "crates/modules/tasks",
+    "crates/modules/workspace",
 ]
 resolver = "2"
 

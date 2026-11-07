@@ -61,5 +61,7 @@ pub fn hosted(host: Host) -> Vec<Box<dyn Module>> {
         Box::new(regulus_module_web::Web::new()),
         Box::new(regulus_module_human::Human::new()),
         Box::new(regulus_module_service::Service::new()),
+        Box::new(regulus_module_tasks::Tasks::new()),
+        Box::new(regulus_module_workspace::Workspace::new()),
     ]
 }

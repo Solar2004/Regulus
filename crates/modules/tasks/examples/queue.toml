@@ -1,0 +1,165 @@
+# A task queue (docs/13-blocks.md §3.3): three tasks, one of them waiting on another,
+# claimed one at a time in order, completed, and the ledger of what happened.
+#
+#   self.add → queue        self.next → claim → self.task       self.plan → ledger
+#                           self.complete ↗   └ done → ledger.progress, self.done
+#                                             └ drained → self.drained
+#   self.read → ledger → self.ledger
+#
+# Needs only `tasks`. The queue lives in the store: it outlives the execution and a
+# restart of the core (use another `queue` name for a fresh one). Copy it to
+# <home>/profiles/, start `regulus serve`, then:
+#
+#   regulus run queue --detach                                  # exec-1  queue  running
+#   regulus send exec-1 add '[{"id":"build","title":"Build","deps":["setup"]},
+#                             {"id":"setup","title":"Set up"},"Write the docs"]'
+#   regulus send exec-1 plan "Set up, then build; docs any time"
+#   regulus send exec-1 next go   # self.task emitted json@1 {"id":"setup",…,"state":"claimed"}
+#   regulus send exec-1 complete ok          # self.done … "setup" "done" "result":"ok"
+#   regulus send exec-1 next go   # "build" was blocked by "setup", now free: oldest first
+#   regulus send exec-1 complete built
+#   regulus send exec-1 next go   # t3, "Write the docs"
+#   regulus send exec-1 complete written     # … and self.drained {"done":3,…}
+#   regulus send exec-1 read now  # self.ledger emitted text@1 "## Plan\n- Set up, …"
+#   regulus call tasks.list '{"execution_id":"exec-1","node_id":"claim"}'
+#   regulus call tasks.ledger '{"execution_id":"exec-1","node_id":"ledger"}'
+#
+# (Observed 2026-11-07 with `regulus serve --port 0`, debug build: claims setup, build,
+# t3 in that order; self.drained {"todo":0,"claimed":0,"done":3,"failed":0,"blocked":0};
+# self.ledger "## Plan\n- Set up, then build; …\n\n## Progress\n- Set up [done]: ok\n
+# - Build [done]: built\n- Write the docs [done]: written".)
+id = "queue"
+name = "Task queue"
+main_workflow_id = "queue"
+
+[[workflows]]
+id = "queue"
+name = "Task queue"
+kind = "main"
+ports = [
+  { id = "add", capability = "json@1", direction = "input", kind = "then" },
+  { id = "next", capability = "text@1", direction = "input", kind = "then" },
+  { id = "complete", capability = "text@1", direction = "input", kind = "then" },
+  { id = "fail", capability = "text@1", direction = "input", kind = "then" },
+  { id = "plan", capability = "text@1", direction = "input", kind = "then" },
+  { id = "read", capability = "text@1", direction = "input", kind = "then" },
+  { id = "task", capability = "json@1", direction = "output", kind = "then" },
+  { id = "done", capability = "json@1", direction = "output", kind = "then" },
+  { id = "drained", capability = "json@1", direction = "output", kind = "then" },
+  { id = "ledger", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "queue"
+  name = "Queue"
+  type = "queue"
+  module_id = "regulus/tasks@0.1.0"
+  position = { x = 150, y = 100 }
+  config = { queue = "example" }
+  ports = [
+    { id = "add", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "claim"
+  name = "Claim"
+  type = "claim"
+  module_id = "regulus/tasks@0.1.0"
+  position = { x = 350, y = 100 }
+  config = { queue = "example", lease_ms = 60000 }
+  ports = [
+    { id = "next", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "complete", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "fail", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "task", capability = "json@1", direction = "output", kind = "then" },
+    { id = "done", capability = "json@1", direction = "output", kind = "then" },
+    { id = "drained", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "ledger"
+  name = "Ledger"
+  type = "ledger"
+  module_id = "regulus/tasks@0.1.0"
+  position = { x = 550, y = 100 }
+  config = {}
+  ports = [
+    { id = "plan", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "progress", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "read", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "add"
+  kind = "then"
+  from = { node_id = "self", port_id = "add" }
+  to = { node_id = "queue", port_id = "add" }
+
+  [[workflows.wires]]
+  id = "next"
+  kind = "then"
+  from = { node_id = "self", port_id = "next" }
+  to = { node_id = "claim", port_id = "next" }
+
+  [[workflows.wires]]
+  id = "complete"
+  kind = "then"
+  from = { node_id = "self", port_id = "complete" }
+  to = { node_id = "claim", port_id = "complete" }
+
+  [[workflows.wires]]
+  id = "fail"
+  kind = "then"
+  from = { node_id = "self", port_id = "fail" }
+  to = { node_id = "claim", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "plan"
+  kind = "then"
+  from = { node_id = "self", port_id = "plan" }
+  to = { node_id = "ledger", port_id = "plan" }
+
+  [[workflows.wires]]
+  id = "read"
+  kind = "then"
+  from = { node_id = "self", port_id = "read" }
+  to = { node_id = "ledger", port_id = "read" }
+
+  [[workflows.wires]]
+  id = "task"
+  kind = "then"
+  from = { node_id = "claim", port_id = "task" }
+  to = { node_id = "self", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "done"
+  kind = "then"
+  from = { node_id = "claim", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "progress"
+  kind = "then"
+  from = { node_id = "claim", port_id = "done" }
+  to = { node_id = "ledger", port_id = "progress" }
+
+  [[workflows.wires]]
+  id = "drained"
+  kind = "then"
+  from = { node_id = "claim", port_id = "drained" }
+  to = { node_id = "self", port_id = "drained" }
+
+  [[workflows.wires]]
+  id = "ledger"
+  kind = "then"
+  from = { node_id = "ledger", port_id = "out" }
+  to = { node_id = "self", port_id = "ledger" }
+
+  [[workflows.wires]]
+  id = "queue-error"
+  kind = "then"
+  from = { node_id = "queue", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }

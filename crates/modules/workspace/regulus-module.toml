@@ -1,0 +1,472 @@
+[module]
+id             = "regulus/workspace@0.1.0"
+name           = "Workspace"
+requires_proto = "^1.9"
+# workspace.artifacts: what an artifacts node registered in one execution.
+methods        = ["workspace.artifacts"]
+
+# Where an execution works (docs/13-blocks.md §3.3): Conductor, Claude Squad, vibe-kanban,
+# ccmanager, Gas Town's Refinery. A folder per execution, with a quota, made by a
+# swappable engine: `git` (a worktree of a base repository on a branch of its own, the
+# default) or `folder` (a plain folder, empty or a copy of `seed`, no git at all). A node
+# wired into `engine` (workspace.engine@1, method `workspace.engine`) replaces both.
+#
+# What `info` sends, and what the merge queue takes (json@1): `{ id, engine, path, repo?,
+# branch?, base?, target?, archive_dir? }`.
+
+# One folder per execution, `<root>/<execution id>`: a child execution (`call`) gets its
+# own. Git: branch `<branch_prefix><execution id>` from `base`, then the files that
+# `.worktreeinclude` lists (globs from the repo's root, `#` comments; untracked files such
+# as `.env`) are copied in. Every git command runs on a thread of the node, one at a time,
+# never on the bus.
+#
+# Quota: the folder is measured by walking it (links not followed; for git, the worktree,
+# not the repository's objects) every `check_ms` and after each operation. Past
+# `quota_bytes` it says so once on `quota_exceeded` and refuses `write` until it is back
+# under. What other programs write there is measured, not stopped.
+[[node]]
+type = "workspace"
+name = "Workspace"
+
+  # Wired, it replaces the built-in engine.
+  [[node.port]]
+  id          = "engine"
+  name        = "engine"
+  capability  = "workspace.engine@1"
+  direction   = "input"
+  kind        = "uses"
+
+  # Any value: creates it now (without `autostart`), or sends `ready` and `info` again.
+  [[node.port]]
+  id          = "create"
+  name        = "create"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # `{ path, text }`: writes a file inside the folder (never outside), within the quota.
+  [[node.port]]
+  id          = "write"
+  name        = "write"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value: commits what changed and merges it into `base` (git) or onto `target` (folder)
+  # at once, with no gate. For gates, use a merge queue.
+  [[node.port]]
+  id          = "merge"
+  name        = "merge"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value: git commits what changed and removes the worktree (the branch stays); folder
+  # moves it under `<root>/archive/`.
+  [[node.port]]
+  id          = "archive"
+  name        = "archive"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value: measures it now and sends `usage`.
+  [[node.port]]
+  id          = "check"
+  name        = "check"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The folder, once it exists. Sent after `info`.
+  [[node.port]]
+  id          = "ready"
+  name        = "ready"
+  capability  = "path@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "info"
+  name        = "info"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "written"
+  name        = "written"
+  capability  = "path@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "merged"
+  name        = "merged"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  # A merge that did not apply cleanly; the base is left as it was.
+  [[node.port]]
+  id          = "conflict"
+  name        = "conflict"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "archived"
+  name        = "archived"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  # `{ id, path, used, quota }`; `used` is a lower bound.
+  [[node.port]]
+  id          = "quota_exceeded"
+  name        = "quota_exceeded"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "usage"
+  name        = "usage"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.field]]
+  id      = "engine"
+  type    = "select"
+  default = "git"
+  options = ["git", "folder"]
+
+  [[node.field]]
+  id      = "repo"
+  type    = "text"
+  default = ""
+  options = ["git: the base repository. Relative: under the node's own directory."]
+
+  # git: yes creates `repo` (git init and one empty commit) if it does not exist.
+  [[node.field]]
+  id      = "init"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "base"
+  type    = "text"
+  default = ""
+  options = ["git: branch to start from and to merge into. Empty: the repo's current branch."]
+
+  [[node.field]]
+  id      = "branch_prefix"
+  type    = "text"
+  default = "regulus/"
+
+  [[node.field]]
+  id      = "include_file"
+  type    = "text"
+  default = ".worktreeinclude"
+  options = ["git: file in the repo listing untracked files to copy in. Empty: none."]
+
+  [[node.field]]
+  id      = "seed"
+  type    = "text"
+  default = ""
+  options = ["folder: what to copy in at creation. Empty: an empty folder."]
+
+  [[node.field]]
+  id      = "target"
+  type    = "text"
+  default = ""
+  options = ["folder: where `merge` copies the folder. Empty: `seed`."]
+
+  [[node.field]]
+  id      = "root"
+  type    = "text"
+  default = ""
+  options = ["Where the folders go. Empty: the node's own directory (`ModuleCtx::node_dir`)."]
+
+  # yes: created when the execution starts. no: on `create`.
+  [[node.field]]
+  id      = "autostart"
+  type    = "select"
+  default = "yes"
+  options = ["no", "yes"]
+
+  # What happens to it when the execution stops.
+  [[node.field]]
+  id      = "on_stop"
+  type    = "select"
+  default = "keep"
+  options = ["keep", "archive"]
+
+  [[node.field]]
+  id      = "quota_bytes"
+  type    = "number"
+  default = 1073741824
+  options = ["Bytes the folder may hold. 0: no quota."]
+
+  [[node.field]]
+  id      = "check_ms"
+  type    = "number"
+  default = 10000
+  options = ["How often it is measured, in ms. 0: only after operations and on `check`."]
+
+  # git: merge, a merge commit (--no-ff); ff, fast-forward only (a base that moved is a
+  # conflict); squash, one commit with everything.
+  [[node.field]]
+  id      = "merge_mode"
+  type    = "select"
+  default = "merge"
+  options = ["merge", "ff", "squash"]
+
+  [[node.field]]
+  id      = "commit_message"
+  type    = "text"
+  default = "regulus: {{workspace}}"
+  options = ["Message of the commit of pending changes and of the merge. {{workspace}}: its id."]
+
+  [[node.field]]
+  id      = "author_name"
+  type    = "text"
+  default = ""
+  options = ["Who commits, if set; empty: git's own configuration."]
+
+  [[node.field]]
+  id      = "author_email"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "git_timeout_ms"
+  type    = "number"
+  default = 60000
+  options = ["Most ms one git command may take; then it is killed. 0: no limit."]
+
+# Merges workspaces one at a time, each only after its gates pass (Gas Town's Refinery).
+# An entry (a workspace's `info`) arrives on `in`; when it is first in line it goes out on
+# `check`, for the gates to look at it. Every input whose id is `pass` or starts with
+# `pass_` is a gate: a value on it passes that gate for the entry it names (`{ entry: n }`,
+# the number `queued` gave it) or, naming none, for the first in line. Any value on `fail`
+# or a `fail_*` input rejects it (out on `rejected`). A gate is whatever ends there: a
+# process `gate`, a judge's verdict, a human. Once every gate passed, it merges through the
+# workspace's engine (or the one wired into `engine`) and the next one goes to `check`.
+# Inputs may be declared with any capability. The line is kept in the node's checkpoint.
+[[node]]
+type = "merge_queue"
+name = "Merge queue"
+
+  # Wired, it replaces the engine each entry names.
+  [[node.port]]
+  id          = "engine"
+  name        = "engine"
+  capability  = "workspace.engine@1"
+  direction   = "input"
+  kind        = "uses"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "pass"
+  name        = "pass"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "fail"
+  name        = "fail"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # `{ entry, position, info }` for each entry taken.
+  [[node.port]]
+  id          = "queued"
+  name        = "queued"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  # `{ entry, info }`: the first in line, for its gates.
+  [[node.port]]
+  id          = "check"
+  name        = "check"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "merged"
+  name        = "merged"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "conflict"
+  name        = "conflict"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  # `{ entry, info, gate, value }`.
+  [[node.port]]
+  id          = "rejected"
+  name        = "rejected"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  # Entries come over a wire, so the queue only merges a workspace this module made and
+  # still has, or, if these are set, a git workspace of this `repo` whose folder is under
+  # this `root` (absolute, or relative to the queue's own directory).
+  [[node.field]]
+  id      = "repo"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "root"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "max_entries"
+  type    = "number"
+  default = 64
+  options = ["Entries waiting at once; past it, `in` is refused."]
+
+  # git: merge, a merge commit (--no-ff); ff, fast-forward only (a base that moved is a
+  # conflict); squash, one commit with everything.
+  [[node.field]]
+  id      = "merge_mode"
+  type    = "select"
+  default = "merge"
+  options = ["merge", "ff", "squash"]
+
+  [[node.field]]
+  id      = "commit_message"
+  type    = "text"
+  default = "regulus: {{workspace}}"
+  options = ["Message of the commit of pending changes and of the merge. {{workspace}}: its id."]
+
+  [[node.field]]
+  id      = "author_name"
+  type    = "text"
+  default = ""
+  options = ["Who commits, if set; empty: git's own configuration."]
+
+  [[node.field]]
+  id      = "author_email"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "git_timeout_ms"
+  type    = "number"
+  default = 60000
+  options = ["Most ms one git command may take; then it is killed. 0: no limit."]
+
+# Files an execution produced, kept and listed. A path on `add` (relative: under `dir`)
+# must stay under `dir`, links and `..` resolved, unless `allow_outside = yes`; with
+# `copy = yes` it is copied to `<node dir>/<execution>/<n>-<name>`, so it outlives the
+# workspace it came from. The path kept goes out on `out`.
+[[node]]
+type = "artifacts"
+name = "Artifacts"
+
+  # A path, or `{ path, name? }`. May be declared `text@1`.
+  [[node.port]]
+  id          = "add"
+  name        = "add"
+  capability  = "path@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value: sends the execution's artifacts on `artifacts`.
+  [[node.port]]
+  id          = "list"
+  name        = "list"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "out"
+  name        = "out"
+  capability  = "path@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "artifacts"
+  name        = "artifacts"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+  options = ["The base folder. Empty: the node's own directory."]
+
+  [[node.field]]
+  id      = "allow_outside"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "copy"
+  type    = "select"
+  default = "yes"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 104857600
+  options = ["Largest file it takes."]
