@@ -96,6 +96,7 @@ Studio, llama.cpp), skills, MCP, canal entre agentes.
 | **`memory`** | **Store** leído y escrito por el agente (como herramienta y como inyección por hook) · **Reflexión** (buffer de fallos) · **Biblioteca de skills** que crece | Letta memory blocks, Reflexion, Voyager, ECC instincts |
 | **`web`** | **HTTP** · **Fetch** · **Búsqueda** · **PDF** · **Descarga** de datasets | n8n/Dify HTTP, PaperBench `web_search` y lector paginado, Agent Lab (arXiv, HuggingFace) |
 | **`human`** | **Aprobación** (pausa, formulario, timeout con rama, reanuda por id) · **Revisión** entre fases | Dify Human Input, LangGraph `interrupt`, A2A `input-required`, Spec Kit (una fase por comando revisado) |
+| **`service`** (✅ decidido 2026-11-07) | Regulus **hacia fuera**: un workflow con puertos propios (§2 #3) se ofrece como **endpoint** a sistemas externos. **Llaves** generadas por Regulus, guardadas como secretos, con **ámbito** (qué proyectos y qué workflows puede llamar cada una), revocables una a una · **Política** por llave, por workflow o por llave×workflow, componible: **cooldown**, límite de peticiones por ventana, concurrencia, presupuesto (son envolturas de `guards` aplicadas en la puerta) · **Log** de peticiones al store (quién, qué, cuándo, cuánto tardó, resultado), consultable como `regulus events` · **Motor intercambiable**: HTTP de serie (síncrono y por job con `id` + sondeo); la misma caja puede servir WebSocket, MCP (`rmcp`, ya en `tools-mcp`) o compatible OpenAI sin tocar nada más · CLI equivalente (`regulus service key new|list|revoke`, `regulus service expose`). Hacer peticiones hacia fuera es `web`; recibirlas sin llave ni política es `triggers` Webhook. Al core no le pide nada nuevo: usa secretos, store (#2) y puertos del workflow (#3) | LiteLLM virtual keys (presupuesto y límite por llave y por equipo), Dify "API Access" (una llave por app), n8n webhook auth, Ollama/LM Studio como API local; **de memoria** |
 
 ---
 
@@ -165,7 +166,7 @@ Lo que ningún diseño de nodos arregla, o que espera a otra pieza:
 ## 7. Orden de trabajo
 
 Es la fila 4f de `plan.md` §3; las filas 5-6 (canvas editable, Operar) van después.
-🔶 Las estimaciones son de Claude, sin medir: ~22 días de core y módulos más ~2 semanas
+🔶 Las estimaciones son de Claude, sin medir: ~23 días de core y módulos más ~2 semanas
 de app, unas 5 semanas en total. Se corrigen con el tiempo real al lado.
 
 | # | Qué | Est. |
@@ -173,7 +174,7 @@ de app, unas 5 semanas en total. Se corrigen con el tiempo real al lado.
 | 1 | Core: cable "luego" con dato + bus; store SQLite con ejecuciones persistentes; workflow con puertos propios; sub-ejecución `Call` | ~5 días |
 | 2 | Caja Agente: ranura `hooks` con puente `regulus hook` | ~2 días |
 | 3 | Módulos de lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers` | ~6 días |
-| 4 | Módulos de entorno: `workspace` · `tasks` · `memory` · `web` · `human` | ~5 días |
+| 4 | Módulos de entorno: `workspace` · `tasks` · `memory` · `web` · `human` · `service` | ~6 días |
 | 5 | Plantillas de §5, en orden, cada una corriendo por CLI/TUI | ~4 días |
 | 6 | Pasarela, solo cuando una plantilla la pida | — |
 | 7 | App: canvas editable, Operar, instalar plantillas; la app misma editable y por configuración (`00-principles.md` §4) | ~2 sem |
