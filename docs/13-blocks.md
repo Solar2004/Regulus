@@ -41,13 +41,12 @@ de §3 piden, y cada pieza tiene quien la pide:
 | 1 | **Cable "luego" con dato**, tipado por capacidad (`text@1`, `image@1`…), sobre el bus. `WireKind::Then` ya existe como tipo y el validador lo acepta (`regulus-proto/src/graph.rs`), pero no hay bus y ningún dato viaja entre cajas | `flow`, `triggers`, `process`, todo lo de §3 |
 | 2 | ✅ *Construido* (2026-11-07, paso 1b). **Store** (SQLite, uno por proyecto y uno global, `02-architecture.md` §6): ejecuciones que sobreviven al reinicio, arrancan con `serve` y se reanudan desde checkpoint | `human` (pausar y reanudar), `tasks`, `memory`, bucles largos |
 | 3 | ✅ *Construido* (2026-11-07, paso 1c). **Workflow como caja**: puertos propios de entrada y salida en un workflow del usuario (`self.<puerto>` dentro, nodo sin módulo con `internal_workflow_id` fuera, `workflow.send` / `regulus send` para hablarle; `02-architecture.md` §4 regla 4, §6). Ya existen `Node.internal_workflow` y `WorkflowKind::Module` (`11-composition.md` §6) y el "luego" que cruza de canvas (§5); lo nuevo es que un workflow declare sus puertos, se enchufe en otro y se le hable (`chat`) desde la TUI o la app | el "CLI custom", `Call` |
-| 4 | **Sub-ejecución "llama y espera"**: `parent` en `Execution`; un nodo `Call` instancia una plantilla con entradas y devuelve su resultado. El agente lo usa como herramienta | subagentes N, handoff, orquestador-workers, Roo `new_task` |
+| 4 | ✅ *Construido* (2026-11-07, paso 1d). **Sub-ejecución "llama y espera"**: `parent` en `Execution`; `ModuleCtx::call_workflow` arranca una hija de un workflow con puertos y su primera salida vuelve al nodo como `node/child`; parar al padre para a las hijas (`02-architecture.md` §4 regla 5). El nodo `call` de `flow` lo usa: un valor, una hija. Que el agente lo use como herramienta queda para su paso | subagentes N, handoff, orquestador-workers, Roo `new_task` |
 
 Lo que **no** entra en el core: hooks (ranura de la caja Agente, §4), disparadores,
 scripts, jueces, memoria, workspaces, colas. Todo módulo, todo se quita uno a uno.
 
-**Qué enmienda en otros docs** (como hizo `11-composition.md` §11; aplicadas salvo
-`parent`, pendiente de su paso):
+**Qué enmienda en otros docs** (como hizo `11-composition.md` §11; todas aplicadas):
 
 - ✅ *Aplicada* (2026-11-07, paso 1a; el bus en `02-architecture.md` §6).
   `11-composition.md` §4 y `02-architecture.md` §4: el "luego" **lleva dato** tipado por
@@ -56,8 +55,8 @@ scripts, jueces, memoria, workspaces, colas. Todo módulo, todo se quita uno a u
   profundidad configurable del core se mantiene como red de seguridad; el tope N del
   Bucle es del nodo. `Port.lazy` y `cardinality` ya existen y se usan tal cual.
 - `02-architecture.md` §4: `Workflow` gana puertos propios ✅ (*aplicada* 2026-11-07,
-  paso 1c) y `Execution` gana `parent` (pendiente, paso 1d). Son abstracciones genéricas,
-  no conceptos de IA.
+  paso 1c) y `Execution` gana `parent` ✅ (*aplicada* 2026-11-07, paso 1d, regla 5). Son
+  abstracciones genéricas, no conceptos de IA.
 - ✅ *Aplicada* (2026-11-07, paso 1b). `02-architecture.md` §6: el esquema del store,
   escrito; este doc decidía **qué** guarda (ejecuciones, checkpoints), aquel dice cómo.
 
@@ -81,7 +80,7 @@ Studio, llama.cpp), skills, MCP, canal entre agentes.
 
 | Módulo | Nodos | De dónde sale |
 |---|---|---|
-| **`flow`** | **Condición/Switch** (reglas o enum) · **Bucle** hasta condición con tope N · **Unir** (fan-in; modo barrera: espera a los N) · **Fan-out** · **Esperar** · **Variable** · **Convertir tipo** (el módulo de compatibilidad entre dos cosas) | n8n IF/Switch/Merge/Loop, Node-RED switch/join, Dify Iteration/Aggregator, Langflow Type Convert; debate y Mixture-of-Agents piden la barrera |
+| **`flow`** | ✅ **Llamar** (`call`, construido 2026-11-07: cada valor arranca una hija del workflow de su campo `workflow`; puertos espejo de los del workflow por id, más `done`; ejemplo `crates/modules/flow/examples/call.toml`) · **Condición/Switch** (reglas o enum) · **Bucle** hasta condición con tope N · **Unir** (fan-in; modo barrera: espera a los N) · **Fan-out** · **Esperar** · **Variable** · **Convertir tipo** (el módulo de compatibilidad entre dos cosas) | n8n IF/Switch/Merge/Loop, Node-RED switch/join, Dify Iteration/Aggregator, Langflow Type Convert; debate y Mixture-of-Agents piden la barrera |
 | **`files`** | **Fichero → prompt** (la IA lee X) · **Prompt → fichero** (artefacto de fase) · **Documento fijo** (se inyecta cada turno: constitución, steering, rules) · **Observar fichero** | Ralph (`PROMPT.md`, `fix_plan.md`), Spec Kit (constitution, `specs/`), Kiro steering, ECC rules, BMAD story files, Manus `todo.md` |
 | **`process`** | **Script/Comando** · **Gate** (exit code = veredicto determinista) · **Job largo** con logs y timeout · **Terminal/PTY** (ya previsto en `plan.md` §2) | Ralph backpressure (tests, tipos), PaperBench `reproduce.sh`, SWE-agent, pxl `build` |
 | **`judge`** | **Juez LLM** (schema estricto, campo enum + `feedback`) · **Clasificador** · **Extractor** · **Rúbrica en árbol** (hojas pass/fail, padre media ponderada) | OpenAI structured outputs, CrewAI guardrails, Dify Question Classifier, PaperBench. **Motor intercambiable:** el de serie es "LLM con schema"; Alexander puede enchufar el suyo desde cero |

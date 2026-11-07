@@ -37,7 +37,9 @@ negociar un major compatible.
 | `event.list` *(1.5)* | `since?`, `execution_id?`, `project_id?`, `limit?` | `events` del bus (`emitted`, `delivered`, `failed`, `cut`), `next` (cursor) y `pending` |
 | `workflow.send` *(1.7)* | `execution_id`, `port`, `value` | `event`: el `seq` del `emitted`; la respuesta sale en `event.list` desde `self.<salida>` |
 
-El core real (`regulus serve`) habla el protocolo `1.7`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.8`, compatible con el `1.0` del mock.
+Desde `1.8` una ejecución puede traer `parent`: la arrancó un nodo de otra
+(`02-architecture.md` §4 regla 5).
 Desde `1.7` un workflow puede traer `ports` (sus entradas y salidas; los cables de dentro
 las nombran `self`).
 Los métodos de los módulos se suman a estos (p. ej. `agent.prompt`, `claude.detect`).
