@@ -1,0 +1,20 @@
+[package]
+name = "regulus-module-web"
+description = "Regulus web: HTTP requests, readable fetch, search over a swappable engine, PDF text and downloads, guarded against private destinations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Pinned to the patch line: the SSRF guard is a resolver of `ureq::unversioned`, which
+# does not follow semver.
+ureq = { version = "~3.5.1", features = ["json"] }
+url = "2.5"
+lopdf = { version = "0.47", default-features = false }
+
+[dev-dependencies]
+toml.workspace = true

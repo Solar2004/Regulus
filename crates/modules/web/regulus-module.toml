@@ -1,0 +1,546 @@
+[module]
+id             = "regulus/web@0.1.0"
+name           = "Web"
+requires_proto = "^1.5"
+
+# The web as a box (docs/13-blocks.md §3.3): n8n and Dify HTTP, PaperBench's web search
+# and paginated reader, Agent Laboratory's arXiv and datasets. Every value is handled on
+# a thread of its own; nothing waits on the bus. Every request goes out with the fixed
+# User-Agent `regulus/<version>`, no proxy and no data about the user; private
+# destinations are refused unless the node says `allow_private = yes`, checked after DNS
+# resolution and again on each redirect. What a node emits starts a new chain (depth 0).
+# Errors say the URL without its query, never a header value.
+
+# An HTTP request per value. A JSON answer (by content type, or `parse`) leaves on `out`,
+# anything else as text on `text`; `status` gets { status, url } first. A status of 400
+# or more goes to `error` unless `fail_on_status = no`.
+[[node]]
+type = "http"
+name = "HTTP"
+
+  # A node may declare it `json@1` instead.
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "out"
+  name        = "out"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "text"
+  name        = "text"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "status"
+  name        = "status"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.field]]
+  id      = "method"
+  type    = "select"
+  default = "GET"
+  options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+
+  # The URL. `{{input}}` is the value, `{{json.path}}` a field of it (a dotted path);
+  # each is percent-encoded. Empty: the value itself is the URL.
+  [[node.field]]
+  id      = "url"
+  type    = "text"
+  default = ""
+
+  # `name = value`; values may be `secret:<name>`. Sent only to the first URL's origin:
+  # a redirect elsewhere drops them.
+  [[node.field]]
+  id      = "headers"
+  type    = "map"
+  default = {}
+
+  # The body, with `{{input}}` and `{{json.path}}` (not encoded). Empty: POST, PUT and
+  # PATCH send the value (text as text/plain, the rest as JSON); other methods none.
+  [[node.field]]
+  id      = "body"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "parse"
+  type    = "select"
+  default = "auto"
+  options = ["auto", "json", "text"]
+
+  [[node.field]]
+  id      = "fail_on_status"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]
+
+  # Milliseconds a whole request may take, redirects and body included.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 30000
+
+  # The body, in bytes; past it the value goes to `error`. Above 0.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 4194304
+
+  # Each hop is checked again: scheme, and the address it resolves to.
+  [[node.field]]
+  id      = "max_redirects"
+  type    = "number"
+  default = 5
+
+  # yes: loopback, private, link-local and shared addresses may be reached
+  # (checked after DNS resolution, on every hop).
+  [[node.field]]
+  id      = "allow_private"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Values one node handles at once, each on a thread of its own.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # Values that wait for a free thread; past it a value goes to `error`. Stopping the
+  # node drops them, and its requests in flight are discarded.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16
+
+# A page as readable text: HTML loses scripts, styles and tags (`markdown` keeps headings,
+# lists, links and emphasis; `raw` keeps the body as sent). With `paginate = yes` the text
+# leaves in chunks of `chunk_chars`, one value each, cut at a line break when it can.
+[[node]]
+type = "fetch"
+name = "Fetch"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "out"
+  name        = "out"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  # The URL. `{{input}}` is the value, `{{json.path}}` a field of it (a dotted path);
+  # each is percent-encoded. Empty: the value itself is the URL.
+  [[node.field]]
+  id      = "url"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "format"
+  type    = "select"
+  default = "markdown"
+  options = ["markdown", "text", "raw"]
+
+  [[node.field]]
+  id      = "paginate"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "chunk_chars"
+  type    = "number"
+  default = 8000
+
+  # Milliseconds a whole request may take, redirects and body included.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 30000
+
+  # The body, in bytes; past it the value goes to `error`. Above 0.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 2097152
+
+  # Each hop is checked again: scheme, and the address it resolves to.
+  [[node.field]]
+  id      = "max_redirects"
+  type    = "number"
+  default = 5
+
+  # yes: loopback, private, link-local and shared addresses may be reached
+  # (checked after DNS resolution, on every hop).
+  [[node.field]]
+  id      = "allow_private"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Values one node handles at once, each on a thread of its own.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # Values that wait for a free thread; past it a value goes to `error`. Stopping the
+  # node drops them, and its requests in flight are discarded.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16
+
+# A web search: the query goes to the engine wired into `engine`, any node serving
+# `web.search@1` (method `web.search`: { query, max_results } -> { results: [{ title, url,
+# snippet }] }). Results leave as JSON on `out` and as a numbered list on `text`.
+[[node]]
+type = "search"
+name = "Search"
+
+  # Required: the box has no engine of its own. `searxng` is the one shipped.
+  [[node.port]]
+  id          = "engine"
+  name        = "engine"
+  capability  = "web.search@1"
+  direction   = "input"
+  kind        = "uses"
+  required    = true
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "out"
+  name        = "out"
+  capability  = "json@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "text"
+  name        = "text"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  # The query, with `{{input}}` and `{{json.path}}`. Empty: the value.
+  [[node.field]]
+  id      = "query"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "max_results"
+  type    = "number"
+  default = 5
+
+  # Values one node handles at once, each on a thread of its own.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # Values that wait for a free thread; past it a value goes to `error`. Stopping the
+  # node drops them, and its requests in flight are discarded.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16
+
+# A search engine for `search`: a SearXNG-style endpoint that answers `?q=…&format=json`
+# with { results: [{ title, url, content }] }. No API key. It runs on the search node's
+# thread.
+[[node]]
+type = "searxng"
+name = "SearXNG engine"
+
+  [[node.port]]
+  id          = "engine"
+  name        = "engine"
+  capability  = "web.search@1"
+  direction   = "output"
+  kind        = "uses"
+
+  # The search endpoint. A local instance needs `allow_private = yes`.
+  [[node.field]]
+  id      = "url"
+  type    = "text"
+  default = "http://127.0.0.1:8888/search"
+
+  [[node.field]]
+  id      = "categories"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "language"
+  type    = "text"
+  default = ""
+
+  # Milliseconds a whole request may take, redirects and body included.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 15000
+
+  # The body, in bytes; past it the value goes to `error`. Above 0.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 2097152
+
+  # Each hop is checked again: scheme, and the address it resolves to.
+  [[node.field]]
+  id      = "max_redirects"
+  type    = "number"
+  default = 5
+
+  # yes: loopback, private, link-local and shared addresses may be reached
+  # (checked after DNS resolution, on every hop).
+  [[node.field]]
+  id      = "allow_private"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+# The text of a PDF at a URL or a path, page by page. A path from the value stays under
+# the base folder (`dir`, or the node's own directory) unless `allow_outside = yes`.
+[[node]]
+type = "pdf"
+name = "PDF"
+
+  # A node may declare it `path@1` instead.
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "out"
+  name        = "out"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  # A path or URL, with `{{input}}`. Empty: the value. The profile's path is not bounded.
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "allow_outside"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "max_pages"
+  type    = "number"
+  default = 200
+
+  [[node.field]]
+  id      = "max_chars"
+  type    = "number"
+  default = 1000000
+
+  # Milliseconds a whole request may take, redirects and body included.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 60000
+
+  # The body, in bytes; past it the value goes to `error`. Above 0.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 33554432
+
+  # Each hop is checked again: scheme, and the address it resolves to.
+  [[node.field]]
+  id      = "max_redirects"
+  type    = "number"
+  default = 5
+
+  # yes: loopback, private, link-local and shared addresses may be reached
+  # (checked after DNS resolution, on every hop).
+  [[node.field]]
+  id      = "allow_private"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Values one node handles at once, each on a thread of its own.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # Values that wait for a free thread; past it a value goes to `error`. Stopping the
+  # node drops them, and its requests in flight are discarded.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16
+
+# Saves a URL to a file under the base folder (`dir`, or the node's own directory) and
+# sends its path. The file fills beside the target and is renamed over it; past
+# `max_bytes` it is deleted. The name is `file`, or the URL's last segment made plain.
+[[node]]
+type = "download"
+name = "Download"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "path"
+  name        = "path"
+  capability  = "path@1"
+  direction   = "output"
+  kind        = "then"
+
+  [[node.port]]
+  id          = "error"
+  name        = "error"
+  capability  = "text@1"
+  direction   = "output"
+  kind        = "then"
+
+  # The URL. `{{input}}` is the value, `{{json.path}}` a field of it (a dotted path);
+  # each is percent-encoded. Empty: the value itself is the URL.
+  [[node.field]]
+  id      = "url"
+  type    = "text"
+  default = ""
+
+  # The file name under the base, with `{{input}}`. Empty: from the URL.
+  [[node.field]]
+  id      = "file"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  # yes: `file` may resolve outside the base folder.
+  [[node.field]]
+  id      = "allow_outside"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Milliseconds a whole request may take, redirects and body included.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 300000
+
+  # The body, in bytes; past it the value goes to `error`. Above 0.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 104857600
+
+  # Each hop is checked again: scheme, and the address it resolves to.
+  [[node.field]]
+  id      = "max_redirects"
+  type    = "number"
+  default = 5
+
+  # yes: loopback, private, link-local and shared addresses may be reached
+  # (checked after DNS resolution, on every hop).
+  [[node.field]]
+  id      = "allow_private"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # no: every hop, the first and each redirect, must be https.
+  [[node.field]]
+  id      = "allow_http"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Values one node handles at once, each on a thread of its own.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # Values that wait for a free thread; past it a value goes to `error`. Stopping the
+  # node drops them, and its requests in flight are discarded.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16

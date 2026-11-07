@@ -1,0 +1,175 @@
+# Web (docs/13-blocks.md §3.3) against a local server, no internet needed. `api` is an
+# HTTP GET of `http://127.0.0.1:8765/{{input}}`; `page` fetches the URL it gets as
+# Markdown in chunks of 100 characters; `save` downloads it under its node directory;
+# `guarded` is the same GET without `allow_private`: the address is refused after DNS.
+# With internet, `page` takes any URL (`regulus send exec-1 page https://example.com`)
+# once `allow_private` is back to `no`.
+#
+# Run (2026-11-07, debug build), from the repository root:
+#
+#   python3 -m http.server 8765 --bind 127.0.0.1 --directory crates/modules/web/examples/site &
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/web/examples/web.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run web --detach                                   # exec-1  web  running
+#   regulus send exec-1 get data.json
+#     … api.status emitted json@1 {"status":200,"url":"http://127.0.0.1:8765/data.json"}
+#     … self.json emitted json@1 {"items":[…],"name":"regulus"}
+#   regulus send exec-1 page http://127.0.0.1:8765/page.html
+#     … self.chunks emitted text@1 "# Release notes\n\nVersion **0.1** adds the [web module](…)…"
+#     … self.chunks emitted text@1 "- Readable fetch\n- PDF text\n\n## Limits\n\n…"   (2 chunks)
+#   regulus send exec-1 save http://127.0.0.1:8765/data.json
+#     … self.saved emitted path@1 "<home>/data/global/regulus/web/web/save/data.json"
+#   regulus send exec-1 guarded data.json
+#     … self.blocked emitted text@1 "http `guarded`: http://127.0.0.1:8765/data.json: io:
+#        127.0.0.1 resolves to 127.0.0.1, a private address; the node needs
+#        `allow_private = yes` to reach it"
+#
+# (`regulus send` returns once what it caused is delivered; the network replies come
+# after, from the nodes' own threads: see them with `regulus events --execution exec-1`.)
+id = "web"
+name = "Web"
+main_workflow_id = "web"
+
+[[workflows]]
+id = "web"
+name = "Web"
+kind = "main"
+ports = [
+  { id = "get", capability = "text@1", direction = "input", kind = "then" },
+  { id = "page", capability = "text@1", direction = "input", kind = "then" },
+  { id = "save", capability = "text@1", direction = "input", kind = "then" },
+  { id = "guarded", capability = "text@1", direction = "input", kind = "then" },
+  { id = "json", capability = "json@1", direction = "output", kind = "then" },
+  { id = "text", capability = "text@1", direction = "output", kind = "then" },
+  { id = "chunks", capability = "text@1", direction = "output", kind = "then" },
+  { id = "saved", capability = "path@1", direction = "output", kind = "then" },
+  { id = "blocked", capability = "text@1", direction = "output", kind = "then" },
+  { id = "errors", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "api"
+  name = "API"
+  type = "http"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 300, y = 50 }
+  config = { url = "http://127.0.0.1:8765/{{input}}", allow_private = "yes", headers = { accept = "application/json" } }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "text", capability = "text@1", direction = "output", kind = "then" },
+    { id = "status", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "reader"
+  name = "Reader"
+  type = "fetch"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 300, y = 200 }
+  config = { allow_private = "yes", paginate = "yes", chunk_chars = 100 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "save"
+  name = "Save"
+  type = "download"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 300, y = 350 }
+  config = { allow_private = "yes", allow_http = "yes", max_bytes = 1048576 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "path", capability = "path@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "guarded"
+  name = "Guarded"
+  type = "http"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 300, y = 500 }
+  config = { url = "http://127.0.0.1:8765/{{input}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "get"
+  kind = "then"
+  from = { node_id = "self", port_id = "get" }
+  to = { node_id = "api", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "json"
+  kind = "then"
+  from = { node_id = "api", port_id = "out" }
+  to = { node_id = "self", port_id = "json" }
+
+  [[workflows.wires]]
+  id = "text"
+  kind = "then"
+  from = { node_id = "api", port_id = "text" }
+  to = { node_id = "self", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "api-error"
+  kind = "then"
+  from = { node_id = "api", port_id = "error" }
+  to = { node_id = "self", port_id = "errors" }
+
+  [[workflows.wires]]
+  id = "page"
+  kind = "then"
+  from = { node_id = "self", port_id = "page" }
+  to = { node_id = "reader", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "chunks"
+  kind = "then"
+  from = { node_id = "reader", port_id = "out" }
+  to = { node_id = "self", port_id = "chunks" }
+
+  [[workflows.wires]]
+  id = "reader-error"
+  kind = "then"
+  from = { node_id = "reader", port_id = "error" }
+  to = { node_id = "self", port_id = "errors" }
+
+  [[workflows.wires]]
+  id = "save"
+  kind = "then"
+  from = { node_id = "self", port_id = "save" }
+  to = { node_id = "save", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "saved"
+  kind = "then"
+  from = { node_id = "save", port_id = "path" }
+  to = { node_id = "self", port_id = "saved" }
+
+  [[workflows.wires]]
+  id = "save-error"
+  kind = "then"
+  from = { node_id = "save", port_id = "error" }
+  to = { node_id = "self", port_id = "errors" }
+
+  [[workflows.wires]]
+  id = "guarded"
+  kind = "then"
+  from = { node_id = "self", port_id = "guarded" }
+  to = { node_id = "guarded", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "blocked"
+  kind = "then"
+  from = { node_id = "guarded", port_id = "error" }
+  to = { node_id = "self", port_id = "blocked" }
