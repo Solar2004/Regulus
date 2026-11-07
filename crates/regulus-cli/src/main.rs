@@ -125,6 +125,30 @@ enum Command {
     /// on stdio and reads its binding from the environment.
     #[command(name = "tools-mcp", hide = true)]
     ToolsMcp,
+    /// The bridge an agent's CLI runs for each hook event. Not for people: it reads the
+    /// event on stdin, asks the hooks wired into the agent through the core, and answers
+    /// the way that CLI reads hooks (docs/13-blocks.md §4).
+    #[command(hide = true)]
+    Hook {
+        #[arg(long)]
+        execution: String,
+        /// The agent node the hooks are wired into.
+        #[arg(long)]
+        node: String,
+        /// Only this hook node. Without it, every hook of the agent.
+        #[arg(long)]
+        hook: Option<String>,
+        /// The engine-neutral event name (`pre_tool`, `stop`…).
+        #[arg(long)]
+        event: String,
+        /// How long the hooks may take. Without it, the core's `[hooks] timeout_ms`.
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// How stdin and the answer are written: `json` (a `HookRequest` in, the combined
+        /// `HookAnswer` out) or the name of an engine's hook protocol (`claude`).
+        #[arg(long, default_value = HOOK_JSON)]
+        format: String,
+    },
     /// Secrets that workflows name as `secret:<name>`.
     Secret {
         #[command(subcommand)]
@@ -214,6 +238,24 @@ async fn main() -> Result<()> {
     match command {
         Command::Serve { port, without } => serve(config, port, without).await,
         Command::ToolsMcp => tools_bridge(&client).await,
+        Command::Hook {
+            execution,
+            node,
+            hook,
+            event,
+            timeout_ms,
+            format,
+        } => {
+            let ask = HookAsk {
+                execution,
+                node,
+                hook,
+                event,
+                timeout_ms,
+            };
+            let code = hook_bridge(&client, ask, &format).await;
+            std::process::exit(code);
+        }
         Command::Call { method, params } => {
             let params: Value = serde_json::from_str(&params).context("params must be JSON")?;
             let result: Value = client.request(&method, params).await?;
@@ -645,6 +687,97 @@ async fn tools_bridge(client: &Client<'_>) -> Result<()> {
     // stdio is blocking; the runtime keeps serving the backend's requests meanwhile.
     tokio::task::block_in_place(|| regulus_module_tools_mcp::serve(&backend, TOOLS_MCP_COMMAND))?;
     Ok(())
+}
+
+/// The neutral format of the hook bridge: a `HookRequest` on stdin, a `HookAnswer` out.
+const HOOK_JSON: &str = "json";
+/// What the hook bridge exits with when it cannot get an answer: a non-blocking error
+/// for Claude Code, which goes on as if there were no hook.
+const HOOK_FAILED: i32 = 1;
+
+struct HookAsk {
+    execution: String,
+    node: String,
+    hook: Option<String>,
+    event: String,
+    timeout_ms: Option<u64>,
+}
+
+/// Reads the event, asks the core and answers in `format`. Returns the exit code.
+async fn hook_bridge(client: &Client<'_>, ask: HookAsk, format: &str) -> i32 {
+    match hook_answer(client, ask, format).await {
+        Ok((code, stdout, stderr)) => {
+            print!("{stdout}");
+            eprint!("{stderr}");
+            code
+        }
+        Err(error) => {
+            eprintln!("regulus hook: {error:#}");
+            HOOK_FAILED
+        }
+    }
+}
+
+async fn hook_answer(
+    client: &Client<'_>,
+    ask: HookAsk,
+    format: &str,
+) -> Result<(i32, String, String)> {
+    use regulus_module_engine_claude::hook as claude;
+    let mut stdin = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)
+        .context("cannot read the event from stdin")?;
+    let payload: Value = if stdin.trim().is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdin).context("the event on stdin is not JSON")?
+    };
+    let request = match format {
+        HOOK_JSON => {
+            let mut request: regulus_proto::HookRequest = serde_json::from_value(match &payload {
+                Value::Null => serde_json::json!({ "event": ask.event }),
+                other => other.clone(),
+            })
+            .context("stdin is not a hook request")?;
+            if request.event.is_empty() {
+                request.event = ask.event.clone();
+            }
+            request
+        }
+        claude::FORMAT => claude::request(&ask.event, payload.clone()),
+        other => bail!(
+            "unknown hook format `{other}` (known: {HOOK_JSON}, {})",
+            claude::FORMAT
+        ),
+    };
+    let params = regulus_proto::HookDispatchParams {
+        execution_id: ask.execution,
+        node_id: ask.node,
+        hook_id: ask.hook,
+        timeout_ms: ask.timeout_ms,
+        request,
+    };
+    let got: regulus_proto::HookDispatched = client
+        .request(method::HOOK_DISPATCH, serde_json::to_value(params)?)
+        .await?;
+    // Hooks that failed or ran out of time count as no answer; say so where a person
+    // debugging the agent's hooks looks.
+    let mut notes = String::new();
+    for reply in &got.replies {
+        if let Some(error) = &reply.error {
+            notes.push_str(&format!("regulus hook: `{}`: {error}\n", reply.node_id));
+        }
+    }
+    let answer = got.combined();
+    Ok(match format {
+        HOOK_JSON => (0, format!("{}\n", serde_json::to_string(&answer)?), notes),
+        _ => {
+            let out = claude::output(&ask.event, &payload, &answer);
+            // Exit 2 makes stderr the reason Claude sees: nothing else may go there.
+            let stderr = if out.code == 0 { notes } else { out.stderr };
+            (out.code, out.stdout, stderr)
+        }
+    })
 }
 
 /// A connection to the core the home directory points at, made per command.
