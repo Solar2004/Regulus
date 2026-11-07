@@ -698,6 +698,12 @@ impl Core {
             value: value.clone(),
         }));
         let mut queued = VecDeque::new();
+        let max_queue = self.bus.max_queue;
+        let mut room = if max_queue == 0 {
+            usize::MAX
+        } else {
+            max_queue.saturating_sub(live.queue.len())
+        };
         for wire in workflow
             .wires
             .iter()
@@ -715,7 +721,11 @@ impl Core {
                         output.capability, p.capability
                     )
                 }
+                Some(_) if room == 0 => {
+                    format!("the execution's queue is full ({max_queue} values waiting)")
+                }
                 Some(_) => {
+                    room -= 1;
                     queued.push_back(Pending {
                         event,
                         depth,

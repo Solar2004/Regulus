@@ -91,7 +91,9 @@ impl ModuleCtx {
     /// core delivers it, in order and without blocking the caller, as `node/event` to
     /// every input wired to that port with the same capability. An emission made while
     /// handling an event continues that chain; past `bus.max_depth` it is dropped and
-    /// reported (docs/11-composition.md §4).
+    /// reported (docs/11-composition.md §4). The chain is tracked per thread: a module
+    /// that hands the event to a thread of its own and emits from there starts a new
+    /// chain at depth 0, out of reach of that cut. `bus.max_queue` still bounds it.
     pub fn emit(&self, node: &NodeRef, port: &str, value: Value) -> Result<(), ModuleError> {
         self.core()?.emit(&self.module_id, node, port, value)
     }

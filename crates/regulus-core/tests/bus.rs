@@ -9,7 +9,7 @@ use regulus_core::{
     BusConfig, Core, Module, ModuleCtx, ModuleError, NodeRef, ProfileStore, Storage,
 };
 use regulus_proto::{
-    method, BusEventKind, EventPage, Manifest, ModuleInfo, NodeCall, NodeEvent, Profile,
+    method, BusEvent, BusEventKind, EventPage, Manifest, ModuleInfo, NodeCall, NodeEvent, Profile,
 };
 use serde_json::{json, Value};
 
@@ -109,11 +109,16 @@ fn profile(nodes: Vec<Value>, wires: Vec<Value>) -> Profile {
 }
 
 fn core(profile: Profile, max_depth: u32) -> (Arc<Core>, Log) {
+    core_with(profile, max_depth, BusConfig::default().max_queue)
+}
+
+fn core_with(profile: Profile, max_depth: u32, max_queue: usize) -> (Arc<Core>, Log) {
     let log = Log::default();
     let mut profiles = ProfileStore::default();
     profiles.insert(profile).unwrap();
     let bus = BusConfig {
         max_depth,
+        max_queue,
         ..BusConfig::default()
     };
     let core = Core::build_with_bus(vec![relay(&log)], &[], profiles, Storage::default(), bus);
@@ -248,6 +253,43 @@ fn a_loop_is_cut_past_the_configured_depth() {
         .unwrap();
     assert_eq!(cut.kind, BusEventKind::Cut { max_depth: 3 });
     assert_eq!(cut.depth, 4);
+}
+
+#[test]
+fn a_full_queue_reports_the_extra_deliveries_as_failed() {
+    // One emission fans out to three inputs, but the queue holds two.
+    let (core, log) = core_with(
+        profile(
+            vec![
+                node("a", json!({ "say": "ping" }), "text@1", "text@1"),
+                node("b", json!({}), "text@1", "text@1"),
+                node("c", json!({}), "text@1", "text@1"),
+                node("d", json!({}), "text@1", "text@1"),
+            ],
+            vec![
+                then("ab", "a", "b"),
+                then("ac", "a", "c"),
+                then("ad", "a", "d"),
+            ],
+        ),
+        64,
+        2,
+    );
+    let (_, page) = run(&core);
+    assert_eq!(log.lock().unwrap().len(), 2);
+    let failed: Vec<&BusEvent> = page
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, BusEventKind::Failed { .. }))
+        .collect();
+    assert_eq!(failed.len(), 1);
+    match &failed[0].kind {
+        BusEventKind::Failed { to, error } => {
+            assert_eq!(to.node_id, "d");
+            assert!(error.contains("queue is full"), "{error}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
 }
 
 #[test]

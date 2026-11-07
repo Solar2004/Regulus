@@ -293,6 +293,10 @@ clientes por socket.
   como `broadcast`. Lo emitido al arrancar se entrega cuando todos los nodos corren.
 - La profundidad cuenta entregas encadenadas: lo que un nodo emite mientras atiende un
   evento sigue esa cadena. Pasado `[bus] max_depth` se corta y queda un evento `cut`.
+  La anchura la acota `[bus] max_queue` (4096; 0 = sin límite): con la cola de la
+  ejecución llena, las entregas nuevas quedan como `failed`. Un módulo que emite desde
+  un hilo propio empieza una cadena nueva en 0: el corte por profundidad no lo ve, la
+  cola sí.
 - Los clientes leen con `event.list` desde un cursor (`since`, `next`, `pending`); el CLI
   con `regulus events [--follow]`. Se guardan los últimos `[bus] history` eventos en
   memoria hasta que exista el store.

@@ -114,6 +114,10 @@ pub struct BusConfig {
     /// Longest chain of deliveries before the core drops the value and reports a cut:
     /// the safety net against loops such as A → B → A (docs/11-composition.md §4).
     pub max_depth: u32,
+    /// Most values waiting to be delivered in one execution; `max_depth` bounds how
+    /// deep a chain goes, this bounds how wide (a loop with fan-out). Past it, new
+    /// deliveries are reported as failed instead of queued. 0 means no limit.
+    pub max_queue: usize,
     /// Bus events kept in memory for `event.list`; the oldest go first.
     pub history: usize,
 }
@@ -122,6 +126,7 @@ impl Default for BusConfig {
     fn default() -> Self {
         Self {
             max_depth: 64,
+            max_queue: 4096,
             history: 1024,
         }
     }
