@@ -1137,10 +1137,17 @@ impl Core {
     // --- bus ----------------------------------------------------------------------------
 
     /// `event.list`: the kept bus events `params` asks for, and how many deliveries are
-    /// still queued for the executions it names.
+    /// still queued for the executions it names. A child that has not yet told its caller
+    /// it ended counts as one more: the caller is still waiting for it.
     fn events(&self, params: &EventListParams) -> Result<EventPage, RpcError> {
-        let pending = self
-            .executions()
+        let executions = self.executions();
+        let waiting = |parent: &str| {
+            executions
+                .iter()
+                .filter(|child| child.link.as_ref().is_some_and(|l| l.parent == parent))
+                .count()
+        };
+        let pending = executions
             .iter()
             .filter(|live| {
                 params
@@ -1152,8 +1159,9 @@ impl Core {
                         .as_deref()
                         .is_none_or(|id| live.execution.project_id.as_deref() == Some(id))
             })
-            .map(|live| live.queue.len() + usize::from(live.draining))
+            .map(|live| live.queue.len() + usize::from(live.draining) + waiting(&live.execution.id))
             .sum();
+        drop(executions);
         let limit = match (params.limit, self.bus.max_page) {
             (limit, 0) => limit,
             (None, max) => Some(max),
