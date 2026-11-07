@@ -1,0 +1,18 @@
+[package]
+name = "regulus-module-files"
+description = "Regulus files: read a file into a prompt, write a prompt to a file, a fixed document injected every turn, and a file watcher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+glob.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+regulus-module-flow = { path = "../flow" }
+toml.workspace = true

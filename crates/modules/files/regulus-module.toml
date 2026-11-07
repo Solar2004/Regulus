@@ -1,0 +1,208 @@
+[module]
+id             = "regulus/files@0.1.0"
+name           = "Files"
+requires_proto = "^1.9"
+
+# Files as prompts and prompts as files (docs/13-blocks.md §3.2): Ralph's PROMPT.md and
+# fix_plan.md, Spec Kit's constitution, Kiro's steering. Every node resolves a relative
+# path against its `dir`; an empty `dir` is the node's own directory under the Regulus
+# home (`ModuleCtx::node_dir`), which outlives executions.
+
+# Reads a file, or every file a glob matches, and sends the text on `out`. Any value on
+# `in` reads it again; with `path` empty, a text on `in` is the path.
+[[node]]
+type = "read"
+name = "File to prompt"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # A file or a glob (`specs/*.md`).
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  # A glob's files: no, one text with `separator` between them; yes, one value each.
+  [[node.field]]
+  id      = "each"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "separator"
+  type    = "text"
+  default = "\n\n"
+
+  # A file larger than this is refused rather than sent whole.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 1048576
+
+# Writes what arrives on `in` to a file and sends its absolute path on `written`. Text
+# goes as is; any other value as indented JSON.
+[[node]]
+type = "write"
+name = "Prompt to file"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "written"
+  name       = "written"
+  capability = "path@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = "output.md"
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "overwrite"
+  options = ["overwrite", "append"]
+
+  # append: what goes between what the file had and the new text.
+  [[node.field]]
+  id      = "separator"
+  type    = "text"
+  default = "\n"
+
+# A document the agent sees every turn: a hook@1 for the Agent box's `hooks` input that
+# adds the document as context on its `event` (`prompt`: every turn; `session_start`:
+# once). The file is read on each turn, so edits show up at once. On start it also sends
+# the text on `out`, for workflows without an agent.
+[[node]]
+type = "document"
+name = "Fixed document"
+
+  [[node.port]]
+  id         = "hook"
+  name       = "hook"
+  capability = "hook@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  # The document itself, instead of a file. Wins over `path`.
+  [[node.field]]
+  id      = "text"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "event"
+  type    = "select"
+  default = "prompt"
+  options = ["prompt", "session_start", "pre_compact"]
+
+  # open: if the document cannot be read, the agent goes on without it. closed: it stops.
+  [[node.field]]
+  id      = "fail"
+  type    = "select"
+  default = "open"
+  options = ["open", "closed"]
+
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 1048576
+
+# Watches a file or a folder from start to stop. After `debounce_ms` without changes, it
+# sends each changed file: its path on `changed`, its text on `text`, if the node has
+# those outputs.
+[[node]]
+type = "watch"
+name = "Watch file"
+
+  [[node.port]]
+  id         = "changed"
+  name       = "changed"
+  capability = "path@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "text"
+  name       = "text"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # A file (it may not exist yet) or a folder.
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  # A folder: also what changes in its subfolders.
+  [[node.field]]
+  id      = "recursive"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Quiet time before a burst of changes counts as one.
+  [[node.field]]
+  id      = "debounce_ms"
+  type    = "number"
+  default = 200
+
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 1048576

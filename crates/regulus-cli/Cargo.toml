@@ -23,6 +23,7 @@ regulus-module-skills = { path = "../modules/skills" }
 regulus-module-communication = { path = "../modules/communication" }
 regulus-module-tools = { path = "../modules/tools" }
 regulus-module-tools-mcp = { path = "../modules/tools-mcp" }
+regulus-module-files = { path = "../modules/files" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true

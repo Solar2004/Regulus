@@ -1,0 +1,419 @@
+//! Files (docs/13-blocks.md §3.2): `read` turns a file into a prompt, `write` a prompt
+//! into a file, `document` injects a file into an agent every turn (as a `hook@1`, the
+//! Agent box's `hooks` input), and `watch` sends what changes in a file or a folder.
+//!
+//! Relative paths resolve against the node's `dir`, or, if it is empty, against the
+//! node's own directory (`ModuleCtx::node_dir`).
+
+mod watch;
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
+use regulus_proto::{
+    method, Direction, Hook, HookAnswer, HookEffect, HookFailure, HookRequest, Manifest, NodeCall,
+    NodeEvent, WireKind, HOOK_DESCRIBE,
+};
+use serde_json::{json, Value};
+
+const MANIFEST: &str = include_str!("../regulus-module.toml");
+const READ: &str = "read";
+const WRITE: &str = "write";
+const DOCUMENT: &str = "document";
+const WATCH: &str = "watch";
+const OUT: &str = "out";
+const WRITTEN: &str = "written";
+const YES: &str = "yes";
+const APPEND: &str = "append";
+/// Characters that make a `path` a glob.
+const GLOB_CHARS: &[char] = &['*', '?', '['];
+
+pub struct Files {
+    manifest: Manifest,
+    ctx: ModuleCtx,
+    watching: watch::Watchers,
+}
+
+fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ModuleError> {
+    serde_json::from_value(params).map_err(|e| ModuleError::InvalidParams(e.to_string()))
+}
+
+fn failed(path: &Path, error: impl std::fmt::Display) -> ModuleError {
+    ModuleError::Failed(format!("{}: {error}", path.display()))
+}
+
+/// One call to one node: the node with its settings, and how to act as it.
+pub(crate) struct Here<'a> {
+    files: &'a Files,
+    call: NodeCall,
+    me: NodeRef,
+}
+
+impl Here<'_> {
+    fn setting(&self, field: &str) -> Option<&Value> {
+        self.files.manifest.setting(&self.call.node, field)
+    }
+
+    /// A setting as text; nothing as empty.
+    fn text(&self, field: &str) -> String {
+        match self.setting(field) {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            Some(other) => other.to_string(),
+        }
+    }
+
+    fn number(&self, field: &str) -> u64 {
+        match self.setting(field) {
+            Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+            Some(Value::String(s)) => s.trim().parse().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    fn has_output(&self, port: &str) -> bool {
+        self.call
+            .node
+            .port(port)
+            .is_some_and(|p| p.kind == WireKind::Then && p.direction == Direction::Output)
+    }
+
+    fn emit(&self, port: &str, value: Value) -> Result<(), ModuleError> {
+        self.files.ctx.emit(&self.me, port, value)
+    }
+
+    /// `path` as an absolute path: as is if it is one, else under `dir`, else under the
+    /// node's own directory.
+    fn resolve(&self, path: &str) -> Result<PathBuf, ModuleError> {
+        let path = Path::new(path.trim());
+        if path.is_absolute() {
+            return Ok(path.to_path_buf());
+        }
+        let dir = self.text("dir");
+        let dir = Path::new(dir.trim());
+        let base = if dir.is_absolute() {
+            dir.to_path_buf()
+        } else {
+            self.files.ctx.node_dir(&self.me)?.join(dir)
+        };
+        Ok(base.join(path))
+    }
+
+    /// The text of a file, refused if it is larger than `max_bytes` (0: no limit).
+    fn read(&self, path: &Path) -> Result<String, ModuleError> {
+        read_bounded(path, self.number("max_bytes"))
+    }
+}
+
+pub(crate) fn read_bounded(path: &Path, max: u64) -> Result<String, ModuleError> {
+    let size = fs::metadata(path).map_err(|e| failed(path, e))?.len();
+    if max > 0 && size > max {
+        return Err(failed(
+            path,
+            format!("{size} bytes, more than `max_bytes` ({max})"),
+        ));
+    }
+    fs::read_to_string(path).map_err(|e| failed(path, e))
+}
+
+/// The files `pattern` names: itself, or, for a glob, every file it matches, sorted.
+fn matches(pattern: &Path) -> Result<Vec<PathBuf>, ModuleError> {
+    let text = pattern.to_string_lossy();
+    if !text.contains(GLOB_CHARS) {
+        return Ok(vec![pattern.to_path_buf()]);
+    }
+    let mut found: Vec<PathBuf> = glob::glob(&text)
+        .map_err(|e| failed(pattern, e))?
+        .filter_map(Result::ok)
+        .filter(|p| p.is_file())
+        .collect();
+    found.sort();
+    if found.is_empty() {
+        return Err(failed(pattern, "no file matches"));
+    }
+    Ok(found)
+}
+
+/// Text as is; any other value as indented JSON.
+fn as_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
+}
+
+impl Files {
+    pub fn new() -> Self {
+        Self {
+            manifest: parse_manifest(MANIFEST).expect("files manifest is valid"),
+            ctx: ModuleCtx::default(),
+            watching: watch::Watchers::default(),
+        }
+    }
+
+    fn here(&self, call: NodeCall) -> Here<'_> {
+        let me = NodeRef {
+            execution_id: call.execution_id.clone(),
+            node_id: call.node.id.clone(),
+        };
+        Here {
+            files: self,
+            call,
+            me,
+        }
+    }
+
+    fn event(&self, mut call: NodeCall) -> Result<Value, ModuleError> {
+        let event: NodeEvent = parse(std::mem::take(&mut call.args))?;
+        let here = self.here(call);
+        match here.call.node.node_type.as_str() {
+            READ => read(&here, event),
+            WRITE => write(&here, event),
+            other => Err(ModuleError::InvalidParams(format!(
+                "node type `{other}` takes no events"
+            ))),
+        }
+    }
+
+    fn start(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let here = self.here(call);
+        match here.call.node.node_type.as_str() {
+            DOCUMENT if here.has_output(OUT) => {
+                here.emit(OUT, json!(document(&here)?))?;
+                Ok(Value::Null)
+            }
+            WATCH => self.watching.start(&here),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn stop(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        self.watching.stop(&self.here(call).me);
+        Ok(Value::Null)
+    }
+}
+
+/// `read`: the file, or each file of a glob, on `out`.
+fn read(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
+    let mut path = here.text("path");
+    if path.trim().is_empty() {
+        path = event.value.as_str().unwrap_or_default().to_string();
+    }
+    if path.trim().is_empty() {
+        return Err(ModuleError::InvalidParams(format!(
+            "read `{}` has no `path` and got no path on `{}`",
+            here.me.node_id, event.port
+        )));
+    }
+    let files = matches(&here.resolve(&path)?)?;
+    let texts = files
+        .iter()
+        .map(|file| here.read(file))
+        .collect::<Result<Vec<_>, _>>()?;
+    if here.text("each") == YES {
+        for text in &texts {
+            here.emit(OUT, json!(text))?;
+        }
+    } else {
+        here.emit(OUT, json!(texts.join(&here.text("separator"))))?;
+    }
+    let read: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+    Ok(json!({ "read": read }))
+}
+
+/// `write`: the value into the file, then its path on `written`.
+fn write(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
+    let path = here.resolve(&here.text("path"))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| failed(parent, e))?;
+    }
+    let text = as_text(&event.value);
+    if here.text("mode") == APPEND {
+        let had = fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| failed(&path, e))?;
+        let separator = if had {
+            here.text("separator")
+        } else {
+            String::new()
+        };
+        file.write_all(format!("{separator}{text}").as_bytes())
+            .map_err(|e| failed(&path, e))?;
+    } else {
+        fs::write(&path, &text).map_err(|e| failed(&path, e))?;
+    }
+    let written = path.display().to_string();
+    if here.has_output(WRITTEN) {
+        here.emit(WRITTEN, json!(written))?;
+    }
+    Ok(json!({ "written": written, "bytes": text.len() }))
+}
+
+/// `document`: its `text`, or the file at `path`, read now.
+fn document(here: &Here) -> Result<String, ModuleError> {
+    let text = here.text("text");
+    if !text.is_empty() {
+        return Ok(text);
+    }
+    let path = here.text("path");
+    if path.trim().is_empty() {
+        return Err(ModuleError::InvalidParams(format!(
+            "document `{}` has neither `text` nor `path`",
+            here.me.node_id
+        )));
+    }
+    here.read(&here.resolve(&path)?)
+}
+
+fn describe(here: &Here) -> Result<Value, ModuleError> {
+    let fail: HookFailure = match here.text("fail").as_str() {
+        "" => HookFailure::Open,
+        fail => parse(json!(fail))?,
+    };
+    serde_json::to_value(Hook {
+        event: here.text("event"),
+        matcher: None,
+        timeout_ms: None,
+        returns: vec![HookEffect::Context],
+        fail,
+    })
+    .map_err(|e| ModuleError::Failed(e.to_string()))
+}
+
+/// On its event, the document as context; on any other, nothing.
+fn answer(here: &Here, request: HookRequest) -> Result<Value, ModuleError> {
+    let answer = if request.event == here.text("event") {
+        HookAnswer::Context {
+            text: document(here)?,
+        }
+    } else {
+        HookAnswer::Nothing
+    };
+    serde_json::to_value(answer).map_err(|e| ModuleError::Failed(e.to_string()))
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Module for Files {
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    fn init(&mut self, ctx: &ModuleCtx) -> Result<(), ModuleError> {
+        self.ctx = ctx.clone();
+        Ok(())
+    }
+
+    fn call(&self, name: &str, params: Value) -> Result<Value, ModuleError> {
+        match name {
+            method::NODE_EVENT => self.event(parse(params)?),
+            method::NODE_START => self.start(parse(params)?),
+            method::NODE_STOP => self.stop(parse(params)?),
+            HOOK_DESCRIBE => describe(&self.here(parse(params)?)),
+            method::NODE_HOOK => {
+                let mut call: NodeCall = parse(params)?;
+                let request = parse(std::mem::take(&mut call.args))?;
+                answer(&self.here(call), request)
+            }
+            other => Err(ModuleError::UnknownMethod(other.into())),
+        }
+    }
+
+    fn shutdown(&mut self) -> Result<(), ModuleError> {
+        self.watching.stop_all();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("regulus-files-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn call(name: &str, node_type: &str, config: Value, args: Value) -> Result<Value, ModuleError> {
+        let node = json!({ "id": "d", "type": node_type, "module_id": "regulus/files@0.1.0",
+                           "config": config });
+        Files::new().call(
+            name,
+            json!({ "execution_id": "e", "node": node, "args": args }),
+        )
+    }
+
+    #[test]
+    fn a_glob_matches_files_in_order_and_a_plain_path_is_itself() {
+        let dir = temp("glob");
+        for name in ["b.md", "a.md", "c.txt"] {
+            fs::write(dir.join(name), name).unwrap();
+        }
+        let found = matches(&dir.join("*.md")).unwrap();
+        assert_eq!(found, [dir.join("a.md"), dir.join("b.md")]);
+        assert!(matches(&dir.join("*.rs")).is_err());
+        assert_eq!(matches(&dir.join("x")).unwrap(), [dir.join("x")]);
+        assert!(
+            read_bounded(&dir.join("a.md"), 2).is_err(),
+            "over max_bytes"
+        );
+        assert_eq!(read_bounded(&dir.join("a.md"), 0).unwrap(), "a.md");
+    }
+
+    #[test]
+    fn a_document_hooks_in_as_context_on_its_event_only() {
+        let dir = temp("document");
+        let path = dir.join("RULES.md");
+        fs::write(&path, "Answer in Spanish.").unwrap();
+        let config = json!({ "path": path });
+        let described = call(HOOK_DESCRIBE, DOCUMENT, config.clone(), Value::Null).unwrap();
+        assert_eq!(
+            described,
+            json!({ "event": "prompt", "returns": ["context"] })
+        );
+        let ask = |event: &str| {
+            call(
+                method::NODE_HOOK,
+                DOCUMENT,
+                config.clone(),
+                json!({ "event": event }),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            ask("prompt"),
+            json!({ "decision": "context", "text": "Answer in Spanish." })
+        );
+        // Read every turn: an edit shows at once.
+        fs::write(&path, "Answer in French.").unwrap();
+        assert_eq!(ask("prompt")["text"], "Answer in French.");
+        assert_eq!(ask("stop"), json!({ "decision": "none" }));
+        let inline = json!({ "text": "inline", "event": "session_start", "fail": "closed" });
+        let described = call(HOOK_DESCRIBE, DOCUMENT, inline, Value::Null).unwrap();
+        assert_eq!(described["fail"], "closed");
+        assert!(call(
+            method::NODE_HOOK,
+            DOCUMENT,
+            json!({}),
+            json!({ "event": "prompt" })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn values_are_written_as_text_or_indented_json() {
+        assert_eq!(as_text(&json!("plain")), "plain");
+        assert_eq!(as_text(&json!({ "a": 1 })), "{\n  \"a\": 1\n}");
+    }
+}
