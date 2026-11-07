@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol spoken by this core. 1.0 = the mock methods; 1.1 adds `profile.check`;
 /// 1.2 adds `execution.start` and `execution.stop`; 1.3 adds `secret.set`, `secret.list`
-/// and `secret.delete`; 1.4 adds `profile_id` to executions.
-pub const PROTOCOL: &str = "1.4";
+/// and `secret.delete`; 1.4 adds `profile_id` to executions; 1.5 adds `event.list`.
+pub const PROTOCOL: &str = "1.5";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -22,6 +22,7 @@ pub mod method {
     pub const SECRET_SET: &str = "secret.set";
     pub const SECRET_LIST: &str = "secret.list";
     pub const SECRET_DELETE: &str = "secret.delete";
+    pub const EVENT_LIST: &str = "event.list";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -36,12 +37,17 @@ pub mod method {
         SECRET_SET,
         SECRET_LIST,
         SECRET_DELETE,
+        EVENT_LIST,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
     /// not declare them; one that does not implement them has no lifecycle.
     pub const NODE_START: &str = "node/start";
     pub const NODE_STOP: &str = "node/stop";
+    /// A value arrived over a "then" wire; `args` is a `NodeEvent`.
+    pub const NODE_EVENT: &str = "node/event";
+    /// Every method the core sends to the owner of a node.
+    pub const NODE: &[&str] = &[NODE_START, NODE_STOP, NODE_EVENT];
 }
 
 /// Error codes beyond the JSON-RPC 2.0 standard ones.
@@ -104,7 +110,7 @@ pub struct NameParams {
 }
 
 /// What a module receives when a call is addressed to one of its nodes: `node/start`,
-/// `node/stop`, or a capability method reached through a wire. `node` carries the node's
+/// `node/stop`, `node/event`, or a capability method reached through a wire. `node` carries the node's
 /// configuration as it was when the execution started, with every `secret:<name>`
 /// already swapped for the secret.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

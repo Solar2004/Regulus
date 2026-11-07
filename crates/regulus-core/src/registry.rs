@@ -56,7 +56,7 @@ fn excluded(id: &str, without: &[String]) -> bool {
     without.iter().any(|skip| skip == id || skip == base_id(id))
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -127,7 +127,7 @@ impl Registry {
             }
         } else if let Some(taken) = manifest.module.methods.iter().find(|m| {
             method::CORE.contains(&m.as_str())
-                || [method::NODE_START, method::NODE_STOP].contains(&m.as_str())
+                || method::NODE.contains(&m.as_str())
                 || self.routes.contains_key(*m)
         }) {
             ModuleState::Broken {

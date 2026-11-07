@@ -46,9 +46,11 @@ de §3 piden, y cada pieza tiene quien la pide:
 Lo que **no** entra en el core: hooks (ranura de la caja Agente, §4), disparadores,
 scripts, jueces, memoria, workspaces, colas. Todo módulo, todo se quita uno a uno.
 
-**Qué enmienda en otros docs** (pendiente de aplicar, como hizo `11-composition.md` §11):
+**Qué enmienda en otros docs** (como hizo `11-composition.md` §11; la primera aplicada,
+las otras pendientes de sus pasos):
 
-- `11-composition.md` §4 y `02-architecture.md` §4: el "luego" **lleva dato** tipado por
+- ✅ *Aplicada* (2026-11-07, paso 1a; el bus en `02-architecture.md` §6).
+  `11-composition.md` §4 y `02-architecture.md` §4: el "luego" **lleva dato** tipado por
   capacidad; el bus es quien lo entrega. Sigue sin haber motor de flujo aparte del bus: un
   Bucle o un Switch son nodos de `flow` que reciben y emiten por "luego". El corte por
   profundidad configurable del core se mantiene como red de seguridad; el tope N del

@@ -12,7 +12,8 @@ use jsonrpsee::ws_client::WsClient;
 use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
-    method, Execution, ExecutionState, ModuleSummary, Profile, ProfileSummary, WireKind, PROTOCOL,
+    method, BusEvent, BusEventKind, EventPage, Execution, ExecutionState, ModuleSummary, Profile,
+    ProfileSummary, WireKind, PROTOCOL,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -67,11 +68,27 @@ enum Command {
     },
     /// Print the nodes and wires of a profile.
     Graph { profile: String },
-    /// Start a workflow of a profile (its main workflow unless --workflow).
+    /// Start a workflow of a profile (its main workflow unless --workflow), then print
+    /// its bus events until the values emitted while starting are delivered.
     Run {
         profile: String,
         #[arg(long)]
         workflow: Option<String>,
+        /// Return as soon as it starts, without waiting for the bus.
+        #[arg(long)]
+        detach: bool,
+    },
+    /// Events of the bus: values over "then" wires, deliveries, failures and cuts.
+    Events {
+        /// Keep printing new events until Ctrl-C.
+        #[arg(long)]
+        follow: bool,
+        /// Only this execution.
+        #[arg(long)]
+        execution: Option<String>,
+        /// Only this project.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Stop a running execution.
     Stop { execution: String },
@@ -221,14 +238,36 @@ async fn main() -> Result<()> {
             print_graph(&profile);
             Ok(())
         }
-        Command::Run { profile, workflow } => {
+        Command::Run {
+            profile,
+            workflow,
+            detach,
+        } => {
             let params = serde_json::json!({ "profile_id": profile, "workflow_id": workflow });
-            let execution: Execution = client.request(method::EXECUTION_START, params).await?;
+            let ws = client.connect().await?;
+            let execution: Execution = rpc::call(&ws, method::EXECUTION_START, params).await?;
             print_execution(&execution);
             if let ExecutionState::Failed { reason } = execution.state {
                 bail!("{reason}");
             }
+            if !detach {
+                let filter = EventFilter {
+                    execution: Some(execution.id),
+                    project: None,
+                };
+                events(&client, &ws, &filter, Follow::UntilIdle).await?;
+            }
             Ok(())
+        }
+        Command::Events {
+            follow,
+            execution,
+            project,
+        } => {
+            let ws = client.connect().await?;
+            let filter = EventFilter { execution, project };
+            let follow = if follow { Follow::Always } else { Follow::No };
+            events(&client, &ws, &filter, follow).await
         }
         Command::Stop { execution } => {
             let params = serde_json::json!({ "id": execution });
@@ -384,6 +423,77 @@ fn read_secret(name: &str) -> Result<String> {
         bail!("empty secret: nothing stored");
     }
     Ok(value)
+}
+
+struct EventFilter {
+    execution: Option<String>,
+    project: Option<String>,
+}
+
+#[derive(PartialEq)]
+enum Follow {
+    /// Print what is there and return.
+    No,
+    /// Until no delivery is queued for what the filter names.
+    UntilIdle,
+    /// Until Ctrl-C.
+    Always,
+}
+
+/// Prints bus events from the oldest kept, polling every `client.refresh_ms` while
+/// following.
+async fn events(
+    client: &Client<'_>,
+    ws: &WsClient,
+    filter: &EventFilter,
+    follow: Follow,
+) -> Result<()> {
+    let poll = Duration::from_millis(client.config.client.refresh_ms);
+    let deadline = Instant::now() + client.timeout;
+    let mut since = 0;
+    loop {
+        let params = serde_json::json!({
+            "since": since, "execution_id": filter.execution, "project_id": filter.project,
+        });
+        let page: EventPage = rpc::call(ws, method::EVENT_LIST, params).await?;
+        for event in &page.events {
+            print_event(event);
+        }
+        since = page.next;
+        let done = match follow {
+            Follow::No => true,
+            Follow::UntilIdle => page.pending == 0,
+            Follow::Always => false,
+        };
+        if done {
+            return Ok(());
+        }
+        if follow == Follow::UntilIdle && Instant::now() >= deadline {
+            bail!(
+                "the bus is still busy after {} s; follow it with `regulus events --follow`",
+                client.timeout.as_secs()
+            );
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
+
+fn print_event(event: &BusEvent) {
+    let from = format!("{}.{}", event.from.node_id, event.from.port_id);
+    let what = match &event.kind {
+        BusEventKind::Emitted { value } => {
+            format!(
+                "emitted {} {value} (depth {})",
+                event.capability, event.depth
+            )
+        }
+        BusEventKind::Delivered { to } => format!("→ {}.{} delivered", to.node_id, to.port_id),
+        BusEventKind::Failed { to, error } => {
+            format!("→ {}.{} failed: {error}", to.node_id, to.port_id)
+        }
+        BusEventKind::Cut { max_depth } => format!("cut: deeper than {max_depth} deliveries"),
+    };
+    println!("#{:<6} {:<12} {from} {what}", event.seq, event.execution_id);
 }
 
 fn print_execution(execution: &Execution) {

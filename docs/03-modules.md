@@ -130,8 +130,11 @@ impl ModuleCtx {
     /// ejecuciones. Cuelga de la casa de Regulus (`REGULUS_HOME`), así que se mueve con ella.
     pub fn node_dir(&self, node: &NodeRef) -> Result<PathBuf>;
 
-    // Llegan con el primer módulo que los pida:
-    // emit / subscribe (bus) y store.
+    /// Pone un valor en la salida "luego" `port` de un nodo suyo. El core lo entrega
+    /// como `node/event` a lo cableado (`02-architecture.md` §6). No hay `subscribe`.
+    pub fn emit(&self, node: &NodeRef, port: &str, value: Value) -> Result<()>;
+
+    // Llega con el primer módulo que lo pida: store.
 }
 ```
 
@@ -183,7 +186,7 @@ core un nodo.** El trait no cambia.
    llama a `node/stop` en orden inverso. Un cable que entra en una entrada `lazy` no
    cuenta para el orden: el nodo solo la lee en marcha, nunca al arrancar, y así puede
    cerrar un ciclo (Alexander, 2026-10-18).
-2. `node/start` y `node/stop` son nombres reservados: el core los envía al módulo dueño
+2. `node/start`, `node/stop` y `node/event` son nombres reservados: el core los envía al módulo dueño
    del nodo y no se pueden declarar en `methods`. Un módulo que no los implementa
    (`UnknownMethod`) simplemente no tiene ciclo de vida.
 3. Toda llamada dirigida a un nodo lleva `NodeCall { execution_id, node, args }`: el nodo
@@ -195,7 +198,8 @@ core un nodo.** El trait no cambia.
 5. Si un `node/start` falla, la ejecución pasa a `failed` con el motivo y se paran los
    nodos ya arrancados.
 
-Los cables "luego" llegan con el bus; este paso no los necesita.
+Los cables "luego" no ordenan el arranque: lo que un nodo emite al arrancar se entrega
+cuando toda la ejecución corre (`02-architecture.md` §6).
 
 ✅ **DECIDIDO** (#10, 2026-10-17) — Registro **a mano**: una línea por módulo en
 `crates/regulus-cli/src/modules.rs`. Instalar es **recompilar automático** (`11` §10):

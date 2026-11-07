@@ -159,7 +159,7 @@ pub struct Node {
     pub exposed:           Vec<String>,        // lo que se edita sin recompilar
 }
 
-/// Uses = servicio permanente. Then = suscripción al bus.
+/// Uses = servicio permanente. Then = un dato tipado por capacidad que entrega el bus.
 pub struct Wire { pub id: WireId, pub kind: WireKind, pub from: PortRef, pub to: PortRef }
 
 pub struct Workflow {
@@ -200,8 +200,10 @@ interpreta: son del cliente.
 
 1. **Uses** une una salida con una entrada del **mismo tipo y versión**. Si la entrada es
    `One`, admite un cable; si es `Many`, varios.
-2. **Then** es una suscripción al bus, no un motor de flujo. El core corta una cadena al
-   pasar de una profundidad **configurable** y lo reporta (bucles A→B→A).
+2. **Then** une una salida con una entrada del **mismo tipo y versión** y lleva un dato de
+   ese tipo; lo entrega el bus (§6), no un motor de flujo. El core corta una cadena al
+   pasar de una profundidad **configurable** (`[bus] max_depth`) y lo reporta (bucles
+   A→B→A).
 3. **Autoconexión:** si para una entrada hay exactamente una salida compatible, se conecta
    sola.
 
@@ -279,9 +281,29 @@ Resumen de lo que importa saber desde arquitectura:
 escucha**. Los cables "luego" corren sobre el bus. También alimenta la suscripción de los
 clientes por socket.
 
+✅ **Cómo es el bus** (2026-11-07, paso 1a de `13-blocks.md` §7):
+
+- Un nodo emite con `ModuleCtx::emit(nodo, puerto, valor)` por una salida "luego"; nadie
+  se suscribe por nombre: los cables dicen quién recibe. El core lo entrega como
+  `node/event` (con `NodeEvent`: puerto, capacidad, valor, origen) a cada entrada de
+  igual capacidad; lo que no encaja queda como `failed` en el bus.
+- **Ni síncrono ni `tokio::broadcast`: una cola FIFO por ejecución, vaciada por un solo
+  hilo a la vez.** Así `emit` no bloquea a quien emite ni reentra en su módulo (sin
+  interbloqueos con sus propios locks), conserva el orden y no pierde eventos por retraso
+  como `broadcast`. Lo emitido al arrancar se entrega cuando todos los nodos corren.
+- La profundidad cuenta entregas encadenadas: lo que un nodo emite mientras atiende un
+  evento sigue esa cadena. Pasado `[bus] max_depth` se corta y queda un evento `cut`.
+  La anchura la acota `[bus] max_queue` (4096; 0 = sin límite): con la cola de la
+  ejecución llena, las entregas nuevas quedan como `failed`. Un módulo que emite desde
+  un hilo propio empieza una cadena nueva en 0: el corte por profundidad no lo ve, la
+  cola sí.
+- Los clientes leen con `event.list` desde un cursor (`since`, `next`, `pending`); el CLI
+  con `regulus events [--follow]`. Se guardan los últimos `[bus] history` eventos en
+  memoria hasta que exista el store.
+
 **Store:** un SQLite por proyecto + uno global. Cada módulo obtiene un **namespace
 propio**. Leer de otro namespace solo a través de capacidades declaradas. Evita que el
 estado compartido degenere en variable global donde todos escriben.
 
-❓ **ABIERTO** — Esquema concreto del store y si el bus es síncrono o `tokio::broadcast`.
-Se decide al escribir `regulus-core`, no antes.
+❓ **ABIERTO** — Esquema concreto del store. Se decide al escribirlo (paso 1b de
+`13-blocks.md` §7), no antes.
