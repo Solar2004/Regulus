@@ -19,7 +19,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-pub use config::{BusConfig, Config};
+pub use config::{BusConfig, CallConfig, Config};
 pub use module::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 pub use profiles::ProfileStore;
 pub use registry::Registry;
@@ -47,7 +47,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
         }
     };
     (
-        Core::build_with_bus(
+        Core::build_with_limits(
             modules,
             &config.modules.without,
             profiles,
@@ -57,6 +57,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
                 store,
             },
             config.bus.clone(),
+            config.call.clone(),
         ),
         warnings,
     )

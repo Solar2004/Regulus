@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use regulus_proto::{BusEvent, EventListParams, PortRef};
+use regulus_proto::{BusEvent, EventListParams, ExecutionState, PortRef};
 use serde_json::Value;
 
 use crate::registry::now_ms;
@@ -18,7 +18,8 @@ use crate::store::Store;
 /// The name of the threads that drain a queue, as seen by debuggers and `top`.
 pub(crate) const THREAD_NAME: &str = "regulus-bus";
 
-/// A value on its way to one input.
+/// A value on its way to one input, or news from a child execution on its way to the node
+/// that called it.
 pub(crate) struct Pending {
     pub event: u64,
     pub depth: u32,
@@ -26,6 +27,17 @@ pub(crate) struct Pending {
     pub capability: String,
     pub value: Value,
     pub to: PortRef,
+    /// Set for news from a child: it goes as `node/child`, not `node/event`.
+    pub child: Option<ChildNews>,
+}
+
+/// What a child execution sends back to the node that called it. `to.port_id` and
+/// `from.port_id` of its `Pending` name the child's output it returned on.
+pub(crate) struct ChildNews {
+    pub execution_id: String,
+    pub workflow_id: String,
+    /// Set when it ended; otherwise it returned `Pending.value`.
+    pub ended: Option<ExecutionState>,
 }
 
 /// Where the answer to an `event.list` comes from.

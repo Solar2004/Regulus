@@ -565,3 +565,46 @@ fn declared_box_ports_must_match_cardinality_and_laziness_too() {
         ["node.box_ports_mismatch"]
     );
 }
+
+/// A module whose node `caller` has a `workflow` field: the id of a workflow it runs as a
+/// child (`ModuleCtx::call_workflow`).
+fn caller_manifest() -> regulus_proto::Manifest {
+    serde_json::from_value(json!({
+        "module": { "id": "t/caller@1.0.0", "name": "caller" },
+        "node": [{ "type": "caller", "name": "Caller",
+                   "field": [{ "id": "workflow", "type": "workflow" }] }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_workflow_field_must_name_a_workflow_with_an_output() {
+    let manifest = caller_manifest();
+    let check = |target: Value| {
+        let mut profile = boxed();
+        profile["workflows"][0]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({ "id": "c", "type": "caller", "module_id": "t/caller@1.0.0",
+                          "config": { "workflow": target } }),
+            );
+        profile["workflows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "id": "closed", "kind": "extra",
+                          "ports": [text_port("ask", "input")] }));
+        let profile: Profile = serde_json::from_value(profile).unwrap();
+        let found = regulus_core::graph::check_fields(&profile, |id| {
+            (id == manifest.module.id).then_some(&manifest)
+        });
+        found.into_iter().map(|d| d.code).collect::<Vec<_>>()
+    };
+    assert_eq!(check(json!("greeter")), Vec::<String>::new());
+    assert_eq!(check(json!("nowhere")), ["field.workflow_missing"]);
+    assert_eq!(check(json!("closed")), ["field.workflow_no_output"]);
+    assert_eq!(check(json!("")), ["field.workflow_unset"]);
+    // A module that is not loaded is not checked.
+    let profile: Profile = serde_json::from_value(boxed()).unwrap();
+    assert!(regulus_core::graph::check_fields(&profile, |_| None).is_empty());
+}

@@ -113,6 +113,27 @@ impl ModuleCtx {
         self.core()?.checkpoint(&self.module_id, node, &state)
     }
 
+    /// Starts a child execution of `workflow`, a workflow of the profile `caller` runs
+    /// from, and puts each `(port, value)` of `inputs` on that "then" input of it. Returns
+    /// the child's id at once; it shows in `execution.list` with `parent` and its events
+    /// carry its own id.
+    ///
+    /// The answer comes later, to `caller`, as `node/child` (`ChildEvent`), on the
+    /// parent's bus like an event: `returned` with the first value that reaches any
+    /// "then" output of the child's workflow, after which the core stops the child; then
+    /// `ended` with its final state. A child that fails or is stopped from outside only
+    /// sends `ended`. Stopping the parent stops its children. `[call]` bounds how deep
+    /// children nest and how many one execution has live; past either, it fails.
+    pub fn call_workflow(
+        &self,
+        caller: &NodeRef,
+        workflow: &str,
+        inputs: Vec<(String, Value)>,
+    ) -> Result<String, ModuleError> {
+        self.core()?
+            .call_workflow(&self.module_id, caller, workflow, inputs)
+    }
+
     /// This module's own key-value space in the store, keyed by its id without version: it
     /// cannot name another module's (docs/02-architecture.md §6). With a node, the space
     /// lives in that node's project database; without one, in the global database.

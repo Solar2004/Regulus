@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use regulus_proto::{
-    Cardinality, Diagnostic, Direction, Node, Port, PortRef, Profile, Severity, Wire, WireKind,
-    Workflow, BOX_SEPARATOR, WORKFLOW_SELF,
+    Cardinality, Diagnostic, Direction, Manifest, Node, Port, PortRef, Profile, Severity, Wire,
+    WireKind, Workflow, BOX_SEPARATOR, FIELD_WORKFLOW, WORKFLOW_SELF,
 };
 
 struct Report<'a> {
@@ -60,6 +60,68 @@ pub fn check_profile(profile: &Profile, is_installed: impl Fn(&str) -> bool) -> 
     for workflow in &profile.workflows {
         report.workflow = Some(&workflow.id);
         check_workflow(profile, workflow, &is_installed, &mut report);
+    }
+    report.list
+}
+
+/// Checks the fields of module nodes the core understands, from what their module's
+/// manifest declares (`manifest_of`; a module that is not loaded is skipped): a
+/// [`FIELD_WORKFLOW`] field must name a workflow of the profile with a "then" output. Unset
+/// is a warning: the node has nothing to run.
+pub fn check_fields<'m>(
+    profile: &Profile,
+    manifest_of: impl Fn(&str) -> Option<&'m Manifest>,
+) -> Vec<Diagnostic> {
+    let mut report = Report {
+        list: Vec::new(),
+        workflow: None,
+    };
+    for workflow in &profile.workflows {
+        report.workflow = Some(&workflow.id);
+        for node in &workflow.nodes {
+            let Some(manifest) = node.module_id.as_deref().and_then(&manifest_of) else {
+                continue;
+            };
+            let Some(node_type) = manifest.node_type(&node.node_type) else {
+                continue;
+            };
+            let id = Some(node.id.as_str());
+            for field in node_type
+                .fields
+                .iter()
+                .filter(|f| f.field_type == FIELD_WORKFLOW)
+            {
+                let value = manifest.setting(node, &field.id).and_then(|v| v.as_str());
+                let Some(target) = value.filter(|v| !v.is_empty()) else {
+                    let message = format!("`{}` names no workflow; the node runs none", field.id);
+                    report.push(Severity::Warning, "field.workflow_unset", message, id, None);
+                    continue;
+                };
+                let Some(called) = profile.workflow(target) else {
+                    let message = format!("`{}`: workflow `{target}` does not exist", field.id);
+                    report.push(Severity::Error, "field.workflow_missing", message, id, None);
+                    continue;
+                };
+                let outputs = called
+                    .ports
+                    .iter()
+                    .any(|p| p.direction == Direction::Output && p.kind == WireKind::Then);
+                if !outputs {
+                    let message = format!(
+                        "`{}`: workflow `{target}` declares no \"then\" output, so nothing \
+                         would come back from it",
+                        field.id
+                    );
+                    report.push(
+                        Severity::Error,
+                        "field.workflow_no_output",
+                        message,
+                        id,
+                        None,
+                    );
+                }
+            }
+        }
     }
     report.list
 }
