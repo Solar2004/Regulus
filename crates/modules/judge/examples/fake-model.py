@@ -13,7 +13,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         prompt = body["messages"][-1]["content"]
-        judged = prompt.rsplit("Input:\n", 1)[-1]
+        # The judge fences the value as a JSON string between <input> and </input>.
+        judged = json.loads(prompt.split("<input>", 1)[1].rsplit("</input>", 1)[0])
         passed = "test" in judged
         answer = {
             "verdict": "pass" if passed else "fail",
