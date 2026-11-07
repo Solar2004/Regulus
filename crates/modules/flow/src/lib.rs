@@ -195,6 +195,15 @@ impl Flow {
         handle(&self.here(call), event)
     }
 
+    /// Checks what a node can only check whole, and sets up what it keeps.
+    fn start(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let here = self.here(call);
+        match here.call.node.node_type.as_str() {
+            "wait" => wait::start(&here),
+            _ => Ok(Value::Null),
+        }
+    }
+
     /// Whatever a node held dies with it: turns, half-open barriers, delayed values.
     fn stop(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let me = self.here(call).me;
@@ -255,7 +264,7 @@ impl Module for Flow {
             method::NODE_EVENT => self.event(parse(params)?),
             method::NODE_CHILD => self.child(parse(params)?),
             method::NODE_STOP => self.stop(parse(params)?),
-            method::NODE_START => Ok(Value::Null),
+            method::NODE_START => self.start(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }
     }

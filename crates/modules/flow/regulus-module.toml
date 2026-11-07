@@ -256,7 +256,8 @@ name = "Wait"
   type    = "number"
   default = 1000
 
-  # Values one node may hold at once; past it, new ones are refused. 0: no limit.
+  # Values one node may hold at once, above 0 (0 is refused at start). Past it, a new
+  # value is dropped and its delivery shows as `failed` on the bus.
   [[node.field]]
   id      = "max_pending"
   type    = "number"

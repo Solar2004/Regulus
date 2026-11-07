@@ -34,8 +34,14 @@ pub(crate) struct Timers {
 }
 
 impl Timers {
-    fn held(&self, node: &NodeRef) -> Arc<Held> {
-        lock(&self.nodes).entry(node.clone()).or_default().clone()
+    /// Makes room for a node's values. Only a started node holds anything: an event that
+    /// comes after its stop finds no room and is refused.
+    fn start(&self, node: &NodeRef) {
+        lock(&self.nodes).insert(node.clone(), Arc::default());
+    }
+
+    fn held(&self, node: &NodeRef) -> Option<Arc<Held>> {
+        lock(&self.nodes).get(node).cloned()
     }
 
     /// Wakes the node's threads and has them drop their values.
@@ -75,15 +81,35 @@ fn sleep(held: &Held, delay: Duration) -> bool {
     false
 }
 
+/// `max_pending` above 0: a node that holds without bound is refused at start.
+fn max_pending(here: &Here) -> Result<usize, ModuleError> {
+    match here.number("max_pending") {
+        0 => Err(ModuleError::InvalidParams(format!(
+            "wait `{}`: `max_pending` must be above 0",
+            here.me.node_id
+        ))),
+        n => Ok(usize::try_from(n).unwrap_or(usize::MAX)),
+    }
+}
+
+pub(crate) fn start(here: &Here) -> Result<Value, ModuleError> {
+    max_pending(here)?;
+    here.flow.timers.start(&here.me);
+    Ok(Value::Null)
+}
+
 pub(crate) fn event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
     let delay = Duration::from_millis(here.number("ms"));
-    let max = here.number("max_pending") as usize;
-    let held = here.flow.timers.held(&here.me);
+    let max = max_pending(here)?;
+    let held =
+        here.flow.timers.held(&here.me).ok_or_else(|| {
+            ModuleError::Failed(format!("wait `{}` is not running", here.me.node_id))
+        })?;
     let pending = held.pending.fetch_add(1, Ordering::SeqCst) + 1;
-    if max > 0 && pending > max {
+    if pending > max {
         held.pending.fetch_sub(1, Ordering::SeqCst);
         return Err(ModuleError::Failed(format!(
-            "wait `{}` already holds {max} values (`max_pending`)",
+            "wait `{}` already holds {max} values (`max_pending`): this one is dropped",
             here.me.node_id
         )));
     }
@@ -111,6 +137,20 @@ pub(crate) fn event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_started_node_holds_and_a_stop_ends_that() {
+        let timers = Timers::default();
+        let node = NodeRef {
+            execution_id: "e".into(),
+            node_id: "w".into(),
+        };
+        assert!(timers.held(&node).is_none(), "nothing before start");
+        timers.start(&node);
+        assert!(timers.held(&node).is_some());
+        timers.cancel(&node);
+        assert!(timers.held(&node).is_none(), "nothing after stop");
+    }
 
     #[test]
     fn a_stop_wakes_a_sleeper_at_once_and_it_drops_its_value() {

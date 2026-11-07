@@ -399,3 +399,53 @@ fn a_variable_outlives_a_restart_that_resumes_its_execution() {
     let values = settled(&core, &id, "value");
     assert_eq!(values.last(), Some(&json!("step 2")), "{values:?}");
 }
+
+/// What `execution.start` answers for `p`.
+fn try_start(core: &Core) -> Value {
+    core.dispatch(method::EXECUTION_START, json!({ "profile_id": "p" }))
+        .unwrap()
+}
+
+fn failures(core: &Core, id: &str) -> Vec<String> {
+    page(core, id)
+        .events
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            BusEventKind::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn wait_refuses_an_unbounded_hold_and_drops_what_does_not_fit() {
+    let make = |max_pending: u64| {
+        profile(
+            vec![port("in", T, "input"), port("out", T, "output")],
+            vec![node(
+                "wait",
+                "wait",
+                json!({ "ms": 300, "max_pending": max_pending }),
+                vec![port("in", T, "input"), port("out", T, "output")],
+            )],
+            vec![wire("self.in", "wait.in"), wire("wait.out", "self.out")],
+        )
+    };
+    let refused = try_start(&core(make(0), Storage::default()));
+    assert_eq!(refused["state"]["status"], "failed", "{refused}");
+    assert!(refused["state"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("max_pending"));
+
+    let core = core(make(1), Storage::default());
+    let id = start(&core);
+    send(&core, &id, "in", json!("kept"));
+    send(&core, &id, "in", json!("dropped"));
+    assert_eq!(until(&core, &id, "out", 1), [json!("kept")]);
+    let errors = failures(&core, &id);
+    assert!(
+        errors.len() == 1 && errors[0].contains("dropped"),
+        "{errors:?}"
+    );
+}
