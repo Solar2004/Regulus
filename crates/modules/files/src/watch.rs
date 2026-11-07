@@ -3,19 +3,24 @@
 //! then sends each changed file once.
 //!
 //! A single file is watched through its folder: editors save by writing a new file and
-//! renaming it over the old one, which a watch on the file itself would lose.
+//! renaming it over the old one, which a watch on the file itself would lose. A path that
+//! does not exist yet counts as a file, and its folder is created so it can be watched.
+//! A watched folder that is deleted and made again is not watched any more: the watch
+//! went with the old one. What it sends starts a new chain at depth 0, out of reach of
+//! `[bus] max_depth`: a `write` into what a `watch` watches, wired from that `watch`, is a
+//! loop nothing cuts.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use regulus_core::{ModuleCtx, ModuleError, NodeRef};
 use serde_json::{json, Value};
 
-use crate::{failed, read_bounded, Here, YES};
+use crate::{failed, read_bounded, Here, TEMP_SUFFIX, YES};
 
 const CHANGED: &str = "changed";
 const TEXT: &str = "text";
@@ -60,6 +65,11 @@ struct Target {
 
 impl Target {
     fn counts(&self, path: &Path) -> bool {
+        // `write` fills a hidden file and renames it: only the rename is a change.
+        let temporary = path.to_string_lossy().ends_with(TEMP_SUFFIX);
+        if temporary {
+            return false;
+        }
         if self.folder {
             path.starts_with(&self.path) && !path.is_dir()
         } else {
@@ -86,25 +96,34 @@ impl Target {
         }
     }
 
-    /// Gathers changes until `debounce` passes without any, then sends them.
+    /// Gathers changes until `debounce` passes without one that counts, then sends them.
+    /// Only changes to what the node watches move the deadline: a noisy file beside it,
+    /// or reads of anything, cannot keep the flush from coming.
     fn run(self, messages: mpsc::Receiver<Message>) {
         let mut pending = BTreeSet::new();
+        let mut deadline: Option<Instant> = None;
         loop {
-            let message = if pending.is_empty() {
-                messages.recv().map_err(|_| RecvTimeoutError::Disconnected)
-            } else {
-                messages.recv_timeout(self.debounce)
+            let message = match deadline {
+                None => messages.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(at) => messages.recv_timeout(at.saturating_duration_since(Instant::now())),
             };
             match message {
                 Ok(Message::Changed(Ok(event))) => {
-                    if !matches!(event.kind, EventKind::Access(_)) {
-                        pending.extend(event.paths.into_iter().filter(|p| self.counts(p)));
+                    if matches!(event.kind, EventKind::Access(_)) {
+                        continue;
+                    }
+                    let counted: Vec<PathBuf> =
+                        event.paths.into_iter().filter(|p| self.counts(p)).collect();
+                    if !counted.is_empty() {
+                        pending.extend(counted);
+                        deadline = Some(Instant::now() + self.debounce);
                     }
                 }
                 Ok(Message::Changed(Err(error))) => {
                     eprintln!("regulus: watch `{}`: {error}", self.me.node_id);
                 }
                 Err(RecvTimeoutError::Timeout) => {
+                    deadline = None;
                     for path in std::mem::take(&mut pending) {
                         self.send(&path);
                     }

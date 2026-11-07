@@ -361,3 +361,33 @@ fn write_replaces_the_file_whole_and_leaves_nothing_beside_it() {
         .collect();
     assert_eq!(left, ["plan.md"], "no temporary file stays");
 }
+
+#[test]
+fn a_noisy_file_beside_the_watched_one_does_not_hold_back_its_change() {
+    let dir = temp("noise");
+    let profile = example(
+        include_str!("../examples/watch.toml"),
+        &dir,
+        &[("notes", "notes.md")],
+    );
+    let core = core(profile, &dir.join("data"));
+    let id = start(&core, "watch");
+    let noisy = dir.join("noise.md");
+    let stop = Instant::now() + Duration::from_millis(1500);
+    let noise = std::thread::spawn(move || {
+        while Instant::now() < stop {
+            fs::write(&noisy, "x").unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let changed = Instant::now();
+    fs::write(dir.join("notes.md"), "note").unwrap();
+    // debounce 200 ms: the change goes out long before the noise stops at 1.5 s.
+    until(&core, &id, "self", "changed", 1);
+    assert!(
+        changed.elapsed() < Duration::from_millis(1000),
+        "{:?}",
+        changed.elapsed()
+    );
+    noise.join().unwrap();
+}

@@ -192,9 +192,12 @@ name = "Fixed document"
   type    = "number"
   default = 1048576
 
-# Watches a file or a folder from start to stop. After `debounce_ms` without changes, it
-# sends each changed file: its path on `changed`, its text on `text`, if the node has
-# those outputs.
+# Watches a file or a folder from start to stop. After `debounce_ms` without changes to
+# what it watches, it sends each changed file: its path on `changed`, its text on `text`,
+# if the node has those outputs. A path that does not exist counts as a file, and its
+# folder is created; a folder deleted and made again is no longer watched. What it sends
+# starts a new chain, out of reach of `[bus] max_depth`: never wire it into a `write` of
+# the file it watches.
 [[node]]
 type = "watch"
 name = "Watch file"
