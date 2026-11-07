@@ -7,16 +7,17 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use regulus_proto::{
     code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, Direction, DisabledNode,
-    EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, IdParams,
-    NameParams, Node, NodeCall, NodeEvent, NodeStart, PortRef, ProjectFilter, SecretSetParams,
-    WireKind, Workflow, WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, WORKFLOW_SELF,
+    EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, HookAnswer,
+    HookDispatchParams, HookDispatched, HookReply, IdParams, NameParams, Node, NodeCall, NodeEvent,
+    NodeStart, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow, WorkflowSendParams,
+    WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::bus::{self, ChildNews, Journal, Listing, Pending};
-use crate::config::{BusConfig, CallConfig, Resume};
+use crate::config::{BusConfig, CallConfig, HooksConfig, Resume};
 use crate::graph::{
     boundary, check_fields, check_profile, flatten, missing_workflow, start_order, wire_end, End,
 };
@@ -156,6 +157,9 @@ struct CallLink {
     returned: bool,
 }
 
+/// The threads that ask hook nodes (`hook.dispatch`).
+const HOOK_THREAD: &str = "regulus-hook";
+
 /// The thread that starts the nodes of a child execution.
 const CALL_THREAD: &str = "regulus-call";
 
@@ -169,6 +173,7 @@ pub struct Core {
     storage: Storage,
     bus: BusConfig,
     call: CallConfig,
+    hooks: HooksConfig,
     /// Lock order: `executions` before `journal`, never the other way round.
     executions: Mutex<Vec<Live>>,
     journal: Mutex<Journal>,
@@ -228,6 +233,20 @@ impl Core {
         bus: BusConfig,
         call: CallConfig,
     ) -> Arc<Self> {
+        let hooks = HooksConfig::default();
+        Self::build_with_hooks(modules, without, profiles, storage, bus, call, hooks)
+    }
+
+    /// [`Core::build_with_limits`] with how long hooks may take.
+    pub fn build_with_hooks(
+        modules: Vec<Box<dyn Module>>,
+        without: &[String],
+        profiles: ProfileStore,
+        storage: Storage,
+        bus: BusConfig,
+        call: CallConfig,
+        hooks: HooksConfig,
+    ) -> Arc<Self> {
         // Numbers go on from the last run; what it left running waits for `recover`.
         let (next_execution, recovering) = match &storage.store {
             None => (1, Vec::new()),
@@ -243,6 +262,7 @@ impl Core {
             journal: Mutex::new(journal),
             bus,
             call,
+            hooks,
             next_execution: AtomicU64::new(next_execution),
             recovering: Mutex::new(recovering),
         })
@@ -309,6 +329,7 @@ impl Core {
             }
             method::EVENT_LIST => json(self.events(&parse(params)?)?),
             method::WORKFLOW_SEND => json(self.send(parse(params)?)?),
+            method::HOOK_DISPATCH => json(self.hook(parse(params)?)?),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",
@@ -965,6 +986,119 @@ impl Core {
             Err(CallError::Module(error)) => Err(error),
             Err(error) => Err(ModuleError::Failed(error.to_string())),
         }
+    }
+
+    // --- hooks ----------------------------------------------------------------------
+
+    /// Relays a hook request to the `hook@1` nodes wired over "uses" into a node of a
+    /// running execution (`hook.dispatch`). The core knows the capability, not what a hook
+    /// decides: it asks each one with `node/hook` on a thread of its own and waits at most
+    /// the time limit. One that does not answer in time, fails or does not take hooks
+    /// counts as no answer, with the reason; its thread is left to finish on its own.
+    fn hook(&self, params: HookDispatchParams) -> Result<HookDispatched, RpcError> {
+        let (workflow, active) = {
+            let executions = self.executions();
+            let live = executions
+                .iter()
+                .find(|live| live.execution.id == params.execution_id)
+                .filter(|live| live.execution.state.is_live())
+                .ok_or_else(|| RpcError::invalid_params("Unknown or stopped execution"))?;
+            (live.workflow.clone(), live.active.clone())
+        };
+        if !active.contains(&params.node_id) {
+            return Err(RpcError::invalid_params(format!(
+                "node `{}` is not running in `{}`",
+                params.node_id, params.execution_id
+            )));
+        }
+        let is_hook = |wire: &&regulus_proto::Wire| {
+            [End::From, End::To].into_iter().any(|end| {
+                wire_end(&workflow, wire, end).is_some_and(|p| p.capability == HOOK_CAPABILITY)
+            })
+        };
+        let targets: Vec<Endpoint> = workflow
+            .wires
+            .iter()
+            .filter(|w| w.kind == WireKind::Uses && w.to.node_id == params.node_id)
+            .filter(is_hook)
+            .filter(|w| {
+                params
+                    .hook_id
+                    .as_ref()
+                    .is_none_or(|id| *id == w.from.node_id)
+            })
+            .filter(|w| active.contains(&w.from.node_id))
+            .filter_map(|w| {
+                let from = workflow.node(&w.from.node_id)?;
+                Some(Endpoint {
+                    node: NodeRef {
+                        execution_id: params.execution_id.clone(),
+                        node_id: from.id.clone(),
+                    },
+                    module_id: from.module_id.clone()?,
+                })
+            })
+            .collect();
+        if let Some(id) = params.hook_id.as_ref().filter(|_| targets.is_empty()) {
+            return Err(RpcError::invalid_params(format!(
+                "no running hook `{id}` is wired into `{}`",
+                params.node_id
+            )));
+        }
+        let limit =
+            std::time::Duration::from_millis(params.timeout_ms.unwrap_or(self.hooks.timeout_ms));
+        let request = json(&params.request)?;
+        let (sender, answers) = std::sync::mpsc::channel();
+        let mut got: Vec<Option<Result<Value, ModuleError>>> =
+            targets.iter().map(|_| None).collect();
+        for (index, target) in targets.iter().enumerate() {
+            let (core, tx, target) = (self.me.clone(), sender.clone(), target.clone());
+            let request = request.clone();
+            let spawned = std::thread::Builder::new()
+                .name(HOOK_THREAD.into())
+                .spawn(move || {
+                    let answer = match core.upgrade() {
+                        Some(core) => core.call_node(&target, method::NODE_HOOK, request),
+                        None => Err(ModuleError::Failed("the core is not running".into())),
+                    };
+                    let _ = tx.send((index, answer));
+                });
+            if let Err(error) = spawned {
+                got[index] = Some(Err(ModuleError::Failed(error.to_string())));
+            }
+        }
+        drop(sender);
+        let deadline = std::time::Instant::now() + limit;
+        while got.iter().any(Option::is_none) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match answers.recv_timeout(left) {
+                Ok((index, answer)) => got[index] = Some(answer),
+                Err(_) => break,
+            }
+        }
+        let replies = targets
+            .iter()
+            .zip(got)
+            .map(|(target, answer)| {
+                let (answer, error) = match answer {
+                    None => (
+                        HookAnswer::Nothing,
+                        Some(format!("no answer within {} ms", limit.as_millis())),
+                    ),
+                    Some(Err(error)) => (HookAnswer::Nothing, Some(error.to_string())),
+                    Some(Ok(value)) => match HookAnswer::from_value(value) {
+                        Ok(answer) => (answer, None),
+                        Err(error) => (HookAnswer::Nothing, Some(format!("bad answer: {error}"))),
+                    },
+                };
+                HookReply {
+                    node_id: target.node.node_id.clone(),
+                    answer,
+                    error,
+                }
+            })
+            .collect();
+        Ok(HookDispatched { replies })
     }
 
     // --- child executions -----------------------------------------------------------

@@ -160,6 +160,22 @@ impl Default for CallConfig {
     }
 }
 
+/// Hooks (`hook.dispatch`): how long the core waits for a hook node that names no time
+/// limit of its own (docs/13-blocks.md §4).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HooksConfig {
+    /// Milliseconds a hook may take to answer; past it, it counts as no answer and the
+    /// agent goes on. A hook's own `timeout_ms` overrides it.
+    pub timeout_ms: u64,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self { timeout_ms: 10_000 }
+    }
+}
+
 /// What happens on start to the executions that were running when the core went down
 /// (docs/02-architecture.md §6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -253,6 +269,7 @@ pub struct Config {
     pub data: DataConfig,
     pub bus: BusConfig,
     pub call: CallConfig,
+    pub hooks: HooksConfig,
     pub store: StoreConfig,
     pub client: ClientConfig,
 }
