@@ -15,6 +15,23 @@ name = "Greeter"
   direction  = "output"
   kind       = "uses"
 
+  # On start the greeting goes out here: the proof that "then" wires carry data.
+  [[node.port]]
+  id         = "tick"
+  name       = "tick"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Whatever arrives here is answered back to the core as received.
+  [[node.port]]
+  id          = "echo"
+  name        = "echo"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
   [[node.field]]
   id      = "name"
   type    = "text"
