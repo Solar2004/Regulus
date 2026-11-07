@@ -83,3 +83,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   log`); motor intercambiable `service.engine@1` con el HTTP de serie (síncrono y por job).
   `regulus service expose <workflow>` imprime los nodos. Ejemplo en
   `crates/modules/service/examples/expose.toml`. Nueva dependencia: `sha2`.
+- `service` y `human`, tras revisión: el listener HTTP acota el tiempo total de escribir y de
+  vaciar una conexión, y responde 503 sin bloquear el hilo que acepta; parar un endpoint libera
+  lo que tenía en vuelo (plazas, presupuesto, jobs, log 503); `budget_requests` reserva las
+  peticiones en vuelo; las 401 ya no van al log; una llamada síncrona que caduca pasa a job sin
+  perder la respuesta. `human` borra lo pendiente solo cuando el valor ya salió y un plazo que
+  venció con el core caído salta al reanudar.
