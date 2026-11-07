@@ -311,6 +311,8 @@ estado compartido degenere en variable global donde todos escriben.
 - **Ficheros:** `<casa>/<[store] dir>/global.db` (lo que no es de ningún proyecto) y
   `.../projects/<proyecto>.db`, creada al primer uso. WAL; `synchronous`,
   `busy_timeout_ms`, `max_events` y `resume` en `[store]`.
+- **Escritura:** ejecuciones y eventos se encolan, en orden, a un hilo escritor; quien
+  tiene los locks del bus nunca espera al disco. Un apagado limpio vacía la cola.
 - **Tablas** (iguales en todas): `executions` (id, número `N` de `exec-N`, proyecto,
   perfil, workflow y **su copia**, estado y motivo, nodos desactivados, `parent` reservado
   para `Call`, inicio y fin) · `checkpoints` (ejecución, seq, nodo, estado JSON, fecha; solo
@@ -318,8 +320,9 @@ estado compartido degenere en variable global donde todos escriben.
   guardan `max_events`, al pasar del doble se borran los viejos) · `kv` (espacio
   clave-valor por módulo, clave `namespace` + `key`).
 - **Esquema versionado:** `schema_version` y migraciones solo hacia delante, una
-  transacción por paso. Una base escrita por un core más nuevo se rechaza sin tocarla y el
-  core sigue en memoria con un aviso.
+  transacción por paso. Una base escrita por un core más nuevo se rechaza sin tocarla. Si
+  la global no abre o no da los números con que seguir, el core sigue en memoria con un
+  aviso; una base de proyecto rota o una fila ilegible se saltan con aviso.
 - **Namespace:** `ModuleCtx::store(nodo?)` da el `kv` del módulo, con su id sin versión
   fijado por el core: no puede nombrar otro. Con nodo, en la base de su proyecto; sin él,
   en la global.
@@ -330,4 +333,6 @@ estado compartido degenere en variable global donde todos escriben.
   todas; `never` las marca todas. Reanudar es arrancar los nodos de la copia guardada; quien
   tiene checkpoint lo recibe en `node/start` como `NodeStart { checkpoint }`.
   `execution.list` y `event.list` leen el store: se ven las ejecuciones y eventos de
-  arranques anteriores, y `seq` y `N` siguen desde el más alto.
+  arranques anteriores, y `seq` y `N` siguen desde el más alto. Una página de
+  `event.list` trae como mucho `[bus] max_page` eventos y `next` siempre avanza hasta lo
+  revisado, coincida el filtro o no.
