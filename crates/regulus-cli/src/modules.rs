@@ -52,5 +52,6 @@ pub fn hosted(host: Host) -> Vec<Box<dyn Module>> {
         Box::new(regulus_module_communication::Communication::new()),
         Box::new(regulus_module_tools::Tools::new()),
         Box::new(regulus_module_tools_mcp::ToolsMcp::new(tools)),
+        Box::new(regulus_module_judge::Judge::new()),
     ]
 }

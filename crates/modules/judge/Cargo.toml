@@ -1,0 +1,18 @@
+[package]
+name = "regulus-module-judge"
+description = "Regulus judge: Judge, Classifier, Extractor and Rubric nodes over a swappable engine (an LLM with a strict schema by default)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+regulus-contract-llm-endpoint.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+regulus-module-providers = { path = "../providers" }
+toml.workspace = true
