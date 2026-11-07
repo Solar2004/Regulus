@@ -51,6 +51,10 @@ pub struct Task {
     pub lease_until: Option<u64>,
     #[serde(default)]
     pub attempts: u64,
+    /// Claims it may have, set by whoever claimed it last; a lease that runs out counts
+    /// as one. 0: no limit.
+    #[serde(default)]
+    pub max_attempts: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +186,9 @@ pub struct Queue {
     pub tasks: Vec<Task>,
     next_seq: u64,
     dirty: HashSet<usize>,
+    /// Leases that ran out since the last [`Queue::take_reaped`]: who held each, and the
+    /// task as it is now (`todo`, or `failed` if it had no attempts left).
+    reaped: Vec<(String, Task)>,
 }
 
 impl Queue {
@@ -206,6 +213,7 @@ impl Queue {
             tasks,
             next_seq,
             dirty: HashSet::new(),
+            reaped: Vec::new(),
         })
     }
 
@@ -231,20 +239,31 @@ impl Queue {
         self.tasks.iter().position(|t| t.id == id)
     }
 
-    /// Leases past `now` go back to `todo`, and every waiting task is `todo` or `blocked`
-    /// as its dependencies say. Returns the tasks whose lease ran out, as they were.
+    /// Leases past `now` go back to `todo`, or to `failed` once the task used its
+    /// attempts, and every waiting task is `todo` or `blocked` as its dependencies say.
+    /// Returns the tasks whose lease ran out, as they are now; they are also kept for
+    /// [`Queue::take_reaped`].
     pub fn settle(&mut self, now: u64) -> Vec<Task> {
         let mut expired = Vec::new();
         for index in 0..self.tasks.len() {
-            let task = &self.tasks[index];
-            if task.state == State::Claimed && task.lease_until.is_some_and(|until| until <= now) {
-                expired.push(task.clone());
-                let task = &mut self.tasks[index];
-                task.state = State::Todo;
-                task.owner = None;
-                task.lease_until = None;
-                self.touch(index, now);
+            let task = &mut self.tasks[index];
+            if task.state != State::Claimed || task.lease_until.is_none_or(|until| until > now) {
+                continue;
             }
+            let holder = task.owner.take().unwrap_or_default();
+            task.lease_until = None;
+            if task.max_attempts > 0 && task.attempts >= task.max_attempts {
+                task.state = State::Failed;
+                task.error = Some(json!(format!(
+                    "the lease ran out on attempt {} of {}",
+                    task.attempts, task.max_attempts
+                )));
+            } else {
+                task.state = State::Todo;
+            }
+            expired.push(task.clone());
+            self.reaped.push((holder, task.clone()));
+            self.touch(index, now);
         }
         let done: HashSet<String> = self
             .tasks
@@ -302,6 +321,7 @@ impl Queue {
                 owner: None,
                 lease_until: None,
                 attempts: 0,
+                max_attempts: 0,
                 data: task.data,
                 result: None,
                 error: None,
@@ -329,8 +349,20 @@ impl Queue {
             .collect()
     }
 
-    /// The oldest free task, claimed for `owner` until `now + lease_ms` (0: no lease).
-    pub fn claim(&mut self, owner: &str, lease_ms: u64, now: u64) -> Option<Task> {
+    /// Leases that ran out since the last call: who held each, and the task now.
+    pub fn take_reaped(&mut self) -> Vec<(String, Task)> {
+        std::mem::take(&mut self.reaped)
+    }
+
+    /// The oldest free task, claimed for `owner` until `now + lease_ms` (0: no lease),
+    /// with at most `max_attempts` claims in all (0: no limit).
+    pub fn claim(
+        &mut self,
+        owner: &str,
+        lease_ms: u64,
+        max_attempts: u64,
+        now: u64,
+    ) -> Option<Task> {
         self.settle(now);
         let index = self.tasks.iter().position(|t| t.state == State::Todo)?;
         let task = &mut self.tasks[index];
@@ -338,13 +370,14 @@ impl Queue {
         task.owner = Some(owner.to_string());
         task.lease_until = (lease_ms > 0).then(|| now.saturating_add(lease_ms));
         task.attempts += 1;
+        task.max_attempts = max_attempts;
         self.touch(index, now);
         Some(self.tasks[index].clone())
     }
 
     /// The task `owner` holds that `value` names: by its `id`, by a text that is the id,
     /// or the oldest it holds.
-    fn which(&self, owner: &str, value: &Value) -> Result<usize, String> {
+    fn which(&self, owner: &str, value: &Value, now: u64) -> Result<usize, String> {
         let named = match value {
             Value::Object(map) => map.get("id").and_then(Value::as_str).map(str::to_string),
             Value::String(text) if self.index(text.trim()).is_some() => {
@@ -366,6 +399,9 @@ impl Queue {
             }
         };
         let task = &self.tasks[index];
+        if task.lease_until.is_some_and(|until| until <= now) {
+            return Err(format!("the lease of task `{}` ran out", task.id));
+        }
         if task.state != State::Claimed || task.owner.as_deref() != Some(owner) {
             return Err(format!(
                 "task `{}` is {} by {}, not claimed by `{owner}`",
@@ -388,7 +424,7 @@ impl Queue {
 
     /// Marks the task `value` names `done`, keeping what came as its result.
     pub fn complete(&mut self, owner: &str, value: &Value, now: u64) -> Result<Task, String> {
-        let index = self.which(owner, value)?;
+        let index = self.which(owner, value, now)?;
         let result = Self::payload(value, "result");
         let task = &mut self.tasks[index];
         task.state = State::Done;
@@ -410,7 +446,7 @@ impl Queue {
         max_attempts: u64,
         now: u64,
     ) -> Result<(Task, bool), String> {
-        let index = self.which(owner, value)?;
+        let index = self.which(owner, value, now)?;
         let error = Self::payload(value, "error");
         let task = &mut self.tasks[index];
         let for_good = task.attempts >= max_attempts.max(1);
@@ -468,6 +504,10 @@ impl Queue {
             .any(|t| matches!(t.state, State::Todo | State::Claimed))
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn snapshot(&self) -> Value {
         json!({ "queue": self.name, "tasks": self.tasks, "counts": self.counts() })
     }
@@ -494,14 +534,14 @@ mod tests {
         );
         assert_eq!(q.tasks[0].state, State::Blocked);
         assert_eq!(q.tasks[2].id, "t3");
-        let first = q.claim("me", 0, 2).unwrap();
+        let first = q.claim("me", 0, 0, 2).unwrap();
         assert_eq!(first.id, "setup");
         assert_eq!(
-            q.claim("me", 0, 2).unwrap().id,
+            q.claim("me", 0, 0, 2).unwrap().id,
             "t3",
             "build is still blocked"
         );
-        assert!(q.claim("me", 0, 2).is_none());
+        assert!(q.claim("me", 0, 0, 2).is_none());
         q.complete("me", &json!("setup"), 3).unwrap();
         assert_eq!(q.tasks[0].state, State::Todo, "unblocked");
         // Text that is not an id goes to the oldest held task as its result.
@@ -510,7 +550,7 @@ mod tests {
             (done.id.as_str(), done.result),
             ("t3", Some(json!("written")))
         );
-        assert_eq!(q.claim("me", 0, 5).unwrap().id, "build");
+        assert_eq!(q.claim("me", 0, 0, 5).unwrap().id, "build");
         assert!(!q.drained());
         q.complete("me", &json!({ "id": "build", "result": 7 }), 6)
             .unwrap();
@@ -522,7 +562,7 @@ mod tests {
     fn only_the_owner_finishes_and_a_lease_runs_out() {
         let mut q = queue();
         add(&mut q, json!("a\nb"));
-        let a = q.claim("one", 10, 100).unwrap();
+        let a = q.claim("one", 10, 2, 100).unwrap();
         assert_eq!(a.lease_until, Some(110));
         assert!(q.complete("two", &json!({ "id": a.id }), 101).is_err());
         assert_eq!(q.next_lease(), Some(110));
@@ -532,19 +572,28 @@ mod tests {
             q.complete("one", &json!({ "id": "t1" }), 111).is_err(),
             "lease gone"
         );
-        assert_eq!(q.claim("two", 0, 112).unwrap().id, "t1");
+        assert_eq!(q.claim("two", 10, 2, 112).unwrap().id, "t1");
         assert_eq!(q.tasks[0].attempts, 2);
+        assert_eq!(q.take_reaped()[0].0, "one", "who held it");
+        // The second lease runs out too: two attempts used, it fails for good.
+        assert!(
+            q.complete("two", &json!("t1"), 122).is_err(),
+            "past its lease"
+        );
+        let expired = q.settle(122);
+        assert_eq!(expired[0].state, State::Failed);
+        assert!(q.claim("two", 10, 2, 123).unwrap().id == "t2");
     }
 
     #[test]
     fn a_fail_retries_while_attempts_last_and_repeated_ids_are_refused() {
         let mut q = queue();
         add(&mut q, json!({ "id": "x", "title": "X" }));
-        q.claim("me", 0, 1).unwrap();
+        q.claim("me", 0, 2, 1).unwrap();
         let (task, for_good) = q.fail("me", &json!("boom"), 2, 2).unwrap();
         assert!(!for_good);
         assert_eq!((task.state, task.error), (State::Todo, Some(json!("boom"))));
-        q.claim("me", 0, 3).unwrap();
+        q.claim("me", 0, 2, 3).unwrap();
         let (task, for_good) = q.fail("me", &Value::Null, 2, 4).unwrap();
         assert!(for_good);
         assert_eq!(task.state, State::Failed);

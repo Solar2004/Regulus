@@ -76,9 +76,10 @@ name = "Task queue"
   default = 10000
 
 # Takes the next free task: the oldest `todo` whose dependencies are all `done`. While a
-# task is `claimed` only its owner may complete or fail it. A claim lasts `lease_ms`;
-# past it the task goes back to `todo` (and out on `expired`), so a dead worker does not
-# hold it for ever.
+# task is `claimed` only its owner may complete or fail it, and only while its lease
+# lasts. A claim lasts `lease_ms`; past it the task goes back to `todo`, or to `failed`
+# after `max_attempts` claims, and out on `expired` of the node that held it (`failed`
+# too), so a dead worker does not hold it for ever.
 #
 # `next` asks for one task; with `wait = yes` a request that finds none waits until one is
 # free (added, unblocked or given back). With `auto = yes` the node asks by itself: on
@@ -146,7 +147,8 @@ name = "Claim task"
   direction  = "output"
   kind       = "then"
 
-  # A task of this node whose lease ran out; it is `todo` again.
+  # A task of this node whose lease ran out: `todo` again, or `failed` if that was its
+  # last attempt (then also on `failed`).
   [[node.port]]
   id         = "expired"
   name       = "expired"
@@ -214,11 +216,13 @@ name = "Claim task"
   type    = "number"
   default = 1
 
-  # Claims a task may have; a fail before the last sends it back to `todo`.
+  # Claims a task may have. A fail, or a lease that runs out, before the last sends it
+  # back to `todo`; at the last it is `failed`, so a task that kills its worker does not
+  # go round for ever. 0: no limit.
   [[node.field]]
   id      = "max_attempts"
   type    = "number"
-  default = 1
+  default = 3
 
   # On `node/stop`: release, its tasks go back to `todo` at once; keep, they wait for
   # their lease.

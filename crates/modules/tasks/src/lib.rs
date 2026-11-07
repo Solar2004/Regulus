@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use lease::Leases;
-use queue::{check_name, parse_new, Kv, Queue, Task};
+use queue::{check_name, parse_new, Kv, Queue, State, Task};
 
 const MANIFEST: &str = include_str!("../regulus-module.toml");
 
@@ -227,6 +227,40 @@ impl Shared {
         }
     }
 
+    /// Says on `expired` (and `failed`, if it had no attempts left) of the node that
+    /// held it each task whose lease ran out, whichever operation found it.
+    fn report(&self, claims: &HashMap<NodeRef, Claim>, queue: &str, reaped: Vec<(String, Task)>) {
+        for (holder, task) in reaped {
+            let Some(claim) = claims
+                .values()
+                .find(|c| c.queue == queue && c.owner == holder)
+            else {
+                continue;
+            };
+            self.task(&claim.at, port::EXPIRED, &task);
+            if task.state == State::Failed {
+                self.task(&claim.at, port::FAILED, &task);
+            }
+        }
+    }
+
+    /// Saves `queue`, reports the leases it reaped, and looks at it again when its next
+    /// lease ends.
+    fn close(
+        self: &Arc<Self>,
+        claims: &HashMap<NodeRef, Claim>,
+        me: &NodeRef,
+        queue: &mut Queue,
+    ) -> Result<(), ModuleError> {
+        queue.save()?;
+        let reaped = queue.take_reaped();
+        self.report(claims, queue.name(), reaped);
+        if let Some(until) = queue.next_lease() {
+            self.leases.at(self, until, queue.name(), me.clone());
+        }
+        Ok(())
+    }
+
     /// Serves every running claim of `queue` that wants a task, in a fixed order.
     fn fill(self: &Arc<Self>, claims: &mut Claims, queue: &str) {
         let mut keys: Vec<NodeRef> = claims
@@ -235,25 +269,32 @@ impl Shared {
             .map(|(k, _)| k.clone())
             .collect();
         keys.sort_by(|a, b| (&a.execution_id, &a.node_id).cmp(&(&b.execution_id, &b.node_id)));
+        let mut reaped = Vec::new();
         for key in keys {
             let Some(claim) = claims.get_mut(&key) else {
                 continue;
             };
-            if let Err(error) = self.serve(claim) {
-                let at = claim.at.clone();
-                let _ = self.error(&at, error.to_string());
+            match self.serve(claim) {
+                Ok(found) => reaped.extend(found),
+                Err(error) => {
+                    let at = claim.at.clone();
+                    let _ = self.error(&at, error.to_string());
+                }
             }
         }
+        self.report(claims, queue, reaped);
     }
 
-    /// Claims for one node as many tasks as it wants and can get.
-    fn serve(self: &Arc<Self>, claim: &mut Claim) -> Result<(), ModuleError> {
+    /// Claims for one node as many tasks as it wants and can get. Returns the leases it
+    /// found run out, for [`Shared::report`].
+    fn serve(self: &Arc<Self>, claim: &mut Claim) -> Result<Vec<(String, Task)>, ModuleError> {
         let kv = self.kv(&claim.at.me)?;
         let mut queue = Queue::load(kv, &claim.queue)?;
         let now = now_ms();
         let mut got = Vec::new();
         while Self::wants(claim, &queue) > 0 {
-            let Some(task) = queue.claim(&claim.owner, claim.lease_ms, now) else {
+            let Some(task) = queue.claim(&claim.owner, claim.lease_ms, claim.max_attempts, now)
+            else {
                 break;
             };
             if !claim.auto {
@@ -261,48 +302,43 @@ impl Shared {
             }
             got.push(task);
         }
+        queue.settle(now);
         queue.save()?;
         if let Some(until) = queue.next_lease() {
-            self.leases.at(self, until, claim.at.me.clone());
+            self.leases
+                .at(self, until, &claim.queue, claim.at.me.clone());
         }
         for task in &got {
             self.task(&claim.at, port::TASK, task);
         }
-        Ok(())
+        Ok(queue.take_reaped())
     }
 
-    /// Leases of the queue `me` claims from that ran out: back to `todo`, said on the
-    /// `expired` of the node that held them, and offered again.
-    pub(crate) fn expire(self: &Arc<Self>, me: &NodeRef) {
+    /// A lease of `queue` may have run out: reaps it through `me` if that claim still
+    /// runs, else through every running claim of the queue, so that one waiting gets the
+    /// task even if the node that held it is gone.
+    pub(crate) fn expire(self: &Arc<Self>, me: &NodeRef, name: &str) {
         let mut claims = self.lock();
-        let Some(claim) = claims.get(me).cloned() else {
-            return;
+        let through: Vec<NodeRef> = if claims.contains_key(me) {
+            vec![me.clone()]
+        } else {
+            claims
+                .iter()
+                .filter(|(_, c)| c.queue == name)
+                .map(|(k, _)| k.clone())
+                .collect()
         };
-        let expired = (|| -> Result<Vec<Task>, ModuleError> {
-            let mut queue = Queue::load(self.kv(me)?, &claim.queue)?;
-            let expired = queue.settle(now_ms());
-            queue.save()?;
-            if let Some(until) = queue.next_lease() {
-                self.leases.at(self, until, me.clone());
-            }
-            Ok(expired)
-        })();
-        let expired = match expired {
-            Ok(expired) => expired,
-            Err(error) => {
-                eprintln!("regulus: tasks: leases of `{}`: {error}", claim.queue);
-                return;
-            }
-        };
-        for task in &expired {
-            let holder = claims
-                .values()
-                .find(|c| c.queue == claim.queue && Some(&c.owner) == task.owner.as_ref());
-            if let Some(holder) = holder {
-                self.task(&holder.at, port::EXPIRED, task);
+        for node in through {
+            let reaped = (|| -> Result<(), ModuleError> {
+                let mut queue = Queue::load(self.kv(&node)?, name)?;
+                queue.settle(now_ms());
+                self.close(&claims, &node, &mut queue)
+            })();
+            if let Err(error) = reaped {
+                eprintln!("regulus: tasks: leases of `{name}`: {error}");
             }
         }
-        self.fill(&mut claims, &claim.queue);
+        self.fill(&mut claims, name);
     }
 
     fn start(self: &Arc<Self>, call: NodeCall) -> Result<Value, ModuleError> {
@@ -337,7 +373,7 @@ impl Shared {
         // Leases taken before a restart still run out.
         if let Ok(kv) = self.kv(&me) {
             if let Some(until) = Queue::load(kv, &queue).ok().and_then(|q| q.next_lease()) {
-                self.leases.at(self, until, me);
+                self.leases.at(self, until, &queue, me);
             }
         }
         self.fill(&mut claims, &queue);
@@ -354,7 +390,7 @@ impl Shared {
             let released = (|| -> Result<usize, ModuleError> {
                 let mut queue = Queue::load(self.kv(&me)?, &claim.queue)?;
                 let released = queue.release(&claim.owner, now_ms()).len();
-                queue.save()?;
+                self.close(&claims, &me, &mut queue)?;
                 Ok(released)
             })();
             match released {
@@ -372,10 +408,10 @@ impl Shared {
         match (call.node.node_type.as_str(), event.port.as_str()) {
             (QUEUE, port::ADD) => self.add(&at, &event.value),
             (QUEUE, port::LIST) => {
-                let _claims = self.lock();
+                let claims = self.lock();
                 let mut queue = Queue::load(self.kv(&at.me)?, &self.queue_name(&at.node)?)?;
                 queue.settle(now_ms());
-                queue.save()?;
+                self.close(&claims, &at.me, &mut queue)?;
                 self.emit(&at, port::TASKS, queue.snapshot());
                 Ok(queue.counts())
             }
@@ -408,7 +444,7 @@ impl Shared {
         let added = queue
             .add(new, max, now_ms())
             .map_err(|e| self.error(at, e))?;
-        queue.save()?;
+        self.close(&claims, &at.me, &mut queue)?;
         self.emit(at, port::ADDED, json!(added));
         self.fill(&mut claims, &name);
         Ok(json!({ "added": added.len() }))
@@ -451,7 +487,7 @@ impl Shared {
                 .map_err(|e| self.error(at, e))?;
             (if for_good { port::FAILED } else { port::RETRY }, task)
         };
-        queue.save()?;
+        self.close(&claims, &at.me, &mut queue)?;
         self.task(at, port, &task);
         if queue.drained() {
             self.emit(at, port::DRAINED, queue.counts());
@@ -601,11 +637,11 @@ impl Tasks {
 
     fn list(&self, target: Target) -> Result<Value, ModuleError> {
         let shared = &self.shared;
-        let _claims = shared.lock();
+        let claims = shared.lock();
         let name = target.queue.clone().unwrap_or_else(|| DEFAULT_QUEUE.into());
         let mut queue = Queue::load(shared.kv(&target.me())?, &name)?;
         queue.settle(now_ms());
-        queue.save()?;
+        shared.close(&claims, &target.me(), &mut queue)?;
         Ok(queue.snapshot())
     }
 

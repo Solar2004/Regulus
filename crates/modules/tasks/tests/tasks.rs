@@ -164,7 +164,7 @@ fn claim_profile(lease_ms: u64) -> Profile {
                      vec![port("add", "text@1", "input")]),
                 node("claim", "claim",
                      json!({ "queue": "leased", "auto": "yes", "lease_ms": lease_ms,
-                             "on_stop": "keep" }),
+                             "on_stop": "keep", "max_attempts": 2 }),
                      vec![port("task", "text@1", "output"), port("expired", "json@1", "output")]),
             ],
             "wires": [wire("a", ("self", "add"), ("queue", "add")),
@@ -200,24 +200,44 @@ fn emitted(core: &Core, id: &str, port: &str, count: usize) -> Vec<Value> {
 }
 
 #[test]
-fn a_lease_runs_out_and_the_task_is_claimed_again() {
+fn a_lease_runs_out_counts_as_an_attempt_and_the_last_one_fails_the_task() {
     let home = home("lease");
     let core = core(claim_profile(150), &home);
     let id = start(&core, "p");
     send(&core, &id, "add", json!("only one"));
-    // `auto` claims it at once; the lease ends, it is offered again and claimed again.
+    // `auto` claims it at once; the lease ends, it is offered again and claimed again;
+    // the second lease ends on its last attempt (`max_attempts` 2) and it fails.
     let tasks = emitted(&core, &id, "task", 2);
     assert_eq!(tasks[..2], [json!("only one"), json!("only one")]);
-    let expired = emitted(&core, &id, "expired", 1);
-    assert_eq!(expired[0]["id"], "t1");
+    let expired = emitted(&core, &id, "expired", 2);
+    assert_eq!(expired[0]["state"], "todo");
+    assert_eq!(expired[1]["state"], "failed");
     let listed = core
         .dispatch(
             LIST,
             json!({ "execution_id": id, "node_id": "claim", "queue": "leased" }),
         )
         .unwrap();
-    assert!(listed["tasks"][0]["attempts"].as_u64().unwrap() >= 2);
+    assert_eq!(listed["tasks"][0]["attempts"], 2);
+    assert_eq!(listed["counts"]["failed"], 1);
     core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_lease_of_a_stopped_claim_runs_out_for_the_claims_still_running() {
+    let home = home("gone");
+    let core = core(claim_profile(200), &home);
+    let first = start(&core, "p");
+    send(&core, &first, "add", json!("orphan"));
+    emitted(&core, &first, "task", 1);
+    // `on_stop = keep`: the task stays claimed by a node that is gone.
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": first }))
+        .unwrap();
+    let second = start(&core, "p");
+    assert_eq!(emitted(&core, &second, "task", 1)[0], json!("orphan"));
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": second }))
         .unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }

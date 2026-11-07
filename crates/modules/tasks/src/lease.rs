@@ -14,8 +14,8 @@ const THREAD: &str = "regulus-tasks-leases";
 
 #[derive(Default)]
 struct Due {
-    /// When, and a claim node of the queue whose lease ends then.
-    heap: BinaryHeap<Reverse<(u64, String, String)>>,
+    /// When, a claim node of the queue whose lease ends then, and the queue.
+    heap: BinaryHeap<Reverse<(u64, String, String, String)>>,
     running: bool,
     stopping: bool,
 }
@@ -33,12 +33,12 @@ impl Leases {
 
     /// Looks at `node`'s queue again at `until` (ms since the epoch). A look that finds
     /// nothing expired does nothing, so a deadline that no longer holds is harmless.
-    pub fn at(&self, shared: &Arc<Shared>, until: u64, node: NodeRef) {
+    pub fn at(&self, shared: &Arc<Shared>, until: u64, queue: &str, node: NodeRef) {
         let mut due = self.due();
         if due.stopping {
             return;
         }
-        let entry = Reverse((until, node.execution_id, node.node_id));
+        let entry = Reverse((until, node.execution_id, node.node_id, queue.to_string()));
         if due.heap.iter().any(|e| *e == entry) {
             return;
         }
@@ -68,21 +68,25 @@ fn run(shared: Weak<Shared>) {
         };
         let leases = &strong.leases;
         let mut due = leases.due();
-        let node = loop {
+        let (node, queue) = loop {
             if due.stopping {
                 due.running = false;
                 return;
             }
             let now = now_ms();
             match due.heap.peek() {
-                Some(Reverse((until, _, _))) if *until <= now => {
-                    let Reverse((_, execution_id, node_id)) = due.heap.pop().expect("peeked");
-                    break NodeRef {
-                        execution_id,
-                        node_id,
-                    };
+                Some(Reverse((until, _, _, _))) if *until <= now => {
+                    let Reverse((_, execution_id, node_id, queue)) =
+                        due.heap.pop().expect("peeked");
+                    break (
+                        NodeRef {
+                            execution_id,
+                            node_id,
+                        },
+                        queue,
+                    );
                 }
-                Some(Reverse((until, _, _))) => {
+                Some(Reverse((until, _, _, _))) => {
                     let wait = Duration::from_millis(until - now);
                     due = leases
                         .wake
@@ -96,6 +100,6 @@ fn run(shared: Weak<Shared>) {
             }
         };
         drop(due);
-        strong.expire(&node);
+        strong.expire(&node, &queue);
     }
 }
