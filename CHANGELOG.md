@@ -15,6 +15,15 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Lógica de IA, el core** (`docs/13-blocks.md` §2, protocolo `1.5` → `1.8`): el cable
+  "luego" lleva dato por un bus por ejecución (`event.list`, `regulus events --follow`,
+  límites `[bus]`); un store SQLite global y por proyecto guarda ejecuciones, checkpoints
+  y el diario del bus, y las ejecuciones sobreviven al reinicio de `serve` (`[store]
+  resume`); un workflow declara puertos propios y se mete en otro como caja (`self.<puerto>`,
+  `workflow.send`, `regulus send`); un nodo llama a un workflow como ejecución hija y
+  espera su resultado (`Execution.parent`, `node/child`, límites `[call]`). Módulo `flow`
+  con el nodo `call`. Ejemplos en `crates/modules/hello/examples/` y
+  `crates/modules/flow/examples/call.toml`.
 - **Hooks del agente** (`docs/13-blocks.md` §4, protocolo `1.9`): la caja Agente tiene
   la entrada `hooks`. Un nodo `rule` (módulo `hooks`) veta una herramienta o añade
   contexto en un evento (`pre_tool`, `stop`, `session_start`…). Con Claude Code en perfil
