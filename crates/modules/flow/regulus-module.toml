@@ -1,0 +1,43 @@
+[module]
+id             = "regulus/flow@0.1.0"
+name           = "Flow"
+requires_proto = "^1.8"
+
+# Runs a workflow of the same profile as a child execution, once per value received, and
+# waits for its answer (docs/13-blocks.md §3.2). Ports mirror the called workflow's by id:
+# a value on input `x` goes to its input `x`; what it returns on output `y` leaves on
+# output `y` of this node. The ports below are the defaults for a workflow with `in` and
+# `out`; a node calling another shape declares that workflow's ports instead.
+[[node]]
+type = "call"
+name = "Call"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Once per child, when it is no longer live: `{ execution_id, workflow_id, state }`,
+  # `state` as `execution.list` spells it (`stopped` after an answer, `failed`…).
+  [[node.port]]
+  id         = "done"
+  name       = "done"
+  capability = "execution.end@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The id of a workflow of this profile with at least one "then" output.
+  [[node.field]]
+  id      = "workflow"
+  type    = "workflow"
+  default = ""

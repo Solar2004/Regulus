@@ -16,6 +16,7 @@ pub fn installed() -> Vec<Box<dyn Module>> {
 pub fn hosted(bridge: Bridge) -> Vec<Box<dyn Module>> {
     vec![
         Box::new(regulus_module_hello::Hello::new()),
+        Box::new(regulus_module_flow::Flow::new()),
         Box::new(regulus_module_agent::Agent::new()),
         Box::new(regulus_module_engine_opencode::module()),
         Box::new(regulus_module_engine_claude::module()),
