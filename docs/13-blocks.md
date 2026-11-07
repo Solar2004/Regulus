@@ -171,7 +171,7 @@ de app, unas 5 semanas en total. Se corrigen con el tiempo real al lado.
 
 | # | Qué | Est. |
 |---|---|---|
-| 1 | Core: cable "luego" con dato + bus; store SQLite con ejecuciones persistentes; workflow con puertos propios; sub-ejecución `Call` | ~5 días |
+| 1 | ✅ Core: cable "luego" con dato + bus; store SQLite con ejecuciones persistentes; workflow con puertos propios; sub-ejecución `Call` (hecho 2026-11-07, 1 día) | ~5 días |
 | 2 | Caja Agente: ranura `hooks` con puente `regulus hook` | ~2 días |
 | 3 | Módulos de lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers` | ~6 días |
 | 4 | Módulos de entorno: `workspace` · `tasks` · `memory` · `web` · `human` · `service` | ~6 días |

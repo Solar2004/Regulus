@@ -17,9 +17,10 @@ se rompa.
 el canvas carga del core real; la caja Agente corre Claude Code y opencode por ACP, con
 proveedores (plantillas, ranuras, suscripción de Claude), skills, perfil aislado y
 secretos, un canal de Comunicación entre agentes, y una TUI (`regulus` sin comando)
-con la vista Operar; los agentes ya se envían mensajes por una herramienta MCP. **Lo
-siguiente: la lógica de IA de serie** — cable "luego" con dato, store, workflow como caja,
-ranura `hooks`, y los módulos y plantillas de [`docs/13-blocks.md`](docs/13-blocks.md).
+con la vista Operar; los agentes ya se envían mensajes por una herramienta MCP; el core
+de la lógica de IA está (bus con dato, store SQLite, workflow como caja, `Call`). **Lo
+siguiente:** la ranura `hooks`, y los módulos y plantillas de
+[`docs/13-blocks.md`](docs/13-blocks.md).
 La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
