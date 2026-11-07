@@ -53,3 +53,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   (`scripts/secrets-scan.sh`) e instalador (`scripts/install-hooks.sh`). Reglas en
   `docs/09-git.md`.
 - `.gitignore` y plantilla de mensaje de commit (`.gitmessage`).
+- **Procesos y guardas** (`docs/13-blocks.md` §3.2): módulo `process` con `command`,
+  `gate` (el código de salida decide y reenvía el mismo valor), `job` (log por ejecución,
+  timeout) y `terminal` (PTY); `node/stop` mata el grupo de procesos sin dejar nada vivo.
+  Módulo `guards` con `budget`, `retry`, `timeout`, `error` y `watchdog`, envolturas para
+  cualquier cable "luego". Ejemplos en `crates/modules/process/examples/job.toml` y
+  `crates/modules/guards/examples/backpressure.toml`.

@@ -53,6 +53,7 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Token aleatorio | **`getrandom`** | `0.4` | Bytes del sistema operativo para `<home>/token`, sin arrastrar `rand`. |
 | Config y manifiestos | **`toml`** | `1` | `config.toml` y `regulus-module.toml`. |
 | TUI | **`ratatui`** (trae **`crossterm`**) | `0.30.2` · crossterm `0.29.0` (verif. 2026-10-18) | El estándar en Rust para interfaces de terminal. `crossterm` se usa a través de `ratatui::crossterm`, así las dos versiones no se desincronizan. [`04-client.md`](04-client.md) §7. |
+| Señales a grupos de procesos | **`libc`** | `0.2` (`0.2.191`, verif. 2026-11-07) | `killpg` para que `process` mate el grupo entero de un comando o job; solo Unix. Ya venía por `portable-pty`. |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,
