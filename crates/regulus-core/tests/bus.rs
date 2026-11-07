@@ -556,3 +556,51 @@ fn a_start_refuses_ids_that_would_be_ambiguous_in_the_running_copy() {
     .collect();
     assert_eq!(codes, ["wire.reserved_id"]);
 }
+
+#[test]
+fn a_wire_into_the_wrong_side_of_a_boundary_is_never_delivered() {
+    let mut profile = nested();
+    let main = &mut profile.workflows[0];
+    main.ports = serde_json::from_value(text_ports()).unwrap();
+    main.nodes.retain(|n| n.id == "outer");
+    // `outer.reply → self.ask` feeds the workflow's own input from inside, and
+    // `x.out → self.ask` in `leaf` feeds the box's input from inside: both would loop.
+    main.wires = serde_json::from_value(json!([
+        wire("w1", ("self", "ask"), ("outer", "ask")),
+        wire("w2", ("outer", "reply"), ("self", "reply")),
+        wire("back", ("outer", "reply"), ("self", "ask")),
+    ]))
+    .unwrap();
+    profile.workflows[2]
+        .wires
+        .push(serde_json::from_value(wire("back", ("x", "out"), ("self", "ask"))).unwrap());
+    let codes: Vec<String> = check_profile(&profile, |_| true)
+        .into_iter()
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(codes, ["wire.direction", "wire.direction"]);
+
+    let (core, log) = core(profile, 64);
+    let (id, _) = run(&core);
+    core.dispatch(
+        method::WORKFLOW_SEND,
+        json!({ "execution_id": id, "port": "ask", "value": "once" }),
+    )
+    .unwrap();
+    let page = idle(&core, &id);
+    assert_eq!(log.lock().unwrap().len(), 1, "no loop through the boundary");
+    let failed: Vec<String> = page
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            BusEventKind::Failed { to, error } => {
+                assert!(error.contains(r#"no "then" input"#), "{error}");
+                Some(format!("{}.{}", to.node_id, to.port_id))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed, ["outer/inner.ask", "self.ask"]);
+    assert!(!kinds(&page).contains(&"cut"));
+    assert_eq!(emitted_from(&page).last().unwrap().0, "self.reply");
+}

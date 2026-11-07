@@ -485,6 +485,39 @@ pub(crate) fn boundary<'a>(plan: &'a Workflow, end: &PortRef) -> Option<&'a Port
         .and_then(|node| node.port(&end.port_id))
 }
 
+/// One end of a wire.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum End {
+    From,
+    To,
+}
+
+/// The port at one end of a wire of a running copy, if it faces the way that end needs:
+/// a value leaves from an output and arrives at an input. Boundary ports face the other
+/// way from inside: the copy's own ports (`self`) and a box's ports for the wires of
+/// that box, the ones whose id is `box/...`.
+pub(crate) fn wire_end<'a>(plan: &'a Workflow, wire: &Wire, end: End) -> Option<&'a Port> {
+    let at = match end {
+        End::From => &wire.from,
+        End::To => &wire.to,
+    };
+    let (port, inside) = if at.node_id == WORKFLOW_SELF {
+        (plan.port(&at.port_id)?, true)
+    } else {
+        let node = plan.node(&at.node_id)?;
+        let owner = wire.id.rsplit_once(BOX_SEPARATOR).map(|(owner, _)| owner);
+        (
+            node.port(&at.port_id)?,
+            node.is_box() && owner == Some(node.id.as_str()),
+        )
+    };
+    let wanted = match (end, inside) {
+        (End::From, false) | (End::To, true) => Direction::Output,
+        (End::To, false) | (End::From, true) => Direction::Input,
+    };
+    Some(port).filter(|port| port.direction == wanted)
+}
+
 /// The order in which a workflow's nodes start: whatever a node uses over a "uses" wire
 /// starts before it, unless the wire ends in a lazy input. Nodes caught in a cycle keep
 /// their declared order, after the rest.

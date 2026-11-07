@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::bus::{self, Journal, Listing, Pending};
 use crate::config::{BusConfig, Resume};
-use crate::graph::{boundary, check_profile, flatten, start_order};
+use crate::graph::{boundary, check_profile, flatten, start_order, wire_end, End};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
 use crate::registry::{base_id, CallError, Registry};
@@ -1013,20 +1013,14 @@ impl Core {
         } else {
             max_queue.saturating_sub(live.queue.len())
         };
-        for wire in workflow
-            .wires
-            .iter()
-            .filter(|w| w.kind == WireKind::Then && w.from == from)
-        {
-            // A boundary port takes a value from either side; a node only on its inputs.
-            let input = boundary(&workflow, &wire.to)
-                .or_else(|| {
-                    workflow
-                        .node(&wire.to.node_id)
-                        .and_then(|n| n.port(&wire.to.port_id))
-                        .filter(|p| p.direction == Direction::Input)
-                })
-                .filter(|p| p.kind == WireKind::Then);
+        // Only wires that leave `from` the way it faces: a boundary port passes a value on
+        // to the side it did not come from.
+        for wire in workflow.wires.iter().filter(|w| {
+            w.kind == WireKind::Then
+                && w.from == from
+                && wire_end(&workflow, w, End::From).is_some()
+        }) {
+            let input = wire_end(&workflow, wire, End::To).filter(|p| p.kind == WireKind::Then);
             let error = match input {
                 None => "no \"then\" input at the other end".to_string(),
                 Some(p) if p.capability != capability => {
