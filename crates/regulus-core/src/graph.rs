@@ -165,6 +165,13 @@ fn check_workflow(
     let mut incoming: HashMap<(&str, &str), usize> = HashMap::new();
     for wire in &workflow.wires {
         let wire_id = Some(wire.id.as_str());
+        if wire.id.contains(BOX_SEPARATOR) {
+            let message = format!(
+                "wire id `{}` is reserved: `{BOX_SEPARATOR}` joins a box to what is inside it",
+                wire.id
+            );
+            report.push(Severity::Error, "wire.reserved_id", message, None, wire_id);
+        }
         if !wires.insert(wire.id.as_str()) {
             report.push(
                 Severity::Error,
@@ -382,6 +389,17 @@ pub fn flatten(profile: &Profile, workflow: &Workflow) -> Result<Workflow, Strin
     };
     let mut path = vec![workflow.id.as_str()];
     inline(profile, workflow, None, &mut path, &mut plan)?;
+    // An id given twice in the copy is ambiguous: lookups find the first and the other
+    // would start twice or take its events. Inlining can make one (`a/b` next to box `a`
+    // with node `b`), and so can a plain duplicate.
+    let mut nodes = HashSet::new();
+    if let Some(node) = plan.nodes.iter().find(|n| !nodes.insert(n.id.as_str())) {
+        return Err(format!("node id `{}` is used more than once", node.id));
+    }
+    let mut wires = HashSet::new();
+    if let Some(wire) = plan.wires.iter().find(|w| !wires.insert(w.id.as_str())) {
+        return Err(format!("wire id `{}` is used more than once", wire.id));
+    }
     Ok(plan)
 }
 
@@ -397,6 +415,13 @@ fn inline<'a>(
         Some(prefix) => format!("{prefix}{BOX_SEPARATOR}{id}"),
     };
     for wire in &workflow.wires {
+        // `/` is how the copy tells which box a wire belongs to.
+        if wire.id.contains(BOX_SEPARATOR) {
+            return Err(format!(
+                "wire id `{}` is reserved: `{BOX_SEPARATOR}` joins a box to what is inside it",
+                wire.id
+            ));
+        }
         let end = |end: &PortRef| PortRef {
             node_id: match prefix {
                 Some(prefix) if end.node_id == WORKFLOW_SELF => prefix.to_string(),
@@ -412,6 +437,13 @@ fn inline<'a>(
         });
     }
     for node in &workflow.nodes {
+        if node.id == WORKFLOW_SELF || node.id.contains(BOX_SEPARATOR) {
+            return Err(format!(
+                "node id `{}` is reserved: `{WORKFLOW_SELF}` names the workflow's own ports \
+                 and `{BOX_SEPARATOR}` joins a box to the nodes inside it",
+                node.id
+            ));
+        }
         let mut placed = node.clone();
         placed.id = join(&node.id);
         let inner = node

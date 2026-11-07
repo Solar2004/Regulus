@@ -214,7 +214,10 @@ interpreta: son del cliente.
    `internal_workflow_id`** es una **caja**: sus puertos son los del workflow (si no
    declara ninguno, se rellenan al cargar; si declara, deben coincidir). El validador
    comprueba capacidad a ambos lados del límite, puertos que no existen, direcciones, que
-   un workflow no acabe dentro de sí mismo y los ids reservados (`self`, `/`). Un workflow
+   un workflow no acabe dentro de sí mismo y los ids reservados (`self` y `/` en nodos,
+   `/` en cables). `execution.start` no pasa el validador entero: rechaza solo lo que haría
+   ambigua o infinita la copia que corre (ids repetidos tras aplanar, reservados, ciclos de
+   cajas); lo demás corre y falla a la vista en el bus, como antes. Un workflow
    con puertos es válido sin que nadie lo llame. Solo cruza "luego"; un puerto "usa" en un
    workflow se avisa.
 

@@ -511,3 +511,48 @@ fn send_talks_to_a_running_workflow_and_its_reply_comes_from_self() {
     let stopped = send(json!({ "execution_id": id, "port": "ask", "value": "x" }));
     assert!(stopped.contains("not running"), "{stopped}");
 }
+
+#[test]
+fn a_start_refuses_ids_that_would_be_ambiguous_in_the_running_copy() {
+    let start = |profile: Profile| -> String {
+        let (core, log) = core(profile, 64);
+        let error = core
+            .dispatch(method::EXECUTION_START, json!({ "profile_id": "p" }))
+            .unwrap_err()
+            .message;
+        assert!(log.lock().unwrap().is_empty(), "nothing started");
+        error
+    };
+    // A node literally named `outer/inner` next to the box `outer` holding `inner`.
+    let mut clash = nested();
+    clash.workflows[0]
+        .nodes
+        .push(serde_json::from_value(node("outer/inner", json!({}), "text@1", "text@1")).unwrap());
+    assert!(start(clash).contains("`outer/inner` is reserved"));
+    // A node named `self` would have its wires taken by a workflow port.
+    let mut named_self = nested();
+    named_self.workflows[2].nodes[0].id = "self".into();
+    assert!(start(named_self).contains("`self` is reserved"));
+    // Plain duplicates, of nodes and of wires once inlined.
+    let mut twice = nested();
+    twice.workflows[0].nodes[2].id = "a".into();
+    assert!(start(twice).contains("node id `a` is used more than once"));
+    let mut wire_twice = nested();
+    wire_twice.workflows[0].wires[1].id = "w1".into();
+    assert!(start(wire_twice).contains("wire id `w1` is used more than once"));
+    let mut slash = nested();
+    slash.workflows[0].wires[1].id = "outer/w1".into();
+    assert!(start(slash).contains("wire id `outer/w1` is reserved"));
+    let codes: Vec<String> = check_profile(
+        &{
+            let mut p = nested();
+            p.workflows[0].wires[1].id = "outer/w1".into();
+            p
+        },
+        |_| true,
+    )
+    .into_iter()
+    .map(|d| d.code)
+    .collect();
+    assert_eq!(codes, ["wire.reserved_id"]);
+}
