@@ -1,6 +1,6 @@
 //! A trivial module. It exists to prove that a module plugs in without touching the core,
 //! that the core starts without it, and that "then" wires carry data: a greeter emits its
-//! greeting on `tick` when it starts and takes whatever arrives on `echo`.
+//! greeting on `tick` when it starts and greets whatever arrives on `echo` on `reply`.
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Manifest, NodeCall, NodeEvent};
@@ -13,6 +13,8 @@ const NAME_FIELD: &str = "name";
 const TICK_PORT: &str = "tick";
 /// The "then" input whose values are echoed back.
 const ECHO_PORT: &str = "echo";
+/// The "then" output that greets what arrived on `echo`.
+const REPLY_PORT: &str = "reply";
 
 pub struct Hello {
     manifest: Manifest,
@@ -54,7 +56,7 @@ impl Hello {
     }
 
     /// `text@1` is a JSON string. The answer only reaches the core, which reports the
-    /// delivery on the bus.
+    /// delivery on the bus; a node with a `reply` port also greets the text on it.
     fn event(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let event: NodeEvent = parse(call.args)?;
         if event.port != ECHO_PORT {
@@ -66,6 +68,13 @@ impl Hello {
         let text = event.value.as_str().ok_or_else(|| {
             ModuleError::InvalidParams(format!("{} must be a string", event.capability))
         })?;
+        if call.node.port(REPLY_PORT).is_some() {
+            let node = NodeRef {
+                execution_id: call.execution_id,
+                node_id: call.node.id,
+            };
+            self.ctx.emit(&node, REPLY_PORT, json!(greeting(text)))?;
+        }
         Ok(json!({ "echoed": text }))
     }
 

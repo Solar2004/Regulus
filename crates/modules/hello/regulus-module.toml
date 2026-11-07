@@ -23,7 +23,8 @@ name = "Greeter"
   direction  = "output"
   kind       = "then"
 
-  # Whatever arrives here is answered back to the core as received.
+  # Whatever arrives here is answered back to the core as received and, if the node has
+  # a `reply` port, greeted on it.
   [[node.port]]
   id          = "echo"
   name        = "echo"
@@ -31,6 +32,14 @@ name = "Greeter"
   direction   = "input"
   kind        = "then"
   cardinality = "many"
+
+  # The greeting for whatever arrived on `echo`: "Alexander" comes back as "Hello, Alexander!".
+  [[node.port]]
+  id         = "reply"
+  name       = "reply"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
 
   [[node.field]]
   id      = "name"
