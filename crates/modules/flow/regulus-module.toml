@@ -337,7 +337,11 @@ name = "Variable"
 
 # Changes what a value is, between capabilities: the compatibility box that goes in a
 # wire whose ends do not fit. `auto` picks the conversion by the input and output
-# capabilities (table in src/convert.rs); a non-empty `template` always wins.
+# capabilities (table in src/convert.rs); a non-empty `template` always wins, and a pair
+# the table lacks passes the value as it is (`same`). `text_to_json` turns text that
+# reads as JSON into that JSON (`"3"` becomes the number 3) and leaves other text a
+# string; `json_to_text` keeps a string as is and writes anything else as JSON. In a
+# template a missing field is empty and any non-string is its JSON.
 [[node]]
 type = "convert"
 name = "Convert"
