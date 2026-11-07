@@ -114,7 +114,10 @@ impl Counters {
                     counter.window.pop_front();
                 }
             }
-            if policy.budget_requests > 0 && spent.requests >= policy.budget_requests {
+            // Requests still running are reserved: they spend when they end.
+            if policy.budget_requests > 0
+                && spent.requests + counter.running >= policy.budget_requests
+            {
                 refuse(
                     format!(
                         "{scope}: budget of {} requests spent",

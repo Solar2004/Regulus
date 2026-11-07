@@ -13,7 +13,7 @@ mod http;
 pub mod policy;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -58,8 +58,9 @@ const REQUESTS_PORT: &str = "requests";
 /// The module's id path inside `node_dir` (`<data>/{global|projects/<p>}/regulus/service/…`).
 const MODULE_SEGMENTS: usize = 2;
 const PROJECTS_DIR: &str = "projects";
-/// How many log writes between two trims.
-const TRIM_EVERY: u64 = 50;
+/// Log rows, numbered, and the number of the next one.
+const LOG_ROW: &str = "log/";
+const LOG_NEXT: &str = "log_next";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -250,7 +251,9 @@ struct Flight {
     budgets: Vec<String>,
     waiter: Option<mpsc::Sender<Outcome>>,
     job: Option<String>,
+    /// Milliseconds until it returned, and what.
     returned: Option<u64>,
+    outputs: Option<Value>,
 }
 
 #[derive(Default)]
@@ -258,6 +261,8 @@ struct Flights {
     by_child: HashMap<String, Flight>,
     /// Child news that came before its flight was registered.
     early: HashMap<String, Vec<ChildEventKind>>,
+    /// Calls between `call_workflow` and their flight: only then can news come early.
+    registering: usize,
 }
 
 /// A live endpoint node.
@@ -282,7 +287,8 @@ struct Inner {
     flights: Mutex<Flights>,
     jobs: Mutex<HashMap<String, Job>>,
     counters: Mutex<Counters>,
-    log_writes: AtomicU64,
+    /// The next log row; read from the store on first use.
+    log_next: Mutex<Option<u64>>,
 }
 
 pub struct Service {
@@ -378,30 +384,40 @@ impl Inner {
     // --- log ------------------------------------------------------------------------
 
     fn log(&self, node: &Node, me: &NodeRef, entry: LogEntry) {
-        if let Ok(store) = self.global() {
-            let seq = self.log_writes.fetch_add(1, Ordering::Relaxed);
-            let row = format!("log/{:020}-{:08}", entry.at_ms, seq % 100_000_000);
-            if let Err(error) = store.set_json(&row, &entry) {
-                eprintln!("regulus: service: log: {error}");
-            }
-            if seq.is_multiple_of(TRIM_EVERY) {
-                let max = self.number(node, "log_max").max(1) as usize;
-                if let Ok(rows) = store.list("log/") {
-                    for (row, _) in rows.iter().take(rows.len().saturating_sub(max)) {
-                        let _ = store.delete(row);
-                    }
-                }
-            }
-        }
+        self.write_log(&entry, self.number(node, "log_max"));
         if node.port(REQUESTS_PORT).is_some() {
             let _ = self.ctx.emit(me, REQUESTS_PORT, json!(entry));
+        }
+    }
+
+    /// Rows are numbered (`log/<n>`): writing row n deletes row n - `max`, so the log
+    /// stays bounded without listing it.
+    fn write_log(&self, entry: &LogEntry, max: u64) {
+        let Ok(store) = self.global() else {
+            return;
+        };
+        let mut next = lock(&self.log_next);
+        let seq = match *next {
+            Some(seq) => seq,
+            None => store.get_json::<u64>(LOG_NEXT).ok().flatten().unwrap_or(0),
+        };
+        *next = Some(seq + 1);
+        let written = store
+            .set_json(&format!("{LOG_ROW}{seq:020}"), entry)
+            .and_then(|()| store.set_json(LOG_NEXT, &(seq + 1)));
+        if let Err(error) = written {
+            eprintln!("regulus: service: log: {error}");
+        }
+        // 0: the caller does not know the limit (its endpoint is gone); trim next time.
+        if let Some(old) = (max > 0).then(|| seq.checked_sub(max)).flatten() {
+            let _ = store.delete(&format!("{LOG_ROW}{old:020}"));
         }
     }
 
     fn read_log(&self, params: LogParams) -> Result<Vec<LogEntry>, ModuleError> {
         let mut entries: Vec<LogEntry> = self
             .global()?
-            .list("log/")?
+            .list(LOG_ROW)?
             .into_iter()
             .filter_map(|(_, bytes)| serde_json::from_slice::<LogEntry>(&bytes).ok())
             .filter(|e| {
@@ -542,15 +558,40 @@ impl Inner {
         if let Some(engine) = lock(&self.engines).remove(&key) {
             engine.close();
         }
-        if let Some(live) = lock(&self.endpoints).remove(&key) {
+        let live = lock(&self.endpoints).remove(&key);
+        if let Some(live) = &live {
             live.stopping.store(true, Ordering::SeqCst);
+            self.abandon(Some(&key), self.number(&live.node, "log_max"));
         }
-        // Waiters of this endpoint learn it stopped: their sender goes.
-        let mut flights = lock(&self.flights);
-        for flight in flights.by_child.values_mut() {
-            if key_of(&flight.me) == key {
-                flight.waiter = None;
-            }
+    }
+
+    /// Ends the requests of one endpoint (or all) that are still running: the core stops
+    /// their children with the endpoint and sends no news of them. Each frees its slots,
+    /// charges its budgets, fails its job and is logged as 503; a waiting caller gets 503.
+    fn abandon(&self, only: Option<&Key>, log_max: u64) {
+        let gone: Vec<(String, Flight)> = {
+            let mut flights = lock(&self.flights);
+            let children: Vec<String> = flights
+                .by_child
+                .iter()
+                .filter(|(_, f)| only.is_none_or(|k| key_of(&f.me) == *k))
+                .map(|(child, _)| child.clone())
+                .collect();
+            children
+                .into_iter()
+                .filter_map(|child| flights.by_child.remove(&child).map(|f| (child, f)))
+                .collect()
+        };
+        for (child, flight) in gone {
+            let status = if flight.returned.is_some() { 200 } else { 503 };
+            self.settle(
+                &child,
+                flight,
+                status,
+                "stopped with the endpoint",
+                None,
+                log_max,
+            );
         }
     }
 
@@ -558,41 +599,38 @@ impl Inner {
     fn handle(self: &Arc<Self>, me: &NodeRef, live: &Live, request: Request) -> Answer {
         let at = now_ms();
         let started = Instant::now();
-        let key = self.key_for(request.key.as_deref());
-        let node = &live.node;
-        let mut entry = LogEntry {
+        let Some(key) = self.key_for(request.key.as_deref()) else {
+            // Not logged: anyone can send these, with any workflow name in them.
+            return Answer::error(401, "unknown or revoked key");
+        };
+        if request.op == "job" {
+            return self.poll(key, request.job.as_deref().unwrap_or_default());
+        }
+        let entry = LogEntry {
             at_ms: at,
-            key_id: key.as_ref().map(|k| k.id.clone()),
-            key_name: key.as_ref().map(|k| k.name.clone()),
+            key_id: Some(key.id.clone()),
+            key_name: Some(key.name.clone()),
             project: live.project.clone(),
             workflow: request.workflow.clone(),
-            mode: if request.op == "job" {
-                "job".into()
-            } else if request.is_async {
-                "async".into()
-            } else {
-                "sync".into()
-            },
+            mode: if request.is_async { "async" } else { "sync" }.into(),
             status: 0,
             ms: 0,
             result: String::new(),
             execution_id: None,
         };
-        let answer = match key {
-            None => Answer::error(401, "unknown or revoked key"),
-            Some(key) if request.op == "job" => {
-                return self.poll(key, request.job.as_deref().unwrap_or_default());
+        match self.admit_and_call(me, live, key, &request, at) {
+            Ok(answer) => answer,
+            Err(answer) => {
+                let entry = LogEntry {
+                    status: answer.status,
+                    ms: started.elapsed().as_millis() as u64,
+                    result: answer.body["error"].as_str().unwrap_or("ok").to_string(),
+                    ..entry
+                };
+                self.log(&live.node, me, entry);
+                answer
             }
-            Some(key) => match self.admit_and_call(me, live, key, &request, at) {
-                Ok(answer) => return answer,
-                Err(answer) => answer,
-            },
-        };
-        entry.status = answer.status;
-        entry.ms = started.elapsed().as_millis() as u64;
-        entry.result = answer.body["error"].as_str().unwrap_or("ok").to_string();
-        self.log(node, me, entry);
-        answer
+        }
     }
 
     fn poll(&self, key: KeyRecord, job: &str) -> Answer {
@@ -600,6 +638,14 @@ impl Inner {
             Some(job) if job.key_id == key.id => Answer::new(200, json!(job)),
             _ => Answer::error(404, format!("no job `{job}` for this key")),
         }
+    }
+
+    /// What a budget scope has spent, from the store.
+    fn spent(&self, scope: &str) -> Spent {
+        self.global()
+            .ok()
+            .and_then(|s| s.get_json(&format!("spent/{scope}")).ok().flatten())
+            .unwrap_or_default()
     }
 
     /// Scope, exposure, input and policies; then the child. `Err` is a refusal to log
@@ -652,39 +698,87 @@ impl Inner {
                 rules.push((format!("{here}/{name}"), *policy));
             }
         }
-        let spent: Vec<(String, Policy, Spent)> = {
-            let store = self.global().ok();
-            rules
+        let job = if request.is_async {
+            Some(format!(
+                "j-{}",
+                random_hex(8).map_err(|e| Answer::error(503, e.to_string()))?
+            ))
+        } else {
+            None
+        };
+        // Spent budgets are read and the request counted under one lock, the same `settle`
+        // charges under: concurrent requests cannot all slip under one budget.
+        let (scopes, budgets): (Vec<String>, Vec<String>) = {
+            let mut counters = lock(&self.counters);
+            let spent: Vec<(String, Policy, Spent)> = rules
                 .into_iter()
                 .map(|(scope, policy)| {
-                    let spent = store
-                        .as_ref()
-                        .and_then(|s| s.get_json(&format!("spent/{scope}")).ok().flatten())
-                        .unwrap_or_default();
+                    let spent = if policy.budget_requests > 0 || policy.budget_ms > 0 {
+                        self.spent(&scope)
+                    } else {
+                        Spent::default()
+                    };
                     (scope, policy, spent)
                 })
-                .collect()
+                .collect();
+            counters.admit(&spent, at).map_err(
+                |Refused {
+                     reason,
+                     retry_after_s,
+                 }| Answer {
+                    status: 429,
+                    // The scope names execution and node: the outside sees only the policy.
+                    body: json!({ "error": reason.replace(&format!("{here}/"), "") }),
+                    retry_after_s,
+                },
+            )?;
+            let budgets = spent
+                .iter()
+                .filter(|(_, p, _)| p.budget_requests > 0 || p.budget_ms > 0)
+                .map(|(s, _, _)| s.clone())
+                .collect();
+            (spent.into_iter().map(|(s, _, _)| s).collect(), budgets)
         };
-        lock(&self.counters).admit(&spent, at).map_err(
-            |Refused {
-                 reason,
-                 retry_after_s,
-             }| Answer {
-                status: 429,
-                // The scope names execution and node: the outside sees only the policy.
-                body: json!({ "error": reason.replace(&format!("{here}/"), "") }),
-                retry_after_s,
-            },
-        )?;
-        let scopes: Vec<String> = spent.iter().map(|(s, _, _)| s.clone()).collect();
-        let budgets: Vec<String> = spent
-            .iter()
-            .filter(|(_, p, _)| p.budget_requests > 0 || p.budget_ms > 0)
-            .map(|(s, _, _)| s.clone())
-            .collect();
         let inputs: Vec<(String, Value)> =
             input.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let child = match self.ctx.call_workflow(me, &workflow, inputs) {
+        lock(&self.flights).registering += 1;
+        let called = self.ctx.call_workflow(me, &workflow, inputs);
+        let (waiter, outcome) = mpsc::channel();
+        let (child, early) = {
+            let mut flights = lock(&self.flights);
+            flights.registering -= 1;
+            let early = match &called {
+                Ok(child) => {
+                    flights.by_child.insert(
+                        child.clone(),
+                        Flight {
+                            me: me.clone(),
+                            key: key.clone(),
+                            project: live.project.clone(),
+                            workflow: workflow.clone(),
+                            mode: if request.is_async { "async" } else { "sync" },
+                            started: Instant::now(),
+                            at_ms: at,
+                            scopes: scopes.clone(),
+                            budgets,
+                            waiter: (!request.is_async).then_some(waiter),
+                            job: job.clone(),
+                            returned: None,
+                            outputs: None,
+                        },
+                    );
+                    flights.early.remove(child).unwrap_or_default()
+                }
+                Err(_) => Vec::new(),
+            };
+            if flights.registering == 0 {
+                // Nobody else is between a call and its flight: what is left is news of
+                // children that will never have one (stopped endpoints).
+                flights.early.clear();
+            }
+            (called, early)
+        };
+        let child = match child {
             Ok(child) => child,
             Err(error) => {
                 lock(&self.counters).refund(&scopes, at);
@@ -696,33 +790,9 @@ impl Inner {
                 return Err(Answer::error(status, error.to_string()));
             }
         };
-        let (waiter, outcome) = mpsc::channel();
-        let job = request
-            .is_async
-            .then(|| self.new_job(&key, &workflow, &child, at))
-            .transpose()
-            .map_err(|e| Answer::error(503, e.to_string()))?;
-        let early = {
-            let mut flights = lock(&self.flights);
-            flights.by_child.insert(
-                child.clone(),
-                Flight {
-                    me: me.clone(),
-                    key,
-                    project: live.project.clone(),
-                    workflow: workflow.clone(),
-                    mode: if request.is_async { "async" } else { "sync" },
-                    started: Instant::now(),
-                    at_ms: at,
-                    scopes,
-                    budgets,
-                    waiter: (!request.is_async).then_some(waiter),
-                    job: job.clone(),
-                    returned: None,
-                },
-            );
-            flights.early.remove(&child).unwrap_or_default()
-        };
+        if let Some(job) = &job {
+            self.insert_job(job, &key, &workflow, &child, at);
+        }
         for news in early {
             self.child_news(&child, news);
         }
@@ -734,42 +804,31 @@ impl Inner {
         }
         let timeout = Duration::from_millis(self.number(node, "timeout_ms").max(1));
         Ok(match outcome.recv_timeout(timeout) {
-            Ok(Outcome::Returned { port, value }) => Answer::new(
-                200,
-                json!({ "execution_id": child, "outputs": { port: value } }),
-            ),
-            Ok(Outcome::Ended { state }) => Answer::new(
-                502,
-                json!({ "error": "the workflow ended without an answer", "state": state,
-                        "execution_id": child }),
-            ),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // It goes on as a job the caller can poll.
-                match self.new_job_for_flight(&child) {
-                    Some(job) => Answer::new(
-                        504,
-                        json!({ "error": "no answer in time; poll the job", "job": job }),
-                    ),
-                    None => Answer::error(504, "no answer in time"),
-                }
-            }
+            Ok(outcome) => Self::sync_answer(&child, outcome),
+            Err(mpsc::RecvTimeoutError::Timeout) => self.to_job(&child, &outcome),
             Err(mpsc::RecvTimeoutError::Disconnected) => Answer::error(503, "the endpoint stopped"),
         })
     }
 
-    fn new_job(
-        &self,
-        key: &KeyRecord,
-        workflow: &str,
-        child: &str,
-        at: u64,
-    ) -> Result<String, ModuleError> {
-        let job = format!("j-{}", random_hex(8)?);
-        let mut jobs = lock(&self.jobs);
-        jobs.insert(
-            job.clone(),
+    fn sync_answer(child: &str, outcome: Outcome) -> Answer {
+        match outcome {
+            Outcome::Returned { port, value } => Answer::new(
+                200,
+                json!({ "execution_id": child, "outputs": { port: value } }),
+            ),
+            Outcome::Ended { state } => Answer::new(
+                502,
+                json!({ "error": "the workflow ended without an answer", "state": state,
+                        "execution_id": child }),
+            ),
+        }
+    }
+
+    fn insert_job(&self, job: &str, key: &KeyRecord, workflow: &str, child: &str, at: u64) {
+        lock(&self.jobs).insert(
+            job.into(),
             Job {
-                job: job.clone(),
+                job: job.into(),
                 key_id: key.id.clone(),
                 workflow: workflow.into(),
                 execution_id: child.into(),
@@ -780,30 +839,50 @@ impl Inner {
                 finished_ms: None,
             },
         );
-        Ok(job)
     }
 
-    /// A sync request that ran out of time becomes a job, unless it just finished.
-    fn new_job_for_flight(&self, child: &str) -> Option<String> {
+    /// A sync request ran out of time: it goes on as a job the caller can poll. The
+    /// handoff happens under the flights lock, so an answer that came meanwhile is either
+    /// already in `outcome` (and answered now) or goes to the job.
+    fn to_job(&self, child: &str, outcome: &mpsc::Receiver<Outcome>) -> Answer {
         let mut flights = lock(&self.flights);
-        let flight = flights.by_child.get_mut(child)?;
-        let job = self
-            .new_job(&flight.key, &flight.workflow, child, flight.at_ms)
-            .ok()?;
+        let Some(flight) = flights.by_child.get_mut(child) else {
+            drop(flights);
+            return match outcome.try_recv() {
+                Ok(outcome) => Self::sync_answer(child, outcome),
+                Err(_) => Answer::error(503, "the endpoint stopped"),
+            };
+        };
         flight.waiter = None;
+        if let Ok(outcome) = outcome.try_recv() {
+            return Self::sync_answer(child, outcome);
+        }
+        let Ok(hex) = random_hex(8) else {
+            return Answer::error(504, "no answer in time");
+        };
+        let job = format!("j-{hex}");
         flight.job = Some(job.clone());
-        Some(job)
+        let (key, workflow, at) = (flight.key.clone(), flight.workflow.clone(), flight.at_ms);
+        self.insert_job(&job, &key, &workflow, child, at);
+        Answer::new(
+            504,
+            json!({ "error": "no answer in time; poll the job", "job": job }),
+        )
     }
 
     fn child(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let news: ChildEvent = parse(call.args)?;
         let mut flights = lock(&self.flights);
         if !flights.by_child.contains_key(&news.execution_id) {
-            flights
-                .early
-                .entry(news.execution_id.clone())
-                .or_default()
-                .push(news.kind);
+            // Early news is possible only while a call waits for its flight; anything
+            // else is about a child whose request is already settled.
+            if flights.registering > 0 {
+                flights
+                    .early
+                    .entry(news.execution_id.clone())
+                    .or_default()
+                    .push(news.kind);
+            }
             return Ok(Value::Null);
         }
         drop(flights);
@@ -819,12 +898,13 @@ impl Inner {
                     return;
                 };
                 flight.returned = Some(flight.started.elapsed().as_millis() as u64);
-                let outputs = json!({ port.clone(): value.clone() });
+                flight.outputs = Some(json!({ port.clone(): value.clone() }));
                 if let Some(waiter) = flight.waiter.take() {
                     let _ = waiter.send(Outcome::Returned { port, value });
                 }
-                if let Some(job) = flight.job.clone() {
-                    drop(flights);
+                let done = flight.job.clone().zip(flight.outputs.clone());
+                drop(flights);
+                if let Some((job, outputs)) = done {
                     self.finish_job(&job, Some(outputs), None);
                 }
             }
@@ -839,22 +919,24 @@ impl Inner {
                             state: state.clone(),
                         });
                     }
-                    if let Some(job) = &flight.job {
-                        self.finish_job(
-                            job,
-                            None,
-                            Some("the workflow ended without an answer".into()),
-                        );
-                    }
                 }
-                self.land(child, flight, &state);
+                let node = lock(&self.endpoints)
+                    .get(&key_of(&flight.me))
+                    .map(|live| live.node.clone());
+                let (status, result) = match flight.returned {
+                    Some(_) => (200, "ok".to_string()),
+                    None => (502, format!("ended without an answer: {state}")),
+                };
+                let max = node.as_ref().map_or(0, |node| self.number(node, "log_max"));
+                self.settle(child, flight, status, &result, node.as_ref(), max);
             }
         }
     }
 
+    /// Marks a job over, once: what comes after it finished changes nothing.
     fn finish_job(&self, job: &str, outputs: Option<Value>, error: Option<String>) {
         let mut jobs = lock(&self.jobs);
-        if let Some(job) = jobs.get_mut(job) {
+        if let Some(job) = jobs.get_mut(job).filter(|j| j.finished_ms.is_none()) {
             job.status = if error.is_some() { "failed" } else { "done" }.into();
             job.outputs = outputs;
             job.error = error;
@@ -862,28 +944,38 @@ impl Inner {
         }
     }
 
-    /// A request is over: free its counters, charge its budgets, log it.
-    fn land(&self, child: &str, flight: Flight, state: &Value) {
-        lock(&self.counters).release(&flight.scopes);
+    /// A request is over: charge its budgets and free its slots under one lock, finish its
+    /// job if it has not, log it (and emit it if its endpoint still runs).
+    fn settle(
+        &self,
+        child: &str,
+        flight: Flight,
+        status: u16,
+        result: &str,
+        node: Option<&Node>,
+        log_max: u64,
+    ) {
         let ms = flight
             .returned
             .unwrap_or_else(|| flight.started.elapsed().as_millis() as u64);
-        if let Ok(store) = self.global() {
-            for scope in &flight.budgets {
-                let row = format!("spent/{scope}");
-                let mut spent: Spent = store.get_json(&row).ok().flatten().unwrap_or_default();
-                spent.requests += 1;
-                spent.ms += ms;
-                let _ = store.set_json(&row, &spent);
+        {
+            let mut counters = lock(&self.counters);
+            if let Ok(store) = self.global() {
+                for scope in &flight.budgets {
+                    let mut spent = self.spent(scope);
+                    spent.requests += 1;
+                    spent.ms += ms;
+                    let _ = store.set_json(&format!("spent/{scope}"), &spent);
+                }
+            }
+            counters.release(&flight.scopes);
+        }
+        if let Some(job) = &flight.job {
+            match &flight.outputs {
+                Some(outputs) => self.finish_job(job, Some(outputs.clone()), None),
+                None => self.finish_job(job, None, Some(result.to_string())),
             }
         }
-        let node = lock(&self.endpoints)
-            .get(&key_of(&flight.me))
-            .map(|live| live.node.clone());
-        let (status, result) = match flight.returned {
-            Some(_) => (200, "ok".to_string()),
-            None => (502, format!("ended without an answer: {state}")),
-        };
         let entry = LogEntry {
             at_ms: flight.at_ms,
             key_id: Some(flight.key.id.clone()),
@@ -893,18 +985,16 @@ impl Inner {
             mode: flight.mode.into(),
             status,
             ms,
-            result,
+            result: if status == 200 {
+                "ok".into()
+            } else {
+                result.into()
+            },
             execution_id: Some(child.into()),
         };
         match node {
-            Some(node) => self.log(&node, &flight.me, entry),
-            None => {
-                if let Ok(store) = self.global() {
-                    let seq = self.log_writes.fetch_add(1, Ordering::Relaxed);
-                    let row = format!("log/{:020}-{:08}", entry.at_ms, seq % 100_000_000);
-                    let _ = store.set_json(&row, &entry);
-                }
-            }
+            Some(node) => self.log(node, &flight.me, entry),
+            None => self.write_log(&entry, log_max),
         }
         self.prune_jobs();
     }
@@ -1025,7 +1115,7 @@ impl Service {
             flights: Mutex::default(),
             jobs: Mutex::default(),
             counters: Mutex::default(),
-            log_writes: AtomicU64::new(0),
+            log_next: Mutex::default(),
         }
     }
 }
@@ -1078,7 +1168,7 @@ impl Module for Service {
         for engine in engines {
             engine.close();
         }
-        lock(&self.inner.flights).by_child.clear();
+        self.inner.abandon(None, 0);
         Ok(())
     }
 }

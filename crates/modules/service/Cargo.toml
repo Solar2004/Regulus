@@ -16,3 +16,4 @@ sha2.workspace = true
 
 [dev-dependencies]
 regulus-module-hello = { path = "../hello" }
+regulus-module-human = { path = "../human" }
