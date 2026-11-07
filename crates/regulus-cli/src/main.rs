@@ -161,6 +161,38 @@ enum Command {
         #[command(subcommand)]
         command: SecretCommand,
     },
+    /// Decisions that wait for a person (Approval and Review nodes of `human`).
+    Human {
+        #[command(subcommand)]
+        command: HumanCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HumanCommand {
+    /// Decisions waiting in running executions, oldest first.
+    List {
+        /// Only this execution.
+        #[arg(long)]
+        execution: Option<String>,
+    },
+    /// One pending decision in full: what waits (raw, to edit for a review) and the form.
+    Show { id: String },
+    /// Decide: `approve` or `reject`. With --file or --text a review sends that text on;
+    /// the decision may then be left out (approve).
+    Answer {
+        id: String,
+        decision: Option<String>,
+        /// A form field, `name=value`. Repeatable; text is read as the type the form says.
+        #[arg(long = "field", value_name = "NAME=VALUE")]
+        fields: Vec<String>,
+        /// A review's edited text, or an approval's comment.
+        #[arg(long)]
+        text: Option<String>,
+        /// A review's edited text, read from this file.
+        #[arg(long, conflicts_with = "text")]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -492,6 +524,89 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Command::Human { command } => human(&client, command).await,
+    }
+}
+
+/// `regulus human`: talks to the `human.*` methods of the running core.
+async fn human(client: &Client<'_>, command: HumanCommand) -> Result<()> {
+    match command {
+        HumanCommand::List { execution } => {
+            let params = serde_json::json!({ "execution_id": execution });
+            let pending: Vec<Value> = client.request("human.list", params).await?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            for p in pending {
+                let age = now.saturating_sub(p["created_ms"].as_u64().unwrap_or(now)) / 1000;
+                let deadline = p["deadline_ms"]
+                    .as_u64()
+                    .map(|d| format!(" · timeout in {} s", d.saturating_sub(now) / 1000))
+                    .unwrap_or_default();
+                println!(
+                    "{:<16} {:<9} {}/{}  {age} s ago{deadline}  {}",
+                    p["id"].as_str().unwrap_or_default(),
+                    p["kind"].as_str().unwrap_or_default(),
+                    p["execution_id"].as_str().unwrap_or_default(),
+                    p["node_id"].as_str().unwrap_or_default(),
+                    p["prompt"].as_str().unwrap_or_default(),
+                );
+            }
+            Ok(())
+        }
+        HumanCommand::Show { id } => {
+            let p: Value = client
+                .request("human.get", serde_json::json!({ "id": id }))
+                .await?;
+            match &p["value"] {
+                Value::String(text) => println!("{text}"),
+                other => println!("{}", serde_json::to_string_pretty(other)?),
+            }
+            if !p["form"].is_null() {
+                eprintln!("form: {}", p["form"]);
+            }
+            Ok(())
+        }
+        HumanCommand::Answer {
+            id,
+            decision,
+            fields,
+            text,
+            file,
+        } => {
+            let text = match file {
+                Some(path) => Some(
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?,
+                ),
+                None => text,
+            };
+            let decision = match decision {
+                Some(decision) => decision,
+                None if text.is_some() => "approve".into(),
+                None => bail!("say `approve` or `reject`"),
+            };
+            let mut map = serde_json::Map::new();
+            for field in fields {
+                let (name, value) = field
+                    .split_once('=')
+                    .with_context(|| format!("`{field}` is not NAME=VALUE"))?;
+                map.insert(name.trim().into(), Value::String(value.into()));
+            }
+            let params = serde_json::json!({
+                "id": id, "decision": decision, "fields": map, "text": text,
+            });
+            let done: Value = client.request("human.answer", params).await?;
+            println!(
+                "{} {} → {} {}.{}",
+                done["id"].as_str().unwrap_or_default(),
+                done["decision"].as_str().unwrap_or_default(),
+                done["execution_id"].as_str().unwrap_or_default(),
+                done["node_id"].as_str().unwrap_or_default(),
+                done["port"].as_str().unwrap_or_default(),
+            );
+            Ok(())
+        }
     }
 }
 

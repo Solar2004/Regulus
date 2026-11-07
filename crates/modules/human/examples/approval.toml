@@ -1,0 +1,77 @@
+# Approval (docs/13-blocks.md §3.3): every value sent to `ask` waits at `approve` until a
+# person decides. `pending` says something waits, with its id; the decision sends the
+# value on to `approved` or `rejected`, with the form's fields merged in. A decision left
+# for 10 minutes goes to `timeout`. Pending decisions survive a restart of the core.
+#
+# Run (see the report of 2026-11-07 for the real output):
+#
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/human/examples/approval.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run approval --detach                 # exec-1  ask  running
+#   regulus send exec-1 ask '{"deploy":"v2"}'     # … approve.pending emitted {"id":"h-…"}
+#   regulus human list                            # h-…  approval  exec-1/approve  Deploy?
+#   kill %1; regulus serve --port 0 &             # the core restarts: exec-1 resumed
+#   regulus human list                            # the same h-… still waits
+#   regulus human answer h-… approve --field replicas=3
+#   regulus events --execution exec-1             # self.approved {"deploy":"v2","replicas":3}
+id = "approval"
+name = "Approval"
+main_workflow_id = "ask"
+
+[[workflows]]
+id = "ask"
+name = "Ask"
+kind = "main"
+ports = [
+  { id = "ask", capability = "json@1", direction = "input", kind = "then" },
+  { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+  { id = "approved", capability = "json@1", direction = "output", kind = "then" },
+  { id = "rejected", capability = "json@1", direction = "output", kind = "then" },
+  { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "approve"
+  name = "Approve the deploy"
+  type = "approval"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 200, y = 100 }
+  config = { prompt = "Deploy?", timeout_ms = 600000, merge_fields = "yes", form = '{"type":"object","properties":{"replicas":{"type":"integer"}},"required":["replicas"]}' }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+    { id = "approved", capability = "json@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "json@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "ask"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "approve", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pending"
+  kind = "then"
+  from = { node_id = "approve", port_id = "pending" }
+  to = { node_id = "self", port_id = "pending" }
+
+  [[workflows.wires]]
+  id = "approved"
+  kind = "then"
+  from = { node_id = "approve", port_id = "approved" }
+  to = { node_id = "self", port_id = "approved" }
+
+  [[workflows.wires]]
+  id = "rejected"
+  kind = "then"
+  from = { node_id = "approve", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "timeout"
+  kind = "then"
+  from = { node_id = "approve", port_id = "timeout" }
+  to = { node_id = "self", port_id = "timeout" }

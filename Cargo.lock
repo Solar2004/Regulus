@@ -4103,6 +4103,7 @@ dependencies = [
  "regulus-module-guards",
  "regulus-module-hello",
  "regulus-module-hooks",
+ "regulus-module-human",
  "regulus-module-judge",
  "regulus-module-process",
  "regulus-module-providers",
@@ -4287,6 +4288,18 @@ dependencies = [
  "regulus-proto",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "regulus-module-human"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
