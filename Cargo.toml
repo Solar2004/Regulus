@@ -28,6 +28,8 @@ members = [
     "crates/modules/guards",
     "crates/modules/judge",
     "crates/modules/triggers",
+    "crates/modules/memory",
+    "crates/modules/web",
 ]
 resolver = "2"
 

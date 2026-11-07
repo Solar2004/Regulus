@@ -1,0 +1,370 @@
+[module]
+id             = "regulus/memory@0.1.0"
+name           = "Memory"
+requires_proto = "^1.9"
+# What the CLI and the app read a live node's memory with (`regulus call`):
+# `memory.entries` and `memory.tools`, both `{ execution_id, node_id }`.
+methods        = ["memory.entries", "memory.tools"]
+
+# Memory as a box (docs/13-blocks.md §3.3): Letta memory blocks, Reflexion, Voyager.
+# Entries are keyed texts in the module's space of the store (`ModuleCtx::store`): the
+# database of the node's project, or the global one outside any project. Every node that
+# reads or writes names a `memory` (nodes with the same name share it) and a `scope`:
+# `project` (every execution of the project) or `execution` (this run only). The limits
+# `max_entries` and `max_bytes` (the sum of keys and texts) hold per memory and scope; they are
+# fields of the node that writes, so give every writer of one memory the same ones. Past
+# them, `evict = oldest` drops the oldest entries, `refuse` refuses the write.
+
+# The store: values on `in` are written; agents read and write it as tools (`tools`, for
+# a Tools box). A value on `in` is a text, or an object `{ key?, text }`; with no key,
+# `key` (if set) is used, else a fresh one. What was written leaves on `written`.
+[[node]]
+type = "store"
+name = "Memory"
+
+  # memory_list, memory_read, memory_search, memory_write, memory_delete. Writes are made
+  # in the caller's name, which its Agent box sets.
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # A node may declare it `json@1` instead.
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The entry written: { key, text, at, by }.
+  [[node.port]]
+  id         = "written"
+  name       = "written"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Why a value was not written.
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "memory"
+  type    = "text"
+  default = "memory"
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  # The key values on `in` are written under when they bring none. Empty: a fresh key.
+  [[node.field]]
+  id      = "key"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "max_entries"
+  type    = "number"
+  default = 200
+
+  # The keys and texts of all entries together, in bytes.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 262144
+
+  # 0 means the default, 128: keys are never unbounded.
+  [[node.field]]
+  id      = "max_key_chars"
+  type    = "number"
+  default = 128
+
+  [[node.field]]
+  id      = "evict"
+  type    = "select"
+  default = "oldest"
+  options = ["oldest", "refuse"]
+
+  # no: agents only read (memory_write and memory_delete are not offered).
+  [[node.field]]
+  id      = "agent_writes"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]
+
+  # What the description of memory_read tells the agent of what is stored: the keys, the
+  # entries themselves, or nothing. Cut at `describe_max_chars`.
+  [[node.field]]
+  id      = "describe"
+  type    = "select"
+  default = "keys"
+  options = ["keys", "entries", "none"]
+
+  [[node.field]]
+  id      = "describe_max_chars"
+  type    = "number"
+  default = 2000
+
+  # The most entries memory_read and memory_search return at once.
+  [[node.field]]
+  id      = "max_results"
+  type    = "number"
+  default = 20
+
+# Memory injected by hook: a hook@1 for the Agent box's `hooks` input that adds the
+# memory as context on its `event` (`prompt`: every turn). `select = all` sends every
+# entry, newest first; `match` only those sharing words with the prompt. Nothing stored
+# (or nothing matching) adds nothing. Any value on `in` sends the same text on `out`,
+# matched against that value: for workflows without an agent.
+[[node]]
+type = "inject"
+name = "Memory hook"
+
+  [[node.port]]
+  id         = "hook"
+  name       = "hook"
+  capability = "hook@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "memory"
+  type    = "text"
+  default = "memory"
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  [[node.field]]
+  id      = "event"
+  type    = "select"
+  default = "prompt"
+  options = ["prompt", "session_start", "pre_compact"]
+
+  [[node.field]]
+  id      = "select"
+  type    = "select"
+  default = "all"
+  options = ["all", "match"]
+
+  # The text goes no longer than this; whole entries are left out past it.
+  [[node.field]]
+  id      = "max_chars"
+  type    = "number"
+  default = 4000
+
+  # The line before the entries.
+  [[node.field]]
+  id      = "header"
+  type    = "text"
+  default = "What you remember from earlier work (memory):"
+
+  # open: if the memory cannot be read, the agent goes on without it. closed: it stops.
+  [[node.field]]
+  id      = "fail"
+  type    = "select"
+  default = "open"
+  options = ["open", "closed"]
+
+# Reflection (Reflexion): failures pile up on `fail` (text, an `error@1` from guards, or
+# any JSON: declare the port with the capability of its wire). When `count` are in, or a
+# value reaches `flush`, they leave on `out` as one text, after `prompt`, for a judge or
+# an agent to distill a lesson from. What comes back on `lesson` is written to memory
+# under `<key_prefix>-<n>` and leaves on `written`. The pile is checkpointed: it survives
+# a restart of the core.
+[[node]]
+type = "reflect"
+name = "Reflection"
+
+  [[node.port]]
+  id          = "fail"
+  name        = "fail"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "flush"
+  name        = "flush"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "lesson"
+  name        = "lesson"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "written"
+  name       = "written"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Failures that make a batch.
+  [[node.field]]
+  id      = "count"
+  type    = "number"
+  default = 3
+
+  # Failures kept at most; past it the oldest go. Each is cut at `max_failure_chars`.
+  [[node.field]]
+  id      = "max_pending"
+  type    = "number"
+  default = 50
+
+  [[node.field]]
+  id      = "max_failure_chars"
+  type    = "number"
+  default = 4000
+
+  [[node.field]]
+  id      = "prompt"
+  type    = "text"
+  default = "These attempts failed. Write one short, general lesson that would have avoided them next time. Answer only with the lesson."
+
+  [[node.field]]
+  id      = "separator"
+  type    = "text"
+  default = "\n\n---\n\n"
+
+  [[node.field]]
+  id      = "memory"
+  type    = "text"
+  default = "memory"
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  [[node.field]]
+  id      = "key_prefix"
+  type    = "text"
+  default = "lesson"
+
+  [[node.field]]
+  id      = "max_entries"
+  type    = "number"
+  default = 200
+
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 262144
+
+  [[node.field]]
+  id      = "evict"
+  type    = "select"
+  default = "oldest"
+  options = ["oldest", "refuse"]
+
+# A skill library that grows (Voyager): each value on `in` is a skill, written as
+# `<dir>/<name>/SKILL.md`, the folder the Skills module's `skill` node points at. A JSON
+# value is `{ name, description, body }`; a text must already be a SKILL.md whose
+# frontmatter has `name` and `description`. The name is lowercase letters, digits and
+# `-`. The folder's absolute path leaves on `path`.
+[[node]]
+type = "library"
+name = "Skill library"
+
+  # A node may declare it `json@1` instead.
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "path"
+  name       = "path"
+  capability = "path@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The library folder. Empty: the node's own directory under the Regulus home; relative:
+  # under it. The profile's word: not bounded.
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  # replace: a skill with the same name is rewritten. keep: it stays and the value goes to
+  # `error`.
+  [[node.field]]
+  id      = "existing"
+  type    = "select"
+  default = "replace"
+  options = ["replace", "keep"]
+
+  # The whole SKILL.md, in bytes.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 65536
+
+  # yes: the skill folder may resolve, through a link in the library, outside it.
+  [[node.field]]
+  id      = "allow_outside"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]

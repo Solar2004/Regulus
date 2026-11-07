@@ -70,3 +70,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   `judge.engine@1`. Módulo `triggers` con Cron, Webhook (`regulus call triggers.webhooks`),
   Evento del bus, Chat con transcript (`triggers.transcript`), Inactividad y Umbral. Ejemplos en
   `crates/modules/judge/examples/judge.toml` y `crates/modules/triggers/examples/triggers.toml`.
+- **Memoria** (`docs/13-blocks.md` §3.3): módulo `memory` con Memoria (`store`, entradas por
+  nombre y ámbito proyecto o ejecución con topes, como herramientas `tool@1` para una caja
+  Tools), Inyección por hook (`inject`, `hook@1`), Reflexión (`reflect`) y Biblioteca de skills
+  (`library`, `SKILL.md` que carga `skills`); las entradas sobreviven al reinicio del core.
+  `regulus call memory.entries` y `memory.tools`.
+  Ejemplo en `crates/modules/memory/examples/memory.toml`.
+- **Web** (`docs/13-blocks.md` §3.3): módulo `web` con HTTP, Fetch legible y paginado,
+  Búsqueda sobre un motor `web.search@1` (de serie, SearXNG), PDF (`lopdf`) y Descarga; destinos
+  privados rechazados tras DNS salvo `allow_private`, User-Agent fijo `regulus/<versión>`; una
+  ruta de `pdf` formada por el valor no sale de la carpeta del nodo.
+  Ejemplo en `crates/modules/web/examples/web.toml`.

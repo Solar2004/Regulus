@@ -1,0 +1,164 @@
+# Memory (docs/13-blocks.md §3.3), no agent needed. Values sent to `remember` are written
+# to the memory `notes` of the project; anything sent to `ask` comes back on `recall` as
+# the text the `recall` hook would add to an agent's turn (here `select = match`: only
+# entries sharing words with what was asked). `memory.tools` shows what an agent wired
+# to `notes` through a Tools box would see. `fail` piles failures for `reflect`; at 2
+# they leave on `reflection` for a judge or an agent, and what comes back on `lesson` is
+# written to the same memory. `skill` grows a skill library under the node's directory.
+#
+# Run (2026-11-07, debug build; `serve` ready in 27 ms):
+#
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/memory/examples/memory.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run memory --detach                            # exec-1  memory  running
+#   regulus send exec-1 remember '{"key":"tests","text":"Run cargo test before committing"}'
+#   regulus send exec-1 remember "Commit messages go in English"
+#   regulus send exec-1 ask "how do I commit?"
+#     … self.recall emitted text@1 "What you remember …:\n- notes-…: Commit messages go in English"
+#   regulus call memory.tools '{"execution_id":"exec-1","node_id":"notes"}'
+#     … "Read the memory `notes`: … Keys stored now (2): tests, notes-…"
+#   regulus call memory.entries '{"execution_id":"exec-1","node_id":"notes"}'
+#   regulus send exec-1 fail "cargo test: 2 failed"
+#   regulus send exec-1 fail '{"message":"exit 101","value":"cargo build"}'
+#     … self.reflection emitted text@1 "These attempts failed. …Failure 1:…Failure 2:…"
+#   regulus send exec-1 lesson "Build before you test"        # → self.learned
+#   regulus send exec-1 skill '{"name":"run-tests","description":"How to run the tests","body":"Run cargo test."}'
+#     … self.skill_path emitted path@1 "<home>/data/global/regulus/memory/memory/skills/run-tests"
+#
+# The skill folder is what a Skills `skill` node's `path` points at.
+id = "memory"
+name = "Memory"
+main_workflow_id = "memory"
+
+[[workflows]]
+id = "memory"
+name = "Memory"
+kind = "main"
+ports = [
+  { id = "remember", capability = "text@1", direction = "input", kind = "then" },
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "fail", capability = "text@1", direction = "input", kind = "then" },
+  { id = "lesson", capability = "text@1", direction = "input", kind = "then" },
+  { id = "skill", capability = "text@1", direction = "input", kind = "then" },
+  { id = "written", capability = "json@1", direction = "output", kind = "then" },
+  { id = "recall", capability = "text@1", direction = "output", kind = "then" },
+  { id = "reflection", capability = "text@1", direction = "output", kind = "then" },
+  { id = "learned", capability = "json@1", direction = "output", kind = "then" },
+  { id = "skill_path", capability = "path@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "notes"
+  name = "Notes"
+  type = "store"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 300, y = 50 }
+  config = { memory = "notes", scope = "project", max_entries = 50 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "recall"
+  name = "Recall"
+  type = "inject"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 300, y = 200 }
+  config = { memory = "notes", scope = "project", select = "match" }
+  ports = [
+    { id = "hook", capability = "hook@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "reflect"
+  name = "Reflect"
+  type = "reflect"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 300, y = 350 }
+  config = { memory = "notes", scope = "project", count = 2 }
+  ports = [
+    { id = "fail", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "lesson", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "written", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "skills"
+  name = "Skill library"
+  type = "library"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 300, y = 500 }
+  config = { dir = "" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "path", capability = "path@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "remember"
+  kind = "then"
+  from = { node_id = "self", port_id = "remember" }
+  to = { node_id = "notes", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "written"
+  kind = "then"
+  from = { node_id = "notes", port_id = "written" }
+  to = { node_id = "self", port_id = "written" }
+
+  [[workflows.wires]]
+  id = "ask"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "recall", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "recall"
+  kind = "then"
+  from = { node_id = "recall", port_id = "out" }
+  to = { node_id = "self", port_id = "recall" }
+
+  [[workflows.wires]]
+  id = "fail"
+  kind = "then"
+  from = { node_id = "self", port_id = "fail" }
+  to = { node_id = "reflect", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "reflection"
+  kind = "then"
+  from = { node_id = "reflect", port_id = "out" }
+  to = { node_id = "self", port_id = "reflection" }
+
+  [[workflows.wires]]
+  id = "lesson"
+  kind = "then"
+  from = { node_id = "self", port_id = "lesson" }
+  to = { node_id = "reflect", port_id = "lesson" }
+
+  [[workflows.wires]]
+  id = "learned"
+  kind = "then"
+  from = { node_id = "reflect", port_id = "written" }
+  to = { node_id = "self", port_id = "learned" }
+
+  [[workflows.wires]]
+  id = "skill"
+  kind = "then"
+  from = { node_id = "self", port_id = "skill" }
+  to = { node_id = "skills", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "skill-path"
+  kind = "then"
+  from = { node_id = "skills", port_id = "path" }
+  to = { node_id = "self", port_id = "skill_path" }
