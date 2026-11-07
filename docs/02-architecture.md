@@ -231,15 +231,20 @@ interpreta: son del cliente.
    corte de `max_depth` sigue viendo los bucles a través de llamadas). **Cuándo acaba una
    hija:** devuelve el **primer valor que llega a cualquiera de sus salidas** (`returned`)
    y el core la para; luego `ended` con su estado. Una salida es una forma de terminar (p.
-   ej. `reply` o `error`); varios resultados van en un valor. Si falla al arrancar o la
-   paran desde fuera, solo `ended`. Sin tiempo límite en el core: eso es `guards`.
+   ej. `reply` o `error`); varios resultados van en un valor. Si falla al arrancar, la
+   paran desde fuera o el corte de `max_depth` tira una cadena suya antes de devolver
+   (queda `failed` con ese motivo), solo `ended`. Sin tiempo límite en el core: eso es
+   `guards`.
    Parar al padre para a sus hijas antes que a sus nodos. Una hija tiene `parent`, sus
    eventos llevan su propio id y en el bus del padre la devolución se anota como entrega
    desde `<hija>/self.<salida>`; una hija sin terminar cuenta en el `pending` del padre.
    `[call] max_nesting` (8) acota la anidación y `[call] max_children` (32; 0 = sin límite)
-   las hijas vivas de una ejecución; pasarse es un error de la llamada, visible como
-   `failed` en el bus. El validador comprueba los campos de tipo `workflow` del manifest:
-   que el workflow exista y tenga alguna salida "luego".
+   las hijas vivas que aún no devolvieron de una ejecución; pasarse es un error de la
+   llamada, visible como `failed` en el bus. Son límites por ejecución: en el peor caso
+   el total vivo es `max_children^max_nesting`. El validador comprueba los campos de tipo
+   `workflow` del manifest: que el workflow exista (si no, `execution.start` y la llamada
+   lo rechazan), que tenga alguna salida "luego" y, como aviso, que los puertos "luego" del
+   nodo encajen por id y capacidad con los suyos. El nodo los declara; nada los copia.
 
 **Qué deja la base abierta a propósito** (`11` §12): cuántos cables admite cada entrada
 (el campo existe, por defecto `One`) y qué lleva cada tipo de puerto (el tipo tiene
@@ -357,8 +362,8 @@ estado compartido degenere en variable global donde todos escriben.
 - **Escritura:** ejecuciones y eventos se encolan, en orden, a un hilo escritor; quien
   tiene los locks del bus nunca espera al disco. Un apagado limpio vacía la cola.
 - **Tablas** (iguales en todas): `executions` (id, número `N` de `exec-N`, proyecto,
-  perfil, workflow y **su copia**, estado y motivo, nodos desactivados, `parent`, inicio y
-  fin) · `checkpoints` (ejecución, seq, nodo, estado JSON, fecha; solo
+  perfil, workflow y **su copia**, estado y motivo, nodos desactivados, `parent` y `caller`
+  —el nodo del padre que la llamó, migración 2—, inicio y fin) · `checkpoints` (ejecución, seq, nodo, estado JSON, fecha; solo
   el último por nodo) · `events` (el diario del bus, los campos de `BusEvent`; por base se
   guardan `max_events`, al pasar del doble se borran los viejos) · `kv` (espacio
   clave-valor por módulo, clave `namespace` + `key`).
@@ -374,8 +379,8 @@ estado compartido degenere en variable global donde todos escriben.
   `[store] resume`: `checkpoint` (defecto) reanuda con el mismo id las que tienen algún
   checkpoint (`ModuleCtx::checkpoint`) y marca el resto `interrupted`; `always` las reanuda
   todas; `never` las marca todas. **Una hija nunca se reanuda** (quién la esperaba vivía en
-  memoria): queda `interrupted` sea cual sea `resume`, y el padre, si tenía un nodo
-  esperándola, vuelve a llamar si lo necesita. Reanudar es arrancar los nodos de la copia guardada; quien
+  memoria): queda `interrupted` sea cual sea `resume`. Si el padre se reanudó, su nodo
+  recibe `node/child` `ended` con ese estado (por `caller`) y decide si vuelve a llamar. Reanudar es arrancar los nodos de la copia guardada; quien
   tiene checkpoint lo recibe en `node/start` como `NodeStart { checkpoint }`.
   `execution.list` y `event.list` leen el store: se ven las ejecuciones y eventos de
   arranques anteriores, y `seq` y `N` siguen desde el más alto. Una página de
