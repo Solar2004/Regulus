@@ -1,0 +1,17 @@
+[package]
+name = "regulus-module-workspace"
+description = "Regulus workspace: a folder per execution with a quota over a swappable engine (git worktree or plain folder), a merge queue with gates, and artifacts"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+glob.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+regulus-module-process = { path = "../process" }
+toml.workspace = true

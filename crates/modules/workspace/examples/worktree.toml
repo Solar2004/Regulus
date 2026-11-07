@@ -1,0 +1,162 @@
+# A git worktree per execution, work done inside it, and a merge once a gate passes
+# (docs/13-blocks.md §3.3, the Refinery of Gas Town without agents).
+#
+#   ws (workspace) ─ready→ work (Command) ─stdout→ gate (Gate) ─pass→ mq (merge queue)
+#      └────────────info───────────────────────────────────────────→ mq.in
+#   mq ─merged / conflict / rejected→ self
+#
+# `ws` makes `demo-repo` under its own directory if it is missing (`init = yes`; point
+# `repo` at a repository of yours instead) and adds the worktree `<ws dir>/<execution>`
+# on branch `regulus/<execution>`. `work` writes hello.txt in it and prints the folder;
+# `gate` passes if hello.txt is there and not empty. Then the queue commits the worktree
+# and merges the branch into the repo's checked-out branch. The fixed author is only for
+# this demo; leave `author_*` empty to commit as git's configured user.
+# Needs `workspace` and `process`. Copy it to <home>/profiles/, start `regulus serve`, then:
+#
+#   regulus run worktree
+#     ws.info emitted json@1 {"id":"exec-1","engine":"git","path":"…/ws/exec-1",
+#       "repo":"…/ws/demo-repo","branch":"regulus/exec-1","base":"master"}
+#     ws.ready emitted path@1 "…/ws/exec-1"
+#   regulus events --execution exec-1 | grep emitted
+#     work.stdout emitted text@1 "…/ws/exec-1" · gate.pass emitted text@1 "…/ws/exec-1"
+#     self.merged emitted json@1 {"entry":1,"merged":{"branch":"regulus/exec-1",
+#       "base":"master","commit":"…","committed_changes":true,"id":"exec-1"}}
+#   git -C <home>/data/global/regulus/workspace/worktree/ws/demo-repo log --oneline
+#     … Merge branch 'regulus/exec-1' · … regulus: exec-1 · … regulus: init
+id = "worktree"
+name = "Worktree"
+main_workflow_id = "worktree"
+
+[[workflows]]
+id = "worktree"
+name = "Worktree"
+kind = "main"
+ports = [
+  { id = "ready", capability = "path@1", direction = "output", kind = "then" },
+  { id = "merged", capability = "json@1", direction = "output", kind = "then" },
+  { id = "conflict", capability = "json@1", direction = "output", kind = "then" },
+  { id = "rejected", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "ws_error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "ws"
+  name = "Workspace"
+  type = "workspace"
+  module_id = "regulus/workspace@0.1.0"
+  position = { x = 100, y = 100 }
+  config = { engine = "git", repo = "demo-repo", init = "yes", quota_bytes = 10485760, author_name = "Regulus", author_email = "regulus@localhost" }
+  ports = [
+    { id = "ready", capability = "path@1", direction = "output", kind = "then" },
+    { id = "info", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "work"
+  name = "Work (agent stand-in)"
+  type = "command"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 300, y = 100 }
+  config = { command = "sh", args = ["-c", 'printf "hello from regulus\n" > "$1/hello.txt" && printf %s "$1"', "sh", "{{input}}"] }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "stdout", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Gate"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 500, y = 100 }
+  config = { command = "sh", args = ["-c", 'test -s "$1/hello.txt"', "sh", "{{input}}"] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mq"
+  name = "Merge queue"
+  type = "merge_queue"
+  module_id = "regulus/workspace@0.1.0"
+  position = { x = 700, y = 100 }
+  config = { author_name = "Regulus", author_email = "regulus@localhost" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "fail", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "merged", capability = "json@1", direction = "output", kind = "then" },
+    { id = "conflict", capability = "json@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "ws-ready-work"
+  kind = "then"
+  from = { node_id = "ws", port_id = "ready" }
+  to = { node_id = "work", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ws-ready-self"
+  kind = "then"
+  from = { node_id = "ws", port_id = "ready" }
+  to = { node_id = "self", port_id = "ready" }
+
+  [[workflows.wires]]
+  id = "ws-info-mq"
+  kind = "then"
+  from = { node_id = "ws", port_id = "info" }
+  to = { node_id = "mq", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "work-gate"
+  kind = "then"
+  from = { node_id = "work", port_id = "stdout" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-pass"
+  kind = "then"
+  from = { node_id = "gate", port_id = "pass" }
+  to = { node_id = "mq", port_id = "pass" }
+
+  [[workflows.wires]]
+  id = "gate-fail"
+  kind = "then"
+  from = { node_id = "gate", port_id = "fail" }
+  to = { node_id = "mq", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "mq-merged"
+  kind = "then"
+  from = { node_id = "mq", port_id = "merged" }
+  to = { node_id = "self", port_id = "merged" }
+
+  [[workflows.wires]]
+  id = "mq-conflict"
+  kind = "then"
+  from = { node_id = "mq", port_id = "conflict" }
+  to = { node_id = "self", port_id = "conflict" }
+
+  [[workflows.wires]]
+  id = "mq-rejected"
+  kind = "then"
+  from = { node_id = "mq", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "mq-error"
+  kind = "then"
+  from = { node_id = "mq", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "ws-error"
+  kind = "then"
+  from = { node_id = "ws", port_id = "error" }
+  to = { node_id = "self", port_id = "ws_error" }

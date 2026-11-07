@@ -29,6 +29,7 @@ regulus-module-guards = { path = "../modules/guards" }
 regulus-module-judge = { path = "../modules/judge" }
 regulus-module-triggers = { path = "../modules/triggers" }
 regulus-module-tasks = { path = "../modules/tasks" }
+regulus-module-workspace = { path = "../modules/workspace" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true

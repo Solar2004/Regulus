@@ -29,6 +29,7 @@ members = [
     "crates/modules/judge",
     "crates/modules/triggers",
     "crates/modules/tasks",
+    "crates/modules/workspace",
 ]
 resolver = "2"
 

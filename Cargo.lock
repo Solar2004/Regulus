@@ -4111,6 +4111,7 @@ dependencies = [
  "regulus-module-tools",
  "regulus-module-tools-mcp",
  "regulus-module-triggers",
+ "regulus-module-workspace",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -4384,6 +4385,19 @@ dependencies = [
  "httparse",
  "regulus-core",
  "regulus-module-hello",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "regulus-module-workspace"
+version = "0.1.0"
+dependencies = [
+ "glob",
+ "regulus-core",
+ "regulus-module-process",
  "regulus-proto",
  "serde",
  "serde_json",
