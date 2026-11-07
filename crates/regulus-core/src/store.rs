@@ -76,6 +76,9 @@ const MIGRATIONS: &[&str] = &[
         updated   INTEGER NOT NULL,
         PRIMARY KEY (namespace, key)
     ) WITHOUT ROWID;",
+    // 2: the node of the parent a child execution answers to, so a resumed parent still
+    // hears that its child was interrupted.
+    "ALTER TABLE executions ADD COLUMN caller TEXT;",
 ];
 
 /// An execution as the store keeps it: with its number (the `N` of `exec-N`, unique in a
@@ -85,6 +88,8 @@ pub struct StoredExecution {
     pub number: u64,
     pub execution: Execution,
     pub workflow: Workflow,
+    /// For a child: the node of its parent that called it.
+    pub caller: Option<String>,
 }
 
 /// The `status` column and the `reason` column of a state, as the protocol spells them.
@@ -119,7 +124,7 @@ fn to_json(value: &impl Serialize) -> rusqlite::Result<String> {
 
 /// The columns `stored_execution` reads, in order.
 const EXECUTION_COLUMNS: &str =
-    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow, parent";
+    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow, parent, caller";
 
 fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
     let number: i64 = row.get(0)?;
@@ -135,6 +140,7 @@ fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
             parent: row.get(9)?,
         },
         workflow: json_column(row, 8)?,
+        caller: row.get(10)?,
     })
 }
 
@@ -346,6 +352,7 @@ enum Write {
         number: u64,
         execution: Execution,
         workflow: String,
+        caller: Option<String>,
         at: u64,
     },
     Update {
@@ -433,8 +440,9 @@ impl Databases {
                 number,
                 execution,
                 workflow,
+                caller,
                 at,
-            } => self.insert_execution(number, &execution, &workflow, at),
+            } => self.insert_execution(number, &execution, &workflow, caller.as_deref(), at),
             Write::Update { execution, at } => self.update_execution(&execution, at),
             Write::Event(event) => self.append_event(&event),
             Write::Checkpoint {
@@ -466,14 +474,15 @@ impl Databases {
         number: u64,
         execution: &Execution,
         workflow: &str,
+        caller: Option<&str>,
         at: u64,
     ) -> Result<(), StoreError> {
         let (status, reason) = status_of(&execution.state);
         self.db(execution.project_id.as_deref())?.with(|conn| {
             conn.execute(
                 "INSERT INTO executions (id, number, project_id, profile_id, workflow_id,
-                     workflow, status, reason, disabled, parent, started)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     workflow, status, reason, disabled, parent, started, caller)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     execution.id,
                     int(number),
@@ -486,6 +495,7 @@ impl Databases {
                     to_json(&execution.disabled)?,
                     execution.parent,
                     int(at),
+                    caller,
                 ],
             )
         })?;
@@ -740,12 +750,24 @@ impl Store {
         execution: &Execution,
         workflow: &Workflow,
     ) -> Result<(), StoreError> {
+        self.insert_child(number, execution, workflow, None)
+    }
+
+    /// [`Store::insert_execution`] for a child, with the node of its parent that called it.
+    pub fn insert_child(
+        &self,
+        number: u64,
+        execution: &Execution,
+        workflow: &Workflow,
+        caller: Option<&str>,
+    ) -> Result<(), StoreError> {
         let workflow =
             serde_json::to_string(workflow).map_err(|e| StoreError::Data(e.to_string()))?;
         self.send(Write::Insert {
             number,
             execution: execution.clone(),
             workflow,
+            caller: caller.map(Into::into),
             at: now_ms(),
         })
     }

@@ -123,3 +123,37 @@ fn the_check_catches_a_call_to_a_missing_workflow_or_one_without_ports() {
     assert_eq!(codes("nowhere"), ["field.workflow_missing"]);
     assert_eq!(codes("plain"), ["field.workflow_no_output"]);
 }
+
+#[test]
+fn a_renamed_output_warns_and_a_missing_workflow_does_not_start() {
+    let mut profile = example();
+    let greeter = profile
+        .workflows
+        .iter_mut()
+        .find(|w| w.id == "greeter")
+        .unwrap();
+    greeter.ports[1].id = "result".into();
+    greeter.wires[1].to.port_id = "result".into();
+    let checked = core(profile);
+    let check: Vec<Diagnostic> = serde_json::from_value(
+        checked
+            .dispatch(method::PROFILE_CHECK, json!({ "id": "call" }))
+            .unwrap(),
+    )
+    .unwrap();
+    let codes: Vec<&str> = check.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["field.workflow_ports_mismatch"]);
+
+    let mut profile = example();
+    profile.workflows[0].nodes[0]
+        .config
+        .insert("workflow".into(), json!("nowhere"));
+    let error = core(profile)
+        .dispatch(method::EXECUTION_START, json!({ "profile_id": "call" }))
+        .unwrap_err();
+    assert!(
+        error.message.contains("`nowhere` does not exist"),
+        "{}",
+        error.message
+    );
+}

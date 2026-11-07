@@ -17,7 +17,9 @@ use serde_json::Value;
 
 use crate::bus::{self, ChildNews, Journal, Listing, Pending};
 use crate::config::{BusConfig, CallConfig, Resume};
-use crate::graph::{boundary, check_fields, check_profile, flatten, start_order, wire_end, End};
+use crate::graph::{
+    boundary, check_fields, check_profile, flatten, missing_workflow, start_order, wire_end, End,
+};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
 use crate::registry::{base_id, CallError, Registry};
@@ -122,6 +124,8 @@ struct Live {
     nesting: u32,
     /// For a child: where its result goes. Taken when it ends, so the caller hears that once.
     link: Option<CallLink>,
+    /// The depth cut dropped a chain of this child before it returned: it is failed.
+    cut: bool,
 }
 
 impl Live {
@@ -136,6 +140,7 @@ impl Live {
             draining: false,
             nesting: 0,
             link: None,
+            cut: false,
         }
     }
 }
@@ -393,6 +398,26 @@ impl Core {
         Some(execution)
     }
 
+    /// Moves an execution to `state` only if `from` holds for the state it is in, and
+    /// returns it as it ends up.
+    fn settle(
+        &self,
+        execution_id: &str,
+        from: fn(&ExecutionState) -> bool,
+        state: ExecutionState,
+    ) -> Option<Execution> {
+        let mut executions = self.executions();
+        let live = executions
+            .iter_mut()
+            .find(|live| live.execution.id == execution_id)?;
+        if from(&live.execution.state) {
+            live.execution.state = state;
+            let execution = live.execution.clone();
+            self.persist(|store| store.update_execution(&execution));
+        }
+        Some(live.execution.clone())
+    }
+
     /// Starts a copy of a workflow: `node/start` on every node whose module is loaded,
     /// what is used before what uses it (docs/03-modules.md §2). A node that fails to
     /// start fails the execution and stops the nodes already started.
@@ -419,6 +444,10 @@ impl Core {
             )
             .map_err(RpcError::invalid_params)?,
         );
+        // A node that runs a workflow the profile does not have could never work.
+        if let Some(error) = missing_workflow(profile, &workflow, |id| self.registry.manifest(id)) {
+            return Err(RpcError::invalid_params(error));
+        }
         let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
         let execution = Execution {
             id: format!("exec-{number}"),
@@ -456,6 +485,7 @@ impl Core {
                 number,
                 mut execution,
                 workflow,
+                caller,
             } = recovering.remove(0);
             let checkpoints = store
                 .checkpoints(execution.project_id.as_deref(), &execution.id)
@@ -483,7 +513,21 @@ impl Core {
                 };
                 self.persist(|store| store.update_execution(&execution));
                 report.push(format!("{} interrupted: {reason}", execution.id));
+                // A parent resumed before it (lower number) hears its wait is over.
+                let news = match (&execution.parent, caller) {
+                    (Some(parent), Some(node)) => Some((parent.clone(), node)),
+                    _ => None,
+                };
+                let ended = (
+                    execution.id.clone(),
+                    execution.workflow_id.clone(),
+                    execution.state.clone(),
+                );
                 self.push_live(number, execution, Arc::new(workflow));
+                if let Some((parent, node)) = news {
+                    let (id, workflow_id, state) = ended;
+                    self.tell_parent(&parent, end_news(&id, workflow_id, state, node, 0));
+                }
                 continue;
             }
             let id = execution.id.clone();
@@ -526,6 +570,7 @@ impl Core {
             number,
             mut execution,
             workflow,
+            ..
         } = recovering.remove(position);
         execution.state = ExecutionState::Stopped;
         self.persist(|store| store.update_execution(&execution));
@@ -603,49 +648,37 @@ impl Core {
                 live.active.insert(node.id.clone());
                 live.started.push(node_ref);
             }
-            let args = match checkpoints.get(&node.id) {
-                None => Value::Null,
-                Some(state) => json(NodeStart {
-                    checkpoint: Some(state.clone()),
-                })?,
-            };
-            let started = match self.node_call(&id, node, args) {
-                Err(error) => Err(error.to_string()),
-                Ok(call) => {
-                    match self
-                        .registry
-                        .call_module(module_id, method::NODE_START, json(call)?)
-                    {
-                        Ok(_) | Err(CallError::Module(ModuleError::UnknownMethod(_))) => Ok(()),
-                        Err(error) => Err(error.to_string()),
-                    }
+            let started = (|| -> Result<(), String> {
+                let args = match checkpoints.get(&node.id) {
+                    None => Value::Null,
+                    Some(state) => serde_json::to_value(NodeStart {
+                        checkpoint: Some(state.clone()),
+                    })
+                    .map_err(|e| e.to_string())?,
+                };
+                let call = self.node_call(&id, node, args).map_err(|e| e.to_string())?;
+                let params = serde_json::to_value(call).map_err(|e| e.to_string())?;
+                match self
+                    .registry
+                    .call_module(module_id, method::NODE_START, params)
+                {
+                    Ok(_) | Err(CallError::Module(ModuleError::UnknownMethod(_))) => Ok(()),
+                    Err(error) => Err(error.to_string()),
                 }
-            };
-            match started {
-                Ok(()) => {}
-                Err(error) => {
-                    // Failed first, so a caller waiting on it hears `failed`, not `stopped`.
-                    let reason = format!("node `{}` failed to start: {error}", node.id);
-                    let failed = self.set_state(&id, ExecutionState::Failed { reason });
-                    self.stop(&id, true);
-                    return failed.ok_or_else(|| RpcError::invalid_params("Unknown execution"));
-                }
+            })();
+            if let Err(error) = started {
+                // Failed before stopping, so a caller waiting on it hears `failed`; unless
+                // it was stopped meanwhile, which stays.
+                let reason = format!("node `{}` failed to start: {error}", node.id);
+                let failed = self.settle(&id, starting, ExecutionState::Failed { reason });
+                self.stop(&id, true);
+                return failed.ok_or_else(|| RpcError::invalid_params("Unknown execution"));
             }
         }
-        let running = {
-            let mut executions = self.executions();
-            let live = executions
-                .iter_mut()
-                .find(|live| live.execution.id == id)
-                .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?;
-            // Stopped while starting: it stays so.
-            if live.execution.state == ExecutionState::Starting {
-                live.execution.state = ExecutionState::Running;
-                let execution = live.execution.clone();
-                self.persist(|store| store.update_execution(&execution));
-            }
-            live.execution.clone()
-        };
+        // Stopped while starting: it stays so.
+        let running = self
+            .settle(&id, starting, ExecutionState::Running)
+            .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?;
         // What the nodes emitted while starting is delivered now that all of them run.
         self.kick(&id);
         Ok(running)
@@ -999,6 +1032,7 @@ impl Core {
             .filter(|live| {
                 live.execution.parent.as_deref() == Some(caller.execution_id.as_str())
                     && live.execution.state.is_live()
+                    && live.link.as_ref().is_some_and(|link| !link.returned)
             })
             .count();
         if self.call.max_children > 0 && children >= self.call.max_children {
@@ -1041,6 +1075,9 @@ impl Core {
             fed.push((port, capability, value));
         }
         let workflow = Arc::new(flatten(profile, target).map_err(ModuleError::InvalidParams)?);
+        if let Some(error) = missing_workflow(profile, &workflow, |id| self.registry.manifest(id)) {
+            return Err(ModuleError::InvalidParams(error));
+        }
         let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
         let execution = Execution {
             id: format!("exec-{number}"),
@@ -1051,7 +1088,9 @@ impl Core {
             disabled: Vec::new(),
             parent: Some(caller.execution_id.clone()),
         };
-        self.persist(|store| store.insert_execution(number, &execution, &workflow));
+        self.persist(|store| {
+            store.insert_child(number, &execution, &workflow, Some(&caller.node_id))
+        });
         let id = execution.id.clone();
         let mut child = Live::new(number, execution, workflow.clone());
         child.nesting = nesting;
@@ -1094,44 +1133,70 @@ impl Core {
 
     /// Tells the node that called a child, once, that the child is no longer live.
     fn ended(&self, child_id: &str) {
-        let mut executions = self.executions();
-        let Some(child) = executions
-            .iter_mut()
-            .find(|live| live.execution.id == child_id)
-            .filter(|live| !live.execution.state.is_live())
-        else {
-            return;
+        let news = {
+            let mut executions = self.executions();
+            let Some(child) = executions
+                .iter_mut()
+                .find(|live| live.execution.id == child_id)
+                .filter(|live| !live.execution.state.is_live())
+            else {
+                return;
+            };
+            let Some(link) = child.link.take() else {
+                return;
+            };
+            let workflow_id = child.execution.workflow_id.clone();
+            let state = child.execution.state.clone();
+            (
+                link.parent,
+                end_news(child_id, workflow_id, state, link.node, link.depth),
+            )
         };
-        let Some(link) = child.link.take() else {
-            return;
-        };
-        let news = Pending {
-            event: 0,
-            depth: link.depth,
-            from: child_self(child_id, ""),
-            capability: String::new(),
-            value: Value::Null,
-            to: PortRef {
-                node_id: link.node,
-                port_id: String::new(),
-            },
-            child: Some(ChildNews {
-                execution_id: child_id.into(),
-                workflow_id: child.execution.workflow_id.clone(),
-                ended: Some(child.execution.state.clone()),
-            }),
-        };
-        // A parent that stopped meanwhile has no one left to tell.
-        let Some(parent) = executions
-            .iter_mut()
-            .find(|live| live.execution.id == link.parent)
-            .filter(|live| live.execution.state.is_live())
-        else {
-            return;
-        };
-        parent.queue.push_back(news);
-        drop(executions);
-        self.kick(&link.parent);
+        self.tell_parent(&news.0, news.1);
+    }
+
+    /// Queues news from a child for its parent, if the parent is still live: a parent that
+    /// stopped meanwhile has no one left to tell.
+    fn tell_parent(&self, parent: &str, news: Pending) {
+        {
+            let mut executions = self.executions();
+            let Some(live) = executions
+                .iter_mut()
+                .find(|live| live.execution.id == parent)
+                .filter(|live| live.execution.state.is_live())
+            else {
+                return;
+            };
+            live.queue.push_back(news);
+        }
+        self.kick(parent);
+    }
+
+    /// A child's chain was cut past `bus.max_depth` before it returned: it fails, and its
+    /// caller hears so. The stop runs on a thread of its own: this may be inside `emit`,
+    /// and stopping calls back into the emitting module.
+    fn fail_cut(&self, child_id: &str) {
+        let reason = format!(
+            "a chain was cut past [bus] max_depth ({}) before it returned",
+            self.bus.max_depth
+        );
+        self.settle(
+            child_id,
+            ExecutionState::is_live,
+            ExecutionState::Failed { reason },
+        );
+        let core = self.me.clone();
+        let id = child_id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name(CALL_THREAD.into())
+            .spawn(move || {
+                if let Some(core) = core.upgrade() {
+                    core.stop(&id, true);
+                }
+            });
+        if spawned.is_err() {
+            self.stop(child_id, true);
+        }
     }
 
     // --- bus ----------------------------------------------------------------------------
@@ -1245,8 +1310,12 @@ impl Core {
         };
         let capability = output.capability.clone();
         self.publish(live, from, capability, value, depth);
+        let cut = std::mem::take(&mut live.cut);
         drop(executions);
         self.kick(&node.execution_id);
+        if cut {
+            self.fail_cut(&node.execution_id);
+        }
         Ok(())
     }
 
@@ -1284,6 +1353,9 @@ impl Core {
                  deliveries deep (event #{seq})",
                 live.execution.id, from.node_id, from.port_id
             );
+            if live.link.as_ref().is_some_and(|link| !link.returned) {
+                live.cut = true;
+            }
             return seq;
         }
         let event = journal.record(head(BusEventKind::Emitted {
@@ -1638,6 +1710,10 @@ impl Core {
         let port = pending.to.port_id.clone();
         let capability = pending.capability.clone();
         let event = self.publish(live, pending.to, pending.capability, pending.value, depth);
+        if std::mem::take(&mut live.cut) {
+            drop(executions);
+            return self.fail_cut(execution_id);
+        }
         let (Some((parent, node, depth)), Some(value)) = (link, value) else {
             return;
         };
@@ -1669,6 +1745,36 @@ impl Core {
         // It returned: what is still on its way inside is dropped with it.
         self.stop(execution_id, true);
     }
+}
+
+/// The news that a child ended, for the node `node` of its parent.
+fn end_news(
+    child_id: &str,
+    workflow_id: String,
+    state: ExecutionState,
+    node: String,
+    depth: u32,
+) -> Pending {
+    Pending {
+        event: 0,
+        depth,
+        from: child_self(child_id, ""),
+        capability: String::new(),
+        value: Value::Null,
+        to: PortRef {
+            node_id: node,
+            port_id: String::new(),
+        },
+        child: Some(ChildNews {
+            execution_id: child_id.into(),
+            workflow_id,
+            ended: Some(state),
+        }),
+    }
+}
+
+fn starting(state: &ExecutionState) -> bool {
+    *state == ExecutionState::Starting
 }
 
 /// How the parent's bus names the outputs of a child: `<child>/self.<port>`. `/` and

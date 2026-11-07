@@ -4,10 +4,12 @@ name           = "Flow"
 requires_proto = "^1.8"
 
 # Runs a workflow of the same profile as a child execution, once per value received, and
-# waits for its answer (docs/13-blocks.md §3.2). Ports mirror the called workflow's by id:
+# waits for its answer (docs/13-blocks.md §3.2). Ports match the called workflow's by id:
 # a value on input `x` goes to its input `x`; what it returns on output `y` leaves on
-# output `y` of this node. The ports below are the defaults for a workflow with `in` and
-# `out`; a node calling another shape declares that workflow's ports instead.
+# output `y` of this node. They are declared on the node, never copied from the workflow:
+# the ones below fit a workflow with `in` and `out`, and a node calling another shape
+# declares that workflow's ports itself. `profile.check` warns when they do not line up
+# (`field.workflow_ports_mismatch`); `execution.start` refuses a workflow that is missing.
 [[node]]
 type = "call"
 name = "Call"

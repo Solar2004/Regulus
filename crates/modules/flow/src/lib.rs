@@ -1,7 +1,7 @@
 //! Flow logic (docs/13-blocks.md §3.2). Today one node, `call`: every value it receives
 //! starts a child execution of the workflow in its `workflow` field, fed on the input of
 //! the same id; the child's answer leaves on the output of the same id, and its end on
-//! `done`. Switch, Loop, Join and the rest come later.
+//! `done`. The node declares those ports itself; nothing copies them from the workflow. Switch, Loop, Join and the rest come later.
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, ChildEvent, ChildEventKind, Manifest, NodeCall, NodeEvent};

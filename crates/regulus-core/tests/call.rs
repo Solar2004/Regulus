@@ -20,8 +20,11 @@ use serde_json::{json, Value};
 type Log = Arc<Mutex<Vec<String>>>;
 
 /// A `caller` node (`config.workflow`) calls that workflow with what arrives on `in` as
-/// its input `ask`, and emits what comes back on `out`. Any other node relays what
-/// arrives on `in` to `out` when `config.relay` is set, and to `config.also` too.
+/// its input `ask`, and emits what comes back on `out`; with `config.again = n` it calls
+/// again with each answer until it has `n`. Any other node relays what arrives on `in` to
+/// `out` when `config.relay` is set, and to `config.also` too. On start, a node with
+/// `config.fail` fails; one with `config.hold` waits until the log says `release`, then
+/// fails.
 struct Tester {
     manifest: Manifest,
     log: Log,
@@ -69,6 +72,27 @@ impl Module for Tester {
                 match child.kind {
                     ChildEventKind::Returned { port, value, .. } => {
                         log(format!("{} returned {port} {value}", child.execution_id));
+                        let again = call.node.config.get("again").and_then(Value::as_u64);
+                        let returned = self
+                            .log
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|l| l.contains("returned"))
+                            .count() as u64;
+                        if let (Some(again), Some(workflow)) = (
+                            again,
+                            call.node.config.get("workflow").and_then(Value::as_str),
+                        ) {
+                            if returned < again {
+                                let next = self.ctx.call_workflow(
+                                    &me,
+                                    workflow,
+                                    vec![("ask".into(), value.clone())],
+                                )?;
+                                log(format!("{} called {next}", me.execution_id));
+                            }
+                        }
                         self.ctx.emit(&me, "out", value)?;
                     }
                     ChildEventKind::Ended { state } => {
@@ -77,7 +101,19 @@ impl Module for Tester {
                 }
                 Ok(Value::Null)
             }
-            method::NODE_START | method::NODE_STOP => Ok(Value::Null),
+            method::NODE_START => {
+                if call.node.config.get("fail") == Some(&json!(true)) {
+                    return Err(ModuleError::Failed("told to fail".into()));
+                }
+                if call.node.config.get("hold") == Some(&json!(true)) {
+                    log(format!("{} holding", me.execution_id));
+                    until("the release", || logged(&self.log, "release"));
+                    log(format!("{} released", me.execution_id));
+                    return Err(ModuleError::Failed("held, then failed".into()));
+                }
+                Ok(Value::Null)
+            }
+            method::NODE_STOP => Ok(Value::Null),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }
     }
@@ -86,7 +122,51 @@ impl Module for Tester {
     }
 }
 
+/// Another module: `other.steal` asks for a child on behalf of any node it is told about.
+struct Other {
+    manifest: Manifest,
+    ctx: ModuleCtx,
+}
+
+impl Module for Other {
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+    fn init(&mut self, ctx: &ModuleCtx) -> Result<(), ModuleError> {
+        self.ctx = ctx.clone();
+        Ok(())
+    }
+    fn call(&self, _: &str, params: Value) -> Result<Value, ModuleError> {
+        let node = NodeRef {
+            execution_id: params["execution_id"].as_str().unwrap_or_default().into(),
+            node_id: params["node_id"].as_str().unwrap_or_default().into(),
+        };
+        let child = self.ctx.call_workflow(&node, "leaf", vec![])?;
+        Ok(json!(child))
+    }
+    fn shutdown(&mut self) -> Result<(), ModuleError> {
+        Ok(())
+    }
+}
+
 const MODULE: &str = "t/tester@1.0.0";
+
+fn other() -> Box<dyn Module> {
+    Box::new(Other {
+        manifest: Manifest {
+            module: ModuleInfo {
+                id: "t/other@1.0.0".into(),
+                name: "other".into(),
+                requires_proto: None,
+                methods: vec!["other.steal".into()],
+                workflow_id: None,
+                origin: None,
+            },
+            nodes: vec![],
+        },
+        ctx: ModuleCtx::default(),
+    })
+}
 
 fn tester(log: &Log) -> Box<dyn Module> {
     Box::new(Tester {
@@ -135,11 +215,16 @@ fn ports(outputs: &[&str]) -> Value {
 /// out on `reply`. `leaf` relays `ask` to `reply`; `mute` takes it and never answers;
 /// `twice` answers on `reply` and on `other`.
 fn profile(target: &str) -> Profile {
+    profile_with(json!({ "workflow": target }))
+}
+
+/// [`profile`] with the configuration of the caller `c` of `main`.
+fn profile_with(caller: Value) -> Profile {
     serde_json::from_value(json!({
         "id": "p", "project_id": "proj", "main_workflow_id": "main",
         "workflows": [
             { "id": "main", "kind": "main", "ports": ports(&["reply"]),
-              "nodes": [node("c", json!({ "workflow": target }))],
+              "nodes": [node("c", caller)],
               "wires": [wire("w1", ("self", "ask"), ("c", "in")),
                         wire("w2", ("c", "out"), ("self", "reply"))] },
             { "id": "leaf", "kind": "extra", "ports": ports(&["reply"]),
@@ -161,6 +246,19 @@ fn profile(target: &str) -> Profile {
               "wires": [wire("w1", ("self", "ask"), ("c", "in")),
                         wire("w2", ("c", "out"), ("self", "reply"))] },
             { "id": "closed", "kind": "extra", "ports": ports(&[]) },
+            // Relays to itself and never reaches `reply`: the depth cut drops the chain.
+            { "id": "spin", "kind": "extra", "ports": ports(&["reply"]),
+              "nodes": [node("x", json!({ "relay": true }))],
+              "wires": [wire("w1", ("self", "ask"), ("x", "in")),
+                        wire("w2", ("x", "out"), ("x", "in"))] },
+            { "id": "broken", "kind": "extra", "ports": ports(&["reply"]),
+              "nodes": [node("x", json!({ "fail": true }))],
+              "wires": [wire("w1", ("self", "ask"), ("x", "in")),
+                        wire("w2", ("x", "out"), ("self", "reply"))] },
+            { "id": "held", "kind": "extra", "ports": ports(&["reply"]),
+              "nodes": [node("x", json!({ "hold": true }))],
+              "wires": [wire("w1", ("self", "ask"), ("x", "in")),
+                        wire("w2", ("x", "out"), ("self", "reply"))] },
         ]
     }))
     .unwrap()
@@ -171,7 +269,7 @@ fn core_with(profile: Profile, call: CallConfig, storage: Storage) -> (Arc<Core>
     let mut profiles = ProfileStore::default();
     profiles.insert(profile).unwrap();
     let core = Core::build_with_limits(
-        vec![tester(&log)],
+        vec![tester(&log), other()],
         &[],
         profiles,
         storage,
@@ -323,6 +421,17 @@ fn only_the_first_value_on_any_output_returns() {
         .cloned()
         .collect();
     assert_eq!(returned, [r#"exec-2 returned reply "hi""#]);
+    // The second output was in flight when the first returned: it never leaves the parent.
+    until("the parent to settle", || {
+        events(&core, &parent).pending == 0
+    });
+    let replies = events(&core, &parent)
+        .events
+        .iter()
+        .filter(|e| e.from.node_id == "self" && matches!(e.kind, BusEventKind::Emitted { .. }))
+        .filter(|e| e.from.port_id == "reply")
+        .count();
+    assert_eq!(replies, 1);
 }
 
 #[test]
@@ -341,7 +450,9 @@ fn a_child_stopped_from_outside_only_ends_and_stopping_the_parent_stops_children
     core.dispatch(method::EXECUTION_STOP, json!({ "id": parent }))
         .unwrap();
     assert_eq!(execution(&core, "exec-3").state, ExecutionState::Stopped);
-    // The parent stopped first: nobody is left to hear the child ended.
+    // The stop is synchronous and the parent stopped first: its queue is empty, nothing
+    // waits, and nobody was left to hear the child ended.
+    assert_eq!(events(&core, &parent).pending, 0);
     assert!(!logged(&log, "exec-3 ended Stopped"));
 }
 
@@ -436,7 +547,7 @@ fn after_a_restart_a_child_keeps_its_parent_and_is_interrupted() {
         // As on Ctrl-C: the store keeps both as running.
         core.shutdown();
     }
-    let (core, _) = stored(&home, Resume::Always);
+    let (core, log) = stored(&home, Resume::Always);
     let report = core.recover();
     assert!(
         report.iter().any(|l| l.starts_with("exec-1 resumed")),
@@ -453,6 +564,195 @@ fn after_a_restart_a_child_keeps_its_parent_and_is_interrupted() {
         "{child:?}"
     );
     assert_eq!(execution(&core, "exec-1").state, ExecutionState::Running);
+    // The resumed parent's caller hears that its wait is over.
+    until("the end to reach the resumed parent", || {
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("exec-2 ended Interrupted"))
+    });
+    assert_eq!(events(&core, "exec-1").pending, 0);
     core.shutdown();
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn stopping_a_parent_stops_its_grandchildren() {
+    let call = CallConfig {
+        max_nesting: 2,
+        ..CallConfig::default()
+    };
+    let (core, _) = core_with(profile("deep"), call, Storage::default());
+    let top = start(&core, "deep");
+    send(&core, &top, "down");
+    until("the grandchild to run", || running(&core, "exec-3"));
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": top }))
+        .unwrap();
+    for id in ["exec-1", "exec-2", "exec-3"] {
+        assert_eq!(execution(&core, id).state, ExecutionState::Stopped, "{id}");
+    }
+}
+
+#[test]
+fn a_parent_is_pending_while_a_child_has_not_ended() {
+    let (core, log) = core("mute");
+    let parent = start(&core, "main");
+    send(&core, &parent, "x");
+    until("the child to run", || running(&core, "exec-2"));
+    until("the parent's own queue to drain", || {
+        events(&core, &parent).pending == 1
+    });
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": "exec-2" }))
+        .unwrap();
+    until("the end to be delivered", || {
+        events(&core, &parent).pending == 0
+    });
+    assert!(logged(&log, "exec-2 ended Stopped"));
+}
+
+#[test]
+fn a_module_cannot_call_on_behalf_of_another_modules_node() {
+    let (core, _) = core("leaf");
+    let parent = start(&core, "main");
+    let error = core
+        .dispatch(
+            "other.steal",
+            json!({ "execution_id": parent, "node_id": "c" }),
+        )
+        .unwrap_err();
+    assert!(
+        error.message.contains("does not belong"),
+        "{}",
+        error.message
+    );
+    assert_eq!(executions(&core).len(), 1);
+}
+
+#[test]
+fn a_child_that_fails_to_start_ends_failed_and_frees_its_slot() {
+    let call = CallConfig {
+        max_children: 1,
+        ..CallConfig::default()
+    };
+    let (core, log) = core_with(profile("broken"), call, Storage::default());
+    let parent = start(&core, "main");
+    let failed = |n: usize| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("ended Failed") && l.contains("told to fail"))
+            .count()
+            == n
+    };
+    // The second call fits only if the failed first one gave its slot back.
+    send(&core, &parent, "a");
+    until("the first child to fail", || failed(1));
+    send(&core, &parent, "b");
+    until("the second child to fail", || failed(2));
+    assert!(!execution(&core, "exec-2").state.is_live());
+    until("the parent to settle", || {
+        events(&core, &parent).pending == 0
+    });
+}
+
+#[test]
+fn a_child_stopped_while_a_node_starts_stays_stopped_when_that_start_fails() {
+    let (core, log) = core("held");
+    let parent = start(&core, "main");
+    send(&core, &parent, "x");
+    until("the node to hold", || logged(&log, "exec-2 holding"));
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": parent }))
+        .unwrap();
+    assert_eq!(execution(&core, "exec-2").state, ExecutionState::Stopped);
+    log.lock().unwrap().push("release".into());
+    until("the start to fail", || logged(&log, "exec-2 released"));
+    // The failed start is handled right after; give it time to (wrongly) overwrite.
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(execution(&core, "exec-2").state, ExecutionState::Stopped);
+}
+
+#[test]
+fn a_returned_child_does_not_count_against_max_children() {
+    let call = CallConfig {
+        max_children: 1,
+        ..CallConfig::default()
+    };
+    let caller = json!({ "workflow": "leaf", "again": 3 });
+    let (core, log) = core_with(profile_with(caller), call, Storage::default());
+    let parent = start(&core, "main");
+    send(&core, &parent, "x");
+    until("three answers", || {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("returned"))
+            .count()
+            == 3
+    });
+    assert!(!events(&core, &parent).events.iter().any(|e| {
+        matches!(&e.kind, BusEventKind::Failed { error, .. } if error.contains("max_children"))
+    }));
+}
+
+#[test]
+fn a_child_whose_chain_is_cut_fails_and_its_caller_hears_it() {
+    let (core, log) = core("spin");
+    let parent = start(&core, "main");
+    send(&core, &parent, "x");
+    until("the end", || {
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("exec-2 ended Failed") && l.contains("max_depth"))
+    });
+    until("the parent to settle", || {
+        events(&core, &parent).pending == 0
+    });
+}
+
+#[test]
+fn a_start_refuses_a_node_that_runs_a_missing_workflow() {
+    // The core only knows the field from a manifest: give the tester one.
+    let log = Log::default();
+    let module = tester(&log);
+    let manifest: Manifest = serde_json::from_value(json!({
+        "module": { "id": MODULE, "name": "t" },
+        "node": [{ "type": "t", "name": "t", "field": [{ "id": "workflow", "type": "workflow" }] }]
+    }))
+    .unwrap();
+    struct WithManifest(Box<dyn Module>, Manifest);
+    impl Module for WithManifest {
+        fn manifest(&self) -> &Manifest {
+            &self.1
+        }
+        fn init(&mut self, ctx: &ModuleCtx) -> Result<(), ModuleError> {
+            self.0.init(ctx)
+        }
+        fn call(&self, method: &str, params: Value) -> Result<Value, ModuleError> {
+            self.0.call(method, params)
+        }
+        fn shutdown(&mut self) -> Result<(), ModuleError> {
+            self.0.shutdown()
+        }
+    }
+    let mut profiles = ProfileStore::default();
+    profiles.insert(profile("nowhere")).unwrap();
+    let core = Core::build(
+        vec![Box::new(WithManifest(module, manifest))],
+        &[],
+        profiles,
+    );
+    let error = core
+        .dispatch(
+            method::EXECUTION_START,
+            json!({ "profile_id": "p", "workflow_id": "main" }),
+        )
+        .unwrap_err();
+    assert!(
+        error.message.contains("`nowhere` does not exist"),
+        "{}",
+        error.message
+    );
+    // The rest of the profile still starts.
+    start(&core, "leaf");
 }

@@ -37,7 +37,8 @@ ports = [
   { id = "done", capability = "execution.end@1", direction = "output", kind = "then" },
 ]
 
-  # Its ports mirror greeter's by id, plus `done`.
+  # Its ports are declared here, not copied from greeter: the same ids and capabilities as
+  # greeter's, plus `done`. If greeter renames `reply`, `regulus profile check` warns.
   [[workflows.nodes]]
   id = "call"
   name = "Call greeter"
