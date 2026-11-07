@@ -506,6 +506,7 @@ mod tests {
             project_id: None,
             state,
             disabled: vec![],
+            parent: None,
         }
     }
 

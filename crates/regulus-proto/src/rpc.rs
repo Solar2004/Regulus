@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 /// 1.2 adds `execution.start` and `execution.stop`; 1.3 adds `secret.set`, `secret.list`
 /// and `secret.delete`; 1.4 adds `profile_id` to executions; 1.5 adds `event.list`; 1.6
 /// adds the `interrupted` state and `NodeStart` for nodes resumed from a checkpoint; 1.7
-/// adds workflow ports (`Workflow.ports`, inner wires to `self`) and `workflow.send`.
-pub const PROTOCOL: &str = "1.7";
+/// adds workflow ports (`Workflow.ports`, inner wires to `self`) and `workflow.send`; 1.8
+/// adds child executions: `Execution.parent` and `node/child` (`ChildEvent`).
+pub const PROTOCOL: &str = "1.8";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -50,8 +51,10 @@ pub mod method {
     pub const NODE_STOP: &str = "node/stop";
     /// A value arrived over a "then" wire; `args` is a `NodeEvent`.
     pub const NODE_EVENT: &str = "node/event";
+    /// A child execution the node started returned or ended; `args` is a `ChildEvent`.
+    pub const NODE_CHILD: &str = "node/child";
     /// Every method the core sends to the owner of a node.
-    pub const NODE: &[&str] = &[NODE_START, NODE_STOP, NODE_EVENT];
+    pub const NODE: &[&str] = &[NODE_START, NODE_STOP, NODE_EVENT, NODE_CHILD];
 }
 
 /// Error codes beyond the JSON-RPC 2.0 standard ones.
@@ -149,6 +152,36 @@ pub struct NodeStart {
     /// The last state the node saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<serde_json::Value>,
+}
+
+/// What a module receives with `node/child`, inside `NodeCall.args`: news from a child
+/// execution one of its nodes started (`ModuleCtx::call_workflow`). A child returns at
+/// most once, then ends; one that fails or is stopped from outside only ends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildEvent {
+    /// The child execution.
+    pub execution_id: String,
+    pub workflow_id: String,
+    #[serde(flatten)]
+    pub kind: ChildEventKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ChildEventKind {
+    /// The first value that reached an output of the child's workflow: its result. The
+    /// core stops the child right after.
+    Returned {
+        /// The output port of the child's workflow.
+        port: String,
+        capability: String,
+        value: serde_json::Value,
+        /// The `seq` of the child's `emitted` event from `self.<port>`.
+        event: u64,
+    },
+    /// The child is no longer live: `stopped` after it returned or was stopped,
+    /// `failed` if a node of it failed to start.
+    Ended { state: crate::ExecutionState },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

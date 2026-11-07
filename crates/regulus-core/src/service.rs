@@ -376,6 +376,7 @@ impl Core {
             project_id: profile.project_id.clone(),
             state: ExecutionState::Starting,
             disabled: Vec::new(),
+            parent: None,
         };
         self.persist(|store| store.insert_execution(number, &execution, &workflow));
         let id = execution.id.clone();

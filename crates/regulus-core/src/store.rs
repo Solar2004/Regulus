@@ -119,7 +119,7 @@ fn to_json(value: &impl Serialize) -> rusqlite::Result<String> {
 
 /// The columns `stored_execution` reads, in order.
 const EXECUTION_COLUMNS: &str =
-    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow";
+    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow, parent";
 
 fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
     let number: i64 = row.get(0)?;
@@ -132,6 +132,7 @@ fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
             workflow_id: row.get(4)?,
             state: state_of(row.get(5)?, row.get(6)?)?,
             disabled: json_column(row, 7)?,
+            parent: row.get(9)?,
         },
         workflow: json_column(row, 8)?,
     })
@@ -472,7 +473,7 @@ impl Databases {
             conn.execute(
                 "INSERT INTO executions (id, number, project_id, profile_id, workflow_id,
                      workflow, status, reason, disabled, parent, started)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     execution.id,
                     int(number),
@@ -483,6 +484,7 @@ impl Databases {
                     status,
                     reason,
                     to_json(&execution.disabled)?,
+                    execution.parent,
                     int(at),
                 ],
             )
@@ -1073,6 +1075,7 @@ mod tests {
             project_id: project.map(String::from),
             state,
             disabled: Vec::new(),
+            parent: None,
         }
     }
 
@@ -1087,7 +1090,8 @@ mod tests {
         assert_eq!(store.first_execution(), 1);
         let mut one = execution("exec-1", None, ExecutionState::Running);
         store.insert_execution(1, &one, &workflow()).unwrap();
-        let two = execution("exec-2", Some("proj"), ExecutionState::Starting);
+        let mut two = execution("exec-2", Some("proj"), ExecutionState::Starting);
+        two.parent = Some("exec-1".into());
         store.insert_execution(2, &two, &workflow()).unwrap();
         one.state = ExecutionState::Failed {
             reason: "boom".into(),
