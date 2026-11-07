@@ -1,0 +1,88 @@
+# Service (docs/13-blocks.md §3.3): the workflow `greet` (one input `ask`, one output
+# `reply`) offered over HTTP on 127.0.0.1:7792, at most 3 requests a minute. The `main`
+# workflow below was printed by `regulus service expose greet --policy
+# requests=3,window_ms=60000 --timeout-ms 10000` and pasted under `[[workflows]] main`.
+#
+# Run (2026-11-07, debug build; real output in the report of that day):
+#
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/service/examples/expose.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run expose --detach                     # exec-1  main  running
+#   regulus service key new --scope demo/greet --name docs
+#     k-…  docs  rgk_xxxxxx…  demo/greet
+#     rgk_…                                         # shown once
+#   curl -s -X POST -H "Authorization: Bearer $KEY" -d '{"ask":"Ada"}' \
+#        http://127.0.0.1:7792/v1/workflows/greet
+#     {"execution_id":"exec-2","outputs":{"reply":"Hello, Ada!"}}
+#   curl -s -X POST -H "Authorization: Bearer $KEY" -d '{"ask":"Ada"}' \
+#        'http://127.0.0.1:7792/v1/workflows/greet?async=1'          # {"job":"j-…",…}
+#   curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:7792/v1/jobs/j-…
+#   (a 4th call within the minute)  → 429, retry-after: <s>
+#   regulus service log
+#   regulus service key revoke k-…                  # then the same curl → 401
+id = "expose"
+name = "Expose greet"
+project_id = "demo"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Main"
+kind = "main"
+
+  [[workflows.nodes]]
+  position = { x = 0, y = 0 }
+  id = "service-http"
+  name = "HTTP engine"
+  type = "http"
+  module_id = "regulus/service@0.1.0"
+  config = { bind = "127.0.0.1:7792" }
+  ports = [{ id = "engine", capability = "service.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  position = { x = 0, y = 0 }
+  id = "service-greet"
+  name = "Endpoint greet"
+  type = "endpoint"
+  module_id = "regulus/service@0.1.0"
+  config = { workflows = ["greet"], timeout_ms = 10000, policy = { requests = 3, window_ms = 60000 } }
+  ports = [{ id = "engine", capability = "service.engine@1", direction = "input", kind = "uses", required = true }]
+
+  [[workflows.wires]]
+  id = "service-engine-greet"
+  kind = "uses"
+  from = { node_id = "service-http", port_id = "engine" }
+  to = { node_id = "service-greet", port_id = "engine" }
+
+[[workflows]]
+id = "greet"
+name = "Greet"
+kind = "extra"
+ports = [
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "hello"
+  name = "Hello"
+  type = "greeter"
+  module_id = "regulus/hello@0.1.0"
+  position = { x = 200, y = 100 }
+  ports = [
+    { id = "echo", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "ask-hello"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "hello", port_id = "echo" }
+
+  [[workflows.wires]]
+  id = "hello-reply"
+  kind = "then"
+  from = { node_id = "hello", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }

@@ -4107,6 +4107,7 @@ dependencies = [
  "regulus-module-judge",
  "regulus-module-process",
  "regulus-module-providers",
+ "regulus-module-service",
  "regulus-module-skills",
  "regulus-module-tools",
  "regulus-module-tools-mcp",
@@ -4339,6 +4340,20 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "regulus-module-service"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "httparse",
+ "regulus-core",
+ "regulus-module-hello",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

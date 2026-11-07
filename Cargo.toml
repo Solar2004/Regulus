@@ -29,6 +29,7 @@ members = [
     "crates/modules/judge",
     "crates/modules/triggers",
     "crates/modules/human",
+    "crates/modules/service",
 ]
 resolver = "2"
 
@@ -69,6 +70,7 @@ ureq = { version = "3.5", features = ["json"] }
 httparse = "1.10"
 croner = "4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sha2 = "0.10"
 
 # Perfil release (en un workspace solo la raíz define profiles).
 # Ver https://tauri.app/concept/size/#cargo-configuration

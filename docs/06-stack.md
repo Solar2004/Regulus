@@ -61,6 +61,7 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Parser HTTP de los módulos | **`httparse`** | `1.10.1` (2025-03-03, verif. 2026-11-07) · 870M descargas | Cabecera de las peticiones del Webhook de `triggers`, que sirve sobre `std::net` con un hilo y un plazo por conexión: un cliente que se para no bloquea a nadie y cerrar no espera a ningún cliente. Ya estaba en el árbol (`hyper`). `tiny_http` se descartó: no tiene plazo de lectura. |
 | Cron | **`croner`** | `4.0.3` (upd 2026-11-04, verif. 2026-11-07) | Cinco o seis campos, `L`, `#`, `W`, alias (`@hourly`), zonas. El Cron de `triggers`. |
 | Fechas | **`chrono`** (sin default; `clock`, `std`) | `0.4.45` (verif. 2026-11-07) | Lo pide `croner`; ya estaba en el árbol. |
+| Hash de las llaves | **`sha2`** | `0.10.9` (verif. 2026-11-07) | SHA-256 de las llaves `rgk_` de `service`: el store guarda solo el hash. Ya estaba en el árbol (`0.10.9` y `0.11.1`). |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,
