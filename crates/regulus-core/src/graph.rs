@@ -117,6 +117,12 @@ fn check_workflow(
             );
             report.push(Severity::Error, "node.reserved_id", message, id, None);
         }
+        if node.is_box() {
+            for port in node.ports.iter().filter(|p| p.kind == WireKind::Uses) {
+                let message = uses_across(&port.id);
+                report.push(Severity::Error, "workflow.port_uses", message, id, None);
+            }
+        }
         if let Some(inner) = node
             .internal_workflow_id
             .as_deref()
@@ -152,12 +158,13 @@ fn check_workflow(
             );
         }
         if port.kind == WireKind::Uses {
-            let message = format!(
-                "workflow port `{}` is a \"uses\" port: only \"then\" values cross a \
-                 workflow's boundary for now",
-                port.id
+            report.push(
+                Severity::Error,
+                "workflow.port_uses",
+                uses_across(&port.id),
+                None,
+                None,
             );
-            report.push(Severity::Warning, "workflow.port_uses", message, None, None);
         }
     }
 
@@ -289,6 +296,22 @@ fn check_workflow(
     }
 }
 
+/// Why a "uses" port on a workflow or a box is refused: nothing would serve it.
+fn uses_across(port: &str) -> String {
+    format!(
+        "`{port}` is a \"uses\" port: only \"then\" values cross a workflow's boundary for \
+         now, so nothing would serve it"
+    )
+}
+
+/// The first "uses" port among the ports of a boundary, as an error.
+fn refuse_uses(ports: &[Port], whose: &str) -> Result<(), String> {
+    match ports.iter().find(|p| p.kind == WireKind::Uses) {
+        None => Ok(()),
+        Some(port) => Err(format!("{whose}: {}", uses_across(&port.id))),
+    }
+}
+
 /// One end of a wire in `workflow`: the port and the direction it has from inside the
 /// workflow. The workflow's own ports (`self`) face the other way inside: an input feeds
 /// nodes, an output takes values.
@@ -414,6 +437,7 @@ fn inline<'a>(
         None => id.to_string(),
         Some(prefix) => format!("{prefix}{BOX_SEPARATOR}{id}"),
     };
+    refuse_uses(&workflow.ports, &format!("workflow `{}`", workflow.id))?;
     for wire in &workflow.wires {
         // `/` is how the copy tells which box a wire belongs to.
         if wire.id.contains(BOX_SEPARATOR) {
@@ -464,6 +488,7 @@ fn inline<'a>(
         if placed.ports.is_empty() {
             placed.ports = inner.ports.clone();
         }
+        refuse_uses(&placed.ports, &format!("box `{}`", placed.id))?;
         let id = placed.id.clone();
         plan.nodes.push(placed);
         path.push(&inner.id);

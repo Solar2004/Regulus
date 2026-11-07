@@ -505,3 +505,40 @@ fn a_running_copy_inlines_boxes_under_their_id() {
     );
     assert_eq!(plan.ports, profile.workflow("main").unwrap().ports);
 }
+
+#[test]
+fn a_uses_port_on_a_workflow_or_a_box_is_an_error_and_never_runs() {
+    let mut uses = text_port("model", "input");
+    uses["kind"] = json!("uses");
+    // Only on the box node: the workflow itself is fine.
+    let mut on_box = boxed();
+    let mut ports = on_box["workflows"][1]["ports"].clone();
+    ports.as_array_mut().unwrap().push(uses.clone());
+    on_box["workflows"][0]["nodes"][0]["ports"] = ports;
+    let diagnostics = checked(on_box.clone());
+    let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.severity, d.node_id.as_deref()))
+        .collect();
+    assert!(
+        found.contains(&("workflow.port_uses", Severity::Error, Some("greet"))),
+        "{diagnostics:#?}"
+    );
+    let profile: Profile = serde_json::from_value(on_box).unwrap();
+    let error = flatten(&profile, profile.workflow("main").unwrap()).unwrap_err();
+    assert!(error.starts_with("box `greet`"), "{error}");
+
+    // On the workflow: an error there, and the box inherits it.
+    let mut on_workflow = boxed();
+    on_workflow["workflows"][1]["ports"]
+        .as_array_mut()
+        .unwrap()
+        .push(uses);
+    let diagnostics = checked(on_workflow.clone());
+    assert_eq!(codes(&diagnostics), ["workflow.port_uses"]);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    let profile: Profile = serde_json::from_value(on_workflow).unwrap();
+    let error = flatten(&profile, profile.workflow("greeter").unwrap()).unwrap_err();
+    assert!(error.starts_with("workflow `greeter`"), "{error}");
+    assert!(error.contains("nothing would serve it"), "{error}");
+}

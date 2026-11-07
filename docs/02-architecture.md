@@ -217,9 +217,10 @@ interpreta: son del cliente.
    un workflow no acabe dentro de sí mismo y los ids reservados (`self` y `/` en nodos,
    `/` en cables). `execution.start` no pasa el validador entero: rechaza solo lo que haría
    ambigua o infinita la copia que corre (ids repetidos tras aplanar, reservados, ciclos de
-   cajas); lo demás corre y falla a la vista en el bus, como antes. Un workflow
-   con puertos es válido sin que nadie lo llame. Solo cruza "luego"; un puerto "usa" en un
-   workflow se avisa.
+   cajas, puertos "usa" en un límite); lo demás corre y falla a la vista en el bus, como
+   antes. Un workflow con puertos es válido sin que nadie lo llame. **"Usa" no cruza
+   límites todavía:** un puerto "usa" en un workflow o en una caja es error y
+   `execution.start` lo rechaza.
 
 **Qué deja la base abierta a propósito** (`11` §12): cuántos cables admite cada entrada
 (el campo existe, por defecto `One`) y qué lleva cada tipo de puerto (el tipo tiene
