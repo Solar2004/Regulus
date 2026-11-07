@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use regulus_proto::{Execution, ExecutionState, Workflow};
+use regulus_proto::{BusEvent, EventListParams, Execution, ExecutionState, PortRef, Workflow};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -132,6 +132,24 @@ fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
             disabled: json_column(row, 7)?,
         },
         workflow: json_column(row, 8)?,
+    })
+}
+
+fn bus_event(row: &Row) -> rusqlite::Result<BusEvent> {
+    let unsigned = |index| row.get::<_, i64>(index).map(|n| n.max(0) as u64);
+    Ok(BusEvent {
+        seq: unsigned(0)?,
+        at: unsigned(1)?,
+        execution_id: row.get(2)?,
+        project_id: row.get(3)?,
+        event: unsigned(4)?,
+        from: PortRef {
+            node_id: row.get(5)?,
+            port_id: row.get(6)?,
+        },
+        capability: row.get(7)?,
+        depth: row.get(8)?,
+        kind: json_column(row, 9)?,
     })
 }
 
@@ -568,6 +586,85 @@ impl Store {
             .collect()
     }
 
+    /// The `seq` for the next bus event: one past the highest kept in any database.
+    pub fn next_seq(&self) -> Result<u64, StoreError> {
+        let mut highest = 0;
+        for db in self.all() {
+            let found: i64 = db.with(|conn| {
+                conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
+            })?;
+            highest = highest.max(found.max(0) as u64);
+        }
+        Ok(highest + 1)
+    }
+
+    /// Keeps a bus event in its project's database; past `2 × max_events` there, the
+    /// oldest go.
+    pub fn append_event(&self, event: &BusEvent) -> Result<(), StoreError> {
+        let kind =
+            serde_json::to_value(&event.kind).map_err(|e| StoreError::Data(e.to_string()))?;
+        let db = self.db(event.project_id.as_deref())?;
+        db.with(|conn| {
+            conn.prepare_cached(
+                "INSERT INTO events (seq, at, execution_id, project_id, event, from_node,
+                     from_port, capability, depth, kind, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?
+            .execute(params![
+                int(event.seq),
+                int(event.at),
+                event.execution_id,
+                event.project_id,
+                int(event.event),
+                event.from.node_id,
+                event.from.port_id,
+                event.capability,
+                event.depth,
+                kind["kind"].as_str().unwrap_or_default(),
+                kind.to_string(),
+            ])
+        })?;
+        if db.max_events > 0 && db.inserted.fetch_add(1, Ordering::Relaxed) + 1 >= db.max_events {
+            db.prune()?;
+        }
+        Ok(())
+    }
+
+    /// The kept bus events `params` asks for, oldest first, from every database it
+    /// reaches.
+    pub fn events(&self, params: &EventListParams) -> Result<Vec<BusEvent>, StoreError> {
+        let limit = params.limit.map_or(-1, int);
+        let mut all = Vec::new();
+        for db in self.reached_by(params.project_id.as_deref()) {
+            let rows = db.with(|conn| {
+                conn.prepare_cached(
+                    "SELECT seq, at, execution_id, project_id, event, from_node, from_port,
+                         capability, depth, data
+                     FROM events
+                     WHERE seq > ?1 AND (?2 IS NULL OR execution_id = ?2)
+                         AND (?3 IS NULL OR project_id = ?3)
+                     ORDER BY seq LIMIT ?4",
+                )?
+                .query_map(
+                    params![
+                        int(params.since),
+                        params.execution_id,
+                        params.project_id,
+                        limit
+                    ],
+                    bus_event,
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()
+            })?;
+            all.extend(rows);
+        }
+        all.sort_by_key(|e| e.seq);
+        if let Some(limit) = params.limit {
+            all.truncate(limit);
+        }
+        Ok(all)
+    }
+
     /// The schema version every database is at.
     pub fn schema_version(&self) -> Result<u32, StoreError> {
         self.global.schema_version()
@@ -821,6 +918,88 @@ mod tests {
         assert_eq!(rows, 2);
         // A checkpoint needs its execution.
         assert!(store.checkpoint(project, "exec-9", "a", &json!(0)).is_err());
+    }
+
+    fn event(seq: u64, execution: &str, project: Option<&str>) -> BusEvent {
+        BusEvent {
+            seq,
+            at: seq * 10,
+            execution_id: execution.into(),
+            project_id: project.map(String::from),
+            event: seq,
+            from: PortRef {
+                node_id: "a".into(),
+                port_id: "out".into(),
+            },
+            capability: "text@1".into(),
+            depth: 0,
+            kind: regulus_proto::BusEventKind::Emitted {
+                value: json!(format!("v{seq}")),
+            },
+        }
+    }
+
+    #[test]
+    fn bus_events_are_kept_per_database_and_read_back_in_order() {
+        let dir = temp_dir("events");
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        assert_eq!(store.next_seq().unwrap(), 1);
+        let written = [
+            event(1, "exec-1", None),
+            event(2, "exec-2", Some("p")),
+            event(3, "exec-1", None),
+            event(4, "exec-2", Some("p")),
+        ];
+        for e in &written {
+            store.append_event(e).unwrap();
+        }
+        drop(store);
+        let store = Store::open(&dir, &StoreConfig::default()).unwrap();
+        assert_eq!(store.next_seq().unwrap(), 5);
+        let all = store.events(&EventListParams::default()).unwrap();
+        assert_eq!(all, written);
+        let page = EventListParams {
+            since: 1,
+            limit: Some(2),
+            ..EventListParams::default()
+        };
+        let seqs: Vec<u64> = store.events(&page).unwrap().iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, [2, 3]);
+        let of_project = EventListParams {
+            project_id: Some("p".into()),
+            ..EventListParams::default()
+        };
+        assert_eq!(
+            store.events(&of_project).unwrap(),
+            [written[1].clone(), written[3].clone()]
+        );
+        let of_execution = EventListParams {
+            execution_id: Some("exec-1".into()),
+            ..EventListParams::default()
+        };
+        assert_eq!(store.events(&of_execution).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn old_events_are_pruned_past_twice_the_limit() {
+        let dir = temp_dir("prune");
+        let config = StoreConfig {
+            max_events: 3,
+            ..StoreConfig::default()
+        };
+        let store = Store::open(&dir, &config).unwrap();
+        for seq in 1..=5 {
+            store.append_event(&event(seq, "exec-1", None)).unwrap();
+        }
+        assert_eq!(store.events(&EventListParams::default()).unwrap().len(), 5);
+        store.append_event(&event(6, "exec-1", None)).unwrap();
+        let left: Vec<u64> = store
+            .events(&EventListParams::default())
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(left, [4, 5, 6]);
     }
 
     #[test]

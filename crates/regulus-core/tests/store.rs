@@ -53,6 +53,9 @@ impl Module for Keeper {
                     self.ctx.store(Some(&me))?.set_json(key, value)?;
                     self.ctx.store(None)?.set_json(key, value)?;
                 }
+                if let Some(say) = call.node.config.get("say") {
+                    self.ctx.emit(&me, "out", say.clone())?;
+                }
                 if let Some(state) = call.node.config.get("checkpoint") {
                     if call.args.is_null() {
                         self.ctx.checkpoint(&me, state.clone())?;
@@ -263,4 +266,53 @@ fn a_stopped_execution_stays_stopped_across_restarts() {
     let core = core_on(&home, &StoreConfig::default(), one_node(json!({})), &log);
     assert!(core.recover().is_empty());
     assert_eq!(list(&core)[0]["state"]["status"], "stopped");
+}
+
+#[test]
+fn bus_events_outlive_the_core_and_their_seq_goes_on() {
+    let home = temp_home("events");
+    let log = Log::default();
+    let speaker = || {
+        profile(vec![json!({
+            "id": "x", "type": "k", "module_id": "t/a@1.0.0", "config": { "say": "hi" },
+            "ports": [{ "id": "out", "capability": "text@1", "direction": "output", "kind": "then" }]
+        })])
+    };
+    let events = |core: &Core, since: u64| -> Vec<(u64, String)> {
+        let page = core
+            .dispatch(method::EVENT_LIST, json!({ "since": since }))
+            .unwrap();
+        page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["seq"].as_u64().unwrap(),
+                    e["execution_id"].as_str().unwrap().into(),
+                )
+            })
+            .collect()
+    };
+    let core = core_on(&home, &StoreConfig::default(), speaker(), &log);
+    start(&core);
+    assert_eq!(events(&core, 0), [(1, "exec-1".to_string())]);
+    drop(core);
+
+    let core = core_on(&home, &StoreConfig::default(), speaker(), &log);
+    assert_eq!(
+        events(&core, 0),
+        [(1, "exec-1".to_string())],
+        "read from the store"
+    );
+    start(&core);
+    assert_eq!(
+        events(&core, 0),
+        [(1, "exec-1".to_string()), (2, "exec-2".to_string())]
+    );
+    assert_eq!(
+        events(&core, 1),
+        [(2, "exec-2".to_string())],
+        "read from memory"
+    );
 }

@@ -1,16 +1,19 @@
 //! The event bus that carries "then" wires (docs/02-architecture.md §6).
 //!
 //! Each execution has its own queue of deliveries, drained in order by one thread at a
-//! time, so `emit` never blocks the emitter nor re-enters its module. The journal keeps
-//! the latest events in memory for clients (`event.list`) until the store exists.
+//! time, so `emit` never blocks the emitter nor re-enters its module. The journal writes
+//! every event to the store and keeps the latest in memory, so following clients
+//! (`event.list`) rarely reach the database.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use regulus_proto::{BusEvent, EventListParams, PortRef};
 use serde_json::Value;
 
 use crate::registry::now_ms;
+use crate::store::Store;
 
 /// The name of the threads that drain a queue, as seen by debuggers and `top`.
 pub(crate) const THREAD_NAME: &str = "regulus-bus";
@@ -25,19 +28,30 @@ pub(crate) struct Pending {
     pub to: PortRef,
 }
 
-/// The latest bus events, oldest first, at most `capacity` of them.
+/// Every bus event, in the store when there is one, and the latest `capacity` of them in
+/// memory, oldest first.
 pub(crate) struct Journal {
     events: VecDeque<BusEvent>,
     next_seq: u64,
     capacity: usize,
+    store: Option<Arc<Store>>,
 }
 
 impl Journal {
-    pub fn new(capacity: usize) -> Self {
+    /// `seq` goes on from the highest the store keeps, so cursors stay valid across
+    /// restarts.
+    pub fn new(capacity: usize, store: Option<Arc<Store>>) -> Self {
+        let next_seq = store.as_ref().map_or(1, |store| {
+            store.next_seq().unwrap_or_else(|e| {
+                eprintln!("regulus: store: {e}");
+                1
+            })
+        });
         Self {
             events: VecDeque::new(),
-            next_seq: 1,
+            next_seq,
             capacity,
+            store,
         }
     }
 
@@ -51,6 +65,11 @@ impl Journal {
         if event.event == 0 {
             event.event = seq;
         }
+        if let Some(store) = &self.store {
+            if let Err(error) = store.append_event(&event) {
+                eprintln!("regulus: store: {error}");
+            }
+        }
         if self.capacity > 0 {
             if self.events.len() == self.capacity {
                 self.events.pop_front();
@@ -60,8 +79,24 @@ impl Journal {
         seq
     }
 
-    /// The events `params` asks for and the cursor to follow from.
+    /// The events `params` asks for and the cursor to follow from. Memory answers when it
+    /// holds everything after `since`; otherwise the store does.
     pub fn list(&self, params: &EventListParams) -> (Vec<BusEvent>, u64) {
+        let in_memory = self
+            .events
+            .front()
+            .map_or(params.since + 1 >= self.next_seq, |first| {
+                params.since + 1 >= first.seq
+            });
+        if let (false, Some(store)) = (in_memory, &self.store) {
+            match store.events(params) {
+                Ok(events) => {
+                    let next = events.last().map_or(params.since, |e| e.seq);
+                    return (events, next);
+                }
+                Err(error) => eprintln!("regulus: store: {error}"),
+            }
+        }
         let events: Vec<BusEvent> = self
             .events
             .iter()

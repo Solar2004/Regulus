@@ -189,13 +189,14 @@ impl Core {
                 (next, unfinished)
             }
         };
+        let journal = Journal::new(bus.history, storage.store.clone());
         Arc::new_cyclic(|core| Self {
             me: core.clone(),
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
             profiles,
             storage,
             executions: Mutex::default(),
-            journal: Mutex::new(Journal::new(bus.history)),
+            journal: Mutex::new(journal),
             bus,
             next_execution: AtomicU64::new(next_execution),
             recovering: Mutex::new(recovering),
