@@ -23,6 +23,7 @@ members = [
     "crates/modules/tools",
     "crates/modules/tools-mcp",
     "crates/regulus-tauri/src-tauri",
+    "crates/modules/process",
 ]
 resolver = "2"
 

@@ -1,0 +1,418 @@
+[module]
+id             = "regulus/process@0.1.0"
+name           = "Process"
+requires_proto = "^1.8"
+
+# Programs as nodes (docs/13-blocks.md §3.2). Every run is a child process in its own
+# process group, waited on by a thread of its own: `node/event` returns at once, and
+# `node/stop` kills the whole group and waits for it, so nothing is left behind.
+# `exit@1` is what a run ended with: `{ code, signal?, ms, stdout, stderr, timed_out }`
+# (code null when a signal killed it); a job adds `job`, `log` and `tail`.
+
+# Runs a program once per value received.
+[[node]]
+type = "command"
+name = "Command"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # What it printed, when it exits 0.
+  [[node.port]]
+  id         = "stdout"
+  name       = "stdout"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # How every run ended.
+  [[node.port]]
+  id         = "exit"
+  name       = "exit"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  # How a run ended that did not exit 0 (or timed out).
+  [[node.port]]
+  id         = "fail"
+  name       = "fail"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The program to run, looked up on PATH. Shell syntax needs a shell: `sh` with
+  # args ["-c", "…"].
+  [[node.field]]
+  id      = "command"
+  type    = "text"
+  default = ""
+
+  # One argument per item; `{{input}}` in any of them is replaced by the value received
+  # (text as is, anything else as JSON). No shell parses them.
+  [[node.field]]
+  id      = "args"
+  type    = "list"
+  default = []
+
+  # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
+  # between executions. Relative: inside that directory.
+  [[node.field]]
+  id      = "cwd"
+  type    = "text"
+  default = ""
+
+  # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
+  # inherited from `regulus serve`.
+  [[node.field]]
+  id      = "env"
+  type    = "map"
+  default = {}
+
+  # On `node/stop`: milliseconds between SIGTERM and SIGKILL to the program's process
+  # group. 0: SIGKILL at once.
+  [[node.field]]
+  id      = "grace_ms"
+  type    = "number"
+  default = 1000
+
+  # yes: the value received is written to the program's stdin. no: stdin is empty.
+  [[node.field]]
+  id      = "stdin"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Milliseconds before the run is killed and counts as failed. 0: no limit.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 600000
+
+  # Bytes of stdout and of stderr kept per run; past it, the start is kept and the rest
+  # dropped (the program still runs to its end).
+  [[node.field]]
+  id      = "max_output"
+  type    = "number"
+  default = 1048576
+
+  # yes: trailing whitespace (the final newline) is cut from what goes out.
+  [[node.field]]
+  id      = "trim"
+  type    = "select"
+  default = "yes"
+  options = ["no", "yes"]
+
+  # Runs of this node at once; a value past it is refused (a failed delivery on the bus).
+  [[node.field]]
+  id      = "max_running"
+  type    = "number"
+  default = 4
+
+# The deterministic check (docs/13-blocks.md §6): runs its program on each value and
+# forwards that same value on `pass` (exit 0) or `fail` (anything else). It goes in a
+# "then" wire as a wrapper: its node declares `in`, `pass` and `fail` with one
+# capability, whichever it is. A node that declares `exit` also gets the details there.
+[[node]]
+type = "gate"
+name = "Gate"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "pass"
+  name       = "pass"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "fail"
+  name       = "fail"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "exit"
+  name       = "exit"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The program to run, looked up on PATH. Shell syntax needs a shell: `sh` with
+  # args ["-c", "…"].
+  [[node.field]]
+  id      = "command"
+  type    = "text"
+  default = ""
+
+  # One argument per item; `{{input}}` in any of them is replaced by the value received
+  # (text as is, anything else as JSON). No shell parses them.
+  [[node.field]]
+  id      = "args"
+  type    = "list"
+  default = []
+
+  # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
+  # between executions. Relative: inside that directory.
+  [[node.field]]
+  id      = "cwd"
+  type    = "text"
+  default = ""
+
+  # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
+  # inherited from `regulus serve`.
+  [[node.field]]
+  id      = "env"
+  type    = "map"
+  default = {}
+
+  # On `node/stop`: milliseconds between SIGTERM and SIGKILL to the program's process
+  # group. 0: SIGKILL at once.
+  [[node.field]]
+  id      = "grace_ms"
+  type    = "number"
+  default = 1000
+
+  # yes: the value received is written to the program's stdin. no: stdin is empty.
+  [[node.field]]
+  id      = "stdin"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Milliseconds before the run is killed and counts as failed. 0: no limit.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 600000
+
+  # Bytes of stdout and of stderr kept per run; past it, the start is kept and the rest
+  # dropped (the program still runs to its end).
+  [[node.field]]
+  id      = "max_output"
+  type    = "number"
+  default = 1048576
+
+  # yes: trailing whitespace (the final newline) is cut from what goes out.
+  [[node.field]]
+  id      = "trim"
+  type    = "select"
+  default = "yes"
+  options = ["no", "yes"]
+
+  # Runs of this node at once; a value past it is refused (a failed delivery on the bus).
+  [[node.field]]
+  id      = "max_running"
+  type    = "number"
+  default = 4
+
+# A long-running program: started by a value on `in` (or with the execution, with
+# `autostart`), its stdout and stderr go to `<node dir>/<log_dir>/<n>.log`, a number per
+# run. `started` says where; it ends on `done` (exit 0), `fail` or `timeout`, each with
+# the last `tail_lines` lines. `node/stop` kills it.
+[[node]]
+type = "job"
+name = "Job"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # `{ job, pid, log }` as soon as it runs.
+  [[node.port]]
+  id         = "started"
+  name       = "started"
+  capability = "job@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "done"
+  name       = "done"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "fail"
+  name       = "fail"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "timeout"
+  name       = "timeout"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The program to run, looked up on PATH. Shell syntax needs a shell: `sh` with
+  # args ["-c", "…"].
+  [[node.field]]
+  id      = "command"
+  type    = "text"
+  default = ""
+
+  # One argument per item; `{{input}}` in any of them is replaced by the value received
+  # (text as is, anything else as JSON). No shell parses them.
+  [[node.field]]
+  id      = "args"
+  type    = "list"
+  default = []
+
+  # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
+  # between executions. Relative: inside that directory.
+  [[node.field]]
+  id      = "cwd"
+  type    = "text"
+  default = ""
+
+  # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
+  # inherited from `regulus serve`.
+  [[node.field]]
+  id      = "env"
+  type    = "map"
+  default = {}
+
+  # On `node/stop`: milliseconds between SIGTERM and SIGKILL to the program's process
+  # group. 0: SIGKILL at once.
+  [[node.field]]
+  id      = "grace_ms"
+  type    = "number"
+  default = 1000
+
+  # Milliseconds before the job is killed and ends on `timeout`. 0: no limit.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 0
+
+  # Where the logs go, inside the node's directory (or absolute).
+  [[node.field]]
+  id      = "log_dir"
+  type    = "text"
+  default = "logs"
+
+  # Lines of the log that travel with `done`, `fail` and `timeout`.
+  [[node.field]]
+  id      = "tail_lines"
+  type    = "number"
+  default = 20
+
+  # yes: one run starts with the execution, with `{{input}}` empty.
+  [[node.field]]
+  id      = "autostart"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Jobs of this node at once; a value past it is refused.
+  [[node.field]]
+  id      = "max_running"
+  type    = "number"
+  default = 1
+
+# A program in a pseudo-terminal (portable-pty), started with the execution: what
+# arrives on `in` is typed into it, what it prints leaves on `out` in chunks as they
+# come, and `exit` says how it ended. `node/stop` kills it.
+[[node]]
+type = "terminal"
+name = "Terminal"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "exit"
+  name       = "exit"
+  capability = "exit@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The program to run, looked up on PATH. Shell syntax needs a shell: `sh` with
+  # args ["-c", "…"].
+  [[node.field]]
+  id      = "command"
+  type    = "text"
+  default = "sh"
+
+  # One argument per item; `{{input}}` in any of them is replaced by the value received
+  # (text as is, anything else as JSON). No shell parses them.
+  [[node.field]]
+  id      = "args"
+  type    = "list"
+  default = []
+
+  # Working directory. Empty: the node's own directory (`ModuleCtx::node_dir`), kept
+  # between executions. Relative: inside that directory.
+  [[node.field]]
+  id      = "cwd"
+  type    = "text"
+  default = ""
+
+  # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
+  # inherited from `regulus serve`.
+  [[node.field]]
+  id      = "env"
+  type    = "map"
+  default = {}
+
+  # On `node/stop`: milliseconds between SIGTERM and SIGKILL to the program's process
+  # group. 0: SIGKILL at once.
+  [[node.field]]
+  id      = "grace_ms"
+  type    = "number"
+  default = 1000
+
+  # yes: a carriage return (Enter) follows every value typed in.
+  [[node.field]]
+  id      = "enter"
+  type    = "select"
+  default = "yes"
+  options = ["no", "yes"]
+
+  [[node.field]]
+  id      = "rows"
+  type    = "number"
+  default = 24
+
+  [[node.field]]
+  id      = "cols"
+  type    = "number"
+  default = 80
+
+  # Bytes read from the terminal at a time: the largest chunk on `out`.
+  [[node.field]]
+  id      = "chunk"
+  type    = "number"
+  default = 4096
