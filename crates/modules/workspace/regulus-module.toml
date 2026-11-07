@@ -350,6 +350,19 @@ name = "Merge queue"
   direction   = "output"
   kind        = "then"
 
+  # Entries come over a wire, so the queue only merges a workspace this module made and
+  # still has, or, if these are set, a git workspace of this `repo` whose folder is under
+  # this `root` (absolute, or relative to the queue's own directory).
+  [[node.field]]
+  id      = "repo"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "root"
+  type    = "text"
+  default = ""
+
   [[node.field]]
   id      = "max_entries"
   type    = "number"

@@ -72,6 +72,7 @@ pub struct Info {
     pub archive_dir: Option<PathBuf>,
 }
 
+#[derive(Debug)]
 pub enum Merge {
     Done(Value),
     /// It could not merge cleanly; nothing changed in the base.
@@ -194,6 +195,20 @@ pub fn git(dir: &Path, args: &[&str], options: &Options) -> Result<String, Strin
     }
 }
 
+/// A branch name git accepts, and that no git command could read as an option.
+pub fn check_branch(name: &str, options: &Options) -> Result<(), String> {
+    if name.is_empty() || name.starts_with('-') {
+        return Err(format!("`{name}` is not a branch name"));
+    }
+    git(
+        Path::new("."),
+        &["check-ref-format", "--branch", name],
+        options,
+    )
+    .map(|_| ())
+    .map_err(|_| format!("`{name}` is not a branch name"))
+}
+
 /// A worktree per execution of a base repository.
 pub struct Git;
 
@@ -218,7 +233,8 @@ impl Git {
     }
 
     /// Copies what `.worktreeinclude` lists (globs from the repo's root, `#` comments)
-    /// into the new worktree, if it is not there already. Nothing outside the repo.
+    /// into the new worktree, if it is not there already. Nothing outside the repo, and
+    /// no symlinks.
     fn include(repo: &Path, worktree: &Path, file: &str) -> Result<u64, String> {
         if file.is_empty() {
             return Ok(0);
@@ -226,13 +242,14 @@ impl Git {
         let Ok(list) = fs::read_to_string(repo.join(file)) else {
             return Ok(0);
         };
+        let root = glob::Pattern::escape(&repo.to_string_lossy());
         let mut copied = 0;
         for line in list.lines().map(str::trim) {
             if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
                 continue;
             }
-            let pattern = repo.join(line.trim_start_matches('/'));
-            let Ok(found) = glob::glob(&pattern.to_string_lossy()) else {
+            let pattern = format!("{root}/{}", line.trim_start_matches('/'));
+            let Ok(found) = glob::glob(&pattern) else {
                 continue;
             };
             for source in found.flatten() {
@@ -246,8 +263,8 @@ impl Git {
                     continue;
                 }
                 let target = worktree.join(relative);
-                if !target.exists() {
-                    copied += fsx::copy_tree(&source, &target)?;
+                if target.symlink_metadata().is_err() {
+                    copied += fsx::copy_tree(&source, &target, fsx::Links::Skip)?;
                 }
             }
         }
@@ -263,16 +280,29 @@ impl Git {
         git(path, &["commit", "-q", "-m", &options.message], options)?;
         Ok(true)
     }
+
+    fn unmerged(repo: &Path, options: &Options) -> Vec<String> {
+        git(repo, &["diff", "--name-only", "--diff-filter=U"], options)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 impl Engine for Git {
     fn create(&self, spec: &Spec) -> Result<Info, String> {
+        if spec.id.is_empty() || spec.id.starts_with('-') {
+            return Err(format!("`{}` cannot name a workspace", spec.id));
+        }
+        check_branch(&spec.branch, &spec.options)?;
         let repo = Self::repo(spec)?;
         let base = if spec.base.is_empty() {
             git(&repo, &["symbolic-ref", "--short", "HEAD"], &spec.options)?
         } else {
             spec.base.clone()
         };
+        check_branch(&base, &spec.options)?;
         let path = &spec.path;
         let shown = path.to_string_lossy().to_string();
         if path.exists() {
@@ -292,13 +322,22 @@ impl Engine for Git {
             if exists {
                 git(
                     &repo,
-                    &["worktree", "add", "-q", &shown, &spec.branch],
+                    &["worktree", "add", "-q", "--", &shown, &spec.branch],
                     &spec.options,
                 )?;
             } else {
                 git(
                     &repo,
-                    &["worktree", "add", "-q", "-b", &spec.branch, &shown, &base],
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        &spec.branch,
+                        "--",
+                        &shown,
+                        &base,
+                    ],
                     &spec.options,
                 )?;
             }
@@ -316,11 +355,14 @@ impl Engine for Git {
         })
     }
 
+    /// Merges in the base branch's checkout, which must be clean of tracked changes: a
+    /// failed merge is undone there, and only what this merge started is undone.
     fn merge(&self, info: &Info, options: &Options) -> Result<Merge, String> {
         let (Some(repo), Some(branch), Some(base)) = (&info.repo, &info.branch, &info.base) else {
             return Err("a git workspace needs `repo`, `branch` and `base`".into());
         };
-        let committed = Self::commit_all(&info.path, options)?;
+        check_branch(branch, options)?;
+        check_branch(base, options)?;
         let current = git(repo, &["symbolic-ref", "--short", "HEAD"], options)?;
         if &current != base {
             return Err(format!(
@@ -329,45 +371,91 @@ impl Engine for Git {
                 repo.display()
             ));
         }
-        let merged = match options.merge_mode.as_str() {
-            "ff" => git(repo, &["merge", "-q", "--ff-only", branch], options),
-            "squash" => git(repo, &["merge", "-q", "--squash", branch], options).and_then(|_| {
-                if git(repo, &["diff", "--cached", "--quiet"], options).is_err() {
-                    git(repo, &["commit", "-q", "-m", &options.message], options)?;
-                }
-                Ok(String::new())
-            }),
-            _ => git(
+        let pending = git(
+            repo,
+            &["status", "--porcelain", "--untracked-files=no"],
+            options,
+        )?;
+        if !pending.is_empty()
+            || git(
                 repo,
-                &[
-                    "merge",
-                    "-q",
-                    "--no-ff",
-                    "--no-edit",
-                    "-m",
-                    &options.message,
-                    branch,
-                ],
+                &["rev-parse", "-q", "--verify", "MERGE_HEAD"],
                 options,
-            ),
+            )
+            .is_ok()
+        {
+            return Err(format!(
+                "{} has uncommitted changes or a merge in progress: nothing merged",
+                repo.display()
+            ));
+        }
+        let committed = Self::commit_all(&info.path, options)?;
+        let conflict = |files: Vec<String>, message: String| {
+            Merge::Conflict(json!({
+                "id": info.id, "branch": branch, "base": base, "files": files, "message": message,
+            }))
         };
-        if let Err(error) = merged {
-            let files =
-                git(repo, &["diff", "--name-only", "--diff-filter=U"], options).unwrap_or_default();
-            if files.is_empty() && options.merge_mode != "ff" {
-                return Err(error);
+        match options.merge_mode.as_str() {
+            "ff" => {
+                // Nothing to undo: a refused fast-forward changes nothing.
+                if let Err(error) = git(repo, &["merge", "-q", "--ff-only", "--", branch], options)
+                {
+                    return Ok(conflict(Vec::new(), error));
+                }
             }
-            // Leave the base as it was.
-            let undo = if options.merge_mode == "squash" {
-                ["reset", "--merge"]
-            } else {
-                ["merge", "--abort"]
-            };
-            let _ = git(repo, &undo, options);
-            let files: Vec<&str> = files.lines().collect();
-            return Ok(Merge::Conflict(json!({
-                "id": info.id, "branch": branch, "base": base, "files": files, "message": error,
-            })));
+            "squash" => {
+                if let Err(error) = git(repo, &["merge", "-q", "--squash", "--", branch], options) {
+                    let files = Self::unmerged(repo, options);
+                    // The checkout was clean: going back to HEAD loses nothing of the user's.
+                    let _ = git(repo, &["reset", "-q", "--merge"], options);
+                    return if files.is_empty() {
+                        Err(error)
+                    } else {
+                        Ok(conflict(files, error))
+                    };
+                }
+                if git(repo, &["diff", "--cached", "--quiet"], options).is_err() {
+                    if let Err(error) =
+                        git(repo, &["commit", "-q", "-m", &options.message], options)
+                    {
+                        let _ = git(repo, &["reset", "-q", "--merge"], options);
+                        return Err(error);
+                    }
+                }
+            }
+            _ => {
+                let merged = git(
+                    repo,
+                    &[
+                        "merge",
+                        "-q",
+                        "--no-ff",
+                        "--no-edit",
+                        "-m",
+                        &options.message,
+                        "--",
+                        branch,
+                    ],
+                    options,
+                );
+                if let Err(error) = merged {
+                    let files = Self::unmerged(repo, options);
+                    if git(
+                        repo,
+                        &["rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                        options,
+                    )
+                    .is_ok()
+                    {
+                        let _ = git(repo, &["merge", "--abort"], options);
+                    }
+                    return if files.is_empty() {
+                        Err(error)
+                    } else {
+                        Ok(conflict(files, error))
+                    };
+                }
+            }
         }
         let commit = git(repo, &["rev-parse", "HEAD"], options)?;
         Ok(Merge::Done(json!({
@@ -381,7 +469,11 @@ impl Engine for Git {
         if info.path.exists() {
             Self::commit_all(&info.path, options)?;
             let shown = info.path.to_string_lossy().to_string();
-            git(repo, &["worktree", "remove", "--force", &shown], options)?;
+            git(
+                repo,
+                &["worktree", "remove", "--force", "--", &shown],
+                options,
+            )?;
         }
         Ok(json!({ "id": info.id, "path": info.path, "branch": info.branch }))
     }
@@ -396,7 +488,15 @@ impl Engine for Folder {
         if !path.exists() {
             match &spec.seed {
                 Some(seed) => {
-                    fsx::copy_tree(seed, path)?;
+                    let seed_real = fsx::real(seed)?;
+                    if fsx::real(path)?.starts_with(&seed_real) {
+                        return Err(format!(
+                            "{} is inside `seed` {}: it would copy itself",
+                            path.display(),
+                            seed.display()
+                        ));
+                    }
+                    fsx::copy_tree(seed, path, fsx::Links::Keep)?;
                 }
                 None => fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))?,
             }
@@ -413,12 +513,14 @@ impl Engine for Folder {
         })
     }
 
+    /// Copies the folder onto `target`, leaving its symlinks out and refusing to write
+    /// through one already in `target`.
     fn merge(&self, info: &Info, _: &Options) -> Result<Merge, String> {
         let target = info
             .target
             .as_ref()
             .ok_or("the folder engine merges onto `target` (or `seed`); neither is set")?;
-        let files = fsx::copy_tree(&info.path, target)?;
+        let files = fsx::copy_tree(&info.path, target, fsx::Links::Skip)?;
         Ok(Merge::Done(
             json!({ "id": info.id, "target": target, "files": files }),
         ))
@@ -442,3 +544,6 @@ impl Engine for Folder {
         Ok(json!({ "id": info.id, "path": to }))
     }
 }
+
+/// The merge modes `Options.merge_mode` takes.
+pub const MERGE_MODES: &[&str] = &["merge", "ff", "squash"];

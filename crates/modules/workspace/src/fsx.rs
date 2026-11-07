@@ -71,14 +71,43 @@ pub fn usage(dir: &Path, limit: u64) -> u64 {
     total
 }
 
-/// Copies `from` (a file or a folder) to `to`, overwriting files; symlinks are copied as
-/// links. Returns how many files it copied.
-pub fn copy_tree(from: &Path, to: &Path) -> Result<u64, String> {
+/// What a copy does with a symlink it finds in what it copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Links {
+    /// Copied as links (a seed from the profile: the user's own).
+    Keep,
+    /// Left out (a merge or an include: the content may come from anything).
+    Skip,
+}
+
+/// Copies `from` (a file or a folder) to `to`, overwriting files. Below `to`, an entry
+/// that is already a symlink is refused rather than written through: a link planted
+/// there must not carry the copy out of `to`. Returns how many entries it copied.
+pub fn copy_tree(from: &Path, to: &Path, links: Links) -> Result<u64, String> {
+    copy_entry(from, to, links, true)
+}
+
+fn copy_entry(from: &Path, to: &Path, links: Links, top: bool) -> Result<u64, String> {
     let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
+    if !top
+        && to
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return Err(format!(
+            "{} is a symlink: refused, a copy never writes through one",
+            to.display()
+        ));
+    }
     let meta = from.symlink_metadata().map_err(|e| fail(from, e))?;
     if meta.file_type().is_symlink() {
+        if links == Links::Skip {
+            return Ok(0);
+        }
         let target = fs::read_link(from).map_err(|e| fail(from, e))?;
-        let _ = fs::remove_file(to);
+        if to.symlink_metadata().is_ok() {
+            fs::remove_file(to).map_err(|e| fail(to, e))?;
+        }
         #[cfg(unix)]
         std::os::unix::fs::symlink(&target, to).map_err(|e| fail(to, e))?;
         #[cfg(not(unix))]
@@ -95,7 +124,7 @@ pub fn copy_tree(from: &Path, to: &Path) -> Result<u64, String> {
     fs::create_dir_all(to).map_err(|e| fail(to, e))?;
     let mut copied = 0;
     for entry in fs::read_dir(from).map_err(|e| fail(from, e))?.flatten() {
-        copied += copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        copied += copy_entry(&entry.path(), &to.join(entry.file_name()), links, false)?;
     }
     Ok(copied)
 }
@@ -113,10 +142,39 @@ mod tests {
         fs::write(root.join("a/b/two"), [0u8; 20]).unwrap();
         assert_eq!(usage(&root, 100), 30);
         assert!(usage(&root, 15) > 15);
-        assert_eq!(copy_tree(&root.join("a"), &root.join("c")).unwrap(), 2);
+        assert_eq!(
+            copy_tree(&root.join("a"), &root.join("c"), Links::Keep).unwrap(),
+            2
+        );
         assert_eq!(fs::read(root.join("c/b/two")).unwrap().len(), 20);
         assert!(confine(&root.join("a"), &root.join("a/new/file")).is_ok());
         assert!(confine(&root.join("a"), &root.join("a/../c/one")).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_never_writes_through_a_link_in_the_target_nor_copies_links_it_skips() {
+        let root = std::env::temp_dir().join(format!("regulus-fsx-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("from/evil")).unwrap();
+        fs::write(root.join("from/evil/x"), "payload").unwrap();
+        fs::create_dir_all(root.join("outside")).unwrap();
+        fs::create_dir_all(root.join("to")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("to/evil")).unwrap();
+        assert!(copy_tree(&root.join("from"), &root.join("to"), Links::Skip).is_err());
+        assert!(
+            !root.join("outside/x").exists(),
+            "nothing went through the link"
+        );
+        // A link in what is copied is left out with `Skip`.
+        fs::create_dir_all(root.join("from2")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("from2/evil")).unwrap();
+        assert_eq!(
+            copy_tree(&root.join("from2"), &root.join("to2"), Links::Skip).unwrap(),
+            0
+        );
+        assert!(root.join("to2/evil").symlink_metadata().is_err());
         let _ = fs::remove_dir_all(&root);
     }
 }

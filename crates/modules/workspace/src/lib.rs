@@ -149,6 +149,9 @@ pub(crate) struct Shared {
     memory: Mutex<BTreeMap<String, Value>>,
     workers: Mutex<HashMap<NodeRef, Sender<Op>>>,
     lines: Mutex<HashMap<NodeRef, Line>>,
+    /// Every workspace this module's nodes made and still have, by folder: what a merge
+    /// queue trusts without asking.
+    made: Mutex<HashMap<PathBuf, Info>>,
     /// Taken while an artifact gets its number and is recorded.
     numbering: Mutex<()>,
 }
@@ -216,6 +219,50 @@ impl Shared {
             author_email: self.text(node, "author_email"),
             timeout_ms: self.number(node, "git_timeout_ms"),
         }
+    }
+
+    /// `merge_mode` must be one the engines know.
+    fn check_mode(&self, node: &Node) -> Result<(), ModuleError> {
+        let mode = self.text(node, "merge_mode");
+        if engine::MERGE_MODES.contains(&mode.as_str()) {
+            return Ok(());
+        }
+        Err(ModuleError::InvalidParams(format!(
+            "`merge_mode` of `{}` is one of {}, not `{mode}`",
+            node.id,
+            engine::MERGE_MODES.join(", ")
+        )))
+    }
+
+    /// Whether a merge queue may merge `info`, which came over a wire: a workspace this
+    /// module made and still has, or a git one in the queue's own `repo` and under its
+    /// `root`. Anything else could name any repository, folder or branch.
+    fn trusted(&self, at: &At, info: &Info) -> Result<(), String> {
+        if lock(&self.made).get(&info.path) == Some(info) {
+            return Ok(());
+        }
+        let place = |field: &str| self.place(at, field).map_err(|e| e.to_string());
+        let (Some(repo), Some(root)) = (place("repo")?, place("root")?) else {
+            return Err(format!(
+                "{} is not a workspace of this module; set the queue's `repo` and `root` to \
+                 merge others",
+                info.path.display()
+            ));
+        };
+        let real = |path: &Path| fsx::real(path);
+        let same_repo = info
+            .repo
+            .as_deref()
+            .is_some_and(|theirs| matches!((real(theirs), real(&repo)), (Ok(a), Ok(b)) if a == b));
+        if info.engine != engine::GIT || !same_repo {
+            return Err(format!(
+                "{}: only git workspaces of {} are merged here",
+                info.path.display(),
+                repo.display()
+            ));
+        }
+        fsx::confine(&root, &info.path)?;
+        Ok(())
     }
 
     fn spec(&self, at: &At) -> Result<Spec, ModuleError> {
@@ -343,6 +390,7 @@ impl Ws {
                 engine.create(&self.spec)?
             }
         };
+        lock(&self.shared.made).insert(info.path.clone(), info.clone());
         let value = json!(info);
         if let Ok(ctx) = self.shared.ctx() {
             let _ = ctx.checkpoint(&self.at.me, value.clone());
@@ -437,6 +485,7 @@ impl Ws {
         let info = self.info()?.clone();
         let engine = self.shared.engine(&self.at.me, &info.engine)?;
         let archived = engine.archive(&info, &self.spec.options)?;
+        lock(&self.shared.made).remove(&info.path);
         self.info = None;
         self.over = false;
         self.shared.emit(&self.at, port::ARCHIVED, archived);
@@ -462,11 +511,16 @@ impl Shared {
                 at.me.node_id
             )));
         }
-        let state: LineState = parse::<NodeStart>(call.args.clone())
+        self.check_mode(&call.node)?;
+        let mut state: LineState = parse::<NodeStart>(call.args.clone())
             .ok()
             .and_then(|start| start.checkpoint)
             .and_then(|state| serde_json::from_value(state).ok())
             .unwrap_or_default();
+        // After a restart the first entry goes to its gates again.
+        for entry in &mut state.entries {
+            entry.checked = false;
+        }
         let options = self.options(&call.node, &at.me.execution_id);
         let mut lines = lock(&self.lines);
         lines.insert(
@@ -520,7 +574,10 @@ impl Shared {
             .spawn(move || {
                 let result = serde_json::from_value::<Info>(entry.info.clone())
                     .map_err(|e| format!("entry {} is not a workspace: {e}", entry.entry))
-                    .and_then(|info| shared.engine(&at.me, &info.engine)?.merge(&info, &options));
+                    .and_then(|info| {
+                        shared.trusted(&at, &info)?;
+                        shared.engine(&at.me, &info.engine)?.merge(&info, &options)
+                    });
                 shared.merged(&at, entry.entry, result);
             });
         if spawned.is_err() {
@@ -535,8 +592,9 @@ impl Shared {
             return; // stopped meanwhile: nobody wants the answer
         };
         line.merging = false;
+        let mut info = Value::Null;
         if line.entries.front().is_some_and(|e| e.entry == entry) {
-            line.entries.pop_front();
+            info = line.entries.pop_front().map(|e| e.info).unwrap_or_default();
         }
         match result {
             Ok(Merge::Done(value)) => {
@@ -549,6 +607,9 @@ impl Shared {
             ),
             Err(message) => {
                 let _ = self.error(at, format!("entry {entry}: {message}"));
+                let rejected = json!({ "entry": entry, "info": info, "gate": Value::Null,
+                                       "error": message });
+                self.emit(at, port::REJECTED, rejected);
             }
         }
         self.advance(&mut lines, &at.me);
@@ -561,8 +622,10 @@ impl Shared {
             .ok_or_else(|| ModuleError::Failed(format!("`{}` is not running", at.me.node_id)))?;
         let port_id = event.port.as_str();
         if port_id == port::IN {
-            serde_json::from_value::<Info>(event.value.clone())
+            let info = serde_json::from_value::<Info>(event.value.clone())
                 .map_err(|e| self.error(at, format!("`in` takes a workspace's `info`: {e}")))?;
+            self.trusted(at, &info)
+                .map_err(|e| self.error(at, format!("`in` refused: {e}")))?;
             let max = self.number(&at.node, "max_entries");
             if line.entries.len() as u64 >= max {
                 return Err(self.error(at, format!("{max} entries are waiting (`max_entries`)")));
@@ -616,7 +679,7 @@ impl Shared {
         format!("artifact/{}/{}/", me.execution_id, me.node_id)
     }
 
-    fn add_artifact(&self, at: &At, value: &Value) -> Result<Value, ModuleError> {
+    fn add_artifact(self: &Arc<Self>, at: &At, value: &Value) -> Result<Value, ModuleError> {
         let (path, name) = match value {
             Value::String(path) => (path.clone(), None),
             Value::Object(map) => (
@@ -664,29 +727,68 @@ impl Shared {
                 .to_string()
         });
         let prefix = Self::artifacts_prefix(&at.me);
-        let numbering = lock(&self.numbering);
-        let seq = self.kv_get(&at.me, &prefix)?.len() as u64 + 1;
-        let kept = if self.text(&at.node, "copy") == YES {
-            let dir = self.ctx()?.node_dir(&at.me)?.join(&at.me.execution_id);
-            fs::create_dir_all(&dir)
-                .map_err(|e| self.error(at, format!("{}: {e}", dir.display())))?;
+        let key;
+        let seq;
+        {
+            // Only the number is taken under the lock: a placeholder holds it.
+            let _numbering = lock(&self.numbering);
+            seq = self.kv_get(&at.me, &prefix)?.len() as u64 + 1;
+            key = format!("{prefix}{seq:012}");
+            self.kv_set(
+                &at.me,
+                &key,
+                &json!({ "seq": seq, "name": name, "pending": true }),
+            )?;
+        }
+        let copy_to = if self.text(&at.node, "copy") == YES {
             let file = Path::new(&name)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let to = dir.join(format!("{seq}-{file}"));
-            fs::copy(&source, &to).map_err(|e| self.error(at, format!("{}: {e}", to.display())))?;
-            to
+            Some(
+                self.ctx()?
+                    .node_dir(&at.me)?
+                    .join(&at.me.execution_id)
+                    .join(format!("{seq}-{file}")),
+            )
         } else {
-            source.clone()
+            None
         };
-        let record = json!({ "seq": seq, "name": name, "path": kept, "source": source,
-                             "bytes": meta.len(), "at": now_ms() });
-        self.kv_set(&at.me, &format!("{prefix}{seq:012}"), &record)?;
-        drop(numbering);
-        self.emit(at, port::OUT, json!(kept.display().to_string()));
-        Ok(record)
+        // A copy of up to `max_bytes` runs on a thread of its own, not on the bus thread.
+        let (shared, at) = (self.clone(), at.clone());
+        let bytes = meta.len();
+        let keep = move || {
+            let kept = match &copy_to {
+                Some(to) => to
+                    .parent()
+                    .map_or(Ok(()), fs::create_dir_all)
+                    .and_then(|()| fs::copy(&source, to))
+                    .map(|_| to.clone())
+                    .map_err(|e| format!("{}: {e}", to.display())),
+                None => Ok(source.clone()),
+            };
+            let record = match &kept {
+                Ok(kept) => json!({ "seq": seq, "name": name, "path": kept, "source": source,
+                                    "bytes": bytes, "at": now_ms() }),
+                Err(error) => json!({ "seq": seq, "name": name, "source": source,
+                                      "error": error, "at": now_ms() }),
+            };
+            if let Err(error) = shared.kv_set(&at.me, &key, &record) {
+                let _ = shared.error(&at, error.to_string());
+            }
+            match kept {
+                Ok(kept) => shared.emit(&at, port::OUT, json!(kept.display().to_string())),
+                Err(error) => {
+                    let _ = shared.error(&at, error);
+                }
+            }
+        };
+        std::thread::Builder::new()
+            .name("regulus-workspace-artifact".into())
+            .spawn(keep)
+            .map_err(|e| ModuleError::Failed(e.to_string()))?;
+        Ok(json!({ "seq": seq }))
     }
 }
 
@@ -704,6 +806,7 @@ impl Workspace {
                 memory: Mutex::default(),
                 workers: Mutex::default(),
                 lines: Mutex::default(),
+                made: Mutex::default(),
                 numbering: Mutex::default(),
             }),
         }
@@ -722,6 +825,7 @@ impl Workspace {
         let at = At::of(&call);
         let engine = shared.text(&call.node, "engine");
         engine::built_in(&engine).map_err(ModuleError::InvalidParams)?;
+        shared.check_mode(&call.node)?;
         let resumed: Option<Info> = parse::<NodeStart>(call.args.clone())
             .ok()
             .and_then(|start| start.checkpoint)
