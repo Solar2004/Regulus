@@ -192,7 +192,8 @@ impl Triggers {
         let name = format!("regulus-{}", call.node.node_type);
         let timer = Timer::spawn(&name, timer::Shared::default(), run)
             .map_err(|e| Self::failed(call, e))?;
-        if let Some(old) = lock(&self.timers).insert(key(&me), timer) {
+        let old = lock(&self.timers).insert(key(&me), timer);
+        if let Some(old) = old {
             old.stop();
         }
         Ok(())
@@ -222,6 +223,7 @@ impl Triggers {
             node: me.clone(),
             token,
             max_body: self.number(&call.node, "max_body_bytes") as usize,
+            timeout: Duration::from_millis(self.number(&call.node, "timeout_ms").max(1)),
             body_port: call.node.port(BODY_PORT).is_some(),
             json_port: call.node.port(JSON_PORT).is_some(),
         };
@@ -238,7 +240,8 @@ impl Triggers {
 
     fn stop(&self, call: NodeCall) {
         let me = Self::me(&call);
-        if let Some(timer) = lock(&self.timers).remove(&key(&me)) {
+        let timer = lock(&self.timers).remove(&key(&me));
+        if let Some(timer) = timer {
             timer.stop();
         }
         self.webhooks.remove(&me);
@@ -425,7 +428,8 @@ impl Module for Triggers {
     }
 
     fn shutdown(&mut self) -> Result<(), ModuleError> {
-        for (_, timer) in lock(&self.timers).drain() {
+        let timers: Vec<Timer> = lock(&self.timers).drain().map(|(_, t)| t).collect();
+        for timer in timers {
             timer.stop();
         }
         self.webhooks.close_all();

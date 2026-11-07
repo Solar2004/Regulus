@@ -36,7 +36,9 @@ name = "Cron"
   options = ["local", "utc"]
 
 # An HTTP endpoint: what is POSTed (or PUT) to its path leaves on `body` as text and, if
-# it is JSON, on `json`. Nodes with the same `bind` share one listener.
+# it is JSON, on `json`. Nodes with the same `bind` share one listener. One request per
+# connection; bodies need `content-length`. On a listener where any node has a token, an
+# unknown path answers 401 like a wrong token, so paths cannot be probed.
 [[node]]
 type = "webhook"
 name = "Webhook"
@@ -55,8 +57,9 @@ name = "Webhook"
   direction  = "output"
   kind       = "then"
 
-  # host:port. Without a token only a loopback address is accepted. Port 0 picks a free
-  # one: `triggers.webhooks` says which.
+  # host:port. Without a token only a loopback address is accepted, and requests that
+  # carry `Origin` (web pages) or a `Host` other than this listener's are refused. Port 0
+  # picks a free one: `triggers.webhooks` says which.
   [[node.field]]
   id      = "bind"
   type    = "text"
@@ -74,10 +77,18 @@ name = "Webhook"
   type    = "text"
   default = ""
 
+  # Larger bodies get 413 before they are read.
   [[node.field]]
   id      = "max_body_bytes"
   type    = "number"
   default = 1048576
+
+  # Milliseconds a whole request may take to arrive; a stalled one gets 408. Each
+  # request has a thread of its own, so a slow client holds up nobody else.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 5000
 
 # Fires on what reaches it over "then" wires and matches its filter. It sees only what is
 # wired into it: the node declares `in` (or more inputs) with the capability it listens to.

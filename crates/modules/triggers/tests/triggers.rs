@@ -132,20 +132,42 @@ fn cron_ticks_until_its_execution_stops() {
     assert_eq!(emitted(&core, &id, "cron", "tick").len(), after);
 }
 
-/// An HTTP request by hand; returns the status code.
-fn post(url: &str, token: Option<&str>, body: &str) -> Result<u16, std::io::Error> {
+/// An HTTP request by hand, with extra header lines; returns the status code.
+fn request(url: &str, method: &str, headers: &[String], body: &str) -> Result<u16, std::io::Error> {
     let rest = url.strip_prefix("http://").unwrap();
     let (host, path) = rest.split_at(rest.find('/').unwrap());
     let mut stream = TcpStream::connect(host)?;
-    let auth = token.map_or(String::new(), |t| format!("authorization: Bearer {t}\r\n"));
+    let mut head = format!("{method} {path} HTTP/1.1\r\n");
+    if !headers.iter().any(|h| h.starts_with("host:")) {
+        head.push_str(&format!("host: {host}\r\n"));
+    }
+    for header in headers {
+        head.push_str(&format!("{header}\r\n"));
+    }
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nhost: {host}\r\n{auth}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+        "{head}content-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )?;
     let mut answer = String::new();
     stream.read_to_string(&mut answer)?;
     Ok(answer.split_whitespace().nth(1).unwrap().parse().unwrap())
+}
+
+fn post(url: &str, token: Option<&str>, body: &str) -> Result<u16, std::io::Error> {
+    let auth: Vec<String> = token
+        .map(|t| format!("authorization: Bearer {t}"))
+        .into_iter()
+        .collect();
+    request(url, "POST", &auth, body)
+}
+
+/// The URL of the only live webhook.
+fn hook_url(core: &Core) -> String {
+    core.dispatch(WEBHOOKS, json!({})).unwrap()[0]["url"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -168,8 +190,12 @@ fn a_webhook_takes_authorized_posts_and_closes_with_its_node() {
 
     assert_eq!(post(&url, None, "{}").unwrap(), 401);
     assert_eq!(post(&url, Some("wrong!"), "{}").unwrap(), 401);
+    // The token comes before the path and the method: nothing to probe without it.
     let other = url.replace("/in", "/elsewhere");
-    assert_eq!(post(&other, Some("s3cret"), "{}").unwrap(), 404);
+    assert_eq!(post(&other, None, "{}").unwrap(), 401);
+    assert_eq!(request(&url, "GET", &[], "").unwrap(), 401);
+    let auth = ["authorization: Bearer s3cret".to_string()];
+    assert_eq!(request(&url, "GET", &auth, "").unwrap(), 405);
     assert_eq!(post(&url, Some("s3cret"), &"x".repeat(65)).unwrap(), 413);
     assert_eq!(
         post(&url, Some("s3cret"), r#"{"deploy":"v2"}"#).unwrap(),
@@ -269,8 +295,11 @@ fn bus_event_fires_only_on_what_matches() {
         json!({ "node_id": "self", "port_id": "log" })
     );
     assert_eq!(fired[0]["capability"], "text@1");
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(emitted(&core, &id, "watch", "fired").len(), 1);
+    // Values arrive in order: the next match is the second one, never "build ok".
+    send(&core, &id, "log", json!("deploy v3"));
+    let fired = wait_for(&core, &id, "watch", "fired", 2);
+    assert_eq!(fired.len(), 2);
+    assert_eq!(fired[1]["value"], "deploy v3");
 }
 
 #[test]
@@ -350,10 +379,7 @@ fn the_core_shutting_down_stops_timers_and_listeners() {
     ];
     let core = core(profile(vec![], nodes, vec![]), None);
     let id = start(&core);
-    let url = core.dispatch(WEBHOOKS, json!({})).unwrap()[0]["url"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let url = hook_url(&core);
     assert_eq!(post(&url, None, "hi").unwrap(), 202);
     let started = Instant::now();
     core.shutdown();
@@ -373,4 +399,99 @@ fn the_example_checks_clean() {
         .dispatch(method::PROFILE_CHECK, json!({ "id": id }))
         .unwrap();
     assert_eq!(check, json!([]));
+}
+
+fn hook_profile(config: Value) -> Profile {
+    let hook = node(
+        "hook",
+        "webhook",
+        config,
+        vec![port("body", "text@1", "output")],
+    );
+    profile(vec![], vec![hook], vec![])
+}
+
+#[test]
+fn a_stalled_client_holds_up_neither_other_requests_nor_the_stop() {
+    let core = core(
+        hook_profile(json!({ "bind": "127.0.0.1:0", "timeout_ms": 400 })),
+        None,
+    );
+    let id = start(&core);
+    let url = hook_url(&core);
+    let host = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    // Promises 100 bytes and sends none.
+    let mut stalled = TcpStream::connect(&host).unwrap();
+    write!(
+        stalled,
+        "POST /hook HTTP/1.1\r\nhost: {host}\r\ncontent-length: 100\r\n\r\n"
+    )
+    .unwrap();
+    let started = Instant::now();
+    assert_eq!(post(&url, None, "next").unwrap(), 202);
+    assert!(started.elapsed() < Duration::from_millis(300));
+    // The stalled one times out on its own.
+    let mut answer = String::new();
+    stalled.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 408"), "{answer}");
+
+    let mut stalled = TcpStream::connect(&host).unwrap();
+    write!(stalled, "POST /hook HTTP/1.1\r\nhost: {host}\r\n").unwrap();
+    let started = Instant::now();
+    stop(&core, &id);
+    assert!(
+        started.elapsed() < Duration::from_millis(300),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(post(&url, None, "{}").is_err(), "still listening");
+}
+
+#[test]
+fn without_a_token_web_pages_and_foreign_hosts_are_refused() {
+    let core = core(
+        hook_profile(json!({ "bind": "127.0.0.1:0", "max_body_bytes": 8 })),
+        None,
+    );
+    let id = start(&core);
+    let url = hook_url(&core);
+    let origin = ["origin: https://evil.example".to_string()];
+    assert_eq!(request(&url, "POST", &origin, "x").unwrap(), 403);
+    let port = url.split(':').nth(2).unwrap().split('/').next().unwrap();
+    let rebound = [format!("host: evil.example:{port}")];
+    assert_eq!(request(&url, "POST", &rebound, "x").unwrap(), 403);
+    let localhost = [format!("host: localhost:{port}")];
+    assert_eq!(request(&url, "POST", &localhost, "x").unwrap(), 202);
+    // One byte over the limit, refused before it is read.
+    assert_eq!(post(&url, None, "123456789").unwrap(), 413);
+    assert_eq!(post(&url, None, "12345678").unwrap(), 202);
+    assert_eq!(
+        wait_for(&core, &id, "hook", "body", 2),
+        [json!("x"), json!("12345678")]
+    );
+    stop(&core, &id);
+}
+
+#[test]
+fn a_token_lets_a_webhook_listen_beyond_loopback() {
+    let core = core(
+        hook_profile(json!({ "bind": "0.0.0.0:0", "token": "k" })),
+        None,
+    );
+    let id = start(&core);
+    let url = hook_url(&core).replace("0.0.0.0", "127.0.0.1");
+    assert_eq!(post(&url, None, "x").unwrap(), 401);
+    let auth = [
+        "authorization: Bearer k".to_string(),
+        "origin: https://ci.example".to_string(),
+    ];
+    assert_eq!(request(&url, "POST", &auth, "x").unwrap(), 202);
+    wait_for(&core, &id, "hook", "body", 1);
+    stop(&core, &id);
 }

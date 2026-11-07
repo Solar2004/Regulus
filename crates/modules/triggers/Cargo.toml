@@ -11,7 +11,7 @@ regulus-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 croner.workspace = true
-tiny_http.workspace = true
+httparse.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]

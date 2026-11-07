@@ -59,7 +59,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 toml = "1"
 tower = "0.5"
 ureq = { version = "3.5", features = ["json"] }
-tiny_http = "0.12"
+httparse = "1.10"
 croner = "4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 

@@ -54,7 +54,7 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Config y manifiestos | **`toml`** | `1` | `config.toml` y `regulus-module.toml`. |
 | TUI | **`ratatui`** (trae **`crossterm`**) | `0.30.2` · crossterm `0.29.0` (verif. 2026-10-18) | El estándar en Rust para interfaces de terminal. `crossterm` se usa a través de `ratatui::crossterm`, así las dos versiones no se desincronizan. [`04-client.md`](04-client.md) §7. |
 | Cliente HTTP de los módulos | **`ureq`** (features `json`; TLS `rustls` sobre `ring`) | `3.5.1` (upd 2026-11-02, verif. 2026-11-07) | Síncrono, sin runtime de tokio por cliente: encaja con módulos de hilos. Lo usa el motor LLM de `judge`. `reqwest` solo estaba en el árbol por Tauri, sin `blocking` y con TLS `aws-lc-rs`. |
-| Servidor HTTP de los módulos | **`tiny_http`** | `0.12.0` (2022-10-06, verif. 2026-11-07) · 76M descargas | Síncrono y pequeño, con `unblock()` para parar limpio. El Webhook de `triggers`. Sin publicar desde 2022: si estorba, `hyper` ya está en el árbol. |
+| Parser HTTP de los módulos | **`httparse`** | `1.10.1` (2025-03-03, verif. 2026-11-07) · 870M descargas | Cabecera de las peticiones del Webhook de `triggers`, que sirve sobre `std::net` con un hilo y un plazo por conexión: un cliente que se para no bloquea a nadie y cerrar no espera a ningún cliente. Ya estaba en el árbol (`hyper`). `tiny_http` se descartó: no tiene plazo de lectura. |
 | Cron | **`croner`** | `4.0.3` (upd 2026-11-04, verif. 2026-11-07) | Cinco o seis campos, `L`, `#`, `W`, alias (`@hourly`), zonas. El Cron de `triggers`. |
 | Fechas | **`chrono`** (sin default; `clock`, `std`) | `0.4.45` (verif. 2026-11-07) | Lo pide `croner`; ya estaba en el árbol. |
 
