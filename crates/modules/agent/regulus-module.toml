@@ -1,7 +1,7 @@
 [module]
 id             = "regulus/agent@0.1.0"
 name           = "Agent"
-requires_proto = "^1.2"
+requires_proto = "^1.9"
 methods        = ["agent.prompt"]
 
 [[node]]
@@ -74,6 +74,16 @@ name = "Agent"
   id          = "tools"
   name        = "tools"
   capability  = "toolset@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
+  # Hooks the engine's CLI asks at points of its life cycle: before a tool, when the
+  # agent stops… (docs/13-blocks.md §4). The engine writes them into the profile.
+  [[node.port]]
+  id          = "hooks"
+  name        = "hooks"
+  capability  = "hook@1"
   direction   = "input"
   kind        = "uses"
   cardinality = "many"

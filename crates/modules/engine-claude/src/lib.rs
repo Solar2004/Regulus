@@ -2,6 +2,8 @@
 //! the `claude` binary we point it at, so the user's own installation and setup are the
 //! ones that run (docs/12-agents.md §4, measured 2026-10-17).
 
+pub mod hook;
+
 use std::collections::BTreeMap;
 
 use regulus_acp::engine::{find_on_path, installations, AcpEngine, EngineModule, Prepared, Start};
@@ -62,6 +64,14 @@ impl AcpEngine for Claude {
 
     fn skills_dir(&self) -> Option<&'static str> {
         Some(SKILLS_DIR)
+    }
+
+    fn place_hooks(
+        &self,
+        dir: &std::path::Path,
+        hooks: &[regulus_contract_agent_engine::HookMount],
+    ) -> Option<Result<Vec<String>, String>> {
+        Some(hook::place(dir, hooks))
     }
 
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String> {

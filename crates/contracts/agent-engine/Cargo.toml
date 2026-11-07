@@ -9,4 +9,5 @@ authors.workspace = true
 regulus-contract-llm-endpoint.workspace = true
 regulus-contract-skill.workspace = true
 regulus-contract-toolset.workspace = true
+regulus-proto.workspace = true
 serde.workspace = true

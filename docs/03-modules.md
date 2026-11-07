@@ -201,8 +201,10 @@ core un nodo.** El trait no cambia.
    llama a `node/stop` en orden inverso. Un cable que entra en una entrada `lazy` no
    cuenta para el orden: el nodo solo la lee en marcha, nunca al arrancar, y así puede
    cerrar un ciclo (Alexander, 2026-10-18).
-2. `node/start`, `node/stop`, `node/event` y `node/child` (lo que devuelve una hija) son
-   nombres reservados: el core los envía al módulo dueño
+2. `node/start`, `node/stop`, `node/event`, `node/child` (lo que devuelve una hija) y
+   `node/hook` (una pregunta de un motor de agente a un nodo `hook@1`, que el core
+   reenvía desde `hook.dispatch` y espera como mucho `[hooks] timeout_ms`;
+   `13-blocks.md` §4) son nombres reservados: el core los envía al módulo dueño
    del nodo y no se pueden declarar en `methods`. Un módulo que no los implementa
    (`UnknownMethod`) simplemente no tiene ciclo de vida.
 3. Toda llamada dirigida a un nodo lleva `NodeCall { execution_id, node, args }`: el nodo

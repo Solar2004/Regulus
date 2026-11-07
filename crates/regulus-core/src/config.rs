@@ -160,6 +160,32 @@ impl Default for CallConfig {
     }
 }
 
+/// Hooks (`hook.dispatch`): how long the core waits for a hook node that names no time
+/// limit of its own (docs/13-blocks.md §4).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HooksConfig {
+    /// Milliseconds a hook may take to answer; past it, it counts as no answer and the
+    /// agent goes on. A hook's own `timeout_ms` overrides it.
+    pub timeout_ms: u64,
+    /// The longest a request may ask a hook to take, in milliseconds.
+    pub max_timeout_ms: u64,
+    /// Requests one hook node may have unanswered at once. Each waits on a thread of its
+    /// own, which outlives a hook that hangs; past this, the node is skipped and counts as
+    /// no answer. 0 means no limit.
+    pub max_in_flight: usize,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 10_000,
+            max_timeout_ms: 600_000,
+            max_in_flight: 4,
+        }
+    }
+}
+
 /// What happens on start to the executions that were running when the core went down
 /// (docs/02-architecture.md §6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -253,6 +279,7 @@ pub struct Config {
     pub data: DataConfig,
     pub bus: BusConfig,
     pub call: CallConfig,
+    pub hooks: HooksConfig,
     pub store: StoreConfig,
     pub client: ClientConfig,
 }

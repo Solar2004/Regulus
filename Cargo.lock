@@ -3857,6 +3857,7 @@ dependencies = [
  "regulus-contract-agent-engine",
  "regulus-core",
  "regulus-module-agent",
+ "regulus-module-engine-claude",
  "regulus-module-providers",
  "regulus-proto",
  "serde",
@@ -3880,6 +3881,7 @@ dependencies = [
  "regulus-module-engine-opencode",
  "regulus-module-flow",
  "regulus-module-hello",
+ "regulus-module-hooks",
  "regulus-module-providers",
  "regulus-module-skills",
  "regulus-module-tools",
@@ -3897,6 +3899,7 @@ dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-contract-skill",
  "regulus-contract-toolset",
+ "regulus-proto",
  "serde",
 ]
 
@@ -4017,6 +4020,16 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-hello"
+version = "0.1.0"
+dependencies = [
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-hooks"
 version = "0.1.0"
 dependencies = [
  "regulus-core",

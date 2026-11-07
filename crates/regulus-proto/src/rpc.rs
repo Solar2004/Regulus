@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 /// and `secret.delete`; 1.4 adds `profile_id` to executions; 1.5 adds `event.list`; 1.6
 /// adds the `interrupted` state and `NodeStart` for nodes resumed from a checkpoint; 1.7
 /// adds workflow ports (`Workflow.ports`, inner wires to `self`) and `workflow.send`; 1.8
-/// adds child executions: `Execution.parent` and `node/child` (`ChildEvent`).
-pub const PROTOCOL: &str = "1.8";
+/// adds child executions: `Execution.parent` and `node/child` (`ChildEvent`); 1.9 adds
+/// the `hook@1` relay: `hook.dispatch` and `node/hook`.
+pub const PROTOCOL: &str = "1.9";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -27,6 +28,9 @@ pub mod method {
     pub const SECRET_DELETE: &str = "secret.delete";
     pub const EVENT_LIST: &str = "event.list";
     pub const WORKFLOW_SEND: &str = "workflow.send";
+    /// Relays a `HookRequest` to the `hook@1` nodes wired into a node and returns their
+    /// answers (`HookDispatchParams` → `HookDispatched`).
+    pub const HOOK_DISPATCH: &str = "hook.dispatch";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -43,6 +47,7 @@ pub mod method {
         SECRET_DELETE,
         EVENT_LIST,
         WORKFLOW_SEND,
+        HOOK_DISPATCH,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -53,8 +58,11 @@ pub mod method {
     pub const NODE_EVENT: &str = "node/event";
     /// A child execution the node started returned or ended; `args` is a `ChildEvent`.
     pub const NODE_CHILD: &str = "node/child";
+    /// A hook node is asked whether to go on; `args` is a `HookRequest`, the answer a
+    /// `HookAnswer`. The core waits for it only so long (`hook.dispatch`).
+    pub const NODE_HOOK: &str = "node/hook";
     /// Every method the core sends to the owner of a node.
-    pub const NODE: &[&str] = &[NODE_START, NODE_STOP, NODE_EVENT, NODE_CHILD];
+    pub const NODE: &[&str] = &[NODE_START, NODE_STOP, NODE_EVENT, NODE_CHILD, NODE_HOOK];
 }
 
 /// Error codes beyond the JSON-RPC 2.0 standard ones.
@@ -133,7 +141,7 @@ pub struct NameParams {
 }
 
 /// What a module receives when a call is addressed to one of its nodes: `node/start`,
-/// `node/stop`, `node/event`, or a capability method reached through a wire. `node` carries the node's
+/// `node/stop`, `node/event`, `node/hook`, or a capability method reached through a wire. `node` carries the node's
 /// configuration as it was when the execution started, with every `secret:<name>`
 /// already swapped for the secret.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

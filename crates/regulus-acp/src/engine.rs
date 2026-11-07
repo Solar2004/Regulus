@@ -54,6 +54,18 @@ pub trait AcpEngine: Send + Sync + 'static {
         None
     }
 
+    /// Writes `hooks` into the isolated profile at `dir`, replacing what an earlier run
+    /// wrote, and returns a warning for each one left out. Called with an empty list too,
+    /// so hooks unwired since are gone. `None`: the engine takes no hooks, and wired ones
+    /// are left out with a warning.
+    fn place_hooks(
+        &self,
+        _dir: &Path,
+        _hooks: &[contract::HookMount],
+    ) -> Option<Result<Vec<String>, String>> {
+        None
+    }
+
     /// How to launch the CLI's ACP side and open the session for this node.
     fn prepare(&self, start: &Start<'_>) -> Result<Prepared, String>;
 }
@@ -336,6 +348,7 @@ impl<E: AcpEngine> EngineModule<E> {
             eprintln!("regulus: node `{}`: {warning}", call.node.id);
             warnings.push(warning);
         }
+        warnings.extend(self.hooks(&call.node.id, &args.hooks, config_dir.as_deref(), isolated)?);
         let mut mcp_servers = Vec::new();
         for mount in args.tools {
             if mount.protocol == MCP_STDIO {
@@ -402,6 +415,33 @@ impl<E: AcpEngine> EngineModule<E> {
             },
             warnings,
         })
+    }
+
+    /// Places the hooks like the skills: only in an isolated profile, never in the user's.
+    /// Returns the warnings, already logged.
+    fn hooks(
+        &self,
+        node: &str,
+        hooks: &[contract::HookMount],
+        dir: Option<&Path>,
+        isolated: bool,
+    ) -> Result<Vec<String>, ModuleError> {
+        let name = &self.manifest.module.name;
+        let warnings = match dir.filter(|_| isolated) {
+            // An isolated profile is rewritten even with no hooks: unwired ones go away.
+            Some(dir) => match self.engine.place_hooks(dir, hooks) {
+                Some(placed) => placed.map_err(failed)?,
+                None if hooks.is_empty() => Vec::new(),
+                None => vec![format!("{name} takes no hooks: {} left out", hooks.len())],
+            },
+            None if hooks.is_empty() => Vec::new(),
+            // The user's own profile is never written to (docs/12-agents.md §6.7).
+            None => vec!["hooks are placed only in an isolated profile".to_string()],
+        };
+        for warning in &warnings {
+            eprintln!("regulus: node `{node}`: {warning}");
+        }
+        Ok(warnings)
     }
 
     fn stop_owned(&self, call: &NodeCall) {

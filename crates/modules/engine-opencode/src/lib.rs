@@ -1,6 +1,12 @@
 //! The opencode engine: opencode speaks ACP natively (`opencode acp`), so this only finds
 //! the binary and turns the profile and the provider into its configuration
 //! (docs/12-agents.md §3, §6).
+//!
+//! It takes no hooks (docs/12-agents.md §3): opencode has no hook settings, only plugins,
+//! which are JS code. Its plugin API (`@opencode-ai/plugin` 1.17) has
+//! `tool.execute.before`/`after` but nothing that keeps the agent working when it stops,
+//! no documented veto, and context only through `experimental.*` hooks. Wired hooks are
+//! left out with a warning until a plugin bridge is worth writing.
 
 use std::collections::BTreeMap;
 use std::path::Path;

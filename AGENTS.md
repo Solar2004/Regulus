@@ -18,9 +18,9 @@ el canvas carga del core real; la caja Agente corre Claude Code y opencode por A
 proveedores (plantillas, ranuras, suscripción de Claude), skills, perfil aislado y
 secretos, un canal de Comunicación entre agentes, y una TUI (`regulus` sin comando)
 con la vista Operar; los agentes ya se envían mensajes por una herramienta MCP; el core
-de la lógica de IA está (bus con dato, store SQLite, workflow como caja, `Call`). **Lo
-siguiente:** la ranura `hooks`, y los módulos y plantillas de
-[`docs/13-blocks.md`](docs/13-blocks.md).
+de la lógica de IA está (bus con dato, store SQLite, workflow como caja, `Call`), y la
+caja Agente tiene la ranura `hooks` (puente `regulus hook`, módulo `hooks`). **Lo
+siguiente:** los módulos y plantillas de [`docs/13-blocks.md`](docs/13-blocks.md).
 La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
@@ -165,7 +165,7 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Bloques** (`13-blocks.md` §7): core (cable "luego" con dato, store, workflow como caja, `Call`) → ranura `hooks` → módulos de lógica y entorno → plantillas | nada |
+| 1 | **Bloques** (`13-blocks.md` §7): ~~core~~ → ~~ranura `hooks`~~ → módulos de lógica y entorno → plantillas | nada |
 | 2 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 

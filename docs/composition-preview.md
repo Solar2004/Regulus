@@ -36,8 +36,11 @@ negociar un major compatible.
 | `secret.delete` *(1.3)* | `name` | `null` |
 | `event.list` *(1.5)* | `since?`, `execution_id?`, `project_id?`, `limit?` | `events` del bus (`emitted`, `delivered`, `failed`, `cut`), `next` (cursor) y `pending` |
 | `workflow.send` *(1.7)* | `execution_id`, `port`, `value` | `event`: el `seq` del `emitted`; la respuesta sale en `event.list` desde `self.<salida>` |
+| `hook.dispatch` *(1.9)* | `execution_id`, `node_id`, `hook_id?`, `timeout_ms?`, `returns?`, `request` (`HookRequest`) | `replies`: por cada nodo `hook@1` conectado a `node_id`, `node_id`, `answer` (`decision`: `none` \| `veto` + `reason` \| `context` + `text`) y `error?` |
 
-El core real (`regulus serve`) habla el protocolo `1.8`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.9`, compatible con el `1.0` del mock.
+Desde `1.9` el core reenvía las preguntas de los hooks de un agente (`13-blocks.md` §4);
+lo usa el puente `regulus hook`, no la UI.
 Desde `1.8` una ejecución puede traer `parent`: la arrancó un nodo de otra
 (`02-architecture.md` §4 regla 5).
 Desde `1.7` un workflow puede traer `ports` (sus entradas y salidas; los cables de dentro

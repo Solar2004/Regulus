@@ -23,6 +23,17 @@ const ENGINE_PORT: &str = "engine";
 const PROVIDER_PORT: &str = "provider";
 const SKILLS_PORT: &str = "skills";
 const TOOLS_PORT: &str = "tools";
+const HOOKS_PORT: &str = "hooks";
+/// The flags of the hook bridge (`regulus hook`) the box fills in for each hook.
+const HOOK_FLAGS: [&str; 7] = [
+    "--execution",
+    "--node",
+    "--hook",
+    "--event",
+    "--timeout-ms",
+    "--returns",
+    "--fail",
+];
 const NAME_FIELD: &str = "name";
 /// What the box says it is to channels.
 const KIND: &str = "agent";
@@ -33,10 +44,19 @@ struct Running {
     session_id: String,
 }
 
+/// How to start the hook bridge: the host's own program and the arguments that reach the
+/// running core and name the bridge. Given by the host, the only one that knows them.
+#[derive(Debug, Clone, Default)]
+pub struct HookBridge {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
 pub struct Agent {
     manifest: Manifest,
     ctx: ModuleCtx,
     running: Mutex<HashMap<NodeRef, Running>>,
+    bridge: HookBridge,
 }
 
 #[derive(Deserialize)]
@@ -77,12 +97,69 @@ fn workdir(setting: Option<&Value>) -> Result<PathBuf, ModuleError> {
 }
 
 impl Agent {
+    /// A box on a host that cannot start the hook bridge: wiring a hook fails its start.
     pub fn new() -> Self {
+        Self::with_bridge(HookBridge::default())
+    }
+
+    pub fn with_bridge(bridge: HookBridge) -> Self {
         Self {
             manifest: parse_manifest(MANIFEST).expect("agent manifest is valid"),
             ctx: ModuleCtx::default(),
             running: Mutex::default(),
+            bridge,
         }
+    }
+
+    /// Each hook wired in, as it describes itself, with the bridge command that asks it
+    /// on behalf of this box.
+    fn hooks(&self, me: &NodeRef) -> Result<Vec<engine::HookMount>, ModuleError> {
+        let wired = self.ctx.resolve(me, HOOKS_PORT);
+        if wired.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.bridge.program.as_os_str().is_empty() {
+            return Err(ModuleError::Failed(
+                "this host cannot start the hook bridge".into(),
+            ));
+        }
+        wired
+            .iter()
+            .map(|endpoint| {
+                let hook: engine::Hook = parse(self.ctx.call(
+                    endpoint,
+                    regulus_proto::HOOK_DESCRIBE,
+                    Value::Null,
+                )?)?;
+                let node = endpoint.node().node_id.clone();
+                let [execution, at, only, event, timeout, returns, fail] = HOOK_FLAGS;
+                let mut args = self.bridge.args.clone();
+                for (flag, value) in [
+                    (execution, me.execution_id.as_str()),
+                    (at, me.node_id.as_str()),
+                    (only, node.as_str()),
+                    (event, hook.event.as_str()),
+                ] {
+                    args.extend([flag.to_string(), value.to_string()]);
+                }
+                if let Some(ms) = hook.timeout_ms {
+                    args.extend([timeout.to_string(), ms.to_string()]);
+                }
+                if !hook.returns.is_empty() {
+                    let names: Vec<&str> = hook.returns.iter().map(|e| e.name()).collect();
+                    args.extend([returns.to_string(), names.join(",")]);
+                }
+                if !hook.fail.is_open() {
+                    args.extend([fail.to_string(), "closed".to_string()]);
+                }
+                Ok(engine::HookMount {
+                    node,
+                    hook,
+                    command: self.bridge.program.clone(),
+                    args,
+                })
+            })
+            .collect()
     }
 
     fn slot_ports<'a>(&'a self, node_type: &str) -> impl Iterator<Item = &'a str> {
@@ -161,6 +238,7 @@ impl Agent {
                 parse(self.ctx.call(endpoint, toolset::MOUNT, args)?)
             })
             .collect::<Result<Vec<toolset::Mount>, _>>()?;
+        let hooks = self.hooks(&me)?;
         let args = engine::StartArgs {
             cwd: workdir(self.manifest.setting(&call.node, "workdir"))?,
             permissions,
@@ -168,6 +246,7 @@ impl Agent {
             slots,
             skills,
             tools,
+            hooks,
         };
         let started: engine::Started =
             parse(self.ctx.call(&engine, engine::SESSION_START, json(args)?)?)?;

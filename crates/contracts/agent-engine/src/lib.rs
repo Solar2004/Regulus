@@ -11,6 +11,7 @@ use std::path::PathBuf;
 pub use regulus_contract_llm_endpoint::LlmEndpoint;
 pub use regulus_contract_skill::Skill;
 pub use regulus_contract_toolset::Mount;
+pub use regulus_proto::Hook;
 use serde::{Deserialize, Serialize};
 
 pub const CAPABILITY: &str = "agent.engine@1";
@@ -78,7 +79,29 @@ pub struct StartArgs {
     /// engine does not speak is left out with a warning. Optional, so it extends `@1`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Mount>,
+    /// The hooks wired into the box (docs/13-blocks.md §4), for the engine to write into
+    /// its CLI's hook settings. One the engine cannot place is left out with a warning.
+    /// Optional, so it extends `@1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookMount>,
 }
+
+/// One hook for the engine's CLI: when to run the bridge and how. The engine appends
+/// [`HOOK_FORMAT_FLAG`] and the name of its own hook protocol to `args`, so the bridge
+/// reads the CLI's payload and answers in kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookMount {
+    /// The hook node, for messages.
+    pub node: String,
+    #[serde(flatten)]
+    pub hook: Hook,
+    pub command: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+/// The bridge's flag naming the hook protocol of the CLI that runs it.
+pub const HOOK_FORMAT_FLAG: &str = "--format";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agent {

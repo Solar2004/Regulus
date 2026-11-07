@@ -24,3 +24,4 @@ test = false
 [dev-dependencies]
 regulus-module-agent = { path = "../modules/agent" }
 regulus-module-providers = { path = "../modules/providers" }
+regulus-module-engine-claude = { path = "../modules/engine-claude" }
