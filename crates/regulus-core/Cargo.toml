@@ -9,6 +9,7 @@ authors.workspace = true
 regulus-proto.workspace = true
 getrandom.workspace = true
 jsonrpsee = { workspace = true, features = ["server"] }
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

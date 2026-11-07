@@ -12,6 +12,7 @@ pub mod registry;
 pub mod secrets;
 pub mod server;
 pub mod service;
+pub mod store;
 
 use std::fs;
 use std::io;
@@ -24,11 +25,24 @@ pub use profiles::ProfileStore;
 pub use registry::Registry;
 pub use secrets::Secrets;
 pub use service::{Core, RpcError, Storage};
+pub use store::{ModuleStore, Store, StoreError};
 
 /// Builds a core from its configuration and the modules its host links in. Returns the
 /// warnings found while loading, which never stop the start.
+///
+/// A store that cannot open is a warning too: the core then keeps executions and bus events
+/// in memory only, as it did before the store existed.
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
-    let (profiles, warnings) = ProfileStore::load(&config.profiles.paths);
+    let (profiles, mut warnings) = ProfileStore::load(&config.profiles.paths);
+    let store = match Store::open(&config.store_dir(), &config.store) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            warnings.push(format!(
+                "store unavailable, keeping state in memory: {error}"
+            ));
+            None
+        }
+    };
     (
         Core::build_with_bus(
             modules,
@@ -37,6 +51,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
             Storage {
                 secrets: config.secrets(),
                 data_dir: Some(config.data_dir()),
+                store,
             },
             config.bus.clone(),
         ),

@@ -17,6 +17,7 @@ const TOKEN_FILE: &str = "token";
 const PORT_FILE: &str = "port";
 const PROFILES_DIR: &str = "profiles";
 const DATA_DIR: &str = "data";
+const STORE_DIR: &str = "store";
 const SECRETS_FILE: &str = "secrets.toml";
 const CORE_LOG_FILE: &str = "core.log";
 const FILE_SOURCE: &str = "file";
@@ -118,7 +119,8 @@ pub struct BusConfig {
     /// deep a chain goes, this bounds how wide (a loop with fan-out). Past it, new
     /// deliveries are reported as failed instead of queued. 0 means no limit.
     pub max_queue: usize,
-    /// Bus events kept in memory for `event.list`; the oldest go first.
+    /// Bus events kept in memory so `event.list` answers recent ones without reading the
+    /// store; the oldest go first. Without a store, they are all there is.
     pub history: usize,
 }
 
@@ -128,6 +130,59 @@ impl Default for BusConfig {
             max_depth: 64,
             max_queue: 4096,
             history: 1024,
+        }
+    }
+}
+
+/// What happens on start to the executions that were running when the core went down
+/// (docs/02-architecture.md §6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Resume {
+    /// Resume those with a checkpoint; mark the rest `interrupted`.
+    #[default]
+    Checkpoint,
+    /// Resume all of them; nodes without a checkpoint start afresh.
+    Always,
+    /// Mark all of them `interrupted`.
+    Never,
+}
+
+/// SQLite `synchronous`: how hard a write waits for the disk. `normal` with the WAL can lose
+/// the last writes on a power cut, never on a crash of the core.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Synchronous {
+    Off,
+    #[default]
+    Normal,
+    Full,
+    Extra,
+}
+
+/// The SQLite store: one database for what belongs to no project and one per project.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StoreConfig {
+    /// Where the databases live. Relative paths are resolved against the home directory.
+    pub dir: PathBuf,
+    pub resume: Resume,
+    /// Bus events kept per database; past twice this, the oldest are dropped down to it.
+    /// 0 keeps them all.
+    pub max_events: usize,
+    pub synchronous: Synchronous,
+    /// How long a write waits for another connection holding the database, in ms.
+    pub busy_timeout_ms: u64,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            dir: PathBuf::from(STORE_DIR),
+            resume: Resume::default(),
+            max_events: 100_000,
+            synchronous: Synchronous::default(),
+            busy_timeout_ms: 5000,
         }
     }
 }
@@ -171,6 +226,7 @@ pub struct Config {
     pub secrets: SecretsConfig,
     pub data: DataConfig,
     pub bus: BusConfig,
+    pub store: StoreConfig,
     pub client: ClientConfig,
 }
 
@@ -226,6 +282,10 @@ impl Config {
 
     pub fn data_dir(&self) -> PathBuf {
         self.home.join(&self.data.dir)
+    }
+
+    pub fn store_dir(&self) -> PathBuf {
+        self.home.join(&self.store.dir)
     }
 
     pub fn token_path(&self) -> PathBuf {

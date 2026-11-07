@@ -21,6 +21,7 @@ use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
 use crate::registry::{base_id, CallError, Registry};
 use crate::secrets::{SecretError, Secrets};
+use crate::store::{ModuleStore, Store};
 
 /// JSON-RPC "method not found".
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -74,12 +75,14 @@ impl From<SecretError> for RpcError {
     }
 }
 
-/// What the core keeps on disk for the modules: the secrets it resolves for them and the
-/// root of their per-node directories. Without a data directory, `node_dir` fails.
+/// What the core keeps on disk: the secrets it resolves for the modules, the root of their
+/// per-node directories and the store. Without a data directory, `node_dir` fails; without
+/// a store, executions and bus events live in memory only and `ModuleCtx::store` fails.
 #[derive(Debug, Clone, Default)]
 pub struct Storage {
     pub secrets: Secrets,
     pub data_dir: Option<PathBuf>,
+    pub store: Option<Arc<Store>>,
 }
 
 /// Directories of nodes outside any project.
@@ -88,7 +91,7 @@ const GLOBAL_DATA: &str = "global";
 const PROJECTS_DATA: &str = "projects";
 
 /// One plain path component: an id can never climb out of the data directory.
-fn path_segment(id: &str) -> Result<&str, ModuleError> {
+pub(crate) fn path_segment(id: &str) -> Result<&str, ModuleError> {
     let mut components = Path::new(id).components();
     match (components.next(), components.next()) {
         (Some(Component::Normal(_)), None) if !id.contains('\\') => Ok(id),
@@ -527,6 +530,39 @@ impl Core {
         std::fs::create_dir_all(&dir)
             .map_err(|e| ModuleError::Failed(format!("cannot create {}: {e}", dir.display())))?;
         Ok(dir)
+    }
+
+    /// The key-value space of a module (`ModuleCtx::store`): the namespace is the module id
+    /// without its version, so an upgrade keeps the data; the database is that of the
+    /// node's project, or the global one.
+    pub(crate) fn module_store(
+        &self,
+        module_id: &str,
+        node: Option<&NodeRef>,
+    ) -> Result<ModuleStore, ModuleError> {
+        let store = self
+            .storage
+            .store
+            .as_ref()
+            .ok_or_else(|| ModuleError::Failed("this core has no store".into()))?;
+        let namespace = base_id(module_id);
+        if namespace.is_empty() {
+            return Err(ModuleError::Failed("no module behind this context".into()));
+        }
+        let project = match node {
+            None => None,
+            Some(node) => {
+                let executions = self.executions();
+                let live = executions
+                    .iter()
+                    .find(|live| live.execution.id == node.execution_id)
+                    .ok_or_else(|| {
+                        ModuleError::Failed(format!("execution `{}` is gone", node.execution_id))
+                    })?;
+                live.execution.project_id.clone()
+            }
+        };
+        Ok(store.module_store(project.as_deref(), namespace)?)
     }
 
     /// What is wired over "uses" into `port` of a node (`ModuleCtx::resolve`).

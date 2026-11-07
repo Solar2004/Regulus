@@ -144,6 +144,7 @@ fn core_with(home: &Path, profile: Profile, seen: &Seen) -> Arc<Core> {
     let storage = Storage {
         secrets: Secrets::new(vec![Source::File(home.join("secrets.toml"))]),
         data_dir: Some(home.join("data")),
+        store: None,
     };
     Core::build_with(modules, &[], profiles, storage)
 }
