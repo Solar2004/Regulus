@@ -9,7 +9,7 @@ mod place;
 mod watch;
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
@@ -114,25 +114,55 @@ impl Here<'_> {
         place::confine(&self.base()?, path)
     }
 
-    /// The text of a file, refused if it is larger than `max_bytes` (0: no limit).
+    /// The text of a file, refused if it is larger than `max_bytes`.
     fn read(&self, path: &Path) -> Result<String, ModuleError> {
         read_bounded(path, self.number("max_bytes"))
     }
 }
 
+/// The text of a regular file, at most `max` bytes of it: a larger one is refused, and so
+/// is anything that is not a regular file (a FIFO or `/dev/zero` would hold the bus
+/// thread). The cap holds even if the file grows while it is read. `max = 0` is refused:
+/// there is no unbounded read.
 pub(crate) fn read_bounded(path: &Path, max: u64) -> Result<String, ModuleError> {
-    let size = fs::metadata(path).map_err(|e| failed(path, e))?.len();
-    if max > 0 && size > max {
-        return Err(failed(
-            path,
-            format!("{size} bytes, more than `max_bytes` ({max})"),
-        ));
+    if max == 0 {
+        return Err(ModuleError::InvalidParams(format!(
+            "{}: a byte limit of 0 reads nothing; set `max_bytes` above 0",
+            path.display()
+        )));
     }
-    fs::read_to_string(path).map_err(|e| failed(path, e))
+    let not_regular = || failed(path, "not a regular file");
+    if !fs::metadata(path).map_err(|e| failed(path, e))?.is_file() {
+        return Err(not_regular());
+    }
+    let file = fs::File::open(path).map_err(|e| failed(path, e))?;
+    if !file.metadata().map_err(|e| failed(path, e))?.is_file() {
+        return Err(not_regular());
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| failed(path, e))?;
+    if bytes.len() as u64 > max {
+        return Err(failed(path, format!("larger than {max} bytes")));
+    }
+    String::from_utf8(bytes).map_err(|e| failed(path, e))
 }
 
-/// The files `pattern` names: itself, or, for a glob, every file it matches, sorted.
-fn matches(pattern: &Path) -> Result<Vec<PathBuf>, ModuleError> {
+/// A limit that must be above 0.
+fn positive(here: &Here, field: &str) -> Result<u64, ModuleError> {
+    match here.number(field) {
+        0 => Err(ModuleError::InvalidParams(format!(
+            "`{field}` of `{}` must be above 0",
+            here.me.node_id
+        ))),
+        n => Ok(n),
+    }
+}
+
+/// The files `pattern` names: itself, or, for a glob, every file it matches, sorted, and
+/// refused if there are more than `max`.
+fn matches(pattern: &Path, max: u64) -> Result<Vec<PathBuf>, ModuleError> {
     let text = pattern.to_string_lossy();
     if !text.contains(GLOB_CHARS) {
         return Ok(vec![pattern.to_path_buf()]);
@@ -141,7 +171,14 @@ fn matches(pattern: &Path) -> Result<Vec<PathBuf>, ModuleError> {
         .map_err(|e| failed(pattern, e))?
         .filter_map(Result::ok)
         .filter(|p| p.is_file())
+        .take(usize::try_from(max).unwrap_or(usize::MAX).saturating_add(1))
         .collect();
+    if found.len() as u64 > max {
+        return Err(failed(
+            pattern,
+            format!("matches more than {max} files (`max_files`)"),
+        ));
+    }
     found.sort();
     if found.is_empty() {
         return Err(failed(pattern, "no file matches"));
@@ -222,22 +259,32 @@ fn read(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
             here.me.node_id, event.port
         )));
     }
-    let mut files = matches(&here.resolve(&path)?)?;
+    let max_bytes = positive(here, "max_bytes")?;
+    let mut left = positive(here, "max_total_bytes")?;
+    let mut files = matches(&here.resolve(&path)?, positive(here, "max_files")?)?;
     if from_value {
         files = files
             .iter()
             .map(|file| here.inside(file))
             .collect::<Result<_, _>>()?;
     }
-    let texts = files
-        .iter()
-        .map(|file| here.read(file))
-        .collect::<Result<Vec<_>, _>>()?;
-    if here.text("each") == YES {
-        for text in &texts {
+    // One file at a time: with `each`, each goes out as soon as it is read.
+    let each = here.text("each") == YES;
+    let mut texts = Vec::new();
+    for file in &files {
+        let text = read_bounded(file, max_bytes.min(left)).map_err(|e| {
+            ModuleError::Failed(format!(
+                "{e} (`max_bytes` {max_bytes}, `max_total_bytes` left {left})"
+            ))
+        })?;
+        left -= text.len() as u64;
+        if each {
             here.emit(OUT, json!(text))?;
+        } else {
+            texts.push(text);
         }
-    } else {
+    }
+    if !each {
         here.emit(OUT, json!(texts.join(&here.text("separator"))))?;
     }
     let read: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
@@ -385,15 +432,20 @@ mod tests {
         for name in ["b.md", "a.md", "c.txt"] {
             fs::write(dir.join(name), name).unwrap();
         }
-        let found = matches(&dir.join("*.md")).unwrap();
+        let found = matches(&dir.join("*.md"), 10).unwrap();
         assert_eq!(found, [dir.join("a.md"), dir.join("b.md")]);
-        assert!(matches(&dir.join("*.rs")).is_err());
-        assert_eq!(matches(&dir.join("x")).unwrap(), [dir.join("x")]);
+        assert!(matches(&dir.join("*.rs"), 10).is_err());
+        assert!(matches(&dir.join("*.md"), 1).is_err(), "over max_files");
+        assert_eq!(matches(&dir.join("x"), 1).unwrap(), [dir.join("x")]);
         assert!(
             read_bounded(&dir.join("a.md"), 2).is_err(),
             "over max_bytes"
         );
-        assert_eq!(read_bounded(&dir.join("a.md"), 0).unwrap(), "a.md");
+        assert_eq!(read_bounded(&dir.join("a.md"), 4).unwrap(), "a.md");
+        assert!(
+            read_bounded(&dir.join("a.md"), 0).is_err(),
+            "no unbounded read"
+        );
     }
 
     #[test]
@@ -434,6 +486,25 @@ mod tests {
             json!({ "event": "prompt" })
         )
         .is_err());
+    }
+
+    #[test]
+    fn only_regular_files_are_read_and_never_past_the_cap() {
+        let dir = temp("special");
+        assert!(read_bounded(&dir, 10).is_err(), "a folder");
+        #[cfg(unix)]
+        {
+            assert!(read_bounded(Path::new("/dev/zero"), 10).is_err());
+            let fifo = dir.join("fifo");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                // Opening a FIFO with no writer would block for ever.
+                assert!(read_bounded(&fifo, 10).is_err());
+            }
+        }
+        fs::write(dir.join("big"), "0123456789").unwrap();
+        assert!(read_bounded(&dir.join("big"), 9).is_err());
+        assert_eq!(read_bounded(&dir.join("big"), 10).unwrap(), "0123456789");
     }
 
     #[test]

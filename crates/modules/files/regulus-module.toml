@@ -56,11 +56,25 @@ name = "File to prompt"
   type    = "text"
   default = "\n\n"
 
-  # A file larger than this is refused rather than sent whole.
+  # A file larger than this is refused rather than sent whole. Above 0: there is no
+  # unbounded read, and only regular files are read (no FIFOs, no devices).
   [[node.field]]
   id      = "max_bytes"
   type    = "number"
   default = 1048576
+
+  # A glob that matches more files than this is refused before anything is read.
+  [[node.field]]
+  id      = "max_files"
+  type    = "number"
+  default = 100
+
+  # All the files of one read together; past it, the read stops with an error (with
+  # `each = yes`, after sending the files read so far).
+  [[node.field]]
+  id      = "max_total_bytes"
+  type    = "number"
+  default = 8388608
 
   # yes: paths may leave the base folder (see the top of this file).
   [[node.field]]
@@ -170,6 +184,7 @@ name = "Fixed document"
   default = "open"
   options = ["open", "closed"]
 
+  # Above 0; only regular files are read.
   [[node.field]]
   id      = "max_bytes"
   type    = "number"
@@ -220,6 +235,7 @@ name = "Watch file"
   type    = "number"
   default = 200
 
+  # Above 0; only regular files are read.
   [[node.field]]
   id      = "max_bytes"
   type    = "number"

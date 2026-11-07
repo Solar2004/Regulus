@@ -304,3 +304,34 @@ fn a_path_that_comes_as_a_value_stays_inside_the_base_unless_allowed() {
     assert_eq!(until(&core, &id, "self", "text", 1), [json!("do not read")]);
     assert_eq!(fs::read_to_string(root.join("escaped.md")).unwrap(), "out");
 }
+
+#[test]
+fn a_glob_read_stops_at_its_total_cap_after_sending_what_fit() {
+    let root = temp("total");
+    fs::create_dir_all(root.join("specs")).unwrap();
+    fs::write(root.join("specs/a.md"), "spec a").unwrap();
+    fs::write(root.join("specs/b.md"), "spec b").unwrap();
+    let read = json!({ "path": "specs/*.md", "each": "yes", "max_total_bytes": 10 });
+    let core = core(
+        reader_and_writer(&root, read, json!({})),
+        &root.join("data"),
+    );
+    let id = start(&core, "p");
+    send(&core, &id, "go", json!("now"));
+    idle(&core, &id);
+    let sent: Vec<Value> = page(&core, &id)
+        .events
+        .into_iter()
+        .filter(|e| e.from.node_id == "read")
+        .filter_map(|e| match e.kind {
+            BusEventKind::Emitted { value } => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [json!("spec a")], "the first went out before the cap");
+    let refused = failures(&core, &id);
+    assert!(
+        refused.iter().any(|e| e.contains("max_total_bytes")),
+        "{refused:?}"
+    );
+}

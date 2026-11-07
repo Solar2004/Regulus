@@ -142,7 +142,7 @@ impl Watchers {
             ctx: here.files.ctx.clone(),
             me: here.me.clone(),
             debounce: Duration::from_millis(here.number("debounce_ms")),
-            max_bytes: here.number("max_bytes"),
+            max_bytes: crate::positive(here, "max_bytes")?,
             changed: here.has_output(CHANGED),
             text: here.has_output(TEXT),
         };
