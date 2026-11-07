@@ -6,7 +6,7 @@
 # they leave on `reflection` for a judge or an agent, and what comes back on `lesson` is
 # written to the same memory. `skill` grows a skill library under the node's directory.
 #
-# Run (see the transcript of 2026-11-07 at the end of docs/13-blocks.md §3.3's row):
+# Run (2026-11-07, debug build; `serve` ready in 27 ms):
 #
 #   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
 #   cp crates/modules/memory/examples/memory.toml $REGULUS_HOME/profiles/
