@@ -542,3 +542,26 @@ fn a_uses_port_on_a_workflow_or_a_box_is_an_error_and_never_runs() {
     assert!(error.starts_with("workflow `greeter`"), "{error}");
     assert!(error.contains("nothing would serve it"), "{error}");
 }
+
+#[test]
+fn declared_box_ports_must_match_cardinality_and_laziness_too() {
+    let declared = |change: &dyn Fn(&mut Value)| {
+        let mut profile = boxed();
+        let mut ports = profile["workflows"][1]["ports"].clone();
+        change(&mut ports[0]);
+        profile["workflows"][0]["nodes"][0]["ports"] = ports;
+        codes(&checked(profile))
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(declared(&|_| {}), Vec::<String>::new());
+    assert_eq!(
+        declared(&|port| port["cardinality"] = json!("many")),
+        ["node.box_ports_mismatch"]
+    );
+    assert_eq!(
+        declared(&|port| port["lazy"] = json!(true)),
+        ["node.box_ports_mismatch"]
+    );
+}

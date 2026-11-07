@@ -346,11 +346,16 @@ fn check_box(
     report: &mut Report,
 ) {
     let id = Some(node.id.as_str());
+    // Everything but the display name: a box that takes one wire where its workflow takes
+    // many, or reads lazily where it does not, is not the same box.
     let same = |a: &Port, b: &Port| {
-        a.id == b.id
-            && a.capability == b.capability
-            && a.direction == b.direction
-            && a.kind == b.kind
+        Port {
+            name: String::new(),
+            ..a.clone()
+        } == Port {
+            name: String::new(),
+            ..b.clone()
+        }
     };
     let matches = node.ports.len() == inner.ports.len()
         && node
