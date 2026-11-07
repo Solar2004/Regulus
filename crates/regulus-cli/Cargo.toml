@@ -24,6 +24,7 @@ regulus-module-communication = { path = "../modules/communication" }
 regulus-module-tools = { path = "../modules/tools" }
 regulus-module-tools-mcp = { path = "../modules/tools-mcp" }
 regulus-module-judge = { path = "../modules/judge" }
+regulus-module-triggers = { path = "../modules/triggers" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true
