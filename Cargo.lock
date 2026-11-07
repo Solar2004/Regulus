@@ -3925,6 +3925,7 @@ dependencies = [
  "regulus-module-engine-claude",
  "regulus-module-engine-opencode",
  "regulus-module-flow",
+ "regulus-module-guards",
  "regulus-module-hello",
  "regulus-module-hooks",
  "regulus-module-process",
@@ -4058,6 +4059,17 @@ version = "0.1.0"
 dependencies = [
  "regulus-core",
  "regulus-module-hello",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "regulus-module-guards"
+version = "0.1.0"
+dependencies = [
+ "regulus-core",
  "regulus-proto",
  "serde",
  "serde_json",
