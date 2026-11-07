@@ -32,6 +32,8 @@ export interface Workflow {
   name: string;
   kind: "main" | "extra" | "module";
   module_id: string | null;
+  /** Its own inputs and outputs (protocol 1.7); inner wires reach them as `self`. */
+  ports?: Port[];
   nodes: CompositionNode[];
   wires: Wire[];
   layout: { x: number; y: number; width: number; height: number };

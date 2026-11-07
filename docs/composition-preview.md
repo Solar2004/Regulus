@@ -35,8 +35,11 @@ negociar un major compatible.
 | `secret.list` *(1.3)* | — | Nombres de los secretos, nunca los valores |
 | `secret.delete` *(1.3)* | `name` | `null` |
 | `event.list` *(1.5)* | `since?`, `execution_id?`, `project_id?`, `limit?` | `events` del bus (`emitted`, `delivered`, `failed`, `cut`), `next` (cursor) y `pending` |
+| `workflow.send` *(1.7)* | `execution_id`, `port`, `value` | `event`: el `seq` del `emitted`; la respuesta sale en `event.list` desde `self.<salida>` |
 
-El core real (`regulus serve`) habla el protocolo `1.5`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.7`, compatible con el `1.0` del mock.
+Desde `1.7` un workflow puede traer `ports` (sus entradas y salidas; los cables de dentro
+las nombran `self`).
 Los métodos de los módulos se suman a estos (p. ej. `agent.prompt`, `claude.detect`).
 Errores propios: `-32001` falta `hello`, `-32002` módulo no disponible, `-32003` el módulo
 falló o entró en pánico. Además pide el token de `<home>/token` en el upgrade

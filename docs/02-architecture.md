@@ -166,6 +166,7 @@ pub struct Workflow {
     pub id:     WorkflowId,
     pub kind:   WorkflowKind,          // Main | Extra | Module
     pub module: Option<ModuleId>,
+    pub ports:  Vec<Port>,             // sus entradas y salidas, vistas desde fuera
     pub nodes:  Vec<Node>,
     pub wires:  Vec<Wire>,
 }
@@ -179,6 +180,7 @@ pub struct Profile {
 }
 
 /// Una copia viva de un workflow. Puede haber varias del mismo a la vez.
+/// `parent` (la sub-ejecución `Call`, paso 1d de 13-blocks.md §7) aún no existe.
 pub struct Execution {
     pub id:       ExecutionId,
     pub workflow: WorkflowId,
@@ -206,6 +208,19 @@ interpreta: son del cliente.
    A→B→A).
 3. **Autoconexión:** si para una entrada hay exactamente una salida compatible, se conecta
    sola.
+4. **Puertos del workflow** ✅ (2026-11-07, paso 1c de `13-blocks.md` §7). Dentro, un
+   cable llega a ellos como el nodo reservado `self` (`self.ask`), y miran al revés: una
+   entrada del workflow alimenta nodos, una salida recibe. Un nodo **sin módulo y con
+   `internal_workflow_id`** es una **caja**: sus puertos son los del workflow (si no
+   declara ninguno, se rellenan al cargar; si declara, deben coincidir). El validador
+   comprueba capacidad a ambos lados del límite, puertos que no existen, direcciones, que
+   un workflow no acabe dentro de sí mismo y los ids reservados (`self` y `/` en nodos,
+   `/` en cables). `execution.start` no pasa el validador entero: rechaza solo lo que haría
+   ambigua o infinita la copia que corre (ids repetidos tras aplanar, reservados, ciclos de
+   cajas, puertos "usa" en un límite); lo demás corre y falla a la vista en el bus, como
+   antes. Un workflow con puertos es válido sin que nadie lo llame. **"Usa" no cruza
+   límites todavía:** un puerto "usa" en un workflow o en una caja es error y
+   `execution.start` lo rechaza.
 
 **Qué deja la base abierta a propósito** (`11` §12): cuántos cables admite cada entrada
 (el campo existe, por defecto `One`) y qué lleva cada tipo de puerto (el tipo tiene
@@ -297,6 +312,15 @@ clientes por socket.
   ejecución llena, las entregas nuevas quedan como `failed`. Un módulo que emite desde
   un hilo propio empieza una cadena nueva en 0: el corte por profundidad no lo ve, la
   cola sí.
+- **Cruzar el límite de un workflow** (paso 1c): la ejecución corre una copia **aplanada**:
+  cada caja conserva su nodo y el workflow de dentro se le une con ids `caja/nodo`, a
+  cualquier profundidad; los módulos siguen viendo nodos normales y el store guarda esa
+  copia. Un valor que llega a un puerto de caja (o a `self`) queda `delivered` ahí y se
+  emite de nuevo desde ese mismo puerto hacia el otro lado, **una entrega más hondo**:
+  `max_depth` y `max_queue` valen igual a través de cajas y niveles. `workflow.send`
+  (`execution_id`, `port`, `value`) mete un valor por una entrada del workflow de la
+  ejecución, como cadena nueva en 0, y responde `{ event }`; lo que llega a sus salidas
+  aparece en `event.list` emitido desde `self.<puerto>`. CLI: `regulus send`.
 - Los clientes leen con `event.list` desde un cursor (`since`, `next`, `pending`); el CLI
   con `regulus events [--follow]`. Todo evento va al store (abajo); los últimos
   `[bus] history` quedan además en memoria como caché.

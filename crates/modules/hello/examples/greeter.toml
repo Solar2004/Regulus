@@ -1,0 +1,78 @@
+# A workflow as a box (docs/11-composition.md §5): `greeter` declares its own ports, an
+# input `ask` and an output `reply`, and inside wires them to a hello node. `chat`, the
+# main workflow, places `greeter` as the node `greet` and feeds it from its own `ask`;
+# the greeting comes back out on `chat`'s `reply`. Inner wires reach their workflow's
+# ports as `self`. Copy it to <home>/profiles/, start `regulus serve`, then:
+#
+#   regulus run greeter --detach            # prints the execution, e.g. exec-1
+#   regulus send exec-1 ask Alexander       # follows the bus until the reply:
+#     emitted self.ask "Alexander" → greet.ask → greet/hello.echo → greet/hello.reply
+#     emitted "Hello, Alexander!" → greet.reply → self.reply, emitted from self.reply
+#   regulus events --execution exec-1       # the same events, kept by the core
+#   regulus events --follow                 # or keep watching while you send more
+#
+# Inside a running copy, the node `hello` of the box `greet` is `greet/hello`.
+id = "greeter"
+name = "Greeter box"
+main_workflow_id = "chat"
+
+[[workflows]]
+id = "chat"
+name = "Chat"
+kind = "main"
+ports = [
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  # No module and an internal workflow: a box. Its ports are `greeter`'s.
+  [[workflows.nodes]]
+  id = "greet"
+  name = "Greet"
+  type = "workflow"
+  internal_workflow_id = "greeter"
+  position = { x = 200, y = 100 }
+
+  [[workflows.wires]]
+  id = "ask-greet"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "greet", port_id = "ask" }
+
+  [[workflows.wires]]
+  id = "greet-reply"
+  kind = "then"
+  from = { node_id = "greet", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+[[workflows]]
+id = "greeter"
+name = "Greeter"
+kind = "extra"
+ports = [
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "hello"
+  name = "Hello"
+  type = "greeter"
+  module_id = "regulus/hello@0.1.0"
+  position = { x = 200, y = 100 }
+  ports = [
+    { id = "echo", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "ask-hello"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "hello", port_id = "echo" }
+
+  [[workflows.wires]]
+  id = "hello-reply"
+  kind = "then"
+  from = { node_id = "hello", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }

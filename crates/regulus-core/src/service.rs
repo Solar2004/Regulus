@@ -9,6 +9,7 @@ use regulus_proto::{
     code, method, BusEvent, BusEventKind, Direction, DisabledNode, EventListParams, EventPage,
     Execution, ExecutionStartParams, ExecutionState, IdParams, NameParams, Node, NodeCall,
     NodeEvent, NodeStart, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow,
+    WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -16,7 +17,7 @@ use serde_json::Value;
 
 use crate::bus::{self, Journal, Listing, Pending};
 use crate::config::{BusConfig, Resume};
-use crate::graph::{check_profile, start_order};
+use crate::graph::{boundary, check_profile, flatten, start_order, wire_end, End};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
 use crate::registry::{base_id, CallError, Registry};
@@ -251,6 +252,7 @@ impl Core {
                 Ok(Value::Null)
             }
             method::EVENT_LIST => json(self.events(&parse(params)?)?),
+            method::WORKFLOW_SEND => json(self.send(parse(params)?)?),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",
@@ -343,6 +345,11 @@ impl Core {
     /// Starts a copy of a workflow: `node/start` on every node whose module is loaded,
     /// what is used before what uses it (docs/03-modules.md §2). A node that fails to
     /// start fails the execution and stops the nodes already started.
+    ///
+    /// It refuses only what would make the running copy ambiguous or endless, which
+    /// `flatten` rejects: an id twice, a reserved id, a workflow inside itself, a "uses"
+    /// port on a boundary. Anything else `profile.check` reports still runs, as it always
+    /// did: a wire that does not fit fails visibly on the bus and the rest keeps working.
     fn start(&self, params: ExecutionStartParams) -> Result<Execution, RpcError> {
         let profile = self
             .profiles
@@ -351,11 +358,15 @@ impl Core {
         let workflow_id = params
             .workflow_id
             .unwrap_or_else(|| profile.main_workflow_id.clone());
+        // What runs is a copy with every box inlined: the bus only ever sees one graph.
         let workflow = Arc::new(
-            profile
-                .workflow(&workflow_id)
-                .ok_or_else(|| RpcError::invalid_params("Unknown workflow"))?
-                .clone(),
+            flatten(
+                profile,
+                profile
+                    .workflow(&workflow_id)
+                    .ok_or_else(|| RpcError::invalid_params("Unknown workflow"))?,
+            )
+            .map_err(RpcError::invalid_params)?,
         );
         let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
         let execution = Execution {
@@ -708,7 +719,10 @@ impl Core {
             dir.push(path_segment(part)?);
         }
         dir.push(path_segment(&workflow_id)?);
-        dir.push(path_segment(&node.node_id)?);
+        // A node inside a box (`box/node`) gets a directory inside the box's.
+        for part in node.node_id.split(BOX_SEPARATOR) {
+            dir.push(path_segment(part)?);
+        }
         std::fs::create_dir_all(&dir)
             .map_err(|e| ModuleError::Failed(format!("cannot create {}: {e}", dir.display())))?;
         Ok(dir)
@@ -946,14 +960,34 @@ impl Core {
             node_id: node.node_id.clone(),
             port_id: port.into(),
         };
+        let capability = output.capability.clone();
+        self.publish(live, from, capability, value, depth);
+        drop(executions);
+        self.kick(&node.execution_id);
+        Ok(())
+    }
+
+    /// Records `value` as emitted from `from` in `live` and queues it for every input
+    /// wired to `from`; returns the `seq` of the `emitted` event, or of the `cut` when the
+    /// chain is deeper than `bus.max_depth`. The caller holds `executions` and kicks the
+    /// queue afterwards.
+    fn publish(
+        &self,
+        live: &mut Live,
+        from: PortRef,
+        capability: String,
+        value: Value,
+        depth: u32,
+    ) -> u64 {
+        let workflow = live.workflow.clone();
         let head = |kind| BusEvent {
             seq: 0,
             at: 0,
-            execution_id: node.execution_id.clone(),
+            execution_id: live.execution.id.clone(),
             project_id: live.execution.project_id.clone(),
             event: 0,
             from: from.clone(),
-            capability: output.capability.clone(),
+            capability: capability.clone(),
             depth,
             kind,
         };
@@ -963,11 +997,11 @@ impl Core {
             let max_depth = self.bus.max_depth;
             let seq = journal.record(head(BusEventKind::Cut { max_depth }));
             eprintln!(
-                "regulus: bus cut a chain in `{}` at `{}.{port}`: more than {max_depth} \
+                "regulus: bus cut a chain in `{}` at `{}.{}`: more than {max_depth} \
                  deliveries deep (event #{seq})",
-                node.execution_id, node.node_id
+                live.execution.id, from.node_id, from.port_id
             );
-            return Ok(());
+            return seq;
         }
         let event = journal.record(head(BusEventKind::Emitted {
             value: value.clone(),
@@ -979,22 +1013,18 @@ impl Core {
         } else {
             max_queue.saturating_sub(live.queue.len())
         };
-        for wire in workflow
-            .wires
-            .iter()
-            .filter(|w| w.kind == WireKind::Then && w.from == from)
-        {
-            let input = workflow
-                .node(&wire.to.node_id)
-                .and_then(|n| n.port(&wire.to.port_id))
-                .filter(|p| p.direction == Direction::Input && p.kind == WireKind::Then);
+        // Only wires that leave `from` the way it faces: a boundary port passes a value on
+        // to the side it did not come from.
+        for wire in workflow.wires.iter().filter(|w| {
+            w.kind == WireKind::Then
+                && w.from == from
+                && wire_end(&workflow, w, End::From).is_some()
+        }) {
+            let input = wire_end(&workflow, wire, End::To).filter(|p| p.kind == WireKind::Then);
             let error = match input {
                 None => "no \"then\" input at the other end".to_string(),
-                Some(p) if p.capability != output.capability => {
-                    format!(
-                        "`{}` does not fit into `{}`",
-                        output.capability, p.capability
-                    )
+                Some(p) if p.capability != capability => {
+                    format!("`{capability}` does not fit into `{}`", p.capability)
                 }
                 Some(_) if room == 0 => {
                     format!("the execution's queue is full ({max_queue} values waiting)")
@@ -1005,7 +1035,7 @@ impl Core {
                         event,
                         depth,
                         from: from.clone(),
-                        capability: output.capability.clone(),
+                        capability: capability.clone(),
                         value: value.clone(),
                         to: wire.to.clone(),
                     });
@@ -1022,9 +1052,43 @@ impl Core {
         }
         drop(journal);
         live.queue.append(&mut queued);
+        event
+    }
+
+    /// `workflow.send`: a value from outside on an input of the workflow a live execution
+    /// runs. It starts a chain of its own, at depth 0; what reaches the workflow's outputs
+    /// shows up in `event.list` as emitted from `self`.
+    fn send(&self, params: WorkflowSendParams) -> Result<WorkflowSent, RpcError> {
+        let mut executions = self.executions();
+        let live = executions
+            .iter_mut()
+            .find(|live| live.execution.id == params.execution_id)
+            .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?;
+        if !live.execution.state.is_live() {
+            return Err(RpcError::invalid_params(format!(
+                "execution `{}` is not running",
+                params.execution_id
+            )));
+        }
+        let capability = live
+            .workflow
+            .port(&params.port)
+            .filter(|p| p.direction == Direction::Input && p.kind == WireKind::Then)
+            .map(|p| p.capability.clone())
+            .ok_or_else(|| {
+                RpcError::invalid_params(format!(
+                    "`{}` is not a \"then\" input of workflow `{}`",
+                    params.port, live.execution.workflow_id
+                ))
+            })?;
+        let from = PortRef {
+            node_id: WORKFLOW_SELF.into(),
+            port_id: params.port,
+        };
+        let event = self.publish(live, from, capability, params.value, 0);
         drop(executions);
-        self.kick(&node.execution_id);
-        Ok(())
+        self.kick(&params.execution_id);
+        Ok(WorkflowSent { event })
     }
 
     /// Starts draining the queue of a running execution unless a thread already does.
@@ -1107,6 +1171,9 @@ impl Core {
         let Some((workflow, project_id, active)) = found else {
             return;
         };
+        if boundary(&workflow, &pending.to).is_some() {
+            return self.cross(execution_id, project_id, pending);
+        }
         let node = workflow
             .node(&pending.to.node_id)
             .filter(|n| active && n.module_id.is_some())
@@ -1154,5 +1221,41 @@ impl Core {
             depth: pending.depth,
             kind,
         });
+    }
+
+    /// A value reached a boundary port: the box or the workflow takes it, and it goes on
+    /// from that same port to whatever is wired on the other side, one delivery deeper,
+    /// so the depth cut still sees loops through boxes. Outputs of the top workflow have
+    /// nothing on the other side: their `emitted` event is the answer a client reads.
+    fn cross(&self, execution_id: &str, project_id: Option<String>, pending: Pending) {
+        let event = BusEvent {
+            seq: 0,
+            at: 0,
+            execution_id: execution_id.into(),
+            project_id,
+            event: pending.event,
+            from: pending.from,
+            capability: pending.capability.clone(),
+            depth: pending.depth,
+            kind: BusEventKind::Delivered {
+                to: pending.to.clone(),
+            },
+        };
+        let mut executions = self.executions();
+        let Some(live) = executions
+            .iter_mut()
+            .find(|live| live.execution.id == execution_id)
+            .filter(|live| live.execution.state.is_live())
+        else {
+            return;
+        };
+        self.journal().record(event);
+        self.publish(
+            live,
+            pending.to,
+            pending.capability,
+            pending.value,
+            pending.depth + 1,
+        );
     }
 }

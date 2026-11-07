@@ -1,11 +1,11 @@
 //! The wiring rules of docs/02-architecture.md §4, checked by `check_profile`.
 
-use regulus_core::graph::{check_profile, start_order};
+use regulus_core::graph::{check_profile, flatten, start_order};
 use regulus_proto::{
     Cardinality, Diagnostic, Direction, Node, Port, PortRef, Profile, Severity, Wire, WireKind,
     Workflow, WorkflowKind,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 const FIXTURE: &str = include_str!("../../regulus-tauri/frontend/mock/profile.json");
 
@@ -45,6 +45,7 @@ fn profile(nodes: Vec<Node>, wires: Vec<Wire>) -> Profile {
         name: "main".into(),
         kind: WorkflowKind::Main,
         module_id: None,
+        ports: vec![],
         nodes,
         wires,
         layout: Default::default(),
@@ -313,4 +314,254 @@ fn a_cycle_keeps_the_declared_order() {
 #[test]
 fn a_lazy_input_does_not_order_the_start() {
     assert_eq!(ids(&channel_cycle(true)), ["channel", "toolbox", "agent"]);
+}
+
+// --- workflows with ports --------------------------------------------------------------
+
+fn text_port(id: &str, direction: &str) -> Value {
+    json!({ "id": id, "capability": "text@1", "direction": direction, "kind": "then" })
+}
+
+fn then_wire(id: &str, from: (&str, &str), to: (&str, &str)) -> Value {
+    json!({ "id": id, "kind": "then",
+            "from": { "node_id": from.0, "port_id": from.1 },
+            "to": { "node_id": to.0, "port_id": to.1 } })
+}
+
+/// `main` asks `greeter`, placed as the box `greet`; `greeter` answers through `hi`.
+fn boxed() -> Value {
+    json!({
+        "id": "p", "main_workflow_id": "main",
+        "workflows": [
+            { "id": "main", "kind": "main",
+              "ports": [text_port("ask", "input"), text_port("reply", "output")],
+              "nodes": [{ "id": "greet", "type": "workflow", "internal_workflow_id": "greeter" }],
+              "wires": [
+                then_wire("in", ("self", "ask"), ("greet", "ask")),
+                then_wire("out", ("greet", "reply"), ("self", "reply")),
+              ] },
+            { "id": "greeter", "kind": "extra",
+              "ports": [text_port("ask", "input"), text_port("reply", "output")],
+              "nodes": [{ "id": "hi", "type": "t", "module_id": "t/x@1.0.0",
+                          "ports": [text_port("in", "input"), text_port("out", "output")] }],
+              "wires": [
+                then_wire("in", ("self", "ask"), ("hi", "in")),
+                then_wire("out", ("hi", "out"), ("self", "reply")),
+              ] },
+        ]
+    })
+}
+
+fn checked(profile: Value) -> Vec<Diagnostic> {
+    check_profile(&serde_json::from_value(profile).unwrap(), |_| true)
+}
+
+#[test]
+fn a_workflow_with_ports_placed_as_a_box_is_clean() {
+    assert_eq!(checked(boxed()), []);
+}
+
+#[test]
+fn a_workflow_with_ports_is_valid_without_any_caller() {
+    let mut profile = boxed();
+    profile["workflows"][0]["ports"] = json!([]);
+    profile["workflows"][0]["wires"] = json!([]);
+    profile["workflows"][1]["wires"] = json!([]);
+    assert_eq!(checked(profile), []);
+}
+
+#[test]
+fn a_capability_mismatch_is_caught_on_both_sides_of_the_boundary() {
+    let mut profile = boxed();
+    profile["workflows"][1]["ports"][0]["capability"] = json!("image@1");
+    let diagnostics = checked(profile);
+    let mismatches: Vec<(Option<&str>, Option<&str>)> = diagnostics
+        .iter()
+        .filter(|d| d.code == "wire.capability_mismatch")
+        .map(|d| (d.workflow_id.as_deref(), d.wire_id.as_deref()))
+        .collect();
+    assert_eq!(
+        mismatches,
+        [(Some("main"), Some("in")), (Some("greeter"), Some("in"))],
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn a_wire_to_a_missing_workflow_or_box_port_dangles() {
+    let mut profile = boxed();
+    profile["workflows"][0]["wires"][0]["to"]["port_id"] = json!("nope");
+    profile["workflows"][1]["wires"][1]["to"]["port_id"] = json!("nope");
+    let diagnostics = checked(profile);
+    assert_eq!(
+        codes(&diagnostics),
+        ["wire.endpoint_missing", "wire.endpoint_missing"]
+    );
+}
+
+#[test]
+fn inside_a_workflow_its_inputs_feed_and_its_outputs_take() {
+    let mut profile = boxed();
+    // Into the workflow's own input, from inside.
+    profile["workflows"][1]["wires"][1]["to"]["port_id"] = json!("ask");
+    let diagnostics = checked(profile);
+    assert_eq!(codes(&diagnostics), ["wire.direction"]);
+
+    let mut profile = boxed();
+    profile["workflows"][1]["wires"]
+        .as_array_mut()
+        .unwrap()
+        .push(then_wire("again", ("hi", "out"), ("self", "reply")));
+    assert_eq!(codes(&checked(profile)), ["port.too_many_wires"]);
+}
+
+#[test]
+fn a_workflow_cannot_end_up_inside_itself() {
+    let mut profile = boxed();
+    profile["workflows"][1]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "back", "type": "workflow", "internal_workflow_id": "main" }));
+    let diagnostics = checked(profile.clone());
+    let found: Vec<(Option<&str>, Option<&str>)> = diagnostics
+        .iter()
+        .filter(|d| d.code == "workflow.embeds_itself")
+        .map(|d| (d.workflow_id.as_deref(), d.node_id.as_deref()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Some("main"), Some("greet")),
+            (Some("greeter"), Some("back"))
+        ]
+    );
+    let profile: Profile = serde_json::from_value(profile).unwrap();
+    let error = flatten(&profile, profile.workflow("main").unwrap()).unwrap_err();
+    assert!(error.contains("inside itself"), "{error}");
+}
+
+#[test]
+fn reserved_ids_declared_box_ports_and_workflow_ports_are_checked() {
+    let mut profile = boxed();
+    let greeter = &mut profile["workflows"][1];
+    greeter["nodes"][0]["id"] = json!("self");
+    greeter["ports"]
+        .as_array_mut()
+        .unwrap()
+        .push(text_port("ask", "input"));
+    let mut uses = text_port("model", "input");
+    uses["kind"] = json!("uses");
+    greeter["ports"].as_array_mut().unwrap().push(uses);
+    greeter["wires"] = json!([]);
+    let main = &mut profile["workflows"][0];
+    main["nodes"][0]["ports"] = json!([text_port("ask", "output")]);
+    main["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "a/b", "type": "t" }));
+    main["wires"] = json!([]);
+    let diagnostics = checked(profile);
+    let mut found = codes(&diagnostics);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            "node.box_ports_mismatch",
+            "node.reserved_id",
+            "node.reserved_id",
+            "workflow.port_duplicate",
+            "workflow.port_uses",
+        ],
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn a_running_copy_inlines_boxes_under_their_id() {
+    let profile: Profile = serde_json::from_value(boxed()).unwrap();
+    let plan = flatten(&profile, profile.workflow("main").unwrap()).unwrap();
+    let nodes: Vec<&str> = plan.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(nodes, ["greet", "greet/hi"]);
+    let greet = plan.node("greet").unwrap();
+    assert_eq!(greet.ports, profile.workflow("greeter").unwrap().ports);
+    let wires: Vec<String> = plan
+        .wires
+        .iter()
+        .map(|w| {
+            format!(
+                "{} {}.{} -> {}.{}",
+                w.id, w.from.node_id, w.from.port_id, w.to.node_id, w.to.port_id
+            )
+        })
+        .collect();
+    assert_eq!(
+        wires,
+        [
+            "in self.ask -> greet.ask",
+            "out greet.reply -> self.reply",
+            "greet/in greet.ask -> greet/hi.in",
+            "greet/out greet/hi.out -> greet.reply",
+        ]
+    );
+    assert_eq!(plan.ports, profile.workflow("main").unwrap().ports);
+}
+
+#[test]
+fn a_uses_port_on_a_workflow_or_a_box_is_an_error_and_never_runs() {
+    let mut uses = text_port("model", "input");
+    uses["kind"] = json!("uses");
+    // Only on the box node: the workflow itself is fine.
+    let mut on_box = boxed();
+    let mut ports = on_box["workflows"][1]["ports"].clone();
+    ports.as_array_mut().unwrap().push(uses.clone());
+    on_box["workflows"][0]["nodes"][0]["ports"] = ports;
+    let diagnostics = checked(on_box.clone());
+    let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.severity, d.node_id.as_deref()))
+        .collect();
+    assert!(
+        found.contains(&("workflow.port_uses", Severity::Error, Some("greet"))),
+        "{diagnostics:#?}"
+    );
+    let profile: Profile = serde_json::from_value(on_box).unwrap();
+    let error = flatten(&profile, profile.workflow("main").unwrap()).unwrap_err();
+    assert!(error.starts_with("box `greet`"), "{error}");
+
+    // On the workflow: an error there, and the box inherits it.
+    let mut on_workflow = boxed();
+    on_workflow["workflows"][1]["ports"]
+        .as_array_mut()
+        .unwrap()
+        .push(uses);
+    let diagnostics = checked(on_workflow.clone());
+    assert_eq!(codes(&diagnostics), ["workflow.port_uses"]);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    let profile: Profile = serde_json::from_value(on_workflow).unwrap();
+    let error = flatten(&profile, profile.workflow("greeter").unwrap()).unwrap_err();
+    assert!(error.starts_with("workflow `greeter`"), "{error}");
+    assert!(error.contains("nothing would serve it"), "{error}");
+}
+
+#[test]
+fn declared_box_ports_must_match_cardinality_and_laziness_too() {
+    let declared = |change: &dyn Fn(&mut Value)| {
+        let mut profile = boxed();
+        let mut ports = profile["workflows"][1]["ports"].clone();
+        change(&mut ports[0]);
+        profile["workflows"][0]["nodes"][0]["ports"] = ports;
+        codes(&checked(profile))
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(declared(&|_| {}), Vec::<String>::new());
+    assert_eq!(
+        declared(&|port| port["cardinality"] = json!("many")),
+        ["node.box_ports_mismatch"]
+    );
+    assert_eq!(
+        declared(&|port| port["lazy"] = json!(true)),
+        ["node.box_ports_mismatch"]
+    );
 }

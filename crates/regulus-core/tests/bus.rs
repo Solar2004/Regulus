@@ -325,3 +325,282 @@ fn a_node_emits_only_on_its_then_outputs() {
     };
     assert!(ModuleCtx::default().emit(&a, "out", json!("x")).is_err());
 }
+
+// --- across a workflow's boundary --------------------------------------------------------
+
+fn text_ports() -> Value {
+    json!([
+        { "id": "ask", "capability": "text@1", "direction": "input", "kind": "then" },
+        { "id": "reply", "capability": "text@1", "direction": "output", "kind": "then" },
+    ])
+}
+
+fn wire(id: &str, from: (&str, &str), to: (&str, &str)) -> Value {
+    json!({ "id": id, "kind": "then",
+            "from": { "node_id": from.0, "port_id": from.1 },
+            "to": { "node_id": to.0, "port_id": to.1 } })
+}
+
+fn a_box(id: &str, workflow: &str) -> Value {
+    json!({ "id": id, "type": "workflow", "internal_workflow_id": workflow })
+}
+
+/// `main`: `a` says hi into box `outer` (workflow `mid`), whose reply reaches `b`. `mid`
+/// passes it through box `inner` (workflow `leaf`), where `x` relays it back out.
+fn nested() -> Profile {
+    serde_json::from_value(json!({
+        "id": "p", "project_id": "proj", "main_workflow_id": "main",
+        "workflows": [
+            { "id": "main", "kind": "main",
+              "nodes": [node("a", json!({ "say": "hi" }), "text@1", "text@1"),
+                        a_box("outer", "mid"),
+                        node("b", json!({}), "text@1", "text@1")],
+              "wires": [wire("w1", ("a", "out"), ("outer", "ask")),
+                        wire("w2", ("outer", "reply"), ("b", "in"))] },
+            { "id": "mid", "kind": "extra", "ports": text_ports(),
+              "nodes": [a_box("inner", "leaf")],
+              "wires": [wire("w1", ("self", "ask"), ("inner", "ask")),
+                        wire("w2", ("inner", "reply"), ("self", "reply"))] },
+            { "id": "leaf", "kind": "extra", "ports": text_ports(),
+              "nodes": [node("x", json!({ "relay": true }), "text@1", "text@1")],
+              "wires": [wire("w1", ("self", "ask"), ("x", "in")),
+                        wire("w2", ("x", "out"), ("self", "reply"))] },
+        ]
+    }))
+    .unwrap()
+}
+
+fn emitted_from(page: &EventPage) -> Vec<(String, u32)> {
+    page.events
+        .iter()
+        .filter(|e| matches!(e.kind, BusEventKind::Emitted { .. }))
+        .map(|e| (format!("{}.{}", e.from.node_id, e.from.port_id), e.depth))
+        .collect()
+}
+
+#[test]
+fn a_value_crosses_two_levels_of_boxes_in_and_back_out() {
+    let profile = nested();
+    assert_eq!(check_profile(&profile, |_| true), []);
+    let (core, log) = core(profile, 64);
+    let (_, page) = run(&core);
+    assert_eq!(
+        log.lock().unwrap().as_slice(),
+        [
+            r#"outer/inner/x.in <- outer/inner.ask "hi""#,
+            r#"b.in <- outer.reply "hi""#
+        ]
+    );
+    // Every crossing is a delivery to the box port and an emission from it.
+    assert_eq!(
+        emitted_from(&page),
+        [
+            ("a.out".into(), 0),
+            ("outer.ask".into(), 1),
+            ("outer/inner.ask".into(), 2),
+            ("outer/inner/x.out".into(), 3),
+            ("outer/inner.reply".into(), 4),
+            ("outer.reply".into(), 5),
+        ]
+    );
+    assert!(!kinds(&page).contains(&"failed"), "{page:#?}");
+}
+
+#[test]
+fn the_depth_cut_counts_deliveries_across_levels() {
+    let (core, log) = core(nested(), 3);
+    let (_, page) = run(&core);
+    // `x` gets it at depth 2 and emits at 3; crossing back out at 4 is cut.
+    assert_eq!(log.lock().unwrap().len(), 1);
+    let cut = page
+        .events
+        .iter()
+        .find(|e| matches!(e.kind, BusEventKind::Cut { .. }))
+        .unwrap();
+    assert_eq!(cut.depth, 4);
+    assert_eq!(cut.from.node_id, "outer/inner");
+    assert_eq!(cut.from.port_id, "reply");
+}
+
+#[test]
+fn the_queue_bound_holds_across_the_boundary() {
+    // `a` fans out to `b` and to the box; the queue holds one, so the box gets nothing.
+    let mut profile = nested();
+    let main = &mut profile.workflows[0];
+    main.wires.insert(
+        0,
+        serde_json::from_value(wire("w0", ("a", "out"), ("b", "in"))).unwrap(),
+    );
+    let (core, log) = core_with(profile, 64, 1);
+    let (_, page) = run(&core);
+    assert_eq!(log.lock().unwrap().as_slice(), [r#"b.in <- a.out "hi""#]);
+    assert!(page.events.iter().any(|e| matches!(&e.kind,
+        BusEventKind::Failed { to, error } if to.node_id == "outer" && error.contains("queue is full"))));
+}
+
+/// Waits until the bus of `id` is idle and returns its events.
+fn idle(core: &Core, id: &str) -> EventPage {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let page: EventPage = serde_json::from_value(
+            core.dispatch(method::EVENT_LIST, json!({ "execution_id": id }))
+                .unwrap(),
+        )
+        .unwrap();
+        if page.pending == 0 {
+            return page;
+        }
+        assert!(Instant::now() < deadline, "the bus never went idle");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn send_talks_to_a_running_workflow_and_its_reply_comes_from_self() {
+    // `main` itself has ports: what comes in on `ask` goes through box `outer` and back.
+    let mut profile = nested();
+    let main = &mut profile.workflows[0];
+    main.ports = serde_json::from_value(text_ports()).unwrap();
+    main.nodes.retain(|n| n.id == "outer");
+    main.wires = serde_json::from_value(json!([
+        wire("w1", ("self", "ask"), ("outer", "ask")),
+        wire("w2", ("outer", "reply"), ("self", "reply")),
+    ]))
+    .unwrap();
+    assert_eq!(check_profile(&profile, |_| true), []);
+    let (core, log) = core(profile, 64);
+    let (id, page) = run(&core);
+    assert!(page.events.is_empty());
+
+    let sent = core
+        .dispatch(
+            method::WORKFLOW_SEND,
+            json!({ "execution_id": id, "port": "ask", "value": "hello" }),
+        )
+        .unwrap();
+    let page = idle(&core, &id);
+    assert_eq!(sent["event"], page.events[0].seq);
+    assert_eq!(
+        log.lock().unwrap().as_slice(),
+        [r#"outer/inner/x.in <- outer/inner.ask "hello""#]
+    );
+    let reply = page.events.last().unwrap();
+    assert_eq!(
+        (reply.from.node_id.as_str(), reply.from.port_id.as_str()),
+        ("self", "reply")
+    );
+    assert_eq!(
+        reply.kind,
+        BusEventKind::Emitted {
+            value: json!("hello")
+        }
+    );
+    assert_eq!(reply.capability, "text@1");
+
+    let send = |params: Value| {
+        core.dispatch(method::WORKFLOW_SEND, params)
+            .unwrap_err()
+            .message
+    };
+    let output = send(json!({ "execution_id": id, "port": "reply", "value": "x" }));
+    assert!(output.contains(r#"is not a "then" input"#), "{output}");
+    let unknown = send(json!({ "execution_id": "exec-9", "port": "ask", "value": "x" }));
+    assert!(unknown.contains("Unknown execution"), "{unknown}");
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let stopped = send(json!({ "execution_id": id, "port": "ask", "value": "x" }));
+    assert!(stopped.contains("not running"), "{stopped}");
+}
+
+#[test]
+fn a_start_refuses_ids_that_would_be_ambiguous_in_the_running_copy() {
+    let start = |profile: Profile| -> String {
+        let (core, log) = core(profile, 64);
+        let error = core
+            .dispatch(method::EXECUTION_START, json!({ "profile_id": "p" }))
+            .unwrap_err()
+            .message;
+        assert!(log.lock().unwrap().is_empty(), "nothing started");
+        error
+    };
+    // A node literally named `outer/inner` next to the box `outer` holding `inner`.
+    let mut clash = nested();
+    clash.workflows[0]
+        .nodes
+        .push(serde_json::from_value(node("outer/inner", json!({}), "text@1", "text@1")).unwrap());
+    assert!(start(clash).contains("`outer/inner` is reserved"));
+    // A node named `self` would have its wires taken by a workflow port.
+    let mut named_self = nested();
+    named_self.workflows[2].nodes[0].id = "self".into();
+    assert!(start(named_self).contains("`self` is reserved"));
+    // Plain duplicates, of nodes and of wires once inlined.
+    let mut twice = nested();
+    twice.workflows[0].nodes[2].id = "a".into();
+    assert!(start(twice).contains("node id `a` is used more than once"));
+    let mut wire_twice = nested();
+    wire_twice.workflows[0].wires[1].id = "w1".into();
+    assert!(start(wire_twice).contains("wire id `w1` is used more than once"));
+    let mut slash = nested();
+    slash.workflows[0].wires[1].id = "outer/w1".into();
+    assert!(start(slash).contains("wire id `outer/w1` is reserved"));
+    let codes: Vec<String> = check_profile(
+        &{
+            let mut p = nested();
+            p.workflows[0].wires[1].id = "outer/w1".into();
+            p
+        },
+        |_| true,
+    )
+    .into_iter()
+    .map(|d| d.code)
+    .collect();
+    assert_eq!(codes, ["wire.reserved_id"]);
+}
+
+#[test]
+fn a_wire_into_the_wrong_side_of_a_boundary_is_never_delivered() {
+    let mut profile = nested();
+    let main = &mut profile.workflows[0];
+    main.ports = serde_json::from_value(text_ports()).unwrap();
+    main.nodes.retain(|n| n.id == "outer");
+    // `outer.reply → self.ask` feeds the workflow's own input from inside, and
+    // `x.out → self.ask` in `leaf` feeds the box's input from inside: both would loop.
+    main.wires = serde_json::from_value(json!([
+        wire("w1", ("self", "ask"), ("outer", "ask")),
+        wire("w2", ("outer", "reply"), ("self", "reply")),
+        wire("back", ("outer", "reply"), ("self", "ask")),
+    ]))
+    .unwrap();
+    profile.workflows[2]
+        .wires
+        .push(serde_json::from_value(wire("back", ("x", "out"), ("self", "ask"))).unwrap());
+    let codes: Vec<String> = check_profile(&profile, |_| true)
+        .into_iter()
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(codes, ["wire.direction", "wire.direction"]);
+
+    let (core, log) = core(profile, 64);
+    let (id, _) = run(&core);
+    core.dispatch(
+        method::WORKFLOW_SEND,
+        json!({ "execution_id": id, "port": "ask", "value": "once" }),
+    )
+    .unwrap();
+    let page = idle(&core, &id);
+    assert_eq!(log.lock().unwrap().len(), 1, "no loop through the boundary");
+    let failed: Vec<String> = page
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            BusEventKind::Failed { to, error } => {
+                assert!(error.contains(r#"no "then" input"#), "{error}");
+                Some(format!("{}.{}", to.node_id, to.port_id))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed, ["outer/inner.ask", "self.ask"]);
+    assert!(!kinds(&page).contains(&"cut"));
+    assert_eq!(emitted_from(&page).last().unwrap().0, "self.reply");
+}
