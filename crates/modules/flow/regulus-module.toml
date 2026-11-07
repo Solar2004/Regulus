@@ -43,3 +43,345 @@ name = "Call"
   id      = "workflow"
   type    = "workflow"
   default = ""
+
+# The nodes below take any capability: their ports are declared on each node in the
+# profile, and the ones here are the defaults the canvas starts from. A value leaves with
+# the capability of the output it goes out on, unchanged; to change what a value is, put
+# a `convert` in the wire.
+
+# Routes each value to the outputs whose rule it meets (docs/13-blocks.md §3.2). Outputs
+# are declared on the node, one per case, plus `fallback` for what meets none.
+[[node]]
+type = "switch"
+name = "Switch"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "other"
+  name       = "other"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # rules: the cases, in order. enum: the value at `path` names the output.
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "rules"
+  options = ["rules", "enum"]
+
+  # Each case: `{ port, op, value, path }`. `op` is one of equals, not_equals, contains,
+  # regex, exists, empty, greater, less; `path` a JSON Pointer (`/verdict`) or dotted
+  # path (`verdict.score`) into the value, empty for the whole value.
+  [[node.field]]
+  id      = "cases"
+  type    = "rules"
+  default = []
+
+  # enum mode: where the output name is in the value. Empty: the value itself.
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  # first: the first case that matches. all: every one.
+  [[node.field]]
+  id      = "match"
+  type    = "select"
+  default = "first"
+  options = ["first", "all"]
+
+  # The output for values that meet no case. If the node lacks it, they are dropped.
+  [[node.field]]
+  id      = "fallback"
+  type    = "text"
+  default = "other"
+
+  # Bytes a compiled `regex` pattern may take, above 0; a larger one is refused. Each
+  # pattern is compiled once and kept.
+  [[node.field]]
+  id      = "regex_size_limit"
+  type    = "number"
+  default = 1048576
+
+# Repeats a body: `in` starts it, `body` goes out each turn, `back` brings the turn's
+# result. It ends when `back` meets `until` or after `max` turns, on `done`; a cap reached
+# goes out on `exhausted` if the node has it. The core's `[bus] max_depth` stays the
+# safety net under it, except across nodes that emit from threads of their own (`wait`).
+# One run per node: a new value on `in` while a run goes ends that run, sending its last
+# value on `exhausted` if the node has it (nothing otherwise), and starts over at turn 1.
+# Each turn is checkpointed, so after a restart that resumes the execution `back` finds
+# its run.
+[[node]]
+type = "loop"
+name = "Loop"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "back"
+  name        = "back"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "body"
+  name       = "body"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "done"
+  name       = "done"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Most turns. 0: no cap of its own.
+  [[node.field]]
+  id      = "max"
+  type    = "number"
+  default = 10
+
+  # A rule, as one case of `switch` without `port`: `{ op = "contains", value = "DONE" }`.
+  # Empty: only `max` ends it.
+  [[node.field]]
+  id      = "until"
+  type    = "rule"
+  default = {}
+
+  # Bytes a compiled `regex` pattern may take, above 0; a larger one is refused. Each
+  # pattern is compiled once and kept.
+  [[node.field]]
+  id      = "regex_size_limit"
+  type    = "number"
+  default = 1048576
+
+# Fan-in. any: every value goes on. barrier: waits for one value on each "then" input
+# declared on the node (or for `count` values on any) and sends them together.
+[[node]]
+type = "join"
+name = "Join"
+
+  [[node.port]]
+  id          = "a"
+  name        = "a"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "b"
+  name        = "b"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "barrier"
+  options = ["barrier", "any"]
+
+  # barrier: 0 waits for each input; N waits for N values on any of them.
+  [[node.field]]
+  id      = "count"
+  type    = "number"
+  default = 0
+
+  # array: in the order inputs are declared (or arrived, with `count`). object: by input.
+  [[node.field]]
+  id      = "shape"
+  type    = "select"
+  default = "array"
+  options = ["array", "object"]
+
+  # barrier: values one input may hold while it waits for the others, above 0. Past it, a
+  # new value is dropped and its delivery shows as `failed`. A barrier with no "then"
+  # inputs and no `count` is refused at start.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 64
+
+# Fan-out: one value to every "then" output of the node, or, with `split`, each element
+# of an array, one after another.
+[[node]]
+type = "fanout"
+name = "Fan-out"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "copy"
+  options = ["copy", "split"]
+
+# Holds each value `ms` milliseconds, on a thread of its own, then sends it on. Stopping
+# the node drops what it holds.
+[[node]]
+type = "wait"
+name = "Wait"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "ms"
+  type    = "number"
+  default = 1000
+
+  # Values one node may hold at once, above 0 (0 is refused at start). Past it, a new
+  # value is dropped and its delivery shows as `failed` on the bus.
+  [[node.field]]
+  id      = "max_pending"
+  type    = "number"
+  default = 64
+
+# A named value kept in the store: `set` writes it, any value on `get` sends it out on
+# `value`. Kept per execution (it survives a restart that resumes it) or per project.
+[[node]]
+type = "variable"
+name = "Variable"
+
+  [[node.port]]
+  id          = "set"
+  name        = "set"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id          = "get"
+  name        = "get"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "value"
+  name       = "value"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Nodes with the same name share the value. Empty: the node's id.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "execution"
+  options = ["execution", "project"]
+
+  # What `get` sends before anything was set. Unset: nothing.
+  [[node.field]]
+  id   = "initial"
+  type = "json"
+
+# Changes what a value is, between capabilities: the compatibility box that goes in a
+# wire whose ends do not fit. `auto` picks the conversion by the input and output
+# capabilities (table in src/convert.rs); a non-empty `template` always wins, and a pair
+# the table lacks passes the value as it is (`same`). `text_to_json` turns text that
+# reads as JSON into that JSON (`"3"` becomes the number 3) and leaves other text a
+# string; `json_to_text` keeps a string as is and writes anything else as JSON. In a
+# template a missing field is empty and any non-string is its JSON.
+[[node]]
+type = "convert"
+name = "Convert"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "conversion"
+  type    = "select"
+  default = "auto"
+  options = ["auto", "same", "text_to_json", "json_to_text", "join", "split", "template"]
+
+  # `{{field}}`, `{{a.b}}` or `{{/a/0}}` from the value; `{{.}}` is the whole value.
+  [[node.field]]
+  id      = "template"
+  type    = "text"
+  default = ""
+
+  # What `join` puts between elements and `split` cuts at.
+  [[node.field]]
+  id      = "separator"
+  type    = "text"
+  default = "\n"
+
+  # json_to_text: indented JSON.
+  [[node.field]]
+  id      = "pretty"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]

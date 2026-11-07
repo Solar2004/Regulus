@@ -1,6 +1,6 @@
 [package]
 name = "regulus-module-flow"
-description = "Regulus flow logic: Call, a node that runs a workflow as a child execution and waits for its answer"
+description = "Regulus flow logic: Call, Switch, Loop, Join, Fan-out, Wait, Variable and Convert"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 regulus-core.workspace = true
 regulus-proto.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

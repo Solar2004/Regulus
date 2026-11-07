@@ -1,0 +1,92 @@
+# A fixed document and a watched file, no agent needed. `rules` sends its text once on
+# start (wired to an Agent box's `hooks` input instead, it is added to every prompt);
+# `notes` sends notes.md's path and text each time the file settles after a change.
+# Copy it to <home>/profiles/, then (run 2026-11-07, `serve` ready in 13 ms, debug):
+#
+#   regulus serve --port 0 &
+#   regulus run watch          # creates /tmp/regulus-watch if missing
+#     #1 rules.out emitted text@1 "Answer in Spanish. Keep it short." (depth 0)
+#     #3 self.rules emitted text@1 "Answer in Spanish. Keep it short." (depth 1)
+#   echo "first draft" > /tmp/regulus-watch/notes.md
+#   echo "second draft" > /tmp/regulus-watch/notes.md   # 0.1 s later: one burst
+#   regulus events
+#     #4  notes.changed emitted path@1 "/tmp/regulus-watch/notes.md" (depth 0)
+#     #5  notes.text emitted text@1 "second draft\n" (depth 0)
+#     #7  self.changed emitted path@1 "/tmp/regulus-watch/notes.md" (depth 1)
+#     #11 self.notes emitted text@1 "notes.md now says: second draft\n" (depth 2)
+#   regulus stop exec-1        # exec-1  watch  stopped
+#   echo "after stop" > /tmp/regulus-watch/notes.md     # no new events
+id = "watch"
+name = "Document and watch"
+main_workflow_id = "watch"
+
+[[workflows]]
+id = "watch"
+name = "Watch"
+kind = "main"
+ports = [
+  { id = "rules", capability = "text@1", direction = "output", kind = "then" },
+  { id = "changed", capability = "path@1", direction = "output", kind = "then" },
+  { id = "notes", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "rules"
+  name = "Rules"
+  type = "document"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { text = "Answer in Spanish. Keep it short." }
+  ports = [
+    { id = "hook", capability = "hook@1", direction = "output", kind = "uses" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "notes"
+  name = "notes.md"
+  type = "watch"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 50, y = 200 }
+  config = { path = "/tmp/regulus-watch/notes.md", debounce_ms = 200 }
+  ports = [
+    { id = "changed", capability = "path@1", direction = "output", kind = "then" },
+    { id = "text", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The text goes through a template on its way out.
+  [[workflows.nodes]]
+  id = "quote"
+  name = "Quote"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 300, y = 200 }
+  config = { template = "notes.md now says: {{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "rules-out"
+  kind = "then"
+  from = { node_id = "rules", port_id = "out" }
+  to = { node_id = "self", port_id = "rules" }
+
+  [[workflows.wires]]
+  id = "notes-changed"
+  kind = "then"
+  from = { node_id = "notes", port_id = "changed" }
+  to = { node_id = "self", port_id = "changed" }
+
+  [[workflows.wires]]
+  id = "notes-quote"
+  kind = "then"
+  from = { node_id = "notes", port_id = "text" }
+  to = { node_id = "quote", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "quote-out"
+  kind = "then"
+  from = { node_id = "quote", port_id = "out" }
+  to = { node_id = "self", port_id = "notes" }
