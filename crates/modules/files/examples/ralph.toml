@@ -1,0 +1,125 @@
+# A Ralph skeleton without the agent (docs/13-blocks.md §5, template 2): a loop of `max`
+# turns that reads PROMPT.md each turn, turns it into a plan line (where the agent would
+# go) and appends it to fix_plan.md. Every file is under `dir` of each files node.
+# Copy it to <home>/profiles/, then (run 2026-11-07, `serve` ready in 14 ms, debug):
+#
+#   mkdir -p /tmp/regulus-ralph && echo "Fix the failing test" > /tmp/regulus-ralph/PROMPT.md
+#   regulus serve --port 0 &
+#   regulus run ralph --detach            # exec-1       ralph            running
+#   regulus send exec-1 go start
+#     #1  self.go emitted text@1 "start" (depth 0)
+#     #2  loop.body emitted text@1 "start" (depth 1)
+#     #4  prompt.out emitted text@1 "Fix the failing test\n" (depth 2)
+#     #6  plan.out emitted text@1 "- [ ] Fix the failing test\n" (depth 3)
+#     #8  fix_plan.written emitted path@1 "/tmp/regulus-ralph/fix_plan.md" (depth 4)
+#     #10 loop.body emitted text@1 "/tmp/regulus-ralph/fix_plan.md" (depth 5)   ← turn 2
+#     …                                                                         ← turn 3
+#     #26 loop.done emitted path@1 "/tmp/regulus-ralph/fix_plan.md" (depth 13)
+#     #29 self.done emitted path@1 "/tmp/regulus-ralph/fix_plan.md" (depth 14)
+#   cat /tmp/regulus-ralph/fix_plan.md    # three lines "- [ ] Fix the failing test"
+#   regulus events | grep -c 'loop.body emitted'   # 3
+#
+# The real template puts an Agent box (fresh context per turn) where `plan` is and a Gate
+# (`process`) before `back`; `until` on the loop can end it early on the gate's verdict.
+id = "ralph"
+name = "Ralph skeleton"
+main_workflow_id = "ralph"
+
+[[workflows]]
+id = "ralph"
+name = "Ralph"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "done", capability = "path@1", direction = "output", kind = "then" },
+]
+
+  # Turns: `body` goes out, what comes back on `back` starts the next, up to `max`.
+  [[workflows.nodes]]
+  id = "loop"
+  name = "Loop"
+  type = "loop"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 100 }
+  config = { max = 3 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "back", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # File → prompt: PROMPT.md, read again every turn.
+  [[workflows.nodes]]
+  id = "prompt"
+  name = "PROMPT.md"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 250, y = 100 }
+  config = { path = "PROMPT.md", dir = "/tmp/regulus-ralph" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Stands in for the agent: one plan line per turn.
+  [[workflows.nodes]]
+  id = "plan"
+  name = "Plan line"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 450, y = 100 }
+  config = { template = "- [ ] {{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Prompt → file: the phase artifact, appended to.
+  [[workflows.nodes]]
+  id = "fix_plan"
+  name = "fix_plan.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 650, y = 100 }
+  config = { path = "fix_plan.md", dir = "/tmp/regulus-ralph", mode = "append", separator = "" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "go-loop"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "loop", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "loop-prompt"
+  kind = "then"
+  from = { node_id = "loop", port_id = "body" }
+  to = { node_id = "prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "prompt-plan"
+  kind = "then"
+  from = { node_id = "prompt", port_id = "out" }
+  to = { node_id = "plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "plan-file"
+  kind = "then"
+  from = { node_id = "plan", port_id = "out" }
+  to = { node_id = "fix_plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "file-back"
+  kind = "then"
+  from = { node_id = "fix_plan", port_id = "written" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "loop-done"
+  kind = "then"
+  from = { node_id = "loop", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }

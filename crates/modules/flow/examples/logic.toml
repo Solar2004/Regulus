@@ -1,0 +1,315 @@
+# Every flow node but `call` (that one is examples/call.toml), no other module needed.
+#   self.task  → switch: "urgent" in it → self.now; anything else → wait 500 ms → self.later
+#   self.list  → fanout split → convert template → self.items (one per element)
+#   self.pair  → fanout copy → two templates → join barrier → self.both (one array)
+#   self.count → loop of 3 turns through a template → self.counted
+#   self.remember → variable `note`; self.recall → the same variable → self.recalled
+# Copy it to <home>/profiles/, then (run 2026-11-07, `serve` ready in 14 ms, debug; only
+# the `self.*` emissions shown):
+#
+#   regulus serve --port 0 &
+#   regulus run logic --detach                 # exec-1  logic  running
+#   regulus send exec-1 task this is urgent    # #5  self.now emitted text@1 "this is urgent"
+#   regulus send exec-1 task tidy up           # returns at once: `hold` keeps it
+#   regulus send exec-1 list '[{"name":"a"},{"name":"b"}]'
+#                                              # #19 self.items emitted text@1 "item: a"
+#                                              # #21 self.items emitted text@1 "item: b"
+#   regulus send exec-1 pair tabs              # #34 self.both emitted json@1
+#                                              #     ["for tabs","against tabs"]
+#   regulus send exec-1 count x                # #51 self.counted emitted text@1 "x|||"
+#   regulus send exec-1 recall '?'             # #56 self.recalled … "(nothing yet)"
+#   regulus send exec-1 remember buy milk
+#   regulus send exec-1 recall '?'             # #63 self.recalled emitted text@1 "buy milk"
+#   regulus events | grep self.later           # #66 self.later emitted text@1 "tidy up"
+#                                              #     (0.5 s after it was sent)
+#   Ctrl-C, regulus serve --port 0 again       # regulus: exec-1 resumed (1 checkpoints)
+#   regulus send exec-1 recall '?'             # #71 self.recalled emitted text@1 "buy milk"
+id = "logic"
+name = "Flow logic"
+main_workflow_id = "logic"
+
+[[workflows]]
+id = "logic"
+name = "Logic"
+kind = "main"
+ports = [
+  { id = "task", capability = "text@1", direction = "input", kind = "then" },
+  { id = "now", capability = "text@1", direction = "output", kind = "then" },
+  { id = "later", capability = "text@1", direction = "output", kind = "then" },
+  { id = "list", capability = "json@1", direction = "input", kind = "then" },
+  { id = "items", capability = "text@1", direction = "output", kind = "then" },
+  { id = "pair", capability = "text@1", direction = "input", kind = "then" },
+  { id = "both", capability = "json@1", direction = "output", kind = "then" },
+  { id = "count", capability = "text@1", direction = "input", kind = "then" },
+  { id = "counted", capability = "text@1", direction = "output", kind = "then" },
+  { id = "remember", capability = "text@1", direction = "input", kind = "then" },
+  { id = "recall", capability = "text@1", direction = "input", kind = "then" },
+  { id = "recalled", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "triage"
+  name = "Triage"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 0 }
+  config = { cases = [{ port = "urgent", op = "contains", value = "urgent" }] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "urgent", capability = "text@1", direction = "output", kind = "then" },
+    { id = "other", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "hold"
+  name = "Hold"
+  type = "wait"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 400, y = 50 }
+  config = { ms = 500 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "split"
+  name = "Split"
+  type = "fanout"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 150 }
+  config = { mode = "split" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "item"
+  name = "Item"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 400, y = 150 }
+  config = { template = "item: {{name}}" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "copy"
+  name = "Copy"
+  type = "fanout"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 250 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "a", capability = "text@1", direction = "output", kind = "then" },
+    { id = "b", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "pro"
+  name = "Pro"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 400, y = 220 }
+  config = { template = "for {{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "con"
+  name = "Con"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 400, y = 280 }
+  config = { template = "against {{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Waits for one value on `a` and one on `b`, then sends both as an array.
+  [[workflows.nodes]]
+  id = "join"
+  name = "Join"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 600, y = 250 }
+  ports = [
+    { id = "a", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "b", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "loop"
+  name = "Loop"
+  type = "loop"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 350 }
+  config = { max = 3 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "back", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "tick"
+  name = "Tick"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 400, y = 350 }
+  config = { template = "{{.}}|" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "keep"
+  name = "Keep note"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 450 }
+  config = { name = "note" }
+  ports = [
+    { id = "set", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "read"
+  name = "Read note"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 520 }
+  config = { name = "note", initial = "(nothing yet)" }
+  ports = [
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "w1"
+  kind = "then"
+  from = { node_id = "self", port_id = "task" }
+  to = { node_id = "triage", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w2"
+  kind = "then"
+  from = { node_id = "triage", port_id = "urgent" }
+  to = { node_id = "self", port_id = "now" }
+
+  [[workflows.wires]]
+  id = "w3"
+  kind = "then"
+  from = { node_id = "triage", port_id = "other" }
+  to = { node_id = "hold", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w4"
+  kind = "then"
+  from = { node_id = "hold", port_id = "out" }
+  to = { node_id = "self", port_id = "later" }
+
+  [[workflows.wires]]
+  id = "w5"
+  kind = "then"
+  from = { node_id = "self", port_id = "list" }
+  to = { node_id = "split", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w6"
+  kind = "then"
+  from = { node_id = "split", port_id = "out" }
+  to = { node_id = "item", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w7"
+  kind = "then"
+  from = { node_id = "item", port_id = "out" }
+  to = { node_id = "self", port_id = "items" }
+
+  [[workflows.wires]]
+  id = "w8"
+  kind = "then"
+  from = { node_id = "self", port_id = "pair" }
+  to = { node_id = "copy", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w9"
+  kind = "then"
+  from = { node_id = "copy", port_id = "a" }
+  to = { node_id = "pro", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w10"
+  kind = "then"
+  from = { node_id = "copy", port_id = "b" }
+  to = { node_id = "con", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w11"
+  kind = "then"
+  from = { node_id = "pro", port_id = "out" }
+  to = { node_id = "join", port_id = "a" }
+
+  [[workflows.wires]]
+  id = "w12"
+  kind = "then"
+  from = { node_id = "con", port_id = "out" }
+  to = { node_id = "join", port_id = "b" }
+
+  [[workflows.wires]]
+  id = "w13"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "self", port_id = "both" }
+
+  [[workflows.wires]]
+  id = "w14"
+  kind = "then"
+  from = { node_id = "self", port_id = "count" }
+  to = { node_id = "loop", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w15"
+  kind = "then"
+  from = { node_id = "loop", port_id = "body" }
+  to = { node_id = "tick", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "w16"
+  kind = "then"
+  from = { node_id = "tick", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "w17"
+  kind = "then"
+  from = { node_id = "loop", port_id = "done" }
+  to = { node_id = "self", port_id = "counted" }
+
+  [[workflows.wires]]
+  id = "w18"
+  kind = "then"
+  from = { node_id = "self", port_id = "remember" }
+  to = { node_id = "keep", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "w19"
+  kind = "then"
+  from = { node_id = "self", port_id = "recall" }
+  to = { node_id = "read", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "w20"
+  kind = "then"
+  from = { node_id = "read", port_id = "value" }
+  to = { node_id = "self", port_id = "recalled" }
