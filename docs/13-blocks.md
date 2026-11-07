@@ -39,7 +39,7 @@ de §3 piden, y cada pieza tiene quien la pide:
 | # | Pieza | Quién la pide |
 |---|---|---|
 | 1 | **Cable "luego" con dato**, tipado por capacidad (`text@1`, `image@1`…), sobre el bus. `WireKind::Then` ya existe como tipo y el validador lo acepta (`regulus-proto/src/graph.rs`), pero no hay bus y ningún dato viaja entre cajas | `flow`, `triggers`, `process`, todo lo de §3 |
-| 2 | **Store** (SQLite, uno por proyecto y uno global, `02-architecture.md` §6): ejecuciones que sobreviven al reinicio, arrancan con `serve` y se reanudan desde checkpoint. Hoy viven en memoria | `human` (pausar y reanudar), `tasks`, `memory`, bucles largos |
+| 2 | ✅ *Construido* (2026-11-07, paso 1b). **Store** (SQLite, uno por proyecto y uno global, `02-architecture.md` §6): ejecuciones que sobreviven al reinicio, arrancan con `serve` y se reanudan desde checkpoint | `human` (pausar y reanudar), `tasks`, `memory`, bucles largos |
 | 3 | **Workflow como caja**: puertos propios de entrada y salida en un workflow del usuario. Ya existen `Node.internal_workflow` y `WorkflowKind::Module` (`11-composition.md` §6) y el "luego" que cruza de canvas (§5); lo nuevo es que un workflow declare sus puertos, se enchufe en otro y se le hable (`chat`) desde la TUI o la app | el "CLI custom", `Call` |
 | 4 | **Sub-ejecución "llama y espera"**: `parent` en `Execution`; un nodo `Call` instancia una plantilla con entradas y devuelve su resultado. El agente lo usa como herramienta | subagentes N, handoff, orquestador-workers, Roo `new_task` |
 
@@ -57,8 +57,8 @@ las otras pendientes de sus pasos):
   Bucle es del nodo. `Port.lazy` y `cardinality` ya existen y se usan tal cual.
 - `02-architecture.md` §4: `Workflow` gana puertos propios y `Execution` gana `parent`.
   Son abstracciones genéricas, no conceptos de IA.
-- `02-architecture.md` §6: el esquema del store sigue ❓ hasta escribirlo; lo que decide
-  este doc es **qué** guarda (ejecuciones, checkpoints), no cómo.
+- ✅ *Aplicada* (2026-11-07, paso 1b). `02-architecture.md` §6: el esquema del store,
+  escrito; este doc decidía **qué** guarda (ejecuciones, checkpoints), aquel dice cómo.
 
 ---
 

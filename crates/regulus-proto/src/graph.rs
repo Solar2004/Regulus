@@ -216,5 +216,19 @@ pub enum ExecutionState {
     Starting,
     Running,
     Stopped,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
+    /// It was running when the core went down and was not resumed on the next start
+    /// (`[store] resume`).
+    Interrupted {
+        reason: String,
+    },
+}
+
+impl ExecutionState {
+    /// Starting or running: its nodes are, or are about to be, at work.
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Starting | Self::Running)
+    }
 }

@@ -134,7 +134,13 @@ impl ModuleCtx {
     /// como `node/event` a lo cableado (`02-architecture.md` §6). No hay `subscribe`.
     pub fn emit(&self, node: &NodeRef, port: &str, value: Value) -> Result<()>;
 
-    // Llega con el primer módulo que lo pida: store.
+    /// Su espacio clave-valor en el store: el de la base del proyecto del nodo, o el
+    /// global sin nodo. El namespace es su id; no puede nombrar otro.
+    pub fn store(&self, node: Option<&NodeRef>) -> Result<ModuleStore>;
+
+    /// Guarda el estado de un nodo suyo. Si el core cae, el siguiente reanuda la
+    /// ejecución y se lo devuelve en `node/start` (`02-architecture.md` §6).
+    pub fn checkpoint(&self, node: &NodeRef, state: Value) -> Result<()>;
 }
 ```
 
@@ -147,7 +153,8 @@ alcanzan a través de un `Endpoint`, nunca por nombre global.
 `<casa>/data/{global | projects/<proyecto>}/<módulo>/<workflow>/<nodo>`: un módulo no puede ver los
 directorios de otro módulo ni de otro proyecto. Si el usuario quiere el perfil en otro
 sitio, lo dice en un campo del nodo. Es la parte en ficheros del namespace del store
-(`02-architecture.md` §6), que sigue ❓ abierto.
+(`02-architecture.md` §6); la parte en base de datos es `store`, que pidieron `human`,
+`tasks` y `memory` (`13-blocks.md` §2, 2026-11-07).
 
 **Si un módulo necesita algo que `ModuleCtx` no da, es una conversación de diseño, no un
 `pub` nuevo.** Esta superficie es deliberadamente pequeña: cada método que se le añade

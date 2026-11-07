@@ -1,6 +1,6 @@
 //! What the core answers, independent of the transport.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -8,19 +8,20 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use regulus_proto::{
     code, method, BusEvent, BusEventKind, Direction, DisabledNode, EventListParams, EventPage,
     Execution, ExecutionStartParams, ExecutionState, IdParams, NameParams, Node, NodeCall,
-    NodeEvent, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow,
+    NodeEvent, NodeStart, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::bus::{self, Journal, Pending};
-use crate::config::BusConfig;
+use crate::bus::{self, Journal, Listing, Pending};
+use crate::config::{BusConfig, Resume};
 use crate::graph::{check_profile, start_order};
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
 use crate::registry::{base_id, CallError, Registry};
 use crate::secrets::{SecretError, Secrets};
+use crate::store::{ModuleStore, Store, StoreError, StoredExecution};
 
 /// JSON-RPC "method not found".
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -74,12 +75,14 @@ impl From<SecretError> for RpcError {
     }
 }
 
-/// What the core keeps on disk for the modules: the secrets it resolves for them and the
-/// root of their per-node directories. Without a data directory, `node_dir` fails.
+/// What the core keeps on disk: the secrets it resolves for the modules, the root of their
+/// per-node directories and the store. Without a data directory, `node_dir` fails; without
+/// a store, executions and bus events live in memory only and `ModuleCtx::store` fails.
 #[derive(Debug, Clone, Default)]
 pub struct Storage {
     pub secrets: Secrets,
     pub data_dir: Option<PathBuf>,
+    pub store: Option<Arc<Store>>,
 }
 
 /// Directories of nodes outside any project.
@@ -88,7 +91,7 @@ const GLOBAL_DATA: &str = "global";
 const PROJECTS_DATA: &str = "projects";
 
 /// One plain path component: an id can never climb out of the data directory.
-fn path_segment(id: &str) -> Result<&str, ModuleError> {
+pub(crate) fn path_segment(id: &str) -> Result<&str, ModuleError> {
     let mut components = Path::new(id).components();
     match (components.next(), components.next()) {
         (Some(Component::Normal(_)), None) if !id.contains('\\') => Ok(id),
@@ -101,6 +104,8 @@ fn path_segment(id: &str) -> Result<&str, ModuleError> {
 /// A running copy of a workflow. The workflow is copied when the execution starts, so
 /// later edits to the profile do not reach it.
 struct Live {
+    /// The `N` of `exec-N`.
+    number: u64,
     execution: Execution,
     workflow: Arc<Workflow>,
     /// Nodes whose module was asked to start them, in start order.
@@ -127,6 +132,8 @@ pub struct Core {
     executions: Mutex<Vec<Live>>,
     journal: Mutex<Journal>,
     next_execution: AtomicU64,
+    /// Executions the previous core left running, until `recover` takes them.
+    recovering: Mutex<Vec<StoredExecution>>,
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
@@ -167,15 +174,22 @@ impl Core {
         storage: Storage,
         bus: BusConfig,
     ) -> Arc<Self> {
+        // Numbers go on from the last run; what it left running waits for `recover`.
+        let (next_execution, recovering) = match &storage.store {
+            None => (1, Vec::new()),
+            Some(store) => (store.first_execution(), store.left_running()),
+        };
+        let journal = Journal::new(bus.history, storage.store.clone());
         Arc::new_cyclic(|core| Self {
             me: core.clone(),
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
             profiles,
             storage,
             executions: Mutex::default(),
-            journal: Mutex::new(Journal::new(bus.history)),
+            journal: Mutex::new(journal),
             bus,
-            next_execution: AtomicU64::new(1),
+            next_execution: AtomicU64::new(next_execution),
+            recovering: Mutex::new(recovering),
         })
     }
 
@@ -203,25 +217,22 @@ impl Core {
             method::MODULE_LIST => json(self.registry.summaries()),
             method::EXECUTION_LIST => {
                 let filter: ProjectFilter = parse(params)?;
-                let wanted = filter.project_id.as_deref();
-                let matches =
-                    |e: &&Execution| wanted.is_none_or(|w| e.project_id.as_deref() == Some(w));
-                let executions = self.executions();
-                json(
-                    executions
-                        .iter()
-                        .map(|live| &live.execution)
-                        .filter(matches)
-                        .collect::<Vec<_>>(),
-                )
+                json(self.list_executions(filter.project_id.as_deref())?)
             }
             method::EXECUTION_START => json(self.start(parse(params)?)?),
             method::EXECUTION_STOP => {
                 let params: IdParams = parse(params)?;
-                json(
-                    self.stop(&params.id)
-                        .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?,
-                )
+                // One still waiting for `recover` is stopped there. One that is not live
+                // here (stopped or interrupted in an earlier run) is answered as the store
+                // has it: there is nothing left to stop.
+                let stopped = match self.stop_recovering(&params.id) {
+                    Some(execution) => Some(execution),
+                    None => match self.stop(&params.id, true) {
+                        Some(execution) => Some(execution),
+                        None => self.stored(&params.id)?.map(|stored| stored.execution),
+                    },
+                };
+                json(stopped.ok_or_else(|| RpcError::invalid_params("Unknown execution"))?)
             }
             method::SECRET_SET => {
                 let params: SecretSetParams = parse(params)?;
@@ -239,7 +250,7 @@ impl Core {
                 }
                 Ok(Value::Null)
             }
-            method::EVENT_LIST => json(self.events(&parse(params)?)),
+            method::EVENT_LIST => json(self.events(&parse(params)?)?),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",
@@ -266,6 +277,50 @@ impl Core {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Runs `f` on the store, if there is one. A store that fails does not stop the core:
+    /// what it could not write is reported and stays in memory.
+    fn persist(&self, f: impl FnOnce(&Store) -> Result<(), StoreError>) {
+        if let Some(store) = &self.storage.store {
+            if let Err(error) = f(store) {
+                eprintln!("regulus: store: {error}");
+            }
+        }
+    }
+
+    fn stored(&self, id: &str) -> Result<Option<StoredExecution>, RpcError> {
+        let Some(store) = &self.storage.store else {
+            return Ok(None);
+        };
+        store
+            .execution(id)
+            .map_err(|e| RpcError::new(code::MODULE_FAILED, e.to_string()))
+    }
+
+    /// `execution.list`: what the store has, from every run, with what is live here on
+    /// top; without a store, what this core started.
+    fn list_executions(&self, project: Option<&str>) -> Result<Vec<Execution>, RpcError> {
+        let mut all: Vec<(u64, Execution)> = match &self.storage.store {
+            None => Vec::new(),
+            Some(store) => store
+                .executions(project)
+                .map_err(|e| RpcError::new(code::MODULE_FAILED, e.to_string()))?
+                .into_iter()
+                .map(|stored| (stored.number, stored.execution))
+                .collect(),
+        };
+        for live in self.executions().iter() {
+            if project.is_some_and(|p| live.execution.project_id.as_deref() != Some(p)) {
+                continue;
+            }
+            match all.iter_mut().find(|(_, e)| e.id == live.execution.id) {
+                Some((_, execution)) => *execution = live.execution.clone(),
+                None => all.push((live.number, live.execution.clone())),
+            }
+        }
+        all.sort_by_key(|(number, _)| *number);
+        Ok(all.into_iter().map(|(_, execution)| execution).collect())
+    }
+
     fn workflow_of(&self, execution_id: &str) -> Option<Arc<Workflow>> {
         let executions = self.executions();
         let live = executions
@@ -280,7 +335,9 @@ impl Core {
             .iter_mut()
             .find(|live| live.execution.id == execution_id)?;
         live.execution.state = state;
-        Some(live.execution.clone())
+        let execution = live.execution.clone();
+        self.persist(|store| store.update_execution(&execution));
+        Some(execution)
     }
 
     /// Starts a copy of a workflow: `node/start` on every node whose module is loaded,
@@ -300,19 +357,19 @@ impl Core {
                 .ok_or_else(|| RpcError::invalid_params("Unknown workflow"))?
                 .clone(),
         );
+        let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
         let execution = Execution {
-            id: format!(
-                "exec-{}",
-                self.next_execution.fetch_add(1, Ordering::Relaxed)
-            ),
+            id: format!("exec-{number}"),
             profile_id: profile.id.clone(),
             workflow_id,
             project_id: profile.project_id.clone(),
             state: ExecutionState::Starting,
             disabled: Vec::new(),
         };
+        self.persist(|store| store.insert_execution(number, &execution, &workflow));
         let id = execution.id.clone();
         self.executions().push(Live {
+            number,
             execution,
             workflow: workflow.clone(),
             started: Vec::new(),
@@ -320,6 +377,118 @@ impl Core {
             queue: VecDeque::new(),
             draining: false,
         });
+        self.launch(&id, &workflow, &HashMap::new())
+    }
+
+    /// Takes the executions the previous core left running and, as `[store] resume`
+    /// says, starts them again under the same id from the workflow copy they ran, or
+    /// marks them `interrupted`. Nodes with a checkpoint get it in `node/start`
+    /// (`NodeStart`); the rest start afresh. Returns what it did, one line each.
+    pub fn recover(&self) -> Vec<String> {
+        let Some(store) = self.storage.store.clone() else {
+            return Vec::new();
+        };
+        let mut report = Vec::new();
+        loop {
+            // Each one leaves `recovering` and enters memory under the same lock, so a
+            // stop always finds it in one or the other.
+            let mut recovering = self.recovering();
+            if recovering.is_empty() {
+                break;
+            }
+            let StoredExecution {
+                number,
+                mut execution,
+                workflow,
+            } = recovering.remove(0);
+            let checkpoints = store
+                .checkpoints(execution.project_id.as_deref(), &execution.id)
+                .unwrap_or_else(|e| {
+                    report.push(format!("{}: {e}", execution.id));
+                    HashMap::new()
+                });
+            let resume = match store.resume() {
+                Resume::Always => true,
+                Resume::Never => false,
+                Resume::Checkpoint => !checkpoints.is_empty(),
+            };
+            if !resume {
+                let reason = if store.resume() == Resume::Never {
+                    "the core stopped and [store] resume = never"
+                } else {
+                    "the core stopped and it saved no checkpoint"
+                };
+                execution.state = ExecutionState::Interrupted {
+                    reason: reason.into(),
+                };
+                self.persist(|store| store.update_execution(&execution));
+                report.push(format!("{} interrupted: {reason}", execution.id));
+                self.push_live(number, execution, Arc::new(workflow));
+                continue;
+            }
+            let id = execution.id.clone();
+            execution.state = ExecutionState::Starting;
+            execution.disabled.clear();
+            let workflow = Arc::new(workflow);
+            self.push_live(number, execution, workflow.clone());
+            drop(recovering);
+            let line = match self.launch(&id, &workflow, &checkpoints) {
+                Ok(Execution {
+                    state: ExecutionState::Failed { reason },
+                    ..
+                }) => format!("{id} failed to resume: {reason}"),
+                Ok(_) => format!("{id} resumed ({} checkpoints)", checkpoints.len()),
+                Err(error) => format!("{id} failed to resume: {}", error.message),
+            };
+            report.push(line);
+        }
+        report
+    }
+
+    fn recovering(&self) -> MutexGuard<'_, Vec<StoredExecution>> {
+        self.recovering
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Keeps an execution in memory, with nothing started yet.
+    fn push_live(&self, number: u64, execution: Execution, workflow: Arc<Workflow>) {
+        self.executions().push(Live {
+            number,
+            execution,
+            workflow,
+            started: Vec::new(),
+            active: HashSet::new(),
+            queue: VecDeque::new(),
+            draining: false,
+        });
+    }
+
+    /// Stops an execution `recover` has not reached yet: it is recorded stopped and
+    /// `recover` no longer sees it.
+    fn stop_recovering(&self, id: &str) -> Option<Execution> {
+        let mut recovering = self.recovering();
+        let position = recovering.iter().position(|s| s.execution.id == id)?;
+        let StoredExecution {
+            number,
+            mut execution,
+            workflow,
+        } = recovering.remove(position);
+        execution.state = ExecutionState::Stopped;
+        self.persist(|store| store.update_execution(&execution));
+        self.push_live(number, execution.clone(), Arc::new(workflow));
+        Some(execution)
+    }
+
+    /// Starts the nodes of a live execution, what is used before what uses it. A node
+    /// with a checkpoint gets it in `node/start`.
+    fn launch(
+        &self,
+        id: &str,
+        workflow: &Workflow,
+        checkpoints: &HashMap<String, Value>,
+    ) -> Result<Execution, RpcError> {
+        let id = id.to_string();
 
         // Resources (no module) take part as they are; a module node needs its module.
         let mut active: HashSet<&str> = workflow
@@ -332,7 +501,7 @@ impl Core {
             })
             .map(|n| n.id.as_str())
             .collect();
-        for node in start_order(&workflow) {
+        for node in start_order(workflow) {
             let Some(module_id) = node
                 .module_id
                 .as_deref()
@@ -376,7 +545,13 @@ impl Core {
                 live.active.insert(node.id.clone());
                 live.started.push(node_ref);
             }
-            let started = match self.node_call(&id, node, Value::Null) {
+            let args = match checkpoints.get(&node.id) {
+                None => Value::Null,
+                Some(state) => json(NodeStart {
+                    checkpoint: Some(state.clone()),
+                })?,
+            };
+            let started = match self.node_call(&id, node, args) {
                 Err(error) => Err(error.to_string()),
                 Ok(call) => {
                     match self
@@ -391,7 +566,7 @@ impl Core {
             match started {
                 Ok(()) => {}
                 Err(error) => {
-                    self.stop(&id);
+                    self.stop(&id, true);
                     let reason = format!("node `{}` failed to start: {error}", node.id);
                     return self
                         .set_state(&id, ExecutionState::Failed { reason })
@@ -408,8 +583,9 @@ impl Core {
     }
 
     /// Stops an execution: `node/stop` on its started nodes, in reverse order. Stopping
-    /// a stopped or failed execution changes nothing.
-    fn stop(&self, execution_id: &str) -> Option<Execution> {
+    /// a stopped or failed execution changes nothing. Without `record`, the store keeps it
+    /// as it was, so the next core finds it running and recovers it.
+    fn stop(&self, execution_id: &str, record: bool) -> Option<Execution> {
         let (started, workflow) = {
             let mut executions = self.executions();
             let live = executions
@@ -420,6 +596,10 @@ impl Core {
                 ExecutionState::Starting | ExecutionState::Running
             ) {
                 live.execution.state = ExecutionState::Stopped;
+                if record {
+                    let execution = live.execution.clone();
+                    self.persist(|store| store.update_execution(&execution));
+                }
             }
             // Values still on their way are dropped: their targets are about to stop.
             live.queue.clear();
@@ -458,7 +638,8 @@ impl Core {
             .map(|live| live.execution.clone())
     }
 
-    /// Stops every execution, then shuts the modules down.
+    /// Stops every execution, then shuts the modules down. The store still has them as
+    /// they were: the next core recovers them (`recover`).
     pub fn shutdown(&self) {
         let running: Vec<String> = self
             .executions()
@@ -467,9 +648,13 @@ impl Core {
             .map(|live| live.execution.id.clone())
             .collect();
         for id in running {
-            self.stop(&id);
+            self.stop(&id, false);
         }
         self.registry.shutdown();
+        // A clean shutdown loses nothing that was queued for the store.
+        if let Some(store) = &self.storage.store {
+            store.flush();
+        }
     }
 
     /// What a module gets for one of its nodes: the node with its secrets resolved.
@@ -527,6 +712,79 @@ impl Core {
         std::fs::create_dir_all(&dir)
             .map_err(|e| ModuleError::Failed(format!("cannot create {}: {e}", dir.display())))?;
         Ok(dir)
+    }
+
+    /// The key-value space of a module (`ModuleCtx::store`): the namespace is the module id
+    /// without its version, so an upgrade keeps the data; the database is that of the
+    /// node's project, or the global one.
+    pub(crate) fn module_store(
+        &self,
+        module_id: &str,
+        node: Option<&NodeRef>,
+    ) -> Result<ModuleStore, ModuleError> {
+        let store = self
+            .storage
+            .store
+            .as_ref()
+            .ok_or_else(|| ModuleError::Failed("this core has no store".into()))?;
+        let namespace = base_id(module_id);
+        if namespace.is_empty() {
+            return Err(ModuleError::Failed("no module behind this context".into()));
+        }
+        let project = match node {
+            None => None,
+            Some(node) => self.project_of_own(module_id, node, false)?,
+        };
+        Ok(store.module_store(project.as_deref(), namespace)?)
+    }
+
+    /// The project of a node's execution, if the node belongs to `module_id`: a module
+    /// cannot reach a project, or a state, through a node that is not its own.
+    fn project_of_own(
+        &self,
+        module_id: &str,
+        node: &NodeRef,
+        live_only: bool,
+    ) -> Result<Option<String>, ModuleError> {
+        let executions = self.executions();
+        let live = executions
+            .iter()
+            .find(|live| {
+                live.execution.id == node.execution_id
+                    && (!live_only || live.execution.state.is_live())
+            })
+            .ok_or_else(|| {
+                ModuleError::Failed(format!("execution `{}` is not running", node.execution_id))
+            })?;
+        let owned = live
+            .workflow
+            .node(&node.node_id)
+            .and_then(|n| n.module_id.as_deref())
+            .is_some_and(|m| base_id(m) == base_id(module_id));
+        if !owned {
+            return Err(ModuleError::InvalidParams(format!(
+                "node `{}` does not belong to this module",
+                node.node_id
+            )));
+        }
+        Ok(live.execution.project_id.clone())
+    }
+
+    /// Saves the state of one of a module's nodes in a live execution
+    /// (`ModuleCtx::checkpoint`), for `recover` to hand back after a restart.
+    pub(crate) fn checkpoint(
+        &self,
+        module_id: &str,
+        node: &NodeRef,
+        state: &Value,
+    ) -> Result<(), ModuleError> {
+        let store = self
+            .storage
+            .store
+            .as_ref()
+            .ok_or_else(|| ModuleError::Failed("this core has no store".into()))?;
+        let project = self.project_of_own(module_id, node, true)?;
+        Ok(store.checkpoint(project.as_deref(), &node.execution_id, &node.node_id, state)?)
     }
 
     /// What is wired over "uses" into `port` of a node (`ModuleCtx::resolve`).
@@ -591,7 +849,7 @@ impl Core {
 
     /// `event.list`: the kept bus events `params` asks for, and how many deliveries are
     /// still queued for the executions it names.
-    fn events(&self, params: &EventListParams) -> EventPage {
+    fn events(&self, params: &EventListParams) -> Result<EventPage, RpcError> {
         let pending = self
             .executions()
             .iter()
@@ -607,12 +865,29 @@ impl Core {
             })
             .map(|live| live.queue.len() + usize::from(live.draining))
             .sum();
-        let (events, next) = self.journal().list(params);
-        EventPage {
+        let limit = match (params.limit, self.bus.max_page) {
+            (limit, 0) => limit,
+            (None, max) => Some(max),
+            (Some(limit), max) => Some(limit.min(max)),
+        };
+        let listing = self.journal().list(params, limit);
+        let (events, next) = match listing {
+            Listing::Ready(events, next) => (events, next),
+            Listing::Store { store, upto } => {
+                // Everything up to `upto` was queued before; wait until it is written.
+                store.flush();
+                let events = store
+                    .events(params, upto, limit)
+                    .map_err(|e| RpcError::new(code::MODULE_FAILED, e.to_string()))?;
+                let next = bus::next_cursor(&events, limit, params.since, upto);
+                (events, next)
+            }
+        };
+        Ok(EventPage {
             events,
             next,
             pending,
-        }
+        })
     }
 
     /// Puts a value on a "then" output (`ModuleCtx::emit`) and queues it for every input

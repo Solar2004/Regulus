@@ -7,6 +7,7 @@ use regulus_proto::Manifest;
 use serde_json::Value;
 
 use crate::service::Core;
+use crate::store::ModuleStore;
 
 /// Four methods, nothing more. `call` uses the same method names as the external socket,
 /// so a module never knows whether a call came from the GUI, the CLI or another module.
@@ -41,8 +42,7 @@ impl Endpoint {
 /// The only view of the world a module gets (docs/03-modules.md §2.1). Cheap to clone:
 /// a module keeps a copy from `init` to use later.
 ///
-/// `store` arrives with the first module that needs it; there is no `subscribe`: the
-/// "then" wires say who receives what. Growing this surface is a design conversation, not
+/// There is no `subscribe`: the "then" wires say who receives what. Growing this surface is a design conversation, not
 /// a new `pub`.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleCtx {
@@ -103,6 +103,21 @@ impl ModuleCtx {
     /// (docs/03-modules.md §2.1).
     pub fn node_dir(&self, node: &NodeRef) -> Result<PathBuf, ModuleError> {
         self.core()?.node_dir(&self.module_id, node)
+    }
+
+    /// Saves `state` as the checkpoint of `node`, one of this module's nodes; only the
+    /// latest is kept. If the core goes down while the execution runs, the next one
+    /// resumes it and hands the state back in `node/start` (`NodeStart`), as `[store]
+    /// resume` says (docs/02-architecture.md §6).
+    pub fn checkpoint(&self, node: &NodeRef, state: Value) -> Result<(), ModuleError> {
+        self.core()?.checkpoint(&self.module_id, node, &state)
+    }
+
+    /// This module's own key-value space in the store, keyed by its id without version: it
+    /// cannot name another module's (docs/02-architecture.md §6). With a node, the space
+    /// lives in that node's project database; without one, in the global database.
+    pub fn store(&self, node: Option<&NodeRef>) -> Result<ModuleStore, ModuleError> {
+        self.core()?.module_store(&self.module_id, node)
     }
 }
 

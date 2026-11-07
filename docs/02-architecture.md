@@ -298,12 +298,41 @@ clientes por socket.
   un hilo propio empieza una cadena nueva en 0: el corte por profundidad no lo ve, la
   cola sí.
 - Los clientes leen con `event.list` desde un cursor (`since`, `next`, `pending`); el CLI
-  con `regulus events [--follow]`. Se guardan los últimos `[bus] history` eventos en
-  memoria hasta que exista el store.
+  con `regulus events [--follow]`. Todo evento va al store (abajo); los últimos
+  `[bus] history` quedan además en memoria como caché.
 
 **Store:** un SQLite por proyecto + uno global. Cada módulo obtiene un **namespace
 propio**. Leer de otro namespace solo a través de capacidades declaradas. Evita que el
 estado compartido degenere en variable global donde todos escriben.
 
-❓ **ABIERTO** — Esquema concreto del store. Se decide al escribirlo (paso 1b de
-`13-blocks.md` §7), no antes.
+✅ **Cómo es el store** (2026-11-07, paso 1b de `13-blocks.md` §7): `rusqlite`, módulo
+`store.rs` de `regulus-core` (el core es su único usuario).
+
+- **Ficheros:** `<casa>/<[store] dir>/global.db` (lo que no es de ningún proyecto) y
+  `.../projects/<proyecto>.db`, creada al primer uso. WAL; `synchronous`,
+  `busy_timeout_ms`, `max_events` y `resume` en `[store]`.
+- **Escritura:** ejecuciones y eventos se encolan, en orden, a un hilo escritor; quien
+  tiene los locks del bus nunca espera al disco. Un apagado limpio vacía la cola.
+- **Tablas** (iguales en todas): `executions` (id, número `N` de `exec-N`, proyecto,
+  perfil, workflow y **su copia**, estado y motivo, nodos desactivados, `parent` reservado
+  para `Call`, inicio y fin) · `checkpoints` (ejecución, seq, nodo, estado JSON, fecha; solo
+  el último por nodo) · `events` (el diario del bus, los campos de `BusEvent`; por base se
+  guardan `max_events`, al pasar del doble se borran los viejos) · `kv` (espacio
+  clave-valor por módulo, clave `namespace` + `key`).
+- **Esquema versionado:** `schema_version` y migraciones solo hacia delante, una
+  transacción por paso. Una base escrita por un core más nuevo se rechaza sin tocarla. Si
+  la global no abre o no da los números con que seguir, el core sigue en memoria con un
+  aviso; una base de proyecto rota o una fila ilegible se saltan con aviso.
+- **Namespace:** `ModuleCtx::store(nodo?)` da el `kv` del módulo, con su id sin versión
+  fijado por el core: no puede nombrar otro. Con nodo, en la base de su proyecto; sin él,
+  en la global.
+- **Reinicio:** apagar `serve` (Ctrl-C o caída) deja las ejecuciones vivas como
+  `running` en el store. Al arrancar, en un hilo aparte tras abrir el socket, según
+  `[store] resume`: `checkpoint` (defecto) reanuda con el mismo id las que tienen algún
+  checkpoint (`ModuleCtx::checkpoint`) y marca el resto `interrupted`; `always` las reanuda
+  todas; `never` las marca todas. Reanudar es arrancar los nodos de la copia guardada; quien
+  tiene checkpoint lo recibe en `node/start` como `NodeStart { checkpoint }`.
+  `execution.list` y `event.list` leen el store: se ven las ejecuciones y eventos de
+  arranques anteriores, y `seq` y `N` siguen desde el más alto. Una página de
+  `event.list` trae como mucho `[bus] max_page` eventos y `next` siempre avanza hasta lo
+  revisado, coincida el filtro o no.
