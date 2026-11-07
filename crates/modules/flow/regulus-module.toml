@@ -43,3 +43,137 @@ name = "Call"
   id      = "workflow"
   type    = "workflow"
   default = ""
+
+# The nodes below take any capability: their ports are declared on each node in the
+# profile, and the ones here are the defaults the canvas starts from. A value leaves with
+# the capability of the output it goes out on, unchanged; to change what a value is, put
+# a `convert` in the wire.
+
+# Routes each value to the outputs whose rule it meets (docs/13-blocks.md §3.2). Outputs
+# are declared on the node, one per case, plus `fallback` for what meets none.
+[[node]]
+type = "switch"
+name = "Switch"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "other"
+  name       = "other"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # rules: the cases, in order. enum: the value at `path` names the output.
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "rules"
+  options = ["rules", "enum"]
+
+  # Each case: `{ port, op, value, path }`. `op` is one of equals, not_equals, contains,
+  # regex, exists, empty, greater, less; `path` a JSON Pointer (`/verdict`) or dotted
+  # path (`verdict.score`) into the value, empty for the whole value.
+  [[node.field]]
+  id      = "cases"
+  type    = "rules"
+  default = []
+
+  # enum mode: where the output name is in the value. Empty: the value itself.
+  [[node.field]]
+  id      = "path"
+  type    = "text"
+  default = ""
+
+  # first: the first case that matches. all: every one.
+  [[node.field]]
+  id      = "match"
+  type    = "select"
+  default = "first"
+  options = ["first", "all"]
+
+  # The output for values that meet no case. If the node lacks it, they are dropped.
+  [[node.field]]
+  id      = "fallback"
+  type    = "text"
+  default = "other"
+
+# Fan-out: one value to every "then" output of the node, or, with `split`, each element
+# of an array, one after another.
+[[node]]
+type = "fanout"
+name = "Fan-out"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "copy"
+  options = ["copy", "split"]
+
+# Changes what a value is, between capabilities: the compatibility box that goes in a
+# wire whose ends do not fit. `auto` picks the conversion by the input and output
+# capabilities (table in src/convert.rs); a non-empty `template` always wins.
+[[node]]
+type = "convert"
+name = "Convert"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "conversion"
+  type    = "select"
+  default = "auto"
+  options = ["auto", "same", "text_to_json", "json_to_text", "join", "split", "template"]
+
+  # `{{field}}`, `{{a.b}}` or `{{/a/0}}` from the value; `{{.}}` is the whole value.
+  [[node.field]]
+  id      = "template"
+  type    = "text"
+  default = ""
+
+  # What `join` puts between elements and `split` cuts at.
+  [[node.field]]
+  id      = "separator"
+  type    = "text"
+  default = "\n"
+
+  # json_to_text: indented JSON.
+  [[node.field]]
+  id      = "pretty"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]

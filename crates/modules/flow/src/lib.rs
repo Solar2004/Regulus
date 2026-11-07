@@ -1,10 +1,19 @@
-//! Flow logic (docs/13-blocks.md §3.2). Today one node, `call`: every value it receives
-//! starts a child execution of the workflow in its `workflow` field, fed on the input of
-//! the same id; the child's answer leaves on the output of the same id, and its end on
-//! `done`. The node declares those ports itself; nothing copies them from the workflow. Switch, Loop, Join and the rest come later.
+//! Flow logic (docs/13-blocks.md §3.2): the nodes that decide where a value goes next.
+//! `call` runs a workflow as a child execution per value; `switch` routes by rules;
+//! `fanout` copies or splits; `convert` changes what a value is between capabilities.
+//!
+//! None of them is a flow engine: each takes values over "then" wires and emits on its
+//! outputs, and the bus does the rest. Ports are declared on each node in the profile;
+//! nothing here assumes a capability except `convert`, whose job it is.
+
+mod convert;
+mod route;
+mod rule;
 
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
-use regulus_proto::{method, ChildEvent, ChildEventKind, Manifest, NodeCall, NodeEvent};
+use regulus_proto::{
+    method, ChildEvent, ChildEventKind, Direction, Manifest, NodeCall, NodeEvent, WireKind,
+};
 use serde_json::{json, Value};
 
 const MANIFEST: &str = include_str!("../regulus-module.toml");
@@ -13,13 +22,96 @@ const WORKFLOW_FIELD: &str = "workflow";
 /// The output that reports each child's end.
 const DONE_PORT: &str = "done";
 
+/// What a node of one type does with a value that arrives on one of its inputs.
+type OnEvent = fn(&Here, NodeEvent) -> Result<Value, ModuleError>;
+
+/// Every node type that takes values, by type. A new node is a row here.
+const EVENTS: &[(&str, OnEvent)] = &[
+    ("call", call_event),
+    ("switch", route::switch),
+    ("fanout", route::fanout),
+    ("convert", convert::event),
+];
+
 pub struct Flow {
     manifest: Manifest,
     ctx: ModuleCtx,
 }
 
-fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ModuleError> {
+pub(crate) fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ModuleError> {
     serde_json::from_value(params).map_err(|e| ModuleError::InvalidParams(e.to_string()))
+}
+
+/// One call to one node: the node with its settings, and how to act as it.
+pub(crate) struct Here<'a> {
+    pub flow: &'a Flow,
+    pub call: NodeCall,
+    pub me: NodeRef,
+}
+
+impl Here<'_> {
+    /// The node's own value for `field`, or the manifest's default.
+    pub fn setting(&self, field: &str) -> Option<&Value> {
+        self.flow.manifest.setting(&self.call.node, field)
+    }
+
+    /// A setting as text: a string as is, anything else as JSON, nothing as empty.
+    pub fn text(&self, field: &str) -> String {
+        self.setting(field).map(rule::text).unwrap_or_default()
+    }
+
+    pub fn emit(&self, port: &str, value: Value) -> Result<(), ModuleError> {
+        self.flow.ctx.emit(&self.me, port, value)
+    }
+
+    /// Emits each `(port, value)` in order and answers which ports got one.
+    pub fn send(&self, out: Vec<(String, Value)>) -> Result<Value, ModuleError> {
+        let mut ports = Vec::with_capacity(out.len());
+        for (port, value) in out {
+            self.emit(&port, value)?;
+            ports.push(port);
+        }
+        Ok(json!({ "sent": ports }))
+    }
+
+    /// The ids of the node's "then" ports facing `direction`, in declared order.
+    pub fn then_ports(&self, direction: Direction) -> Vec<String> {
+        self.call
+            .node
+            .ports
+            .iter()
+            .filter(|p| p.kind == WireKind::Then && p.direction == direction)
+            .map(|p| p.id.clone())
+            .collect()
+    }
+
+    /// The capability of one of the node's ports, if it has it.
+    pub fn capability(&self, port: &str) -> Option<&str> {
+        self.call.node.port(port).map(|p| p.capability.as_str())
+    }
+
+    pub fn ctx(&self) -> &ModuleCtx {
+        &self.flow.ctx
+    }
+}
+
+/// One value in, one child: the workflow gets it on its input of the same id.
+fn call_event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
+    let workflow = here
+        .setting(WORKFLOW_FIELD)
+        .and_then(Value::as_str)
+        .filter(|w| !w.is_empty())
+        .ok_or_else(|| {
+            ModuleError::InvalidParams(format!(
+                "node `{}` names no workflow in `{WORKFLOW_FIELD}`",
+                here.me.node_id
+            ))
+        })?
+        .to_string();
+    let child = here
+        .ctx()
+        .call_workflow(&here.me, &workflow, vec![(event.port, event.value)])?;
+    Ok(json!({ "execution_id": child }))
 }
 
 impl Flow {
@@ -30,57 +122,55 @@ impl Flow {
         }
     }
 
-    /// One value in, one child: the workflow gets it on its input of the same id.
-    fn event(&self, call: NodeCall) -> Result<Value, ModuleError> {
-        let event: NodeEvent = parse(call.args)?;
-        let workflow = self
-            .manifest
-            .setting(&call.node, WORKFLOW_FIELD)
-            .and_then(Value::as_str)
-            .filter(|w| !w.is_empty())
+    fn here(&self, call: NodeCall) -> Here<'_> {
+        let me = NodeRef {
+            execution_id: call.execution_id.clone(),
+            node_id: call.node.id.clone(),
+        };
+        Here {
+            flow: self,
+            call,
+            me,
+        }
+    }
+
+    fn event(&self, mut call: NodeCall) -> Result<Value, ModuleError> {
+        let event: NodeEvent = parse(std::mem::take(&mut call.args))?;
+        let (_, handle) = EVENTS
+            .iter()
+            .find(|(node_type, _)| *node_type == call.node.node_type)
             .ok_or_else(|| {
                 ModuleError::InvalidParams(format!(
-                    "node `{}` names no workflow in `{WORKFLOW_FIELD}`",
-                    call.node.id
+                    "node type `{}` takes no events",
+                    call.node.node_type
                 ))
-            })?
-            .to_string();
-        let node = NodeRef {
-            execution_id: call.execution_id,
-            node_id: call.node.id,
-        };
-        let child = self
-            .ctx
-            .call_workflow(&node, &workflow, vec![(event.port, event.value)])?;
-        Ok(json!({ "execution_id": child }))
+            })?;
+        handle(&self.here(call), event)
     }
 
     /// The child's answer leaves on the output of the same id; its end, on `done` if the
     /// node has it.
     fn child(&self, call: NodeCall) -> Result<Value, ModuleError> {
-        let child: ChildEvent = parse(call.args)?;
-        let node = NodeRef {
-            execution_id: call.execution_id,
-            node_id: call.node.id.clone(),
-        };
+        let child: ChildEvent = parse(call.args.clone())?;
+        let here = self.here(call);
         match child.kind {
             ChildEventKind::Returned { port, value, .. } => {
-                if call.node.port(&port).is_none() {
+                if here.call.node.port(&port).is_none() {
                     return Err(ModuleError::InvalidParams(format!(
                         "node `{}` has no output `{port}` for what `{}` returned",
-                        call.node.id, child.execution_id
+                        here.me.node_id, child.execution_id
                     )));
                 }
-                self.ctx.emit(&node, &port, value)?;
+                here.emit(&port, value)?;
             }
             ChildEventKind::Ended { state } => {
-                if call.node.port(DONE_PORT).is_some() {
+                if here.call.node.port(DONE_PORT).is_some() {
                     let end = json!({
                         "execution_id": child.execution_id,
                         "workflow_id": child.workflow_id,
                         "state": state,
                     });
-                    self.ctx.emit(&node, DONE_PORT, end)?;
+                    here.emit(DONE_PORT, end)?;
                 }
             }
         }
@@ -119,12 +209,19 @@ impl Module for Flow {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use regulus_proto::FIELD_WORKFLOW;
 
+    /// A `NodeCall` for a node of `node_type` with `config` and `ports`, as JSON.
+    pub fn node_call(node_type: &str, config: Value, ports: Value, args: Value) -> Value {
+        let node = json!({ "id": "n", "type": node_type, "module_id": "regulus/flow@0.1.0",
+                           "config": config, "ports": ports });
+        json!({ "execution_id": "e", "node": node, "args": args })
+    }
+
     #[test]
-    fn manifest_declares_call_with_a_workflow_field() {
+    fn manifest_declares_every_node_that_takes_events() {
         let manifest = Flow::new().manifest().clone();
         let call = manifest.node_type("call").unwrap();
         assert_eq!(
@@ -133,6 +230,10 @@ mod tests {
         );
         assert!(call.ports.iter().any(|p| p.id == DONE_PORT));
         assert!(manifest.module.methods.is_empty());
+        for (node_type, _) in EVENTS {
+            assert!(manifest.node_type(node_type).is_some(), "{node_type}");
+        }
+        assert_eq!(manifest.nodes.len(), EVENTS.len());
     }
 
     #[test]
@@ -140,10 +241,9 @@ mod tests {
         let flow = Flow::new();
         let event = json!({ "port": "in", "capability": "text@1", "value": "x",
             "from": { "node_id": "self", "port_id": "in" }, "event": 1 });
-        let node = json!({ "id": "c", "type": "call" });
         let result = flow.call(
             method::NODE_EVENT,
-            json!({ "execution_id": "e", "node": node, "args": event }),
+            node_call("call", json!({}), json!([]), event),
         );
         assert!(matches!(result, Err(ModuleError::InvalidParams(_))));
     }
