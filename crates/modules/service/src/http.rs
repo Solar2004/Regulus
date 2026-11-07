@@ -25,6 +25,8 @@ const MAX_HEADERS: usize = 64;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const LINGER: Duration = Duration::from_millis(100);
 const LINGER_BYTES: u64 = 64 * 1024;
+/// The most time writing one answer may take, however slowly the client reads.
+const WRITE_TIME: Duration = Duration::from_secs(5);
 /// The longest a `next` waits in one call: the module's lock is held meanwhile.
 pub const MAX_PULL: Duration = Duration::from_secs(1);
 const WORKFLOWS: &str = "/v1/workflows/";
@@ -102,17 +104,73 @@ fn write_reply(stream: &mut TcpStream, status: u16, body: &Value, retry_after: O
     let retry = retry_after
         .map(|s| format!("retry-after: {s}\r\n"))
         .unwrap_or_default();
-    let _ = write!(
-        stream,
+    let head = format!(
         "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-         {retry}connection: close\r\n\r\n{body}",
+         {retry}connection: close\r\n\r\n",
         reason(status),
         body.len()
     );
-    let _ = stream.flush();
+    let deadline = Instant::now() + WRITE_TIME;
+    if write_by(stream, head.as_bytes(), deadline) && write_by(stream, body.as_bytes(), deadline) {
+        let _ = stream.flush();
+    }
     let _ = stream.shutdown(std::net::Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(LINGER));
-    let _ = std::io::copy(&mut (&*stream).take(LINGER_BYTES), &mut std::io::sink());
+    linger(stream);
+}
+
+/// Writes all of `bytes` unless `deadline` passes first: a client that reads slowly
+/// cannot hold the connection past it.
+fn write_by(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> bool {
+    while !bytes.is_empty() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_write_timeout(Some(left)).is_err() {
+            return false;
+        }
+        match stream.write(bytes) {
+            Ok(0) => return false,
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Reads and drops what the client still sends, for `LINGER` in all, so closing does not
+/// reset the connection before it reads the answer. A client that trickles bytes gets no
+/// more time than one that sends nothing.
+fn linger(stream: &mut TcpStream) {
+    let deadline = Instant::now() + LINGER;
+    let mut chunk = [0u8; 4096];
+    let mut dropped = 0u64;
+    while dropped < LINGER_BYTES {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            return;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(n) => dropped += n as u64,
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Over the connection cap, on the accept thread: one non-blocking write of a 503 that
+/// fits any socket buffer, then close. No waiting, no lingering.
+fn refuse_fast(stream: TcpStream) {
+    let body = json!({ "error": "too many connections" }).to_string();
+    let reply = format!(
+        "HTTP/1.1 503 {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+         connection: close\r\n\r\n{body}",
+        reason(503),
+        body.len()
+    );
+    if stream.set_nonblocking(true).is_ok() {
+        let _ = (&stream).write(reply.as_bytes());
+    }
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 fn error(stream: &mut TcpStream, status: u16, message: &str) {
@@ -250,7 +308,7 @@ impl Engine {
                     if stopping.load(Ordering::SeqCst) {
                         break;
                     }
-                    let mut stream = match stream {
+                    let stream = match stream {
                         Ok(stream) => stream,
                         Err(error) => {
                             eprintln!("regulus: service: http {addr}: {error}");
@@ -264,7 +322,7 @@ impl Engine {
                     if engine.open.fetch_add(1, Ordering::SeqCst) >= engine.settings.max_connections
                     {
                         engine.open.fetch_sub(1, Ordering::SeqCst);
-                        error(&mut stream, 503, "too many connections");
+                        refuse_fast(stream);
                         continue;
                     }
                     let spawned = std::thread::Builder::new()
@@ -474,5 +532,91 @@ mod tests {
         assert!(wants_async(&head("async=1", &[])));
         assert!(wants_async(&head("", &[("Prefer", "respond-async")])));
         assert!(!wants_async(&head("asyncx=1", &[])));
+    }
+
+    fn engine(max_connections: usize, read_ms: u64) -> Arc<Engine> {
+        Engine::open(Settings {
+            bind: "127.0.0.1:0".into(),
+            max_body: 100,
+            read_timeout: Duration::from_millis(read_ms),
+            accept: Duration::from_millis(100),
+            max_wait: Duration::from_millis(100),
+            max_connections,
+        })
+        .unwrap()
+    }
+
+    fn status_of(stream: &mut TcpStream) -> u16 {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text);
+        text.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0)
+    }
+
+    fn wait_until(what: &str, done: impl Fn() -> bool) -> Duration {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(5), "{what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    fn a_large_body_gets_413_and_a_trickling_client_does_not_keep_the_slot() {
+        let engine = engine(4, 5000);
+        let mut stream = TcpStream::connect(engine.addr).unwrap();
+        write!(
+            stream,
+            "POST /v1/workflows/w HTTP/1.1\r\ncontent-length: 1000000\r\n\r\n"
+        )
+        .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let trickle = std::thread::spawn(move || {
+            for _ in 0..60 {
+                if writer.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        });
+        assert_eq!(status_of(&mut stream), 413);
+        let freed = wait_until("the slot is freed", || {
+            engine.open.load(Ordering::SeqCst) == 0
+        });
+        assert!(freed < Duration::from_millis(1000), "{freed:?}");
+        drop(stream);
+        let _ = trickle.join();
+        engine.close();
+    }
+
+    #[test]
+    fn a_slow_head_gets_408() {
+        let engine = engine(4, 200);
+        let mut stream = TcpStream::connect(engine.addr).unwrap();
+        write!(stream, "POST /v1/workflows/w HTTP/1.1\r\n").unwrap();
+        assert_eq!(status_of(&mut stream), 408);
+        engine.close();
+    }
+
+    #[test]
+    fn over_the_cap_gets_503_at_once_and_accept_goes_on() {
+        let engine = engine(1, 3000);
+        // Holds the only slot: a head that never ends.
+        let mut stalled = TcpStream::connect(engine.addr).unwrap();
+        write!(stalled, "POST /v1/").unwrap();
+        wait_until("the first connection is open", || {
+            engine.open.load(Ordering::SeqCst) == 1
+        });
+        // One that never reads must not freeze the accept loop for the next.
+        let _silent = TcpStream::connect(engine.addr).unwrap();
+        let started = Instant::now();
+        let mut next = TcpStream::connect(engine.addr).unwrap();
+        assert_eq!(status_of(&mut next), 503);
+        assert!(started.elapsed() < Duration::from_millis(1000));
+        drop(stalled);
+        engine.close();
     }
 }
