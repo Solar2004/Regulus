@@ -1,0 +1,44 @@
+# Two greeters joined by a "then" wire (docs/11-composition.md §4): when `ana` starts it
+# emits its greeting on `tick`, and the bus delivers it to the `echo` input of `bob`.
+# Copy it to ~/.regulus/profiles/, start `regulus serve`, then:
+#
+#   regulus run then          # starts it and prints the emitted and delivered events
+#   regulus events            # every bus event kept, oldest first
+id = "then"
+name = "Then wire"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Then wire"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "ana"
+  name = "Ana"
+  type = "greeter"
+  module_id = "regulus/hello@0.1.0"
+  position = { x = 50, y = 100 }
+  config = { name = "Ana" }
+  ports = [
+    { id = "tick", capability = "text@1", direction = "output", kind = "then" },
+    { id = "echo", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "bob"
+  name = "Bob"
+  type = "greeter"
+  module_id = "regulus/hello@0.1.0"
+  position = { x = 350, y = 100 }
+  config = { name = "Bob" }
+  ports = [
+    { id = "tick", capability = "text@1", direction = "output", kind = "then" },
+    { id = "echo", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.wires]]
+  id = "ana-to-bob"
+  kind = "then"
+  from = { node_id = "ana", port_id = "tick" }
+  to = { node_id = "bob", port_id = "echo" }
