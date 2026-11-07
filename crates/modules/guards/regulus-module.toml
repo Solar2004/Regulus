@@ -1,0 +1,306 @@
+[module]
+id             = "regulus/guards@0.1.0"
+name           = "Guards"
+requires_proto = "^1.8"
+
+# Wrappers for "then" wires (docs/13-blocks.md §3.2, docs/00-principles.md rule 4): each
+# node takes a value on `in` and gives the same value on `out`, so it goes in any wire.
+# The capability below is only the template's: a node declares `in`, `out` and the ports
+# that carry the value (`exceeded`, `gave_up`, `timeout`, `stuck`, `restart`) with the
+# capability of the wire it sits in, any one, and `node/start` refuses a node whose
+# ports do not share it. They act per workflow step, per node and execution; wrappers
+# per request to a model (Pool, Plan B, Router) are not here: they need the gateway.
+
+# Lets values through until a limit: how many, for how long since the first, or how much
+# they cost. Past it, the value goes to `exceeded` instead, and so does every later one
+# until `reset`. Several in a row compose. Counters survive a restart (checkpoint), and
+# `max_ms` is wall clock: the time the core was down counts. Limits are checked only when
+# a value arrives; nothing fires on its own.
+[[node]]
+type = "budget"
+name = "Budget"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # What came in, forwarded.
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The value refused for being over budget.
+  [[node.port]]
+  id         = "exceeded"
+  name       = "exceeded"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Any value here sets the counters back to zero.
+  [[node.port]]
+  id          = "reset"
+  name        = "reset"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Values let through. 0: no limit.
+  [[node.field]]
+  id      = "max_items"
+  type    = "number"
+  default = 10
+
+  # Milliseconds since the first value. 0: no limit.
+  [[node.field]]
+  id      = "max_ms"
+  type    = "number"
+  default = 0
+
+  # Cost units, summed from `cost_path` of each value. 0: no limit.
+  [[node.field]]
+  id      = "max_cost"
+  type    = "number"
+  default = 0
+
+  # JSON pointer to a number in the value (`/usage/cost`). Empty, missing or negative:
+  # costs 0.
+  [[node.field]]
+  id      = "cost_path"
+  type    = "text"
+  default = ""
+
+# Forwards `in` to `out` and remembers it. A value on `fail` sends one out again after a
+# backoff, up to `max_retries` times; one more and it goes to `gave_up`. Which one: the
+# `value` field of the failure if it has one (`error@1`), else the last on `in`, which
+# assumes one value in flight at a time. A new value on `in` starts its own count and
+# does not cancel retries already waiting; at most `max_pending` wait at once.
+[[node]]
+type = "retry"
+name = "Retry"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # What came in, forwarded.
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The step failed: try again its `value`, or the last value.
+  [[node.port]]
+  id          = "fail"
+  name        = "fail"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The last value, after `max_retries` failed retries.
+  [[node.port]]
+  id         = "gave_up"
+  name       = "gave_up"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Retries per value.
+  [[node.field]]
+  id      = "max_retries"
+  type    = "number"
+  default = 3
+
+  # Milliseconds before the first retry.
+  [[node.field]]
+  id      = "backoff_ms"
+  type    = "number"
+  default = 1000
+
+  # Each retry waits this many times longer than the one before.
+  [[node.field]]
+  id      = "backoff_factor"
+  type    = "number"
+  default = 2
+
+  # The longest wait between retries.
+  [[node.field]]
+  id      = "max_backoff_ms"
+  type    = "number"
+  default = 60000
+
+  # Values waiting for a retry at once; one more failure is refused.
+  [[node.field]]
+  id      = "max_pending"
+  type    = "number"
+  default = 8
+
+# Forwards `in` to `out` and starts a clock for it. A value on `ack` stops the clock of
+# the value it names (by `key_path`, or equal as a whole), else the oldest; one that runs
+# out sends its value to `timeout`. Nothing waits on the bus thread: one timer thread
+# serves every guard. Times below 1 ms count as 1 ms.
+[[node]]
+type = "timeout"
+name = "Timeout"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # What came in, forwarded.
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The step answered: for the value it names, or the oldest.
+  [[node.port]]
+  id          = "ack"
+  name        = "ack"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # A value nobody acknowledged in time.
+  [[node.port]]
+  id         = "timeout"
+  name       = "timeout"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Milliseconds a value has to be acknowledged.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 60000
+
+  # JSON pointer to what identifies a value (`/id`), in what comes in and in the ack.
+  # Empty: the whole value.
+  [[node.field]]
+  id      = "key_path"
+  type    = "text"
+  default = ""
+
+# The explicit fail branch made uniform: whatever arrives on `fail` (a command's exit, a
+# gate's value, a guard's refusal) leaves on `error` as `error@1`:
+# `{ from: { node_id, port_id }, message, value, at }`. It only sees what is wired into it:
+# a delivery the bus reports as `failed`, or a node that fails to start, is not sent to
+# any node; those show in `regulus events` and in the execution's state.
+[[node]]
+type = "error"
+name = "Error"
+
+  [[node.port]]
+  id          = "fail"
+  name        = "fail"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "error@1"
+  direction  = "output"
+  kind       = "then"
+
+# A step that stalls: a value on `in` (forwarded to `out`) makes it busy, any value on
+# `progress` resets its clock and one on `done` makes it idle. Busy for `stall_ms`
+# without progress: the last value goes to `stuck`, and with `restart = yes` also to
+# `restart` to run the step again, at most `max_restarts` times.
+[[node]]
+type = "watchdog"
+name = "Watchdog"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # What came in, forwarded.
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Any value: the step is alive.
+  [[node.port]]
+  id          = "progress"
+  name        = "progress"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value: the step is over.
+  [[node.port]]
+  id          = "done"
+  name        = "done"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The value of a step that stalled.
+  [[node.port]]
+  id         = "stuck"
+  name       = "stuck"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The same value, to run the step again.
+  [[node.port]]
+  id         = "restart"
+  name       = "restart"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Milliseconds busy without progress before it counts as stuck.
+  [[node.field]]
+  id      = "stall_ms"
+  type    = "number"
+  default = 300000
+
+  # yes: a stuck step is also sent to `restart`.
+  [[node.field]]
+  id      = "restart"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # Restarts per value on `in`; after them it only reports `stuck`.
+  [[node.field]]
+  id      = "max_restarts"
+  type    = "number"
+  default = 1

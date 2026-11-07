@@ -1,0 +1,179 @@
+# Ralph's backpressure without the agent (docs/13-blocks.md §5, §6): a task goes round
+# until a deterministic gate passes, bounded by a budget.
+#
+#   self.task → retry → budget → work (Command) → gate (Gate) → self.passed
+#                 ▲                    │ fail            │ fail
+#                 └────────────────────┼─────────────────┘
+#                                      └→ error (Error) → self.error
+#
+# `work` stands in for the agent: it counts its attempts at a task in a file of its own
+# directory and prints the count. `gate` passes once a task took 2 attempts. `retry` sends
+# a failed task again after 200 ms (twice at most, then `gave_up`); `budget` lets 3
+# attempts through per execution, then `exceeded`. Attempt files stay in work's directory
+# (<home>/data/global/regulus/process/ralph/work/): use a new task name per try.
+# Needs only `process` and `guards`. Copy it to <home>/profiles/, start `regulus serve`, then:
+#
+#   regulus run ralph --detach               # exec-3  ralph  running
+#   regulus send exec-3 task alpha           # returns when the bus is idle; then
+#   regulus events --execution exec-3 | grep emitted
+#     self.task emitted text@1 "alpha" (depth 0)
+#     retry.out emitted text@1 "alpha" (depth 1)
+#     budget.out emitted text@1 "alpha" (depth 2)
+#     work.stdout emitted text@1 "1" (depth 0)      ← its own thread: a new chain
+#     gate.fail emitted text@1 "1" (depth 0)
+#     retry.out emitted text@1 "alpha" (depth 0)    ← 200 ms later, from the timer
+#     budget.out emitted text@1 "alpha" (depth 1)
+#     work.stdout emitted text@1 "2" (depth 0)
+#     gate.pass emitted text@1 "2" (depth 0)
+#     self.passed emitted text@1 "2" (depth 1)
+#   regulus send exec-3 task beta            # the third attempt of the execution…
+#     work.stdout emitted text@1 "1" · gate.fail emitted text@1 "1"
+#     retry.out emitted text@1 "beta" (depth 0)
+#     budget.exceeded emitted text@1 "beta" (depth 1)
+#     self.exceeded emitted text@1 "beta" (depth 2)   ← …and the fourth is refused
+#   regulus run ralph --detach && regulus send exec-4 task no/such
+#     self.error emitted error@1 {"from":{"node_id":"work","port_id":"fail"},
+#       "message":"sh: line 1: no/such.attempts: No such file or directory",
+#       "value":{"code":1,"ms":2,"stdout":"","stderr":"sh: line 1: …"},"at":…}
+#
+# (Observed 2026-11-07 with `regulus serve --port 0`, debug build.)
+id = "ralph"
+name = "Backpressure"
+main_workflow_id = "ralph"
+
+[[workflows]]
+id = "ralph"
+name = "Backpressure"
+kind = "main"
+ports = [
+  { id = "task", capability = "text@1", direction = "input", kind = "then" },
+  { id = "passed", capability = "text@1", direction = "output", kind = "then" },
+  { id = "gave_up", capability = "text@1", direction = "output", kind = "then" },
+  { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "error@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "retry"
+  name = "Retry"
+  type = "retry"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 150, y = 100 }
+  config = { max_retries = 2, backoff_ms = 200 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "gave_up", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "budget"
+  name = "Budget"
+  type = "budget"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 300, y = 100 }
+  config = { max_items = 3 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "work"
+  name = "Work (agent stand-in)"
+  type = "command"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 450, y = 100 }
+  config = { command = "sh", args = ["-c", 'echo . >> "$1.attempts" && wc -l < "$1.attempts" | tr -d " "', "sh", "{{input}}"] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "stdout", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Gate"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 600, y = 100 }
+  config = { command = "sh", args = ["-c", 'test "$1" -ge 2', "sh", "{{input}}"] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "error"
+  name = "Error"
+  type = "error"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 600, y = 250 }
+  config = {}
+  ports = [
+    { id = "fail", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "error", capability = "error@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "self-task-retry-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "task" }
+  to = { node_id = "retry", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "retry-out-budget-in"
+  kind = "then"
+  from = { node_id = "retry", port_id = "out" }
+  to = { node_id = "budget", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "budget-out-work-in"
+  kind = "then"
+  from = { node_id = "budget", port_id = "out" }
+  to = { node_id = "work", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "work-stdout-gate-in"
+  kind = "then"
+  from = { node_id = "work", port_id = "stdout" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-pass-self-passed"
+  kind = "then"
+  from = { node_id = "gate", port_id = "pass" }
+  to = { node_id = "self", port_id = "passed" }
+
+  [[workflows.wires]]
+  id = "gate-fail-retry-fail"
+  kind = "then"
+  from = { node_id = "gate", port_id = "fail" }
+  to = { node_id = "retry", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "retry-gave_up-self-gave_up"
+  kind = "then"
+  from = { node_id = "retry", port_id = "gave_up" }
+  to = { node_id = "self", port_id = "gave_up" }
+
+  [[workflows.wires]]
+  id = "budget-exceeded-self-exceeded"
+  kind = "then"
+  from = { node_id = "budget", port_id = "exceeded" }
+  to = { node_id = "self", port_id = "exceeded" }
+
+  [[workflows.wires]]
+  id = "work-fail-error-fail"
+  kind = "then"
+  from = { node_id = "work", port_id = "fail" }
+  to = { node_id = "error", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "error-error-self-error"
+  kind = "then"
+  from = { node_id = "error", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }

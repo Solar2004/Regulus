@@ -24,6 +24,8 @@ members = [
     "crates/modules/tools-mcp",
     "crates/modules/files",
     "crates/regulus-tauri/src-tauri",
+    "crates/modules/process",
+    "crates/modules/guards",
 ]
 resolver = "2"
 

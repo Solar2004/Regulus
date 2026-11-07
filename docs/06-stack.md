@@ -56,6 +56,7 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Expresiones regulares | **`regex`** | `1.13` (1.13.1, verif. 2026-11-07) | Reglas `regex` de `switch` y `loop` en `flow`. Ya estaba en el lock por otras dependencias. |
 | Globs | **`glob`** | `0.3.4` (verif. 2026-11-07) | `read` de `files` con `specs/*.md`. Del equipo de Rust, sin dependencias. |
 | Observar ficheros | **`notify`** | `8.2` (8.2.1, verif. 2026-11-07; licencia CC0-1.0) | `watch` de `files`: inotify, FSEvents y ReadDirectoryChanges detrás de una API. La 9 sigue en `rc`. |
+| Señales a grupos de procesos | **`libc`** | `0.2` (`0.2.191`, verif. 2026-11-07) | `killpg` para que `process` mate el grupo entero de un comando o job; solo Unix. Ya venía por `portable-pty`. |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,

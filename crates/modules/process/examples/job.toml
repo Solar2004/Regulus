@@ -1,0 +1,85 @@
+# A long job (docs/13-blocks.md §3.2): every value sent to `run` starts `sleep <value>`
+# with its output logged to <node dir>/logs/<n>.log. `started` says its pid and log;
+# it ends on `done`, on `fail` or, past 45 s, on `timeout`. Stopping the execution kills
+# its process group and waits for it: nothing is left behind.
+# Copy it to <home>/profiles/, start `regulus serve`, then:
+#
+#   regulus run job --detach                 # exec-1  main  running
+#   regulus send exec-1 run 30
+#     self.run emitted text@1 30 (depth 0)
+#     sleeper.started emitted job@1 {"job":1,"pid":2111340,"log":"<home>/data/global/
+#       regulus/process/main/sleeper/logs/1.log"} (depth 1)
+#     self.run → sleeper.in delivered · sleeper.started → self.started delivered
+#     self.started emitted job@1 {…same…} (depth 2)
+#   pgrep -a -x sleep                        # 2111340 sleep 30
+#   regulus stop exec-1                      # exec-1  main  stopped
+#   pgrep -a -x sleep                        # no 2111340; /proc/2111340 is gone, no zombie
+#
+#   regulus run job --detach && regulus send exec-2 run 1      # a second later:
+#     self.done emitted exit@1 {"code":0,"ms":1001,"stdout":"","stderr":"","job":2,
+#                               "log":"…/logs/2.log","tail":""}
+#   regulus send exec-2 run nope
+#     self.fail emitted exit@1 {"code":1,"ms":1,…,"job":3,"log":"…/logs/3.log",
+#                               "tail":"sleep: invalid time interval 'nope'…"}
+#
+# (Observed 2026-11-07 with `regulus serve --port 0`, debug build.)
+id = "job"
+name = "Long job"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Long job"
+kind = "main"
+ports = [
+  { id = "run", capability = "text@1", direction = "input", kind = "then" },
+  { id = "started", capability = "job@1", direction = "output", kind = "then" },
+  { id = "done", capability = "exit@1", direction = "output", kind = "then" },
+  { id = "fail", capability = "exit@1", direction = "output", kind = "then" },
+  { id = "timeout", capability = "exit@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "sleeper"
+  name = "Sleeper"
+  type = "job"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 200, y = 100 }
+  config = { command = "sleep", args = ["{{input}}"], timeout_ms = 45000, tail_lines = 5 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "started", capability = "job@1", direction = "output", kind = "then" },
+    { id = "done", capability = "exit@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "exit@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "run-sleeper"
+  kind = "then"
+  from = { node_id = "self", port_id = "run" }
+  to = { node_id = "sleeper", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "sleeper-started"
+  kind = "then"
+  from = { node_id = "sleeper", port_id = "started" }
+  to = { node_id = "self", port_id = "started" }
+
+  [[workflows.wires]]
+  id = "sleeper-done"
+  kind = "then"
+  from = { node_id = "sleeper", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "sleeper-fail"
+  kind = "then"
+  from = { node_id = "sleeper", port_id = "fail" }
+  to = { node_id = "self", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "sleeper-timeout"
+  kind = "then"
+  from = { node_id = "sleeper", port_id = "timeout" }
+  to = { node_id = "self", port_id = "timeout" }
