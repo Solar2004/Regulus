@@ -325,3 +325,115 @@ fn a_node_emits_only_on_its_then_outputs() {
     };
     assert!(ModuleCtx::default().emit(&a, "out", json!("x")).is_err());
 }
+
+// --- across a workflow's boundary --------------------------------------------------------
+
+fn text_ports() -> Value {
+    json!([
+        { "id": "ask", "capability": "text@1", "direction": "input", "kind": "then" },
+        { "id": "reply", "capability": "text@1", "direction": "output", "kind": "then" },
+    ])
+}
+
+fn wire(id: &str, from: (&str, &str), to: (&str, &str)) -> Value {
+    json!({ "id": id, "kind": "then",
+            "from": { "node_id": from.0, "port_id": from.1 },
+            "to": { "node_id": to.0, "port_id": to.1 } })
+}
+
+fn a_box(id: &str, workflow: &str) -> Value {
+    json!({ "id": id, "type": "workflow", "internal_workflow_id": workflow })
+}
+
+/// `main`: `a` says hi into box `outer` (workflow `mid`), whose reply reaches `b`. `mid`
+/// passes it through box `inner` (workflow `leaf`), where `x` relays it back out.
+fn nested() -> Profile {
+    serde_json::from_value(json!({
+        "id": "p", "project_id": "proj", "main_workflow_id": "main",
+        "workflows": [
+            { "id": "main", "kind": "main",
+              "nodes": [node("a", json!({ "say": "hi" }), "text@1", "text@1"),
+                        a_box("outer", "mid"),
+                        node("b", json!({}), "text@1", "text@1")],
+              "wires": [wire("w1", ("a", "out"), ("outer", "ask")),
+                        wire("w2", ("outer", "reply"), ("b", "in"))] },
+            { "id": "mid", "kind": "extra", "ports": text_ports(),
+              "nodes": [a_box("inner", "leaf")],
+              "wires": [wire("w1", ("self", "ask"), ("inner", "ask")),
+                        wire("w2", ("inner", "reply"), ("self", "reply"))] },
+            { "id": "leaf", "kind": "extra", "ports": text_ports(),
+              "nodes": [node("x", json!({ "relay": true }), "text@1", "text@1")],
+              "wires": [wire("w1", ("self", "ask"), ("x", "in")),
+                        wire("w2", ("x", "out"), ("self", "reply"))] },
+        ]
+    }))
+    .unwrap()
+}
+
+fn emitted_from(page: &EventPage) -> Vec<(String, u32)> {
+    page.events
+        .iter()
+        .filter(|e| matches!(e.kind, BusEventKind::Emitted { .. }))
+        .map(|e| (format!("{}.{}", e.from.node_id, e.from.port_id), e.depth))
+        .collect()
+}
+
+#[test]
+fn a_value_crosses_two_levels_of_boxes_in_and_back_out() {
+    let profile = nested();
+    assert_eq!(check_profile(&profile, |_| true), []);
+    let (core, log) = core(profile, 64);
+    let (_, page) = run(&core);
+    assert_eq!(
+        log.lock().unwrap().as_slice(),
+        [
+            r#"outer/inner/x.in <- outer/inner.ask "hi""#,
+            r#"b.in <- outer.reply "hi""#
+        ]
+    );
+    // Every crossing is a delivery to the box port and an emission from it.
+    assert_eq!(
+        emitted_from(&page),
+        [
+            ("a.out".into(), 0),
+            ("outer.ask".into(), 1),
+            ("outer/inner.ask".into(), 2),
+            ("outer/inner/x.out".into(), 3),
+            ("outer/inner.reply".into(), 4),
+            ("outer.reply".into(), 5),
+        ]
+    );
+    assert!(!kinds(&page).contains(&"failed"), "{page:#?}");
+}
+
+#[test]
+fn the_depth_cut_counts_deliveries_across_levels() {
+    let (core, log) = core(nested(), 3);
+    let (_, page) = run(&core);
+    // `x` gets it at depth 2 and emits at 3; crossing back out at 4 is cut.
+    assert_eq!(log.lock().unwrap().len(), 1);
+    let cut = page
+        .events
+        .iter()
+        .find(|e| matches!(e.kind, BusEventKind::Cut { .. }))
+        .unwrap();
+    assert_eq!(cut.depth, 4);
+    assert_eq!(cut.from.node_id, "outer/inner");
+    assert_eq!(cut.from.port_id, "reply");
+}
+
+#[test]
+fn the_queue_bound_holds_across_the_boundary() {
+    // `a` fans out to `b` and to the box; the queue holds one, so the box gets nothing.
+    let mut profile = nested();
+    let main = &mut profile.workflows[0];
+    main.wires.insert(
+        0,
+        serde_json::from_value(wire("w0", ("a", "out"), ("b", "in"))).unwrap(),
+    );
+    let (core, log) = core_with(profile, 64, 1);
+    let (_, page) = run(&core);
+    assert_eq!(log.lock().unwrap().as_slice(), [r#"b.in <- a.out "hi""#]);
+    assert!(page.events.iter().any(|e| matches!(&e.kind,
+        BusEventKind::Failed { to, error } if to.node_id == "outer" && error.contains("queue is full"))));
+}

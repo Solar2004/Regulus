@@ -441,6 +441,18 @@ fn inline<'a>(
     Ok(())
 }
 
+/// The boundary port at `end` of a running copy: a port of the workflow itself (`self`)
+/// or of a box node. A value that reaches one is passed on from it, to whatever is wired
+/// on its other side.
+pub(crate) fn boundary<'a>(plan: &'a Workflow, end: &PortRef) -> Option<&'a Port> {
+    if end.node_id == WORKFLOW_SELF {
+        return plan.port(&end.port_id);
+    }
+    plan.node(&end.node_id)
+        .filter(|node| node.is_box())
+        .and_then(|node| node.port(&end.port_id))
+}
+
 /// The order in which a workflow's nodes start: whatever a node uses over a "uses" wire
 /// starts before it, unless the wire ends in a lazy input. Nodes caught in a cycle keep
 /// their declared order, after the rest.
