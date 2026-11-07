@@ -4104,6 +4104,7 @@ dependencies = [
  "regulus-module-hello",
  "regulus-module-hooks",
  "regulus-module-judge",
+ "regulus-module-memory",
  "regulus-module-process",
  "regulus-module-providers",
  "regulus-module-skills",
@@ -4301,6 +4302,20 @@ dependencies = [
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
  "ureq",
+]
+
+[[package]]
+name = "regulus-module-memory"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-skill",
+ "regulus-contract-tool",
+ "regulus-core",
+ "regulus-module-skills",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
