@@ -215,3 +215,195 @@ fn opened_projects_load_again_from_config() {
     assert_eq!(projects.iter().count(), 0);
     assert!(warnings[0].contains("is not open"), "{warnings:?}");
 }
+
+const PROFILE: &str = r#"id = "{id}"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "echo"
+  type = "echo"
+  module_id = "test/echo@0.1.0"
+"#;
+
+fn profile_text(id: &str) -> String {
+    PROFILE.replace("{id}", id)
+}
+
+const TEMPLATE: &str = r#"id = "{{id}}"
+main_workflow_id = "main"
+
+[template]
+name = "{name}"
+
+[template.vars]
+id = { default = "{name}" }
+
+[[workflows]]
+id = "main"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "echo"
+  type = "echo"
+  module_id = "test/echo@0.1.0"
+"#;
+
+fn template_text(name: &str) -> String {
+    TEMPLATE.replace("{name}", name)
+}
+
+fn profiles(s: &Setup) -> Vec<(String, Value)> {
+    let list = s.call(method::PROFILE_LIST, json!({})).unwrap();
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["id"].as_str().unwrap().to_string(),
+                p["project_id"].clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_projects_profiles_load_with_its_id_and_leave_when_it_closes() {
+    let s = Setup::new("profiles");
+    let demo = s.folder("demo");
+    let dir = demo.join(".regulus/profiles");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("mine.toml"), profile_text("mine")).unwrap();
+    fs::write(
+        dir.join("other.toml"),
+        profile_text("other").replace(
+            "main_workflow_id",
+            "project_id = \"elsewhere\"\nmain_workflow_id",
+        ),
+    )
+    .unwrap();
+    let opened = open(&s, &demo);
+    assert!(
+        opened["warnings"]
+            .to_string()
+            .contains("says project_id `elsewhere`"),
+        "{opened}"
+    );
+    assert_eq!(
+        profiles(&s),
+        [
+            ("mine".into(), json!("demo")),
+            ("other".into(), json!("demo"))
+        ]
+    );
+    let filtered = s
+        .call(method::PROFILE_LIST, json!({ "project_id": "demo" }))
+        .unwrap();
+    assert_eq!(filtered.as_array().unwrap().len(), 2);
+
+    // Saved with its project_id, a profile goes to the project's folder.
+    let mut saved: Value = toml::from_str::<toml::Table>(&profile_text("new"))
+        .map(|t| serde_json::to_value(t).unwrap())
+        .unwrap();
+    saved["project_id"] = json!("demo");
+    let written = s
+        .call(method::PROFILE_SAVE, json!({ "profile": saved }))
+        .unwrap();
+    assert_eq!(written["path"], dir.join("new.toml").display().to_string());
+
+    let deleted = s
+        .call(method::PROFILE_DELETE, json!({ "id": "new" }))
+        .unwrap();
+    assert_eq!(deleted["profile_id"], "new");
+    assert!(!dir.join("new.toml").exists());
+
+    s.call(method::PROJECT_CLOSE, json!({ "id": "demo" }))
+        .unwrap();
+    assert!(profiles(&s).is_empty());
+    assert!(dir.join("mine.toml").exists());
+}
+
+#[test]
+fn project_templates_are_listed_and_applied_into_the_project() {
+    let s = Setup::new("templates");
+    let global = s.folder("global-templates");
+    fs::write(global.join("shared.toml"), template_text("shared")).unwrap();
+    s.core.set_template_places(regulus_core::templates::Places {
+        templates: vec![global],
+        profiles_dir: Some(s.dir.join("home/profiles")),
+        profile_paths: vec![s.dir.join("home/profiles")],
+        home: Some(s.dir.join("home")),
+    });
+    let demo = s.folder("demo");
+    fs::create_dir_all(demo.join(".regulus/templates")).unwrap();
+    fs::write(
+        demo.join(".regulus/templates/local.toml"),
+        template_text("local"),
+    )
+    .unwrap();
+    open(&s, &demo);
+
+    let list = s.call(method::TEMPLATE_LIST, Value::Null).unwrap();
+    let names: Vec<(&str, &Value)> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), &t["project_id"]))
+        .collect();
+    assert_eq!(names, [("shared", &Value::Null), ("local", &json!("demo"))]);
+    let got = s
+        .call(method::TEMPLATE_GET, json!({ "template": "local" }))
+        .unwrap();
+    assert!(got["path"].as_str().unwrap().contains(".regulus/templates"));
+
+    // A global template, applied into the project.
+    let applied = s
+        .call(
+            method::TEMPLATE_APPLY,
+            json!({ "template": "shared", "project_id": "demo" }),
+        )
+        .unwrap();
+    let written = demo.join(".regulus/profiles/shared.toml");
+    assert_eq!(applied["path"], written.display().to_string());
+    assert!(fs::read_to_string(&written)
+        .unwrap()
+        .contains("project_id = \"demo\""));
+
+    // A project's template goes to its project without saying so; a global one stays global.
+    let local = s
+        .call(method::TEMPLATE_APPLY, json!({ "template": "local" }))
+        .unwrap();
+    assert!(local["path"]
+        .as_str()
+        .unwrap()
+        .contains(".regulus/profiles"));
+    let plain = s
+        .call(
+            method::TEMPLATE_APPLY,
+            json!({ "template": "shared", "vars": { "id": "plain" } }),
+        )
+        .unwrap();
+    assert_eq!(
+        plain["path"],
+        s.dir.join("home/profiles/plain.toml").display().to_string()
+    );
+    let mut found = profiles(&s);
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        found,
+        [
+            ("local".into(), json!("demo")),
+            ("plain".into(), Value::Null),
+            ("shared".into(), json!("demo"))
+        ]
+    );
+
+    let unknown = s.call(
+        method::TEMPLATE_APPLY,
+        json!({ "template": "shared", "project_id": "nope" }),
+    );
+    assert_eq!(unknown.unwrap_err().0, code::PROJECT_NOT_FOUND);
+}

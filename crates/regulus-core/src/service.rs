@@ -378,7 +378,7 @@ impl Core {
             return Ok(self.project_summary(open));
         }
         projects::ensure_file(&root)?;
-        let project = Project::load(&root)?;
+        let mut project = Project::load(&root)?;
         if let Some(other) = self.projects().get(&project.id) {
             return Err(ProjectError::Exists(format!(
                 "project `{}` is already open at {}; give this one another `[project] id`",
@@ -390,6 +390,12 @@ impl Core {
         if let Some(home) = &home {
             projects::remember(&home.config, &home.home, &root)?;
         }
+        let found = self
+            .profiles
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .load_project(&project.id, &project.profiles);
+        project.warnings.extend(found);
         let summary = self.project_summary(&project);
         self.projects
             .write()
@@ -415,6 +421,10 @@ impl Core {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&project.id);
+        self.profiles
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove_project(&project.id, &project.profiles);
         Ok(self.project_summary(&project))
     }
 
@@ -429,12 +439,89 @@ impl Core {
             .clone()
     }
 
+    /// Where templates are looked up, with the project each place belongs to: `first`'s
+    /// templates (an open project), then the global ones, then every other open project's.
+    fn template_sources(&self, first: Option<&str>) -> Vec<(Places, Option<String>)> {
+        let global = self.template_places();
+        let project_places = |project: &Project| Places {
+            templates: project.templates.clone(),
+            ..global.clone()
+        };
+        let projects = self.projects();
+        let mut sources = Vec::new();
+        if let Some(project) = first.and_then(|id| projects.get(id)) {
+            sources.push((project_places(project), Some(project.id.clone())));
+        }
+        sources.push((global.clone(), None));
+        for project in projects.iter().filter(|p| Some(p.id.as_str()) != first) {
+            sources.push((project_places(project), Some(project.id.clone())));
+        }
+        sources
+    }
+
+    /// A template by name, in the order of [`Core::template_sources`], or by path; with the
+    /// project it belongs to.
+    fn find_template(
+        &self,
+        wanted: &str,
+        project: Option<&str>,
+    ) -> Result<(templates::Template, Option<String>), RpcError> {
+        let mut searched = Vec::new();
+        for (places, owner) in self.template_sources(project) {
+            match templates::find(&places, wanted) {
+                Ok(template) => return Ok((template, owner.or(project.map(Into::into)))),
+                Err(TemplateError::NotFound(_)) => {
+                    searched.extend(places.templates.iter().map(|p| p.display().to_string()))
+                }
+                Err(other) => return Err(other.into()),
+            }
+        }
+        Err(TemplateError::NotFound(format!(
+            "no template named `{wanted}` in {}",
+            searched.join(", ")
+        ))
+        .into())
+    }
+
+    /// `template.list`: the global templates, then each open project's, tagged with it.
+    fn list_templates(&self) -> Vec<regulus_proto::TemplateSummary> {
+        self.template_sources(None)
+            .into_iter()
+            .flat_map(|(places, owner)| {
+                templates::list(&places).into_iter().map(move |mut t| {
+                    t.project_id = owner.clone();
+                    t
+                })
+            })
+            .collect()
+    }
+
+    /// Where a profile of `project_id` is written: the first profiles path of its project
+    /// if it is open, else the first `[profiles] paths` entry.
+    fn profiles_dir(&self, project_id: Option<&str>) -> Result<PathBuf, RpcError> {
+        if let Some(project) = project_id.and_then(|id| self.projects().get(id).cloned()) {
+            return project.profiles.first().cloned().ok_or_else(|| {
+                TemplateError::Io(format!(
+                    "project `{}` has no profiles path to write to",
+                    project.id
+                ))
+                .into()
+            });
+        }
+        self.template_places().profiles_dir.ok_or_else(|| {
+            TemplateError::Io("no [profiles] paths entry to write the profile to".into()).into()
+        })
+    }
+
     /// `template.apply`: renders, checks the modules it requires and the profile it makes,
     /// then writes the copy and loads it. Nothing is written unless every check passes, and
     /// an existing profile is only replaced with `force`.
     fn apply_template(&self, params: TemplateApplyParams) -> Result<TemplateApplied, RpcError> {
-        let places = self.template_places();
-        let template = templates::find(&places, &params.template)?;
+        if let Some(id) = &params.project_id {
+            self.project(id)?;
+        }
+        let (template, project) =
+            self.find_template(&params.template, params.project_id.as_deref())?;
         let mut values = std::collections::BTreeMap::new();
         for (name, value) in params.vars {
             let text = match value {
@@ -450,6 +537,9 @@ impl Core {
         }
         templates::check_requires(&template.requires, self.registry.ids())?;
         let mut text = templates::render(&template, &values)?;
+        if let Some(project) = &project {
+            text = templates::set_project(&text, project);
+        }
         let mut profile = templates::profile_of(&template, &text)?;
         if let Some(id) = params.id.filter(|id| *id != profile.id) {
             templates::file_name(&id)?;
@@ -469,9 +559,7 @@ impl Core {
             ))
             .into());
         }
-        let dir = places.profiles_dir.ok_or_else(|| {
-            TemplateError::Io("no [profiles] paths entry to write the profile to".into())
-        })?;
+        let dir = self.profiles_dir(project.as_deref())?;
         let text = templates::provenance(&template) + &text;
         let written = self.write_profile(&dir, profile, &text, params.force)?;
         Ok(TemplateApplied {
@@ -570,9 +658,7 @@ impl Core {
         let text = crate::profiles::to_toml(&profile).map_err(|e| {
             RpcError::invalid_params(format!("profile `{id}` cannot be written as TOML: {e}"))
         })?;
-        let dir = self.template_places().profiles_dir.ok_or_else(|| {
-            TemplateError::Io("no [profiles] paths entry to write the profile to".into())
-        })?;
+        let dir = self.profiles_dir(profile.project_id.as_deref())?;
         let written = self.write_profile(&dir, profile, &text, params.force)?;
         Ok(ProfileSaved {
             profile_id: id,
@@ -599,10 +685,16 @@ impl Core {
                 "profile `{id}` is loaded without a file; there is nothing to delete"
             ))
         })?;
+        let project_paths: Vec<PathBuf> = self
+            .projects()
+            .iter()
+            .flat_map(|p| p.profiles.clone())
+            .collect();
         let inside = self
             .template_places()
             .profile_paths
             .iter()
+            .chain(&project_paths)
             .any(|dir| origin.parent() == Some(dir.as_path()) && dir.is_dir());
         if !inside {
             return Err(TemplateError::Exists(format!(
@@ -699,10 +791,10 @@ impl Core {
             }
             method::PROJECT_OPEN => json(self.open_project(parse(params)?)?),
             method::PROJECT_CLOSE => json(self.close_project(parse(params)?)?),
-            method::TEMPLATE_LIST => json(templates::list(&self.template_places())),
+            method::TEMPLATE_LIST => json(self.list_templates()),
             method::TEMPLATE_GET => {
                 let params: TemplateParams = parse(params)?;
-                let template = templates::find(&self.template_places(), &params.template)?;
+                let (template, _) = self.find_template(&params.template, None)?;
                 json(TemplateText {
                     name: template.name,
                     path: template.path.display().to_string(),

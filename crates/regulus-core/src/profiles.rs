@@ -169,6 +169,40 @@ impl ProfileStore {
     /// file never stops the core.
     pub fn load(paths: &[PathBuf]) -> (Self, Vec<String>) {
         let mut store = ProfileStore::default();
+        let warnings = store.add_from(paths, None);
+        (store, warnings)
+    }
+
+    /// Adds the profiles of an open project (docs/11-composition.md §13): every one found in
+    /// `paths` gets `project_id`; a file that says another one is told so, and the project
+    /// wins. A path that does not exist holds none.
+    pub fn load_project(&mut self, project_id: &str, paths: &[PathBuf]) -> Vec<String> {
+        let existing: Vec<PathBuf> = paths.iter().filter(|p| p.exists()).cloned().collect();
+        self.add_from(&existing, Some(project_id))
+    }
+
+    /// Unloads the profiles a project's `paths` gave, and returns their ids. Executions
+    /// already running keep the copy they started with.
+    pub fn remove_project(&mut self, project_id: &str, paths: &[PathBuf]) -> Vec<String> {
+        let from_project = |origin: &Path| {
+            paths
+                .iter()
+                .any(|p| origin == p || origin.parent() == Some(p.as_path()))
+        };
+        let ids: Vec<String> = self
+            .profiles
+            .iter()
+            .filter(|p| p.project_id.as_deref() == Some(project_id))
+            .filter(|p| self.origin(&p.id).is_some_and(from_project))
+            .map(|p| p.id.clone())
+            .collect();
+        for id in &ids {
+            self.remove(id);
+        }
+        ids
+    }
+
+    fn add_from(&mut self, paths: &[PathBuf], project_id: Option<&str>) -> Vec<String> {
         let mut warnings = Vec::new();
         for path in paths {
             let found = files(path).and_then(|files| {
@@ -180,11 +214,23 @@ impl ProfileStore {
             match found {
                 Ok(found) => {
                     for (file, profiles) in found {
-                        for profile in profiles {
+                        for mut profile in profiles {
+                            if let Some(project) = project_id {
+                                match profile.project_id.as_deref() {
+                                    Some(other) if other != project => warnings.push(format!(
+                                        "profile `{}` in {} says project_id `{other}`; it \
+                                         belongs to project `{project}`, which wins",
+                                        profile.id,
+                                        file.display()
+                                    )),
+                                    _ => {}
+                                }
+                                profile.project_id = Some(project.to_string());
+                            }
                             let id = profile.id.clone();
-                            match store.insert(profile) {
+                            match self.insert(profile) {
                                 Ok(()) => {
-                                    store.origins.insert(id, file.to_path_buf());
+                                    self.origins.insert(id, file.to_path_buf());
                                 }
                                 Err(warning) => warnings.push(warning),
                             }
@@ -194,7 +240,7 @@ impl ProfileStore {
                 Err(warning) => warnings.push(warning),
             }
         }
-        (store, warnings)
+        warnings
     }
 
     pub fn insert(&mut self, mut profile: Profile) -> Result<(), String> {

@@ -36,8 +36,15 @@ pub use store::{ModuleStore, Store, StoreError, StoredExecution};
 /// in memory only, as it did before the store existed.
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
     let mut warnings = config.warnings.clone();
-    let (profiles, found) = ProfileStore::load(&config.profiles.paths);
+    let (mut profiles, found) = ProfileStore::load(&config.profiles.paths);
     warnings.extend(found);
+    // Global profiles first: on a clash of ids, the first one stays, as between files.
+    let (mut projects, found) = projects::Projects::load(&config.projects.paths);
+    warnings.extend(found);
+    for project in projects.iter_mut() {
+        let found = profiles.load_project(&project.id, &project.profiles);
+        project.warnings.extend(found);
+    }
     let store = match Store::open(&config.store_dir(), &config.store) {
         Ok(store) => {
             warnings.extend(store.warnings().iter().cloned());
@@ -64,8 +71,6 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
         config.hooks.clone(),
     );
     core.set_template_places(config.template_places());
-    let (projects, found) = projects::Projects::load(&config.projects.paths);
-    warnings.extend(found);
     for project in projects.iter() {
         let found = project.warnings(|id| core.registry().is_installed(id));
         warnings.extend(found.iter().map(|w| format!("project {}: {w}", project.id)));

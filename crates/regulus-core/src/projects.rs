@@ -357,6 +357,10 @@ impl Projects {
     pub fn iter(&self) -> impl Iterator<Item = &Project> {
         self.open.iter()
     }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Project> {
+        self.open.iter_mut()
+    }
 }
 
 /// Reads `config.toml` as a table, or an empty one if it does not exist.
