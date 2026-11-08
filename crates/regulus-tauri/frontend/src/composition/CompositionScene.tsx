@@ -4,6 +4,7 @@ import { Blocks, CircleCheck, CircleAlert, FilePlus2, GitBranch, Info, ListCheck
 import { Button } from "@/components/ui/button";
 import { t } from "@/lib/i18n";
 import { useCore } from "@/core/connection";
+import { useRegulusUi } from "@/store/useRegulusUi";
 import { useComposition } from "./client";
 import * as doc from "./editor/document";
 import { bySeverity, checkProfile, deleteProfile, getProfile, messageOf, saveProfile, startExecution } from "./editor/api";
@@ -43,8 +44,10 @@ function Editor({ composition }: { composition: Composition }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const flow = useReactFlow();
 
-  // The first profile opens by itself; a draft survives leaving the view.
-  useEffect(() => { if (!useEditor.getState().doc && profiles[0]) open(profiles[0]); }, [profiles, open]);
+  // A profile asked for from another view ("Open in canvas") opens; otherwise the first one
+  // opens by itself, and a draft survives leaving the view.
+  const requested = useRegulusUi((s) => s.canvasProfileId);
+  useEffect(() => { if (!requested && !useEditor.getState().doc && profiles[0]) open(profiles[0]); }, [requested, profiles, open]);
 
   /** Runs `action` now, or after asking when there are unsaved changes. */
   const guard = (action: () => void) => {
@@ -58,6 +61,12 @@ function Editor({ composition }: { composition: Composition }) {
     if (!client) return;
     try { open(await getProfile(client, id)); } catch (error) { fail("editor.notice.openFailed", error); }
   });
+
+  useEffect(() => {
+    if (!requested || !client) return;
+    useRegulusUi.setState({ canvasProfileId: null });
+    if (useEditor.getState().doc?.id !== requested) { reload(); openProfile(requested); }
+  }, [requested, client]);
 
   const save = useCallback(async () => {
     const state = useEditor.getState();
