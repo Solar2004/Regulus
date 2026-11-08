@@ -9,7 +9,9 @@
 conexión local. En Composición se puede ver el workflow principal, uno extra y el interno
 del módulo de comunicación; verlos juntos; seleccionar nodos y examinar puertos,
 referencias a secretos y parámetros expuestos; abrir el workflow interno de un nodo.
-Zoom y cámara son estado del cliente. No se crean nodos, cables ni ejecuciones.
+Zoom y cámara son estado del cliente. Desde el 2026-11-08 el canvas edita: crea perfiles,
+nodos y cables, guarda con `profile.save` y arranca ejecuciones con `execution.start`
+([`04-client.md`](04-client.md) §9).
 
 El perfil de ejemplo vive en `frontend/mock/profile.json`. No representa módulos
 instalados de verdad. Se pueden cambiar nodos, coordenadas y workflows sin tocar el
@@ -28,7 +30,7 @@ negociar un major compatible.
 | `profile.get` | `id` | Perfil con workflow principal y todos sus workflows |
 | `module.list` | — | Módulos de ejemplo y tipos de nodo que aportan |
 | `execution.list` | — | Lista vacía; nada está ejecutándose |
-| `profile.check` *(1.1, solo core real)* | `id` | Diagnósticos del perfil: `severity`, `code`, `message` |
+| `profile.check` *(1.1)* | `id` | Diagnósticos del perfil: `severity`, `code`, `message` |
 | `execution.start` *(1.2)* | `profile_id`, `workflow_id?` | La ejecución: `id`, `profile_id` *(1.4)*, `workflow_id`, `state`, y `disabled` (nodos sin sus entradas obligatorias) |
 | `execution.stop` *(1.2)* | `id` | La ejecución parada |
 | `secret.set` *(1.3)* | `name`, `value` | `null` |
