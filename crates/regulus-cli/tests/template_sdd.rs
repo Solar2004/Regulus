@@ -49,6 +49,50 @@ fn stop_cores(home: &Path) {
     }
 }
 
+/// The diagnostics of `profile.check` for `id`: none at all, warnings included.
+fn assert_check_is_clean(home: &Path, id: &str) {
+    let params = format!(r#"{{"id":"{id}"}}"#);
+    let check = regulus(home, &["call", "profile.check", &params]);
+    assert!(check.status.success(), "{}", text(&check));
+    let diagnostics: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(diagnostics, serde_json::json!([]), "{diagnostics}");
+}
+
+/// The written profile keeps its topology: each `(workflow, wire)` exists, and every node
+/// of every workflow but those in `idle` has at least one wire.
+fn assert_topology(copy: &str, wires: &[(&str, &str)], idle: &[&str]) {
+    let profile: toml::Value = toml::from_str(copy).unwrap();
+    let workflows = profile["workflows"].as_array().unwrap();
+    for (workflow, wire) in wires {
+        let found = workflows
+            .iter()
+            .filter(|w| w["id"].as_str() == Some(*workflow))
+            .flat_map(|w| w["wires"].as_array().unwrap())
+            .any(|w| w["id"].as_str() == Some(*wire));
+        assert!(found, "no wire `{wire}` in workflow `{workflow}`");
+    }
+    for workflow in workflows {
+        let wired: Vec<&str> = workflow["wires"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|w| [&w["from"]["node_id"], &w["to"]["node_id"]])
+            .filter_map(|n| n.as_str())
+            .collect();
+        for node in workflow["nodes"].as_array().unwrap() {
+            let id = node["id"].as_str().unwrap();
+            if idle.contains(&id) {
+                continue;
+            }
+            assert!(
+                wired.contains(&id),
+                "node `{id}` of workflow `{}` has no wire",
+                workflow["id"].as_str().unwrap()
+            );
+        }
+    }
+}
+
 fn steps(home: &Path) {
     let missing = regulus(home, &["template", "apply", "sdd"]);
     assert!(!missing.status.success());
@@ -86,16 +130,18 @@ fn steps(home: &Path) {
     assert!(copy.contains(r#"path = "specs/tasks.md""#), "{copy}");
     assert!(copy.contains("{{/tasks}}"), "{copy}");
 
-    let check = regulus(home, &["call", "profile.check", r#"{"id":"sdd"}"#]);
-    assert!(check.status.success(), "{}", text(&check));
-    let diagnostics: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
-    let errors: Vec<_> = diagnostics
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|d| d["severity"] == "error")
-        .collect();
-    assert!(errors.is_empty(), "{diagnostics}");
+    assert_topology(
+        &copy,
+        &[
+            ("sdd", "gate-back"),
+            ("sdd", "agent-back"),
+            ("sdd", "tasks-start"),
+            ("persona", "agent-engine"),
+            ("persona", "agent-out"),
+        ],
+        &[],
+    );
+    assert_check_is_clean(home, "sdd");
 }
 
 #[test]

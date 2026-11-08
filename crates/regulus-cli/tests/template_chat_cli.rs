@@ -61,18 +61,48 @@ fn router_of(copy: &str) -> String {
     wire["to"]["node_id"].as_str().unwrap().to_owned()
 }
 
-fn check_has_no_errors(home: &Path, id: &str) {
+/// The diagnostics of `profile.check` for `id`: none at all, warnings included.
+fn assert_check_is_clean(home: &Path, id: &str) {
     let params = format!(r#"{{"id":"{id}"}}"#);
     let check = regulus(home, &["call", "profile.check", &params]);
     assert!(check.status.success(), "{}", text(&check));
     let diagnostics: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
-    let errors: Vec<_> = diagnostics
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|d| d["severity"] == "error")
-        .collect();
-    assert!(errors.is_empty(), "{diagnostics}");
+    assert_eq!(diagnostics, serde_json::json!([]), "{diagnostics}");
+}
+
+/// The written profile keeps its topology: each `(workflow, wire)` exists, and every node
+/// of every workflow but those in `idle` has at least one wire.
+fn assert_topology(copy: &str, wires: &[(&str, &str)], idle: &[&str]) {
+    let profile: toml::Value = toml::from_str(copy).unwrap();
+    let workflows = profile["workflows"].as_array().unwrap();
+    for (workflow, wire) in wires {
+        let found = workflows
+            .iter()
+            .filter(|w| w["id"].as_str() == Some(*workflow))
+            .flat_map(|w| w["wires"].as_array().unwrap())
+            .any(|w| w["id"].as_str() == Some(*wire));
+        assert!(found, "no wire `{wire}` in workflow `{workflow}`");
+    }
+    for workflow in workflows {
+        let wired: Vec<&str> = workflow["wires"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|w| [&w["from"]["node_id"], &w["to"]["node_id"]])
+            .filter_map(|n| n.as_str())
+            .collect();
+        for node in workflow["nodes"].as_array().unwrap() {
+            let id = node["id"].as_str().unwrap();
+            if idle.contains(&id) {
+                continue;
+            }
+            assert!(
+                wired.contains(&id),
+                "node `{id}` of workflow `{}` has no wire",
+                workflow["id"].as_str().unwrap()
+            );
+        }
+    }
 }
 
 fn steps(home: &Path) {
@@ -93,7 +123,21 @@ fn steps(home: &Path) {
     assert!(copy.contains(r#"preset = "ollama""#), "{copy}");
     assert!(copy.contains(r#"profile = "isolated""#), "{copy}");
     assert!(copy.contains("{{/message}}"), "{copy}");
-    check_has_no_errors(home, "chat-cli");
+    assert!(copy.contains(r#"scope = "project""#), "{copy}");
+    assert!(copy.contains("You have memory tools"), "{copy}");
+    assert_topology(
+        &copy,
+        &[
+            ("chat", "agent-engine"),
+            ("chat", "notes-toolset"),
+            ("chat", "memory-tools"),
+            ("chat", "mcp-tools"),
+            ("chat", "join-router"),
+        ],
+        // The router `router` did not pick: on the canvas, fed by nothing.
+        &["keywords"],
+    );
+    assert_check_is_clean(home, "chat-cli");
 
     let keywords = regulus(
         home,
@@ -112,7 +156,12 @@ fn steps(home: &Path) {
     assert!(keywords.status.success(), "{}", text(&keywords));
     let copy = std::fs::read_to_string(home.join("profiles/chat-kw.toml")).unwrap();
     assert_eq!(router_of(&copy), "keywords");
-    check_has_no_errors(home, "chat-kw");
+    assert_topology(
+        &copy,
+        &[("chat", "agent-engine"), ("chat", "notes-toolset")],
+        &[],
+    );
+    assert_check_is_clean(home, "chat-kw");
 }
 
 #[test]
