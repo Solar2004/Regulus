@@ -51,9 +51,9 @@ pub struct Flow {
     ctx: ModuleCtx,
     /// The run each `loop` has going.
     loops: Mutex<HashMap<NodeRef, repeat::Run>>,
-    /// What each `join` holds until its barrier opens.
-    joins: Mutex<HashMap<NodeRef, join::Gate>>,
-    /// The values each `wait` holds.
+    /// What each `join` holds until its barrier opens; shared with its timeout thread.
+    joins: Mutex<HashMap<NodeRef, std::sync::Arc<Mutex<join::Gate>>>>,
+    /// The values each `wait` holds, and the clocks of `join`s with a timeout.
     timers: wait::Timers,
     /// The regex patterns rules use, compiled once.
     regexes: rule::Regexes,

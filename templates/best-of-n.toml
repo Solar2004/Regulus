@@ -43,9 +43,11 @@
 # 3. The merge queue merges only the first in line (`check` goes to the head), so the
 #    losers are never queued: they would block it. Fix: none needed if only the winner is
 #    queued; a `fail` naming each loser's `entry` would do it otherwise.
-# 4. The barrier waits for exactly `n` answers: a child that never answers (git fails
-#    to make its worktree, the core stops it) stalls the run; `regulus stop` it. Every
-#    other failure still answers (a failed prompt is the reply, `diff` always exits).
+# 4. The barrier waits for `n` answers. A child that never answers (git fails to make
+#    its worktree, the core stops it) stalls the run unless `join_timeout_ms` is set:
+#    then, that long after the first answer, the judge gets the ones that came (fewer
+#    than `n`) by the barrier's `timeout`. 0 (the default) waits forever. Every other
+#    failure still answers (a failed prompt is the reply, `diff` always exits).
 # Also: `n` ≥ 1; 0 means no limit (the loop never stops making attempts). `n` above 4
 # needs care: `call` starts all children at once (n opencode sessions); the loop's depth
 # grows by 2 per turn under `[bus] max_depth`. The merge runs in the checkout of `base` in
@@ -126,6 +128,7 @@ repo = { description = "absolute path of the git repository; its base branch mus
 worktrees = { description = "absolute path of an existing folder for the attempts' worktrees, outside the repo; each agent runs in its own worktree under it" }
 judge_model = { description = "model id the judge asks, as its provider names it (an Ollama model you pulled, an OpenRouter id...)" }
 n = { description = "how many agents try the task", default = 3 }
+join_timeout_ms = { description = "milliseconds the barrier waits for the n attempts, from the first one; past it the judge gets the ones that came. 0: it waits forever", default = 0 }
 model = { description = "model of the agents' engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
 judge_preset = { description = "provider template of the judge, from the providers module's presets.toml (ollama, openrouter-openai, anthropic...)", default = "ollama" }
 judge_base_url = { description = "base URL of the judge's provider; empty: the preset's", default = "" }
@@ -193,10 +196,11 @@ ports = [
   type = "join"
   module_id = "regulus/flow@0.1.0"
   position = { x = 500, y = 200 }
-  config = { mode = "barrier", count = {{n}}, shape = "array" }
+  config = { mode = "barrier", count = {{n}}, shape = "array", timeout_ms = {{join_timeout_ms}} }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
@@ -401,11 +405,25 @@ ports = [
   from = { node_id = "attempts", port_id = "out" }
   to = { node_id = "collect", port_id = "in" }
 
+  # The time ran out (`join_timeout_ms`): what came goes on the same way.
+  [[workflows.wires]]
+  id = "collect-cands-timeout"
+  kind = "then"
+  from = { node_id = "collect", port_id = "timeout" }
+  to = { node_id = "cands", port_id = "set" }
+
   [[workflows.wires]]
   id = "collect-cands"
   kind = "then"
   from = { node_id = "collect", port_id = "out" }
   to = { node_id = "cands", port_id = "set" }
+
+  # The time ran out (`join_timeout_ms`): what came goes on the same way.
+  [[workflows.wires]]
+  id = "collect-pick-timeout"
+  kind = "then"
+  from = { node_id = "collect", port_id = "timeout" }
+  to = { node_id = "pick", port_id = "in" }
 
   [[workflows.wires]]
   id = "collect-pick"

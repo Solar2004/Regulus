@@ -56,8 +56,10 @@
 # (b) with `quality_by = criteria` the whole report is sent to an external service (the
 # judge's provider, OpenRouter by default). (c) the barrier `gather` waits for exactly
 # `questions` answers: fewer lines from the orchestrator, or `max_ms` running out before
-# every child started (`exceeded` does not feed it), and it waits until `regulus stop`;
-# extra lines go out on `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
+# every child started (`exceeded` does not feed it), and it waits until `regulus stop`
+# unless `join_timeout_ms` is set: then, that long after the first answer, the notes are
+# made of the answers that came (the barrier's `timeout`); extra lines go out on
+# `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
 # researcher gets the first chunk only, the rest is dropped (a truncation, not paging).
 # (e) a provider that keeps retrying inside the turn (the free model past its quota)
 # hangs the agent: the Agent box gets neither `reply` nor `failed`, and `guards` can
@@ -125,6 +127,7 @@ requires = [
 workdir = { description = "absolute path of an existing folder: the agents start there, the workspaces go in <workdir>/<execution>, paper.md and the report are written there" }
 model = { description = "model of the engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
 questions = { description = "sub-questions the orchestrator is asked for; the barrier waits for this many answers", default = 3 }
+join_timeout_ms = { description = "milliseconds the notes barrier waits for every sub-question, from the first answer; past it the notes are made of the ones that came. 0: it waits forever", default = 0 }
 max_ms = { description = "milliseconds from the first sub-question after which no other starts", default = 1800000 }
 search_url = { description = "URL each sub-question is fetched from; {{input}} is the sub-question, percent-encoded", default = "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch={{input}}" }
 source_chars = { description = "characters of the fetched page a researcher gets", default = 6000 }
@@ -277,10 +280,11 @@ ports = [
   type = "join"
   module_id = "regulus/flow@0.1.0"
   position = { x = 1250, y = 50 }
-  config = { mode = "barrier", count = {{questions}}, shape = "array" }
+  config = { mode = "barrier", count = {{questions}}, shape = "array", timeout_ms = {{join_timeout_ms}} }
   ports = [
     { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
@@ -729,6 +733,13 @@ ports = [
   kind = "then"
   from = { node_id = "call", port_id = "out" }
   to = { node_id = "gather", port_id = "in" }
+
+  # The time ran out (`join_timeout_ms`): what came goes on the same way.
+  [[workflows.wires]]
+  id = "gather-notes-timeout"
+  kind = "then"
+  from = { node_id = "gather", port_id = "timeout" }
+  to = { node_id = "notes", port_id = "in" }
 
   [[workflows.wires]]
   id = "gather-notes"

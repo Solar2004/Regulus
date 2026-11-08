@@ -207,11 +207,32 @@ name = "Join"
   direction  = "output"
   kind       = "then"
 
+  # barrier with `timeout_ms`: what a round had when its time ran out, shaped like `out`.
+  # With `count`, the values gathered so far (fewer than `count`), in arrival order. By
+  # input, the first value of each one and `null` for an input that sent none: an array
+  # in declared order, or an object by input with `shape = "object"`. Values queued
+  # behind those stay for the next round. Sent from a thread of the node (a new chain,
+  # depth 0). Without this output, what ran out is dropped and logged.
+  [[node.port]]
+  id         = "timeout"
+  name       = "timeout"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
   [[node.field]]
   id      = "mode"
   type    = "select"
   default = "barrier"
   options = ["barrier", "any"]
+
+  # barrier: milliseconds a round may wait, from the first value it holds (or from what
+  # stays queued when one opens); past it, what came goes out on `timeout` and the
+  # barrier starts over empty. 0: it waits forever.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 0
 
   # barrier: 0 waits for each input; N waits for N values on any of them.
   [[node.field]]

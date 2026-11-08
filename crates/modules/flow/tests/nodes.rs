@@ -526,3 +526,57 @@ fn a_loop_has_one_run_that_a_new_start_cuts_and_a_restart_keeps() {
         failures(&core, &id)
     );
 }
+
+#[test]
+fn a_barrier_with_a_timeout_sends_what_came_and_starts_over() {
+    let p = profile(
+        vec![
+            port("a", T, "input"),
+            port("b", T, "input"),
+            port("out", J, "output"),
+            port("late", J, "output"),
+        ],
+        vec![node(
+            "join",
+            "join",
+            json!({ "shape": "object", "timeout_ms": 150 }),
+            vec![
+                port("a", T, "input"),
+                port("b", T, "input"),
+                port("out", J, "output"),
+                port("timeout", J, "output"),
+            ],
+        )],
+        vec![
+            wire("self.a", "join.a"),
+            wire("self.b", "join.b"),
+            wire("join.out", "self.out"),
+            wire("join.timeout", "self.late"),
+        ],
+    );
+    let core = core(p, Storage::default());
+    let id = start(&core);
+    // A round that opens in time sends on `out` only.
+    send(&core, &id, "a", json!("1"));
+    send(&core, &id, "b", json!("2"));
+    assert_eq!(settled(&core, &id, "out"), [json!({ "a": "1", "b": "2" })]);
+    // One that does not sends what came, `null` for the input that never did.
+    send(&core, &id, "a", json!("lonely"));
+    assert_eq!(
+        until(&core, &id, "late", 1),
+        [json!({ "a": "lonely", "b": null })]
+    );
+    // The barrier is empty again: the next pair opens it normally.
+    send(&core, &id, "b", json!("x"));
+    send(&core, &id, "a", json!("y"));
+    assert_eq!(settled(&core, &id, "out").len(), 2);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        emitted(&core, &id, "self.late").len(),
+        1,
+        "nothing else ran out"
+    );
+    no_failures(&core, &id);
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+}

@@ -21,7 +21,7 @@ const THREAD_NAME: &str = "regulus-flow-wait";
 
 /// What one `wait` node holds.
 #[derive(Default)]
-struct Held {
+pub(crate) struct Held {
     stopped: Mutex<bool>,
     wake: Condvar,
     pending: AtomicUsize,
@@ -36,11 +36,11 @@ pub(crate) struct Timers {
 impl Timers {
     /// Makes room for a node's values. Only a started node holds anything: an event that
     /// comes after its stop finds no room and is refused.
-    fn start(&self, node: &NodeRef) {
+    pub(crate) fn start(&self, node: &NodeRef) {
         lock(&self.nodes).insert(node.clone(), Arc::default());
     }
 
-    fn held(&self, node: &NodeRef) -> Option<Arc<Held>> {
+    pub(crate) fn held(&self, node: &NodeRef) -> Option<Arc<Held>> {
         lock(&self.nodes).get(node).cloned()
     }
 
@@ -64,7 +64,7 @@ fn stop(held: &Held) {
 }
 
 /// Sleeps until `delay` passes or the node stops; true if it is still running.
-fn sleep(held: &Held, delay: Duration) -> bool {
+pub(crate) fn sleep(held: &Held, delay: Duration) -> bool {
     let deadline = Instant::now() + delay;
     let mut stopped = lock(&held.stopped);
     while !*stopped {
