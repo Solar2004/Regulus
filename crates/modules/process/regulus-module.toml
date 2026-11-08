@@ -74,7 +74,7 @@ name = "Command"
   default = ""
 
   # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
-  # inherited from `regulus serve`.
+  # inherited from `regulus serve`, except `PWD`: it is `cwd` unless set here.
   [[node.field]]
   id      = "env"
   type    = "map"
@@ -189,7 +189,7 @@ name = "Gate"
   default = ""
 
   # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
-  # inherited from `regulus serve`.
+  # inherited from `regulus serve`, except `PWD`: it is `cwd` unless set here.
   [[node.field]]
   id      = "env"
   type    = "map"
@@ -312,7 +312,7 @@ name = "Job"
   default = ""
 
   # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
-  # inherited from `regulus serve`.
+  # inherited from `regulus serve`, except `PWD`: it is `cwd` unless set here.
   [[node.field]]
   id      = "env"
   type    = "map"
@@ -411,7 +411,7 @@ name = "Terminal"
   default = ""
 
   # Extra environment, `NAME = value`; values may be `secret:<name>`. The rest is
-  # inherited from `regulus serve`.
+  # inherited from `regulus serve`, except `PWD`: it is `cwd` unless set here.
   [[node.field]]
   id      = "env"
   type    = "map"

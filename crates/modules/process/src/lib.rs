@@ -13,7 +13,7 @@ mod run;
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -37,6 +37,8 @@ const TERMINAL: &str = "terminal";
 const INPUT_MARK: &str = "{{input}}";
 /// The `select` value that switches a yes/no field on.
 const YES: &str = "yes";
+/// The variable a shell and many tools take their working directory from.
+const PWD: &str = "PWD";
 /// What `enter` types after each value in a terminal.
 const ENTER: &[u8] = b"\r";
 
@@ -165,6 +167,16 @@ impl Fields<'_> {
     }
 }
 
+/// `env` with `PWD` set to `cwd`, unless `env` sets it itself. The child would otherwise
+/// inherit the core's `PWD`, and tools that take their project from it (opencode) would
+/// work in the wrong directory.
+fn with_pwd(mut env: Vec<(String, String)>, cwd: &Path) -> Vec<(String, String)> {
+    if !env.iter().any(|(name, _)| name == PWD) {
+        env.push((PWD.into(), cwd.to_string_lossy().into_owned()));
+    }
+    env
+}
+
 impl Process {
     pub fn new() -> Self {
         Self {
@@ -193,6 +205,7 @@ impl Process {
                 call.node.id
             )));
         }
+        let cwd = self.dir(at, &fields.text("cwd"))?;
         Ok(Spec {
             program,
             args: fields
@@ -200,8 +213,8 @@ impl Process {
                 .into_iter()
                 .map(|a| a.replace(INPUT_MARK, input))
                 .collect(),
-            cwd: self.dir(at, &fields.text("cwd"))?,
-            env: fields.map("env"),
+            env: with_pwd(fields.map("env"), &cwd),
+            cwd,
         })
     }
 
