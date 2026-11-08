@@ -16,7 +16,8 @@
 #                              │     └ value → refinery (merge queue) ─check→ path → gate
 #                              │                 ▲ pass │ fail ←───────────────────┘
 #                              ├ complete ← route_merged ← merged ┘  (by branch)
-#                              └ fail ← route_failed ← rejected │ conflict;  ← failed
+#                              └ fail ← route_failed ← rejected │ conflict;  ← failed │ ws error
+#   queue.error, refinery.error → self.error
 #   (N = 1, 2; each polecat has its own claim, join, prompt, witness, worktree, engine)
 #
 # How a task goes: the mayor's reply is added to the queue (`tasks`, store of the project:
@@ -36,17 +37,27 @@
 # is a participant with a name (`participant.describe`: `@mayor`, `@polecat-1`,
 # `@polecat-2`) and gets the channel's `send`, `participants` and `inbox` as MCP tools.
 #
-# Risks: `permissions = "allow"` says yes to everything the agents ask, unattended, with
-# the user's own opencode setup. The Agent box's `workdir` is a field, not an input: the
-# polecats start in `<workdir>` and are TOLD their worktree in the prompt; nothing forces
-# them to stay there. `repo` must have `base` checked out and clean (no tracked changes)
-# for a merge; keep `workdir` outside `repo`. The queue outlives the run: use a fresh
-# `queue` name for a fresh start. The mayor's reply is taken line by line: a model that
-# chats adds its chatter as tasks (send tasks on `tasks` to skip it).
+# Risks: `permissions` is "allow" by default: it says yes to everything the agents ask,
+# unattended, with the user's own opencode setup; and `test_command` runs, with the
+# user's rights and no isolation, code the agent just wrote in the worktree (that is why
+# it has no default). The Agent box's `workdir` is a field, not an input: the polecats
+# start in `<workdir>` and are TOLD their worktree in the prompt; nothing forces them to
+# stay there. `repo` must have `base` checked out and clean (no tracked changes) for a
+# merge; keep `workdir` outside `repo`. The queue outlives the run: use a fresh `queue`
+# name for a fresh start. The mayor's reply is taken line by line: a model that chats
+# adds its chatter as tasks (send tasks on `tasks` to skip it).
+#
+# Limits: a polecat's worktree is one per execution (`<branch_prefix>polecat-N/
+# <execution>`) and is reused for its second task without a rebase, so that task starts
+# from the base as it was and a conflict repeats until `max_attempts`; only one task per
+# polecat has been run (below). A worktree that cannot be made (`ws_N.error`) fails the
+# task like a failed prompt; `queue.error` and `refinery.error` only reach `self.error`.
+# The witness only reports: nothing cancels an agent's turn, the claim's `lease_ms` is
+# the real recovery.
 #
 # Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field).
 # Another model: `--set model=provider/model` (all three; give each engine node its own
-# value to mix them). More polecats: copy the eleven `*_2` nodes and their wires to `*_3`,
+# value to mix them). More polecats: copy the twelve `*_2` nodes and their wires to `*_3`,
 # with `polecat-3` in the name, branch and folder, a case in each route switch, and its
 # participant into the channel. A template has no repetition, so N is drawn, not a hole.
 # Witness as a restarter: `restart = "yes"` on `witness_N` and a wire from its `restart`
@@ -56,7 +67,7 @@
 # paths` on this folder; <repo> a git repo on `master` with one commit, <work> empty):
 #
 #   regulus template apply team --set repo=<repo> --set workdir=<work> \
-#     --set queue=team-run2 --set max_tasks=2      # wrote <home>/profiles/team.toml
+#     --set test_command=true --set queue=team-run2 --set max_tasks=2
 #   regulus call profile.check '{"id":"team"}'      # []
 #   regulus run team --detach                       # exec-2  team  running
 #   regulus msg who exec-2 channel                  # @mayor, @polecat-1, @polecat-2 idle
@@ -108,11 +119,12 @@ base = { description = "branch the worktrees start from and merge into; empty: t
 branch_prefix = { description = "start of every worktree branch; each one is <branch_prefix>polecat-N/<execution>", default = "team/" }
 queue = { description = "name of the task queue in the project's store; it outlives the run, a new name starts empty", default = "team" }
 max_tasks = { description = "most tasks the mayor is asked to split the goal into", default = 4 }
-test_command = { description = "shell line run inside a worktree before it is merged; exit 0 merges it", default = "true" }
+test_command = { description = "shell line run inside a worktree before it is merged; exit 0 merges it (no default: with `allow`, nothing unverified should be merged)" }
 stall_ms = { description = "milliseconds a polecat may work on one task before the witness reports it stuck", default = 600000 }
 lease_ms = { description = "milliseconds a claim lasts; past it the task goes back to todo", default = 1800000 }
 max_attempts = { description = "claims a task may have before it fails for good", default = 2 }
 quota_bytes = { description = "bytes each worktree may hold before it says so on quota_exceeded", default = 1073741824 }
+permissions = { description = "what the agents answer when their tools ask for permission: allow or reject", default = "allow" }
 fresh_context = { description = "yes: each agent starts a new session for every prompt; no: they keep what they knew", default = "no" }
 mayor_brief = { description = "one line added to the mayor's prompt (house rules, scope)", default = "Prefer tasks that touch different files." }
 polecat_brief = { description = "one line added to every polecat's prompt", default = "Keep the change small and do not commit." }
@@ -130,6 +142,7 @@ ports = [
   { id = "rejected", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
   { id = "failed", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
   { id = "stuck", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
 ]
 
   # ── The mayor: the goal in, tasks out, one per line ────────────────────────────────
@@ -152,7 +165,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 250, y = 50 }
-  config = { name = "mayor", workdir = "{{workdir}}", permissions = "allow", fresh_context = "{{fresh_context}}" }
+  config = { name = "mayor", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
@@ -394,7 +407,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 1150, y = 200 }
-  config = { name = "polecat-1", workdir = "{{workdir}}", permissions = "allow", fresh_context = "{{fresh_context}}" }
+  config = { name = "polecat-1", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
@@ -425,7 +438,20 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
-  # ── Polecat 2 (the same eleven nodes) ───────────────────────────────────────────────
+  # A worktree that cannot be made fails the task the same way.
+  [[workflows.nodes]]
+  id = "ws_failed_1"
+  name = "Failed worktree (polecat-1)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 250 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # ── Polecat 2 (the same twelve nodes) ───────────────────────────────────────────────
 
   [[workflows.nodes]]
   id = "claim_2"
@@ -513,7 +539,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 1150, y = 600 }
-  config = { name = "polecat-2", workdir = "{{workdir}}", permissions = "allow", fresh_context = "{{fresh_context}}" }
+  config = { name = "polecat-2", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
@@ -538,6 +564,19 @@ ports = [
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 1300, y = 550 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # A worktree that cannot be made fails the task the same way.
+  [[workflows.nodes]]
+  id = "ws_failed_2"
+  name = "Failed worktree (polecat-2)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 650 }
   config = { conversion = "text_to_json" }
   ports = [
     { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -575,6 +614,12 @@ ports = [
   kind = "uses"
   from = { node_id = "engine_mayor", port_id = "engine" }
   to = { node_id = "mayor", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "queue-error"
+  kind = "then"
+  from = { node_id = "queue", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
 
   # ── Wires: the channel and its tools ────────────────────────────────────────────────
 
@@ -687,6 +732,12 @@ ports = [
   kind = "then"
   from = { node_id = "refinery", port_id = "conflict" }
   to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "refinery-error"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
 
   # ── Wires: polecat 1 ────────────────────────────────────────────────────────────────
 
@@ -804,6 +855,18 @@ ports = [
   from = { node_id = "claim_1", port_id = "drained" }
   to = { node_id = "self", port_id = "drained" }
 
+  [[workflows.wires]]
+  id = "ws_1-error"
+  kind = "then"
+  from = { node_id = "ws_1", port_id = "error" }
+  to = { node_id = "ws_failed_1", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ws_failed_1-claim"
+  kind = "then"
+  from = { node_id = "ws_failed_1", port_id = "out" }
+  to = { node_id = "claim_1", port_id = "fail" }
+
   # ── Wires: polecat 2 ────────────────────────────────────────────────────────────────
 
   [[workflows.wires]]
@@ -919,3 +982,15 @@ ports = [
   kind = "then"
   from = { node_id = "claim_2", port_id = "drained" }
   to = { node_id = "self", port_id = "drained" }
+
+  [[workflows.wires]]
+  id = "ws_2-error"
+  kind = "then"
+  from = { node_id = "ws_2", port_id = "error" }
+  to = { node_id = "ws_failed_2", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ws_failed_2-claim"
+  kind = "then"
+  from = { node_id = "ws_failed_2", port_id = "out" }
+  to = { node_id = "claim_2", port_id = "fail" }

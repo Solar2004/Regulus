@@ -6,12 +6,13 @@
 # Agent Laboratory (arxiv.org/html/2501.04227: literature, experiment, report) and open
 # deep research (langchain.com/blog/open-deep-research: planner, parallel researchers).
 #
-#   self.question → plan_prompt → orchestrator ─reply→ split → fanout → budget ─→ call
-#        │                                                      exceeded ┘     │ (one child
+#   self.question → plan_prompt → orchestrator ─reply→ split → fanout → lines → budget → call
+#        │                                            (blank lines dropped) exceeded ┘  │ (one child
 #        └→ question (variable)          gather (barrier, `questions`) ← out ┘  per line)
 #   self.paper → pdf → paper.md            │ notes
 #                                          ▼
 #   notes_file + notes → notes_write → workspace (folder, quota) ─written→ notes_path
+#                                        └ quota_exceeded → quota_text → self.error
 #                                           └→ exp_prompt → experimenter ─reply│failed┐
 #   job (experiment_command in the workspace) ← notes_path ←────────────────────────┘
 #     │ done│fail│timeout ──→ "experiment" gate result ──→ rubric.gate
@@ -47,13 +48,24 @@
 # after `quality`, fed by the `report_check` exit: no model, no key, and the judgement is
 # only deterministic. The provider node stays, without a key, and is never asked.
 #
-# Risks: `permissions = "allow"` says yes to everything the agents ask, unattended, with
-# the user's own opencode setup; the experiment runs whatever the experimenter wrote,
-# with the user's rights (no isolation, docs/11-composition.md §12; the quota measures,
-# it does not stop other programs). The agents start in `workdir` and are told the
-# workspace in the prompt. If the orchestrator gives fewer lines than `questions`, the
-# barrier waits until `regulus stop`; more, and the extras go out on `exceeded`.
-# `experiment_command` and `report_check` may not hold `"` or `\`: use a script.
+# Risks: (a) `permissions` is "allow" by default: it says yes to everything the agents
+# ask, unattended, with the user's own opencode setup; and the chain web page → notes →
+# experimenter → `run.sh` → job means text fetched from the web can end up as a script
+# run with the user's rights (prompt injection to execution; no isolation,
+# docs/11-composition.md §12; the quota measures, it does not stop other programs).
+# (b) with `quality_by = criteria` the whole report is sent to an external service (the
+# judge's provider, OpenRouter by default). (c) the barrier `gather` waits for exactly
+# `questions` answers: fewer lines from the orchestrator, or `max_ms` running out before
+# every child started (`exceeded` does not feed it), and it waits until `regulus stop`;
+# extra lines go out on `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
+# researcher gets the first chunk only, the rest is dropped (a truncation, not paging).
+# (e) a provider that keeps retrying inside the turn (the free model past its quota)
+# hangs the agent: the Agent box gets neither `reply` nor `failed`, and `guards` can
+# only report it (`watchdog`, `timeout` forward and warn, they cannot end a turn), so
+# the flow waits until `regulus stop`. (f) the close writer → report_check → rubric has
+# NOT run end to end (see the run below). The agents start in `workdir` and are told the
+# workspace in the prompt. `experiment_command` and `report_check` may not hold `"` or
+# `\`: use a script.
 #
 # Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field);
 # the child's researcher has its own engine node. Another model: `--set model=…` (all
@@ -115,16 +127,17 @@ questions = { description = "sub-questions the orchestrator is asked for; the ba
 max_ms = { description = "milliseconds from the first sub-question after which no other starts", default = 1800000 }
 search_url = { description = "URL each sub-question is fetched from; {{input}} is the sub-question, percent-encoded", default = "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch={{input}}" }
 source_chars = { description = "characters of the fetched page a researcher gets", default = 6000 }
-quota_bytes = { description = "bytes the workspace may hold before it says so and refuses writes", default = 1073741824 }
+quota_bytes = { description = "bytes the workspace may hold; past it, it refuses writes and says so on self.error", default = 1073741824 }
 experiment_command = { description = "shell line the job runs inside the workspace after the experimenter's turn", default = "sh run.sh" }
 job_timeout_ms = { description = "milliseconds before the experiment job is killed", default = 600000 }
 report_file = { description = "file under workdir the report is written to", default = "report.md" }
-report_check = { description = "shell line run on the report, its path in $0; exit 0 passes the report_check leaf", default = "grep -q http $0" }
+report_check = { description = "shell line run on the report, its path in $0 (read it with `< $0`: unquoted, a path with spaces splits); exit 0 passes the report_check leaf", default = "grep -q http < $0" }
 quality = { description = "what the judge checks in the report (the quality leaf)", default = "The report answers the question and every claim comes from the notes or the experiment" }
-quality_by = { description = "criteria: the judge decides the quality leaf; gate: report_check stands in for it (no model)", default = "criteria" }
+quality_by = { description = "how the quality leaf is decided: `criteria` (the judge, a model) or `gate` (report_check stands in, no model); any other word passes profile.check and fails at run, in the rubric", default = "criteria" }
 threshold = { description = "weighted score from which the report passes", default = 0.7 }
 judge_preset = { description = "provider template (presets.toml) of the judge, OpenAI protocol", default = "openrouter-openai" }
 judge_credential = { description = "the judge's key as secret:<name> (set it with regulus secret set <name>); empty: none, for quality_by = gate or a local endpoint", default = "secret:openrouter" }
+permissions = { description = "what the agents answer when their tools ask for permission: allow or reject", default = "allow" }
 input = { description = "kept as is: the {{input}} of the nodes that take the value", default = "{{input}}" }
 
 [[workflows]]
@@ -173,7 +186,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 250, y = 50 }
-  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -214,6 +227,21 @@ ports = [
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # A blank line of the orchestrator's reply is dropped here (`empty`, unwired), so it
+  # does not spend one of the budget's `max_items`; every other line goes on.
+  [[workflows.nodes]]
+  id = "lines"
+  name = "Skip blank lines"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 750, y = 150 }
+  config = { cases = [{ port = "empty", op = "empty" }] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "empty", capability = "text@1", direction = "output", kind = "then" },
+    { id = "other", capability = "text@1", direction = "output", kind = "then" },
   ]
 
   # At most `questions` sub-agents, and none after `max_ms`.
@@ -308,7 +336,22 @@ ports = [
     { id = "error", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  # The path of notes.md, for the job (and, by the same name, for the writer).
+  # The quota, as one line for `self.error`.
+  [[workflows.nodes]]
+  id = "quota_text"
+  name = "Quota exceeded"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1850, y = 250 }
+  config = { conversion = "template", template = "workspace quota exceeded: {{/path}} holds {{/used}} of {{/quota}} bytes" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The path of notes.md, for the job. `notes_path_w` below reads the SAME variable
+  # (`name = "notes_path"`: flow variables are shared by name within the execution); it
+  # is a second node only because `get` there is fed by the job's `exit@1`, not text.
   [[workflows.nodes]]
   id = "notes_path"
   name = "notes.md path"
@@ -342,7 +385,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 2250, y = 50 }
-  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -400,6 +443,8 @@ ports = [
 
   # ── 5. Report ───────────────────────────────────────────────────────────────────────
 
+  # The same variable as `notes_path` (coupled by `name = "notes_path"`), read by the
+  # job's exit for the writer; change both names together.
   [[workflows.nodes]]
   id = "notes_path_w"
   name = "notes.md path (writer)"
@@ -445,7 +490,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 3250, y = 450 }
-  config = { name = "writer", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  config = { name = "writer", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -652,9 +697,15 @@ ports = [
   to = { node_id = "fanout", port_id = "in" }
 
   [[workflows.wires]]
-  id = "fanout-budget"
+  id = "fanout-lines"
   kind = "then"
   from = { node_id = "fanout", port_id = "out" }
+  to = { node_id = "lines", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "lines-budget"
+  kind = "then"
+  from = { node_id = "lines", port_id = "other" }
   to = { node_id = "budget", port_id = "in" }
 
   [[workflows.wires]]
@@ -709,6 +760,18 @@ ports = [
   id = "workspace-error"
   kind = "then"
   from = { node_id = "workspace", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "workspace-quota"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "quota_exceeded" }
+  to = { node_id = "quota_text", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "quota-error"
+  kind = "then"
+  from = { node_id = "quota_text", port_id = "out" }
   to = { node_id = "self", port_id = "error" }
 
   [[workflows.wires]]
@@ -992,7 +1055,7 @@ ports = [
 [[workflows]]
 id = "investigate"
 name = "Investigate"
-kind = "main"
+kind = "extra"
 ports = [
   { id = "in", capability = "text@1", direction = "input", kind = "then" },
   { id = "out", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
@@ -1042,7 +1105,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 850, y = 150 }
-  config = { name = "researcher", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  config = { name = "researcher", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
