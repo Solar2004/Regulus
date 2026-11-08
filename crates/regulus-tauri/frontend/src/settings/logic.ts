@@ -90,6 +90,12 @@ export function logRows(entries: LogEntry[], filter: StatusFilter): LogEntry[] {
   return entries.filter((entry) => filter === "all" || statusClass(entry.status) === filter).reverse();
 }
 
+/** `last` of the log form: empty is all, anything else must be a whole number above 0. */
+export function lastValid(text: string): boolean {
+  const trimmed = text.trim();
+  return !trimmed || (/^\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed)) && Number(trimmed) > 0);
+}
+
 /** `service.log` filters from the form: blanks are no filter, `last` a whole number > 0. */
 export function logQuery(form: { last: string; key: string; workflow: string }): { last?: number; key?: string; workflow?: string } {
   const query: { last?: number; key?: string; workflow?: string } = {};

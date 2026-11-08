@@ -1,6 +1,6 @@
 import { CircleCheck, CircleDashed, OctagonX, PackageOpen, TriangleAlert, type LucideIcon } from "lucide-react";
-import { useModuleList } from "@/core/modules";
-import { moduleCountKey } from "@/core/modules";
+import { useCore } from "@/core/connection";
+import { moduleCountKey, useModuleList } from "@/core/modules";
 import { t, type LocaleKey } from "@/lib/i18n";
 import { Mark } from "@/operate/StateMark";
 import { formatTime, moduleRows, statusCounts, type ModuleStatus } from "./logic";
@@ -30,17 +30,30 @@ function reasonOf(status: ModuleStatus): string {
   }
 }
 
+const countKeys: Record<ModuleStatus["kind"], LocaleKey> = {
+  active: "settings.module.count.active",
+  unused: "settings.module.count.unused",
+  idle: "settings.module.count.idle",
+  disabled: "settings.module.count.disabled",
+  broken: "settings.module.count.broken",
+  incompatible: "settings.module.count.incompatible",
+};
+
 const problem = (status: ModuleStatus) => status.kind === "broken" || status.kind === "incompatible" || status.kind === "disabled";
 
 export function ModuleSettings() {
   const modules = useModuleList();
+  const { status } = useCore();
   const rows = modules ? moduleRows(modules) : [];
   const counts = statusCounts(rows);
   return <>
     <div className="settings-row"><div><h2>{t("settings.moduleSpace")}</h2><p>{t("settings.moduleSpaceDescription")}</p></div></div>
     {rows.length
       ? <>
-        <p className="settings-counts">{t(moduleCountKey(modules), { count: rows.length })}{(Object.keys(meta) as ModuleStatus["kind"][]).filter((kind) => counts[kind]).map((kind) => <span key={kind}> · {counts[kind]} {t(meta[kind].label).toLowerCase()}</span>)}</p>
+        <p className="settings-counts">{[
+          t(moduleCountKey(modules), { count: rows.length }),
+          ...(Object.keys(countKeys) as ModuleStatus["kind"][]).filter((kind) => counts[kind]).map((kind) => t(countKeys[kind], { count: counts[kind]! })),
+        ].join(t("settings.listSeparator"))}</p>
         <ul className="settings-modules" aria-label={t("settings.modules")}>{rows.map((row) => {
           const look = meta[row.status.kind];
           return <li key={row.id} data-state={row.status.kind}>
@@ -55,7 +68,9 @@ export function ModuleSettings() {
           </li>;
         })}</ul>
       </>
-      : <div className="module-empty"><PackageOpen size={36} strokeWidth={1.25} /><h3>{t(moduleCountKey(modules))}</h3><p>{t("settings.modulesDescription")}</p></div>}
+      : modules === null && status !== "offline" && status !== "incompatible"
+        ? <p className="settings-empty" role="status">{t("settings.modulesLoading")}</p>
+        : <div className="module-empty"><PackageOpen size={36} strokeWidth={1.25} /><h3>{t(moduleCountKey(modules))}</h3><p>{t("settings.modulesDescription")}</p></div>}
     <div className="layers"><h3>{t("settings.layers")}</h3><p>{t("settings.layersDescription")}</p></div>
   </>;
 }

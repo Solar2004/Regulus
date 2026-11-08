@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ModuleDefinition, ModuleState } from "@/composition/model";
 import type { KeyRecord, LogEntry } from "./model";
 import {
-  emptyPolicy, isRevoked, logQuery, logRows, moduleRows, moduleStatus, parsePolicy, parseScope, policyLimits,
+  emptyPolicy, isRevoked, lastValid, logQuery, logRows, moduleRows, moduleStatus, parsePolicy, parseScope, policyLimits,
   scopeEntryValid, secretNameProblem, sortKeys, sortNames, statusClass, statusCounts,
 } from "./logic";
 
@@ -81,6 +81,10 @@ describe("service log", () => {
     expect(logQuery({ last: "50", key: "k-1", workflow: " summarize " })).toEqual({ last: 50, key: "k-1", workflow: "summarize" });
     expect(logQuery({ last: "0", key: "", workflow: "" })).toEqual({});
     expect(logQuery({ last: "2.5", key: "", workflow: "" })).toEqual({});
+  });
+  test("last is empty or a whole number above 0", () => {
+    for (const text of ["", " ", "1", " 100 "]) expect(lastValid(text)).toBe(true);
+    for (const text of ["0", "-3", "2.5", "abc", "1e3"]) expect(lastValid(text)).toBe(false);
   });
 });
 
