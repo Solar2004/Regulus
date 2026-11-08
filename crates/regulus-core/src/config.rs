@@ -87,6 +87,18 @@ pub struct TemplatesConfig {
     pub unknown: toml::Table,
 }
 
+/// Projects: folders with a `regulus.toml` (docs/11-composition.md §13).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectsConfig {
+    /// The open project folders. Relative paths are resolved against the home directory.
+    /// `project.open` and `project.close` edit this list.
+    pub paths: Vec<PathBuf>,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ModulesConfig {
@@ -330,6 +342,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub profiles: ProfilesConfig,
     pub templates: TemplatesConfig,
+    pub projects: ProjectsConfig,
     pub modules: ModulesConfig,
     pub secrets: SecretsConfig,
     pub data: DataConfig,
@@ -378,17 +391,19 @@ impl Config {
             .iter()
             .map(|p| home.join(p))
             .collect();
+        config.projects.paths = config.projects.paths.iter().map(|p| home.join(p)).collect();
         config.validate()?;
         Ok(config)
     }
 
     /// One warning per key no section knows, as `section.key`.
     fn unknown_keys(&self, path: &Path) -> Vec<String> {
-        let sections: [(&str, &toml::Table); 12] = [
+        let sections: [(&str, &toml::Table); 13] = [
             ("", &self.unknown),
             ("server.", &self.server.unknown),
             ("profiles.", &self.profiles.unknown),
             ("templates.", &self.templates.unknown),
+            ("projects.", &self.projects.unknown),
             ("modules.", &self.modules.unknown),
             ("secrets.", &self.secrets.unknown),
             ("data.", &self.data.unknown),
@@ -432,6 +447,11 @@ impl Config {
 
     pub fn store_dir(&self) -> PathBuf {
         self.home.join(&self.store.dir)
+    }
+
+    /// The file `load` reads, and `project.open` and `project.close` edit.
+    pub fn config_path(&self) -> PathBuf {
+        self.home.join(CONFIG_FILE)
     }
 
     pub fn token_path(&self) -> PathBuf {

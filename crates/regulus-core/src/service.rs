@@ -10,9 +10,10 @@ use regulus_proto::{
     EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, HookAnswer,
     HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams, NameParams,
     Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted, ProfileSaveParams,
-    ProfileSaved, ProjectFilter, SecretSetParams, Severity, TemplateApplied, TemplateApplyParams,
-    TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams, WorkflowSent,
-    BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
+    ProfileSaved, ProjectDetails, ProjectFilter, ProjectOpenParams, ProjectSummary,
+    SecretSetParams, Severity, TemplateApplied, TemplateApplyParams, TemplateParams, TemplateText,
+    WireKind, Workflow, WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY,
+    WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -25,6 +26,7 @@ use crate::graph::{
 };
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
+use crate::projects::{self, Project, ProjectError, Projects};
 use crate::registry::{base_id, CallError, Registry};
 use crate::secrets::{SecretError, Secrets};
 use crate::store::{ModuleStore, Store, StoreError, StoredExecution};
@@ -86,6 +88,18 @@ impl From<TemplateError> for RpcError {
     }
 }
 
+impl From<ProjectError> for RpcError {
+    fn from(error: ProjectError) -> Self {
+        let code = match error {
+            ProjectError::NotFound(_) => code::PROJECT_NOT_FOUND,
+            ProjectError::Invalid(_) => code::PROJECT_INVALID,
+            ProjectError::Exists(_) => code::PROJECT_EXISTS,
+            ProjectError::Io(_) => code::MODULE_FAILED,
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 impl From<SecretError> for RpcError {
     fn from(error: SecretError) -> Self {
         let code = match error {
@@ -104,6 +118,14 @@ pub struct Storage {
     pub secrets: Secrets,
     pub data_dir: Option<PathBuf>,
     pub store: Option<Arc<Store>>,
+}
+
+/// Where `project.open` and `project.close` remember the open folders: `config.toml`, and
+/// the home its relative paths are resolved against.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectHome {
+    pub config: PathBuf,
+    pub home: PathBuf,
 }
 
 /// Directories of nodes outside any project.
@@ -195,6 +217,11 @@ pub struct Core {
     profile_writes: Mutex<()>,
     /// Where templates are read from and applied ones written (`set_template_places`).
     places: RwLock<Places>,
+    /// The open projects. Lock order: `profile_writes`, then `projects`, then `profiles`;
+    /// `executions` before `projects`.
+    projects: RwLock<Projects>,
+    /// Without it, `project.open` and `project.close` change nothing on disk.
+    project_home: RwLock<Option<ProjectHome>>,
     storage: Storage,
     bus: BusConfig,
     call: CallConfig,
@@ -286,6 +313,8 @@ impl Core {
             profiles: RwLock::new(profiles),
             profile_writes: Mutex::default(),
             places: RwLock::default(),
+            projects: RwLock::default(),
+            project_home: RwLock::default(),
             storage,
             executions: Mutex::default(),
             journal: Mutex::new(journal),
@@ -306,6 +335,87 @@ impl Core {
     /// empty and applying is refused.
     pub fn set_template_places(&self, places: Places) {
         *self.places.write().unwrap_or_else(|p| p.into_inner()) = places;
+    }
+
+    /// The open projects, and where opening or closing one is remembered.
+    pub fn set_projects(&self, projects: Projects, home: ProjectHome) {
+        *self.projects.write().unwrap_or_else(|p| p.into_inner()) = projects;
+        *self.project_home.write().unwrap_or_else(|p| p.into_inner()) = Some(home);
+    }
+
+    fn projects(&self) -> RwLockReadGuard<'_, Projects> {
+        self.projects.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn project(&self, id: &str) -> Result<Project, RpcError> {
+        self.projects()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| ProjectError::NotFound(format!("no open project `{id}`")).into())
+    }
+
+    fn project_warnings(&self, project: &Project) -> Vec<String> {
+        project.warnings(|id| self.registry.is_installed(id))
+    }
+
+    fn project_summary(&self, project: &Project) -> ProjectSummary {
+        project.summary(self.project_warnings(project))
+    }
+
+    /// `project.open`: makes a folder a project (a minimal `regulus.toml` if it has none),
+    /// remembers it in `config.toml` and serves it. Opening an open folder again changes
+    /// nothing.
+    fn open_project(&self, params: ProjectOpenParams) -> Result<ProjectSummary, RpcError> {
+        let _writing = self.writing();
+        let home = self
+            .project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let base = home.as_ref().map_or(PathBuf::new(), |h| h.home.clone());
+        let root = projects::folder(&base, Path::new(&params.path))?;
+        if let Some(open) = self.projects().by_root(&root) {
+            return Ok(self.project_summary(open));
+        }
+        projects::ensure_file(&root)?;
+        let project = Project::load(&root)?;
+        if let Some(other) = self.projects().get(&project.id) {
+            return Err(ProjectError::Exists(format!(
+                "project `{}` is already open at {}; give this one another `[project] id`",
+                other.id,
+                other.root.display()
+            ))
+            .into());
+        }
+        if let Some(home) = &home {
+            projects::remember(&home.config, &home.home, &root)?;
+        }
+        let summary = self.project_summary(&project);
+        self.projects
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(project)?;
+        Ok(summary)
+    }
+
+    /// `project.close`: stops serving a project and forgets it in `config.toml`. Nothing
+    /// in its folder is touched.
+    fn close_project(&self, params: IdParams) -> Result<ProjectSummary, RpcError> {
+        let _writing = self.writing();
+        let project = self.project(&params.id)?;
+        let home = self
+            .project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(home) = &home {
+            projects::forget(&home.config, &home.home, &project.root)?;
+        }
+        self.projects
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&project.id);
+        Ok(self.project_summary(&project))
     }
 
     fn profile_store(&self) -> RwLockReadGuard<'_, ProfileStore> {
@@ -575,6 +685,20 @@ impl Core {
                 found.extend(check_fields(&profile, |id| self.registry.manifest(id)));
                 json(found)
             }
+            method::PROJECT_LIST => json(
+                self.projects()
+                    .iter()
+                    .map(|p| self.project_summary(p))
+                    .collect::<Vec<_>>(),
+            ),
+            method::PROJECT_GET => {
+                let params: IdParams = parse(params)?;
+                let project = self.project(&params.id)?;
+                let details: ProjectDetails = project.details(self.project_warnings(&project));
+                json(details)
+            }
+            method::PROJECT_OPEN => json(self.open_project(parse(params)?)?),
+            method::PROJECT_CLOSE => json(self.close_project(parse(params)?)?),
             method::TEMPLATE_LIST => json(templates::list(&self.template_places())),
             method::TEMPLATE_GET => {
                 let params: TemplateParams = parse(params)?;

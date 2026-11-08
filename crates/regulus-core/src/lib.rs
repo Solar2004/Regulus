@@ -8,6 +8,7 @@ pub mod graph;
 pub mod local;
 pub mod module;
 pub mod profiles;
+pub mod projects;
 pub mod registry;
 pub mod secrets;
 pub mod server;
@@ -63,6 +64,19 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
         config.hooks.clone(),
     );
     core.set_template_places(config.template_places());
+    let (projects, found) = projects::Projects::load(&config.projects.paths);
+    warnings.extend(found);
+    for project in projects.iter() {
+        let found = project.warnings(|id| core.registry().is_installed(id));
+        warnings.extend(found.iter().map(|w| format!("project {}: {w}", project.id)));
+    }
+    core.set_projects(
+        projects,
+        service::ProjectHome {
+            config: config.config_path(),
+            home: config.home.clone(),
+        },
+    );
     (core, warnings)
 }
 
