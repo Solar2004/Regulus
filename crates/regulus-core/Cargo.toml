@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 regulus-proto.workspace = true
 getrandom.workspace = true
+base64.workspace = true
 jsonrpsee = { workspace = true, features = ["server"] }
 rusqlite.workspace = true
 semver.workspace = true

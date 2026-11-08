@@ -245,6 +245,14 @@ pura en `logic.ts` con tests, componentes aparte). Ningún método nuevo en el c
   de estado 2xx/4xx/5xx (en el cliente). Sin el módulo: *no instalado* (`-32601`) o *no
   disponible* con la razón del core (`-32002`), decidido por el código de error, nunca
   por el id del módulo.
+- **Actualizaciones** (2026-11-08, `06-stack.md` §5.4). General → *Updates*: la versión
+  que corre, la del canal y el botón que la instala y reinicia la app. No pasa por el core:
+  son comandos del shell (`update_settings`, `update_check`, `update_install`) sobre
+  `tauri-plugin-updater`, con `[update]` del mismo `config.toml` que lee `regulus update`.
+  Sin `url` dice "apagado" y qué fichero editar; sin `public_key`, que no se instala nada;
+  en el navegador (mock), que es cosa de la app de escritorio o de `regulus update`. Con
+  `check_on_start` la app mira al abrir y Ajustes lo enseña. Lógica en
+  `src/settings/update.ts` con tests.
 - **Mock:** `mock/settings.mjs` + `mock/settings.json` contestan `secret.*` y
   `service.*` y añaden módulos en cada estado (activo, roto, desactivado, incompatible).
 
@@ -269,6 +277,9 @@ core, la leen del fichero.
 | `keys.*` | §7 | TUI | Teclas por acción: `save = "ctrl+w"` o una lista |
 | `tui.*` | §7 | TUI; `event_page`, `event_keep` y `value_max` también la app | Números: `event_page`, `event_keep`, `value_max`, `cascade_step`, `node_width`, `node_height` |
 
+- **`[update]`** no es de `[client]`: lo leen la CLI (`regulus update`) y el shell de la app
+  del mismo `config.toml`. Sus claves (`url`, `channel`, `check_on_start`, `public_key`,
+  `timeout_ms`) están en [`06-stack.md`](06-stack.md) §5.4.
 - **Por proyecto.** El `[client]` del `regulus.toml` de un proyecto
   ([`11-composition.md`](11-composition.md) §13) va encima del global, clave a clave; las
   tablas (`keys`, `tui`) también se mezclan clave a clave. La app lo pide de nuevo al

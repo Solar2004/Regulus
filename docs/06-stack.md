@@ -1,6 +1,6 @@
 # 06 — Stack, terminal y versionado
 
-> **v0.4** · 2026-10-02
+> **v0.5** · 2026-11-08 (§5.4 build y actualización)
 > Las dependencias concretas, con versiones verificadas. El reparto de la terminal.
 > El sistema de versionado de la app.
 > Lee [`02-architecture.md`](02-architecture.md) primero.
@@ -65,6 +65,11 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | URLs | **`url`** | `2.5.8` (verif. 2026-11-07) | `web`: resolver redirecciones relativas, armar la query del motor de búsqueda y quitar query y credenciales de los errores. Ya estaba en el árbol. |
 | Hash de las llaves | **`sha2`** | `0.10.9` (verif. 2026-11-07) | SHA-256 de las llaves `rgk_` de `service`: el store guarda solo el hash. Ya estaba en el árbol (`0.10.9` y `0.11.1`). |
 | Requisitos de versión | **`semver`** | `1.0.28` (verif. 2026-11-08) | `requires` de las plantillas (`>=0.1`, `^0.2`) contra la versión del manifiesto de cada módulo. El de cargo, de dtolnay. Ya estaba en el árbol (Tauri). |
+| Firma de releases | **`ed25519-dalek`** | `3.0.0` (verif. 2026-11-08) | `regulus update keygen` y `sign`: firma Ed25519. Solo firma; verificar lo hace `minisign-verify`. |
+| Hash previo de la firma | **`blake2`** | `0.11.0` (verif. 2026-11-08) | BLAKE2b-512 del fichero antes de firmarlo: el modo *prehashed* (`ED`) de minisign. La 0.11 comparte `digest` 0.11 con `ed25519-dalek`. |
+| Verificar firmas | **`minisign-verify`** | `0.3.0` (verif. 2026-11-08) · sin dependencias | `regulus update` comprueba la firma del manifiesto. Es el mismo crate con el que verifica `tauri-plugin-updater`: una clave, un formato. |
+| Reemplazar el ejecutable | **`self-replace`** | `1.5.1` (verif. 2026-11-08) | Pone el binario nuevo en lugar del que corre. En Unix es copiar junto a él y `rename` (atómico); en Windows resuelve que un `.exe` en marcha no se puede pisar. Se prefirió a `self_update` 1.3.3, que trae su propio cliente HTTP, `zip`, `tar` y formatos de GitHub/S3: lo que Regulus ya tiene (`ureq`) o no quiere. |
+| Base64 | **`base64`** | `0.22` (verif. 2026-11-08) | Claves y firmas en texto (formato minisign). Ya estaba en el árbol. |
 
 Aviso honesto: **`portable-pty` no se actualiza desde 2025-02-11.** No es abandono —
 manejar PTYs no cambia, y es lo que mueve wezterm en producción. Si alguna vez estorba,
@@ -83,6 +88,7 @@ la alternativa es `nix` directo, que es lo que hcom hace hoy.
 | Canvas de composición | **`@xyflow/react`** | `12.12.0` (verificado 2026-10-04) | Ver §2.3. |
 | Mock de desarrollo | **`ws`**, tipos `@types/ws` | `8.22.0` / `8.18.2` (verificado 2026-10-04) | JSON-RPC por WebSocket integrado en Vite; no entra en el cliente de producción. |
 | Tests unitarios del cliente | **`vitest`** | `5.1.0` (verificado 2026-11-08) | Usa la config de Vite (alias `@`), sin otro bundler; `pnpm test` corre la lógica pura de `src/`. |
+| Actualizar la app | **`tauri-plugin-updater`** (Rust) | `2.14.1` (verif. 2026-11-08) | El updater de Tauri, configurado en tiempo de ejecución desde `[update]` de `config.toml` (§5.4): sin URL ni clave fijas en `tauri.conf.json`. Solo en el shell: el frontend lo pide con comandos de Tauri, sin el paquete JS. |
 
 ### 2.3 Canvas de composición con React Flow
 
@@ -217,4 +223,94 @@ que ya existía, no añade un sistema paralelo.
 | App de escritorio | **`tauri build`** | Tauri trae su propio empaquetador |
 | Disparador | un `git tag v0.x.y` | Un tag produce los dos artefactos |
 
+Hoy los dos artefactos salen de `scripts/release.sh` (§5.4); `cargo-dist` sigue siendo el
+camino para publicar en varias plataformas desde CI cuando haga falta.
+
 ❓ **ABIERTO** — Si habrá canal nightly. No se decide hasta que haya algo que publicar.
+
+### 5.4 Build y actualización (2026-11-08)
+
+✅ **HECHO** — un script construye la release y los dos clientes se actualizan solos desde
+una URL que se configura.
+
+**Build: `scripts/release.sh`.** Construye el programa `regulus` (core, CLI y TUI) con
+`cargo build --release -p regulus-cli` y la app con `tauri build` (por defecto AppImage y
+deb), y escribe `dist/<versión>/`:
+
+| Fichero | Qué es |
+|---|---|
+| `regulus-<so>-<arch>` | El programa (`regulus-linux-x86_64`). El sufijo deja publicar varias plataformas en el mismo canal |
+| `Regulus_<v>_amd64.AppImage`, `.deb` | Los bundles de la app que se hayan construido |
+| `SHA256SUMS` | `sha256sum` de todo lo anterior |
+| `manifest.json` | `{version, date, channel, files: [{name, sha256, size, platform, kind}]}`: lo que lee `regulus update`. `kind` es `cli` o `app`; un `url` opcional por fichero (absoluto o relativo al manifiesto) lo saca de la carpeta del canal |
+| `*.sig` | Firma minisign del manifiesto y de cada bundle (con `--sign-key` o `$REGULUS_SIGNING_KEY`) |
+| `latest.json` | El formato del updater de Tauri, con firma y URL de cada bundle; solo con firma y `--url` (o `$REGULUS_UPDATE_URL`), porque Tauri exige URLs absolutas |
+
+- **Una sola versión:** la de `[workspace.package]` en `Cargo.toml`. `regulus-tauri` la hereda
+  (`version.workspace = true`) y `tauri.conf.json` ya no lleva `version`: Tauri toma la del
+  crate. El script comprueba que `regulus --version` dice la misma y para si no.
+- **Flags:** `--cli-only`, `--channel <nombre>` (`stable` por defecto; cualquier nombre de
+  carpeta: el canal nightly sigue ❓ abierto, pero no hay que tocar código para tenerlo),
+  `--out <dir>`, `--sign-key <fichero>`, `--url <base>`, `--bundles <lista>`.
+- **Sin librerías del sistema** (`pkg-config`: webkit2gtk-4.1, javascriptcoregtk-4.1,
+  libsoup-3.0, gtk+-3.0, librsvg-2.0, openssl; lista en `$REGULUS_APP_LIBS`) o sin `pnpm`, la
+  app se salta diciendo qué falta y el programa sale igual. Sale con código 3 si la app no se
+  construyó. No instala nada del sistema.
+- **Publicar** es copiar `dist/<versión>/*` a `<url>/<canal>/` en cualquier servidor estático.
+- **Medido** (2026-11-08, Arch, con otros dos builds en la máquina y `nice 10`): `regulus` en
+  release 7 min 07 s (`lto = true`, `codegen-units = 1`); la app 4 min 41 s de compilación
+  más ~1,5 min de bundles. Tamaños: `regulus-linux-x86_64` 21,2 MiB, `.deb` 5,8 MiB,
+  `.AppImage` 102,8 MiB. El AppImage baja `linuxdeploy` de GitHub la primera vez: sin red
+  falla solo ese bundle (cada tipo se empaqueta aparte con `tauri bundle`).
+
+**Claves.** `regulus update keygen --out release.key` escribe la clave secreta (modo 600) y
+`release.key.pub`, e imprime la línea para `config.toml`. El formato es el de **minisign**
+(Ed25519 con BLAKE2b-512 previo): una sola clave firma el manifiesto que lee la CLI y los
+bundles que lee el updater de Tauri, y `minisign -V` puede comprobar cualquier firma.
+`regulus update sign <ficheros> --key <f>` (o `$REGULUS_SIGNING_KEY` con el texto de la clave)
+escribe `<fichero>.sig` con `version:<v>` en el comentario firmado, que Tauri compara con la
+versión que anuncia `latest.json`. La clave secreta no va al repo (`*.key` en `.gitignore`).
+
+**`[update]` en `config.toml`** (es el único sitio de estas claves):
+
+| Clave | Por defecto | Qué hace |
+|---|---|---|
+| `url` | vacío | Base de las releases: el manifiesto es `<url>/<channel>/manifest.json`. **Vacío = actualizar está apagado**, y `regulus update` lo dice con la clave a poner. Vale `https://`, `file://` o una ruta; `http://` solo con `allow_insecure` |
+| `channel` | `stable` | Qué carpeta seguir (`stable`, `beta`, …) |
+| `check_on_start` | `false` | Al arrancar `regulus serve` (en un hilo, sin retrasar el arranque) y al abrir la app, mira si hay una versión nueva y lo dice. Nunca instala |
+| `public_key` | vacío | La línea `RW…` que imprimió `keygen`. **Sin ella no se instala nada**; `--check` funciona y avisa "unverified" (la firma no se comprobó) |
+| `timeout_ms` | 120000 | Cuánto puede tardar una descarga. `0` = sin límite |
+| `max_bytes` | 1073741824 (1 GiB) | Lo máximo que puede pesar un fichero de la release; un manifiesto que pida más se rechaza sin descargar |
+| `allow_insecure` | `false` | Aceptar `url` en `http://` plano. Apagado, CLI y app rechazan esa URL antes de pedir nada. La firma ya protege el contenido; esto evita seguir una URL mal escrita |
+
+**CLI: `regulus update [--check] [--channel X] [--url X] [--yes]`.** Baja el manifiesto y su
+`.sig`, verifica la firma, exige que el manifiesto firmado nombre su canal y sea el que se
+sigue (uno firmado para `beta` no vale copiado en `stable`), compara SemVer con la versión
+que corre (solo sube, nunca baja), elige el fichero `kind = cli` de su plataforma
+(`std::env::consts`, `linux-x86_64`), lo baja y comprueba tamaño y sha256 contra el manifiesto
+firmado. Lo escribe junto al ejecutable en un fichero nuevo con nombre aleatorio y modo
+`0700` (nunca encima de algo que ya esté ahí), lo ejecuta con `--version` sin stdin y con
+30 s de tope (tiene que decir la versión nueva: así no se instala un binario que no arranca
+aquí) y lo renombra encima con `self-replace`, con los permisos del programa viejo.
+Cualquier fallo deja el programa como estaba. **Límite:** no hay protección contra *replay*:
+un manifiesto firmado antiguo sigue siendo válido. No permite bajar de versión porque solo
+se instala `version >` la que corre, pero sí serviría para retener a alguien en una versión
+vieja mientras se le sirva ese manifiesto. Sin `--yes` pregunta, y sin
+terminal pide `--yes`. Si la carpeta del ejecutable no se puede escribir (instalado por el
+gestor de paquetes), lo dice: ese caso se actualiza con el paquete.
+
+**App.** El shell lee `[update]` del mismo `config.toml` y construye el updater de Tauri en
+tiempo de ejecución: endpoint `<url>/<channel>/latest.json` y, como clave, la misma
+`public_key` envuelta en el fichero de clave pública de minisign que Tauri espera. Ajustes →
+General → *Updates* muestra la versión que corre, la disponible y el botón para instalarla
+(`04-client.md` §10); instalar vuelve a leer `latest.json` y, si ahora anuncia otra versión
+que la mostrada, no instala y pide comprobar de nuevo. Sin `url`, dice que está apagado y qué poner.
+`tauri.conf.json` solo lleva lo que no se puede dar en tiempo de ejecución:
+`requireSignedVersion = true` (la versión firmada tiene que ser la anunciada) y
+`dangerousInsecureTransportProtocol = true`, para que `url` pueda ser `http://` como en la
+CLI: la integridad la da la firma, no TLS, y una release no tiene nada secreto.
+
+**Probado:** `crates/regulus-cli/tests/update.rs` sirve una release con `python3 -m
+http.server` y comprueba que una copia de `regulus` se reemplaza por el binario nuevo y que
+un manifiesto alterado tras firmarlo, otra clave, un sha256 equivocado o la falta de clave lo
+dejan intacto.

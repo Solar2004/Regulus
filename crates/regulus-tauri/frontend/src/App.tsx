@@ -9,6 +9,8 @@ import { moduleCountKey, useModuleList } from "@/core/modules";
 import { useOperateSettings } from "@/operate/settings";
 import { useRegulusUi } from "@/store/useRegulusUi";
 import SettingsScene from "@/settings/SettingsScene";
+import { updateApi, useUpdates } from "@/settings/update";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import "@/shell.css";
 
 const CompositionScene = lazy(() => import("@/composition/CompositionScene"));
@@ -53,6 +55,8 @@ export default function App() {
   const { status, source, connect } = useCore();
   const modules = useModuleList();
   useEffect(() => { connect(); }, [connect]);
+  // `[update] check_on_start`: the shell says whether to look; Settings shows what it found.
+  useEffect(() => { if (isTauri()) void useUpdates.getState().load(updateApi(invoke), true); }, []);
   useClientConfigSync(useOperateSettings((s) => s.projectId));
   // `start_view` of config.toml picks the first view, on the first answer only.
   const firstAnswer = useClientConfig((s) => s.answers === 1);

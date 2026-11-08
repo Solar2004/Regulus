@@ -183,6 +183,50 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+    /// Replace this program with the newest signed release of its channel (`[update]` in
+    /// config.toml, docs/06-stack.md §5.4).
+    #[command(args_conflicts_with_subcommands = true)]
+    Update {
+        #[command(subcommand)]
+        command: Option<UpdateCommand>,
+        /// Only say whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+        /// Follow this channel instead of `update.channel`.
+        #[arg(long)]
+        channel: Option<String>,
+        /// Read releases from this base URL instead of `update.url`.
+        #[arg(long)]
+        url: Option<String>,
+        /// Install without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UpdateCommand {
+    /// Make a release key pair: the secret key file for `release.sh`, the public key for
+    /// `[update] public_key`.
+    Keygen {
+        /// Where to write the secret key; the public key goes to `<out>.pub`.
+        #[arg(long, default_value = "regulus-release.key")]
+        out: PathBuf,
+        /// Overwrite an existing key file.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Sign files with the release key, into `<file>.sig` (minisign format).
+    Sign {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// The secret key file. Without it, the key text is read from $REGULUS_SIGNING_KEY.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// The version the files belong to, recorded in the signature's trusted comment.
+        #[arg(long)]
+        release_version: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -512,6 +556,24 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Template { command } => template(&client, command).await,
+        Command::Update {
+            command,
+            check,
+            channel,
+            url,
+            yes,
+        } => match command {
+            Some(command) => update_tool(command),
+            None => {
+                let ask = UpdateAsk {
+                    check,
+                    channel,
+                    url,
+                    yes,
+                };
+                tokio::task::spawn_blocking(move || update(&config, ask)).await?
+            }
+        },
         Command::Project { command } => project(&client, command).await,
         Command::Graph { profile } => {
             let params = serde_json::json!({ "id": profile });
@@ -1282,6 +1344,11 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.token_path().display(),
         started.elapsed().as_millis()
     );
+    if config.update.check_on_start {
+        let update = config.update.clone();
+        let path = config.config_path();
+        std::thread::spawn(move || announce_update(&update, &path));
+    }
     shutdown_signal().await?;
     running.stop().await;
     core.shutdown();
@@ -1474,6 +1541,153 @@ async fn hook_answer(
             (out.code, out.stdout, stderr)
         }
     })
+}
+
+struct UpdateAsk {
+    check: bool,
+    channel: Option<String>,
+    url: Option<String>,
+    yes: bool,
+}
+
+/// `regulus update`: check, ask, download, verify, replace.
+fn update(config: &Config, ask: UpdateAsk) -> Result<()> {
+    use regulus_cli::update as up;
+    let source = up::Source::new(&config.update, &config.config_path(), ask.url, ask.channel)?;
+    let current = up::current_version();
+    let offer = up::fetch_offer(&source, !ask.check)?;
+    let trust = if offer.signed {
+        "signed"
+    } else {
+        "unverified: [update] public_key is empty, so the signature was not checked"
+    };
+    if !offer.newer_than(&current) {
+        println!(
+            "regulus {current} is up to date ({} on {}, {trust})",
+            offer.version, source.channel
+        );
+        return Ok(());
+    }
+    println!(
+        "regulus {} is available on {} ({trust}); running {current}",
+        offer.version, source.channel
+    );
+    if ask.check {
+        return Ok(());
+    }
+    let platform = up::platform();
+    let entry = offer.binary(&platform).with_context(|| {
+        format!(
+            "release {} has no program for {platform}",
+            offer.manifest.version
+        )
+    })?;
+    let exe = std::env::current_exe().context("cannot find this program's path")?;
+    if !ask.yes {
+        if !std::io::stdin().is_terminal() {
+            bail!("pass --yes to replace {} without asking", exe.display());
+        }
+        eprint!(
+            "Replace {} with regulus {}? [y/N] ",
+            exe.display(),
+            offer.version
+        );
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            println!("nothing changed");
+            return Ok(());
+        }
+    }
+    let bytes = up::download(&source, entry)?;
+    up::install(&exe, &bytes, &offer.version)?;
+    println!("updated {} to regulus {}", exe.display(), offer.version);
+    Ok(())
+}
+
+/// `[update] check_on_start`: one line on stderr when a newer release exists.
+fn announce_update(update: &regulus_core::config::UpdateConfig, path: &std::path::Path) {
+    use regulus_cli::update as up;
+    let offer = up::Source::new(update, path, None, None)
+        .and_then(|source| Ok((up::fetch_offer(&source, false)?, source)));
+    match offer {
+        Ok((offer, source)) if offer.newer_than(&up::current_version()) => eprintln!(
+            "regulus: {} is available on {} (`regulus update`)",
+            offer.version, source.channel
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("regulus: update check: {error:#}"),
+    }
+}
+
+/// `regulus update keygen` and `regulus update sign`: the release side.
+fn update_tool(command: UpdateCommand) -> Result<()> {
+    use regulus_cli::update as up;
+    match command {
+        UpdateCommand::Keygen { out, force } => {
+            let mut public_path = out.clone().into_os_string();
+            public_path.push(".pub");
+            let public_path = PathBuf::from(public_path);
+            if !force && (out.exists() || public_path.exists()) {
+                bail!("{} exists; --force overwrites it", out.display());
+            }
+            let pair = up::keygen()?;
+            write_private(&out, &pair.secret_file)?;
+            std::fs::write(
+                &public_path,
+                format!(
+                    "untrusted comment: minisign public key {}\n{}\n",
+                    pair.key_id, pair.public_key
+                ),
+            )?;
+            println!(
+                "secret key: {} (keep it off the machines you update)",
+                out.display()
+            );
+            println!("public key: {}", public_path.display());
+            println!();
+            println!("[update]");
+            println!("public_key = \"{}\"", pair.public_key);
+            Ok(())
+        }
+        UpdateCommand::Sign {
+            files,
+            key,
+            release_version,
+        } => {
+            let text = match key {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("cannot read {}", path.display()))?,
+                None => std::env::var(up::KEY_ENV).with_context(|| {
+                    format!("no key: pass --key <file> or set ${}", up::KEY_ENV)
+                })?,
+            };
+            let key = up::SecretKey::parse(&text)?;
+            for path in up::sign_files(&key, &files, release_version.as_deref())? {
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Writes a file only its owner can read. The mode given at creation does not apply to a
+/// file that exists (`keygen --force`), so it is set again before anything is written.
+fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
+    Ok(())
 }
 
 /// A connection to the core the home directory points at, made per command.
