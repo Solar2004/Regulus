@@ -3,8 +3,10 @@ import { lazy, Suspense, useEffect } from "react";
 import Titlebar from "@/components/Titlebar";
 import { Button } from "@/components/ui/button";
 import { t, type LocaleKey } from "@/lib/i18n";
+import { useClientConfig, useClientConfigSync } from "@/core/clientConfig";
 import { useCore, type CoreSource, type CoreStatus } from "@/core/connection";
 import { moduleCountKey, useModuleList } from "@/core/modules";
+import { useOperateSettings } from "@/operate/settings";
 import { useRegulusUi } from "@/store/useRegulusUi";
 import SettingsScene from "@/settings/SettingsScene";
 import "@/shell.css";
@@ -51,6 +53,12 @@ export default function App() {
   const { status, source, connect } = useCore();
   const modules = useModuleList();
   useEffect(() => { connect(); }, [connect]);
+  useClientConfigSync(useOperateSettings((s) => s.projectId));
+  // `start_view` of config.toml picks the first view, on the first answer only.
+  const firstAnswer = useClientConfig((s) => s.answers === 1);
+  useEffect(() => {
+    if (firstAnswer) useRegulusUi.getState().applyStartView(useClientConfig.getState().client.start_view);
+  }, [firstAnswer]);
   return <div className="regulus-shell" data-density={density}>
     <Titlebar />
     <div className="shell-body">

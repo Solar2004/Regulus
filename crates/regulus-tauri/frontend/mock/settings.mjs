@@ -1,5 +1,5 @@
-// What Settings calls: the core's `secret.*` and the `service` module's methods, mirrored
-// with canned data from settings.json. Shapes and errors follow `regulus-core::secrets`
+// What Settings calls: the core's `secret.*` and `config.client` and the `service` module's
+// methods, mirrored with canned data from settings.json. Shapes and errors follow `regulus-core::secrets`
 // and `crates/modules/service`; the mock adds no method of its own.
 import extra from "./settings.json" with { type: "json" };
 
@@ -21,6 +21,7 @@ export function settingsState() {
     keys: data.keys,
     serviceLog: data.log,
     serviceEndpoints: data.endpoints,
+    clientConfig: data.client,
   };
 }
 
@@ -33,7 +34,24 @@ const validScope = (entry) => {
 const hex = (bytes) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
 const isEmpty = (policy) => POLICY.every((field) => !policy[field]);
 
-/** Answers `secret.*` and `service.*`; `null` for any other method or an absent module. */
+const isTable = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** `config.client` as `regulus_core::config::layer_client` builds it: the project's `[client]`
+ * on top of the global one, key by key; a table on both sides merges key by key too. */
+export function layerClient(global, project = {}) {
+  const client = structuredClone(global);
+  for (const [key, value] of Object.entries(project)) {
+    client[key] = isTable(client[key]) && isTable(value) ? { ...client[key], ...value } : structuredClone(value);
+  }
+  const sources = {};
+  for (const [key, value] of Object.entries(client)) {
+    if (isTable(value)) for (const name of Object.keys(value)) sources[`${key}.${name}`] = isTable(project[key]) && name in project[key] ? "regulus.toml" : "config.toml";
+    else sources[key] = key in project ? "regulus.toml" : "config.toml";
+  }
+  return { client, sources };
+}
+
+/** Answers `secret.*`, `config.client` and `service.*`; `null` for any other method or an absent module. */
 export function settingsMethod(state, method, params) {
   switch (method) {
     case "secret.list": return ok([...state.secrets.keys()]);
@@ -42,6 +60,12 @@ export function settingsMethod(state, method, params) {
       if (!validName(params.name)) return failure(-32602, `invalid secret name \`${params.name}\``);
       state.secrets.set(params.name, params.value);
       return ok(null);
+    case "config.client": {
+      const { global, projects, warnings } = state.clientConfig;
+      const projectId = params.project_id ?? null;
+      if (projectId !== null && !Object.hasOwn(projects, projectId)) return failure(-32010, `no open project \`${projectId}\``);
+      return ok({ ...layerClient(global, projectId === null ? {} : projects[projectId]), warnings });
+    }
     case "secret.delete":
       if (!state.secrets.delete(params.name)) return failure(-32602, `secret \`${params.name}\` is not set`);
       return ok(null);

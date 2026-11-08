@@ -42,6 +42,7 @@
 .operate-field { display:flex; flex-direction:column; gap:var(--rg-space-1); font-size:.6875rem; color:var(--rg-color-text-secondary); }
 .operate-field.grow { flex:1; min-width:12rem; }
 .operate-field small { color:var(--rg-color-text-muted); line-height:1.6; }
+.operate-field small.operate-source { color:var(--rg-color-text-secondary); font-family:var(--rg-font-mono); }
 .operate-field input[aria-invalid] { border-color:var(--rg-color-danger); }
 .operate-check { display:flex; align-items:center; gap:var(--rg-space-2); font-size:.75rem; color:var(--rg-color-text-secondary); }
 .operate-inline { display:flex; align-items:center; gap:var(--rg-space-2); margin-left:auto; font-size:.6875rem; }

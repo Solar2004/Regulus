@@ -191,8 +191,8 @@ export function createSession(state = createState()) {
         result = diagnose(profile, state.modules);
         break;
       }
-      // execution.start and the other Operate methods live in operate.mjs, secret.* and
-      // service.* in settings.mjs.
+      // execution.start and the other Operate methods live in operate.mjs, secret.*,
+      // config.client and service.* in settings.mjs.
       default: {
         const answer = operateMethod(state, method, params) ?? settingsMethod(state, method, params);
         if (!answer) return error(id, -32601, "Method not found");

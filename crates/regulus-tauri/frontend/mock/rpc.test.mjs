@@ -324,3 +324,19 @@ test("module.list carries the states Settings shows, each with its reason", () =
   assert.equal(status("regulus/judge@0.1.0").status, "incompatible");
   assert.equal(status("regulus/service@0.1.0").status, "active");
 });
+
+test("config.client gives [client] as written, the project's on top key by key, with sources", () => {
+  const session = negotiatedSession();
+  const global = session(request("config.client")).result;
+  assert.deepEqual(global, {
+    client: settings.client.global,
+    sources: { refresh_ms: "config.toml", "tui.event_page": "config.toml" },
+    warnings: [],
+  });
+  const demo = session(request("config.client", { project_id: "demo" })).result;
+  assert.deepEqual(demo.client, { refresh_ms: 500, tui: { event_page: 100, value_max: 120 }, start_view: "operate" });
+  assert.equal(demo.sources.refresh_ms, "regulus.toml");
+  assert.equal(demo.sources["tui.event_page"], "config.toml");
+  assert.equal(demo.sources["tui.value_max"], "regulus.toml");
+  assert.equal(session(request("config.client", { project_id: "nope" })).error.code, -32010);
+});

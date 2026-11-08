@@ -87,5 +87,10 @@
   ],
   "endpoints": [
     { "url": "http://127.0.0.1:7792", "execution_id": "exec-svc", "node_id": "http" }
-  ]
+  ],
+  "client": {
+    "global": { "refresh_ms": 1500, "tui": { "event_page": 100 } },
+    "warnings": [],
+    "projects": { "demo": { "start_view": "operate", "refresh_ms": 500, "tui": { "value_max": 120 } } }
+  }
 }
