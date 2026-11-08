@@ -42,6 +42,8 @@ const ISOLATED_HOMES: &[(&str, &str)] = &[
 /// The provider id the wired endpoint gets inside opencode: models are `regulus/<id>`. A
 /// slot on another endpoint gets `regulus-<slot>`.
 const PROVIDER_ID: &str = "regulus";
+/// The node's own choice of model, used when no provider is wired into the box.
+const MODEL_FIELD: &str = "model";
 /// opencode's built-in subagents, whose model the `subagent` slot sets.
 const SUBAGENTS: &[&str] = &["general", "explore"];
 
@@ -83,7 +85,8 @@ impl AcpEngine for Opencode {
                 isolate(&mut launch, dir);
             }
         }
-        if let Some(config) = config(start.provider, start.slots)? {
+        let model = start.settings.text(MODEL_FIELD);
+        if let Some(config) = config(start.provider, start.slots, model)? {
             launch
                 .env
                 .insert(CONFIG_CONTENT_ENV.into(), config.to_string());
@@ -109,12 +112,17 @@ fn isolate(launch: &mut Launch, dir: &Path) {
 /// The wired providers as opencode configuration: one opencode provider per endpoint, the
 /// main model, `small_model` for the `fast` slot and the subagents' model for `subagent`.
 /// opencode holds several providers at once, so every slot can reach its own endpoint.
+///
+/// `model` is the node's `model` field, an opencode model id: the main model when no
+/// provider is wired. A wired provider wins over it.
 fn config(
     main: Option<&LlmEndpoint>,
     slots: &BTreeMap<String, LlmEndpoint>,
+    model: Option<&str>,
 ) -> Result<Option<Value>, String> {
+    let model = model.filter(|_| main.is_none());
     if main.is_none() && slots.is_empty() {
-        return Ok(None);
+        return Ok(model.map(|model| json!({ "model": model })));
     }
     // Endpoints that reach the same place share one opencode provider.
     let mut routes: Vec<(String, LlmEndpoint, Vec<String>)> = Vec::new();
@@ -149,6 +157,8 @@ fn config(
             "model".into(),
             json!(route(main, PROVIDER_ID.into(), "provider")?),
         );
+    } else if let Some(model) = model {
+        root.insert("model".into(), json!(model));
     }
     for (name, endpoint) in slots {
         let model = route(endpoint, format!("{PROVIDER_ID}-{name}"), name)?;
@@ -248,7 +258,9 @@ mod tests {
             "https://openrouter.ai/api/",
             ("authorization", "Bearer k"),
         );
-        let config = config(Some(&provider), &BTreeMap::new()).unwrap().unwrap();
+        let config = config(Some(&provider), &BTreeMap::new(), None)
+            .unwrap()
+            .unwrap();
         let regulus = &config["provider"]["regulus"];
         assert_eq!(regulus["npm"], "@ai-sdk/anthropic");
         assert_eq!(
@@ -263,7 +275,9 @@ mod tests {
     #[test]
     fn an_openai_endpoint_keeps_its_base_url() {
         let provider = endpoint("openai", "http://127.0.0.1:8000/v1", ("x-team", "a"));
-        let config = config(Some(&provider), &BTreeMap::new()).unwrap().unwrap();
+        let config = config(Some(&provider), &BTreeMap::new(), None)
+            .unwrap()
+            .unwrap();
         let options = &config["provider"]["regulus"]["options"];
         assert_eq!(options["baseURL"], "http://127.0.0.1:8000/v1");
         assert_eq!(options["headers"]["x-team"], "a");
@@ -274,8 +288,8 @@ mod tests {
     fn without_a_model_opencode_cannot_use_the_provider() {
         let mut provider = endpoint("anthropic", "http://127.0.0.1:3456", ("x", "y"));
         provider.models.clear();
-        assert!(config(Some(&provider), &BTreeMap::new()).is_err());
-        assert!(config(None, &BTreeMap::new()).unwrap().is_none());
+        assert!(config(Some(&provider), &BTreeMap::new(), None).is_err());
+        assert!(config(None, &BTreeMap::new(), None).unwrap().is_none());
     }
 
     #[test]
@@ -293,7 +307,7 @@ mod tests {
             ("authorization", "Bearer o"),
         );
         let slots = [("fast".to_string(), same), ("subagent".to_string(), other)].into();
-        let config = config(Some(&main), &slots).unwrap().unwrap();
+        let config = config(Some(&main), &slots, None).unwrap().unwrap();
         assert_eq!(config["model"], "regulus/m1");
         assert_eq!(config["small_model"], "regulus/m3");
         assert_eq!(config["agent"]["general"]["model"], "regulus-subagent/m1");
@@ -305,5 +319,25 @@ mod tests {
             providers["regulus-subagent"]["npm"],
             "@ai-sdk/openai-compatible"
         );
+    }
+
+    #[test]
+    fn the_model_field_applies_only_without_a_provider() {
+        let free = Some("opencode/glm-5.3-flash-free");
+        let config_of = |main, slots: &BTreeMap<String, LlmEndpoint>| {
+            config(main, slots, free).unwrap().unwrap()
+        };
+        let alone = config_of(None, &BTreeMap::new());
+        assert_eq!(alone, json!({ "model": "opencode/glm-5.3-flash-free" }));
+        let main = endpoint("anthropic", "http://127.0.0.1:3456", ("x-api-key", "k"));
+        assert_eq!(
+            config_of(Some(&main), &BTreeMap::new())["model"],
+            "regulus/m1"
+        );
+        let slots = [("fast".to_string(), main.clone())].into();
+        let with_slot = config_of(None, &slots);
+        assert_eq!(with_slot["model"], "opencode/glm-5.3-flash-free");
+        assert_eq!(with_slot["small_model"], "regulus-fast/m1");
+        assert!(config(None, &BTreeMap::new(), None).unwrap().is_none());
     }
 }
