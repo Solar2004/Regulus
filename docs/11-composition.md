@@ -426,7 +426,7 @@ disable = ["web"]               # los nodos de `web` no corren en perfiles de es
 manifest = "tools/mi-modulo/manifest.toml"
 command = ["tools/mi-modulo/run"]
 
-[client]                        # pisa el [client] global solo aquí (§14 de 04-client, cuando exista)
+[client]                        # pisa el [client] global solo aquí (04-client.md §11)
 start_view = "operate"
 ```
 
@@ -462,7 +462,8 @@ tolerancia; `ProcessModule` no.
 o no es TOML, o un id inválido, **no abre** (`project.open` da `-32011`; al arrancar, el
 proyecto sale en `project.list` con `error` y sin nada cargado), para no correr sin su veto;
   `[[modules.local]]` se lee, se devuelve y avisa "local modules are not supported yet";
-  `[client]` se devuelve tal cual (nadie lo consume aún). `config.toml` igual: avisa al
+  `[client]` se devuelve tal cual y `config.client` lo pone encima del global para la app
+  (`04-client.md` §11). `config.toml` igual: avisa al
   arrancar (`regulus: … unknown key`) y sigue; `hello` no devuelve avisos, no tenía dónde.
 - **Perfiles y plantillas:** los del proyecto se cargan al abrir con su `project_id` (si el
   fichero dice otro, aviso y gana el proyecto) y se descargan al cerrar; las ejecuciones en
@@ -481,5 +482,4 @@ de tipo equivocado no sustituye a la última buena (el veto no cae por una errat
 cambiar el id o las carpetas de perfiles pide cerrar y abrir. `profiles` y `templates` solo
 aceptan rutas dentro de la carpeta: absolutas, con `..` o enlaces que salen se ignoran con aviso.
 (4) Una ejecución que se reanuda tras reiniciar el core no pasa el veto: corre la copia que
-tenía. **Queda:** `ProcessModule` para `[[modules.local]]` y un consumidor de `[client]`
-(`04-client.md`).
+tenía. **Queda:** `ProcessModule` para `[[modules.local]]`.

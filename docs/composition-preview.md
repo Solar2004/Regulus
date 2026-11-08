@@ -49,8 +49,9 @@ negociar un major compatible.
 | `project.get` *(1.12)* | `id` | El `regulus.toml` resuelto: `id`, `name`, `path`, `file`, `profiles` y `templates` (rutas absolutas), `disable`, `enable?`, `local` (tal cual, sin cargar), `client` (tabla libre), `content` (el fichero entero con las claves desconocidas) y `warnings` |
 | `project.open` *(1.12)* | `path` (carpeta o su `regulus.toml`; relativa al home del core) | Como una entrada de `project.list`. Abrir una carpeta ya abierta no cambia nada |
 | `project.close` *(1.12)* | `id` | Como una entrada de `project.list`; no borra nada en disco |
+| `config.client` *(1.13)* | `project_id?` | `client`: el `[client]` de `config.toml` tal como está escrito, con el del proyecto encima clave a clave (las tablas como `keys` y `tui`, también clave a clave; lo desconocido pasa tal cual); `sources`: de qué fichero sale cada valor (`config.toml` o `regulus.toml`, por `clave` o `tabla.clave`); `warnings`: las claves de `[client]` que el core no conoce. Proyecto que no está abierto: `-32010`. Detalle en [`04-client.md`](04-client.md) §11 |
 
-El core real (`regulus serve`) habla el protocolo `1.12`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.13`, compatible con el `1.0` del mock.
 Desde `1.12` hay proyectos ([`11-composition.md`](11-composition.md) §13): `project.open`
 añade la carpeta a `[projects] paths` de `config.toml` y suma sus perfiles y plantillas;
 `profile.save` de un perfil con `project_id` de un proyecto abierto y `template.apply` con
