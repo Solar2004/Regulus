@@ -131,3 +131,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   `fix_plan.md` y corre `test_command` en `workdir`: código 0 acaba en `done`; si no, su
   salida es el feedback de la vuelta siguiente. Presupuesto por tiempo (`max_ms`).
   `regulus template apply ralph --set workdir=<repo>`.
+- **La app puede editar** (`docs/11-composition.md` §7, protocolo `1.11`): `module.manifest`
+  da el manifiesto de un módulo o de todos (tipos de nodo con puertos, campos, defaults y
+  opciones); `profile.save` escribe un perfil entero en la primera ruta de `[profiles] paths`
+  y lo carga sin reiniciar (pisar uno existente pide `force`); `profile.delete` lo borra si no
+  está en uso. Errores nuevos `-32008` (perfil con errores) y `-32009` (perfil en uso). Al
+  guardar se pierden los comentarios del fichero. CLI: `regulus module show`,
+  `regulus profile save` y `regulus profile rm`. El mock de la UI los imita en memoria.

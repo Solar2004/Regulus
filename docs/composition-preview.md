@@ -40,8 +40,19 @@ negociar un major compatible.
 | `template.list` *(1.10)* | — | Plantillas de `[templates] paths`: `name`, `description`, `path`, `vars` (`name`, `description`, `default?`), `requires` (`module`, `version`) y `error?` si el fichero no se puede leer como plantilla |
 | `template.get` *(1.10)* | `template` (nombre o ruta) | `name`, `path` y `text`: el fichero tal cual |
 | `template.apply` *(1.10)* | `template`, `vars` (`{nombre: valor}`), `id?`, `force?` | `profile_id`, `path` (el fichero escrito) y `diagnostics` (avisos e información; un error de `profile.check` impide escribir) |
+| `module.manifest` *(1.11)* | `id?` (con o sin versión) | El `Manifest` del módulo con los nombres del TOML (`module`, `node[]` con `type`, `name`, `port[]`, `field[]`: `id`, `type`, `default`, `options`); sin `id`, la lista de todos. También de un módulo `broken` o `incompatible` |
+| `profile.save` *(1.11)* | `profile` (el perfil entero, como lo da `profile.get`), `force?` | `profile_id`, `path` y `diagnostics`, como `template.apply` |
+| `profile.delete` *(1.11)* | `id` | `profile_id` y `path` (el fichero borrado) |
 
-El core real (`regulus serve`) habla el protocolo `1.10`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.11`, compatible con el `1.0` del mock.
+Desde `1.11` la app puede editar: `module.manifest` da los tipos de nodo con puertos, campos,
+defaults y opciones; `profile.save` escribe el perfil entero como `<id>.toml` en la primera
+ruta de `[profiles] paths` y lo carga sin reiniciar (nuevo sin `force`; uno cargado, solo con
+`force` y si su fichero está ahí y lo tiene a él solo; si vive en otro sitio, el error dice
+dónde); `profile.delete` borra el fichero si está en una carpeta de `[profiles] paths` y solo
+tiene ese perfil, y se niega mientras una ejecución suya arranca, corre o espera a reanudarse.
+El fichero se reescribe entero: los comentarios se pierden. El mock los imita en memoria
+(`mock/manifests.json`, sacado de `flow` y `files` reales).
 Desde `1.10` el core aplica plantillas (`11-composition.md` §7): escribe la copia en la
 primera ruta de `[profiles] paths` y la carga sin reiniciar; nunca pisa un perfil sin `force`.
 Desde `1.9` el core reenvía las preguntas de los hooks de un agente (`13-blocks.md` §4);
@@ -54,7 +65,11 @@ Los métodos de los módulos se suman a estos (p. ej. `agent.prompt`, `claude.de
 Errores propios: `-32001` falta `hello`, `-32002` módulo no disponible, `-32003` el módulo
 falló o entró en pánico; de plantillas *(1.10)*: `-32004` no existe, `-32005` mal formada
 (hueco sin declarar, no da un perfil, el perfil tiene errores), `-32006` falta un módulo de
-`requires` o su versión no encaja, `-32007` el perfil ya existe; una var sin valor es `-32602`. Además pide el token de `<home>/token` en el upgrade
+`requires` o su versión no encaja, `-32007` el perfil ya existe; una var sin valor es `-32602`;
+de perfiles *(1.11)*: `-32007` también si el perfil vive donde no se puede pisar ni borrar
+(otro fichero, un fichero con más perfiles, ninguno), `-32008` el perfil que se guarda tiene
+errores de `profile.check`, `-32009` el perfil que se borra está en uso; un id que no puede ser
+nombre de fichero o un `null` en un `config` (TOML no lo tiene) es `-32602`. Además pide el token de `<home>/token` en el upgrade
 (`?token=` desde la webview).
 
 El perfil contiene `project_id` nullable y `extends` reservado. Cada workflow contiene
