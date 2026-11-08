@@ -34,6 +34,8 @@
 # runs `test_command` in `workdir`; "gate exit 0" ends the run on `done`, any other exit
 # is the next turn's feedback, up to `max_turns` (`exhausted`). Every turn reads tasks.md
 # again and every turn is a new agent: nothing carries over but the files.
+# `test_command` defaults to `true`, as in Ralph: the gate passes whatever was done and
+# the loop ends on turn 1 unless a real check is set.
 #
 # Risk: `permissions = "allow"` says yes to everything the agents ask (writing files,
 # running commands), unattended, in `workdir` and wherever their tools reach. The

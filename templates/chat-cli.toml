@@ -1,8 +1,8 @@
 # Custom chat CLI (docs/13-blocks.md §5 row 8): your own harness, talked to from the app,
 # the TUI or `regulus send`. Every message goes through a supervisor that decides which
 # tools the answer needs, then to an agent in an isolated profile that sees a fixed
-# document as its system prompt. Source: Alexander's idea, "tu harness, hablado desde la
-# app" (docs/13-blocks.md §1).
+# document as its system prompt. Source: Alexander's idea, your own harness talked to
+# from the app (docs/13-blocks.md §1).
 #
 #   self.chat → chat ─message─┬→ SYSTEM.md (read) ─┐
 #                             └────────────────────┴→ join ─→ {{router}}
@@ -11,6 +11,9 @@
 #                                                              ├─other─→ compose → agent ⇢ engine
 #                                                              └─error─→ "supervisor failed"
 #   agent.reply, agent_notes.reply (or failed) → chat.reply → chat.out → self.reply
+#
+# SYSTEM.md must exist: if it cannot be read, the join's barrier never fires, and the chat
+# gets no answer and no error.
 #
 # Each message: the chat box records it (transcript per execution, `triggers.transcript`)
 # and sends it on; SYSTEM.md is read again (edit it while you chat) and joined with it;
@@ -36,8 +39,8 @@
 #
 # Risk: `permissions = "allow"` says yes to everything the agents ask, unattended, in
 # `workdir` and wherever their tools reach; `reject` keeps them to answering and to the
-# Regulus tools (opencode does not ask before an MCP tool). The memory is the project's:
-# what one chat writes, the next one reads.
+# Regulus tools (opencode does not ask before an MCP tool). With `memory_scope = project`
+# the memory is the project's: what one chat writes, the next one reads.
 #
 # Another engine: replace the nodes `engine` and `engine_notes` (e.g. `engine-claude`; it
 # has no `model` field, its setup picks the model). Another model: `--set model=…`.
@@ -116,7 +119,11 @@ supervisor_credential = { description = "secret:<name> with the supervisor's key
 supervisor_model = { description = "the supervisor's model id on that endpoint", default = "qwen3:4b" }
 supervisor_instructions = { description = "how the supervisor tells the labels apart", default = "notes: the message asks to remember, note, recall, look up or forget something kept between chats. other: anything else." }
 keywords = { description = "keywords router: a regex on the message that sends it to the agent with the memory tools", default = "(?i)(remember|note|recall|forget)" }
-memory = { description = "name of the memory the notes agent reads and writes (shared by every chat of the project)", default = "chat-notes" }
+memory = { description = "name of the memory the notes agent reads and writes", default = "chat-notes" }
+memory_scope = { description = "project: every chat of the project shares the memory; execution: each chat has its own", default = "project" }
+memory_agent_writes = { description = "yes: the notes agent may write and delete entries; no: it only reads", default = "yes" }
+chat_prompt = { description = "what the agent without tools is told between the system document and the message; empty says nothing", default = "" }
+notes_prompt = { description = "what the agent with the memory tools is told between the system document and the message", default = "You have memory tools (memory_list, memory_read, memory_search, memory_write, memory_delete): use them for what this message asks to keep or find." }
 
 [[workflows]]
 id = "chat"
@@ -225,7 +232,7 @@ ports = [
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 650, y = 300 }
-  config = { conversion = "template", template = "# System\n\n{{/system}}\n\n# Message\n\n{{/message}}\n" }
+  config = { conversion = "template", template = "# System\n\n{{/system}}\n\n{{chat_prompt}}\n\n# Message\n\n{{/message}}\n" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
@@ -261,7 +268,7 @@ ports = [
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 650, y = 150 }
-  config = { conversion = "template", template = "# System\n\n{{/system}}\n\nYou have memory tools (memory_list, memory_read, memory_search, memory_write, memory_delete): use them for what this message asks to keep or find.\n\n# Message\n\n{{/message}}\n" }
+  config = { conversion = "template", template = "# System\n\n{{/system}}\n\n{{notes_prompt}}\n\n# Message\n\n{{/message}}\n" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
@@ -298,7 +305,7 @@ ports = [
   type = "store"
   module_id = "regulus/memory@0.1.0"
   position = { x = 1100, y = 20 }
-  config = { memory = "{{memory}}", scope = "project", agent_writes = "yes" }
+  config = { memory = "{{memory}}", scope = "{{memory_scope}}", agent_writes = "{{memory_agent_writes}}" }
   ports = [{ id = "tools", capability = "tool@1", direction = "output", kind = "uses" }]
 
   [[workflows.nodes]]
