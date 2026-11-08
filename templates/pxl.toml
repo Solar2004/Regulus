@@ -73,9 +73,17 @@
 # `engine` (e.g. `engine-claude`, no `model` field). With `review = human` the judge's
 # provider still starts: leave `judge_credential` empty or point it at a local server.
 #
-# Run: pending. The free opencode model answered "Free usage limit reached" when this
-# template was written (2026-11-08); the render, the gate and the wiring are tested
-# without an agent (crates/regulus-cli/tests/template_pxl.rs). To run it:
+# Run (2026-11-08, engine `engine-claude`, `review = human`, 2 turns, ~11 min of which ~10 were
+# the reviewer's): `send go "A 16x16 red mushroom with white spots, black outline."`
+# 20:01:26 → agent.reply 20:01:54 (28 s) → render.exit 0 in 34 ms (16x16, 4 colors, PNG
+# 128x128 RGBA) → human.pending; approved with the note "The stem should be wider: make it
+# 9 pixels wide instead of 7" → notes.fail → "verdict fail" → second turn: agent.reply in
+# ~30 s, stem now 9 wide, render 0 in 40 ms → human.pending; approved as it is →
+# notes.pass → loop.done → self.done "verdict pass", self.png = <workdir>/sprite.png.
+# Both review paths (notes back, approve) and the render went as drawn above; the free
+# opencode model had answered "Free usage limit reached", so Claude ran it. The render,
+# the gate and the wiring are also tested without an agent
+# (crates/regulus-cli/tests/template_pxl.rs). To run it:
 #
 #   regulus template apply pxl --set workdir=<dir> --set review=judge \
 #     --set judge_base_url=<openai-compatible url> --set judge_model=<model>
