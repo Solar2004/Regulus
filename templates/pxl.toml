@@ -1,0 +1,882 @@
+# pxl (docs/13-blocks.md §5 row 1): an agent draws pixel art as data, a deterministic
+# renderer turns it into a PNG, and a judge or a person looks at it. Rebuilds claude-pxl
+# (https://github.com/crsolver/claude-pxl: the AI writes `.px.js`, a CLI makes PNG, GIF
+# and JSON) with the boxes Regulus already has: no Rust, nothing to install but
+# `python3` (standard library only) and the engine's CLI.
+#
+#   self.go → task (variable) ; first turn → loop ─body→ join ← task.get
+#               ▲                                       └→ compose → agent ⇢ engine
+#               │                                                 reply │ failed
+#               │   render (gate: python3 renderer, exit) ←───────────┘   └→ agent_report ─┐
+#               │     └exit→ rendered (switch on code) ─bad→ render_report ────────────────┤
+#               │                  └ok→ sprite (read .px.txt) → preview_join ← task.get     │
+#               │                                     └→ preview → {{review}} (judge|human) │
+#               │   judge:  pass|fail → tag_* → verdict_join ← feedback → verdict ──────────┤
+#               │   human:  out → notes (switch) ─pass|fail→ human_pass|human_fail ─────────┤
+#               │           rejected → human_rejected ──────────────────────────────────────┤
+#               └──────────────────────────────── back ←────────────────────────────────────┘
+#   loop.done → self.done, png_path → self.png ; loop.exhausted → self.exhausted
+#   viewer (job, autostart): python3 -m http.server serve_port in workdir, if not 0
+#
+# The format, `sprite.px.txt` (the hole `sprite_file`): palette lines `a=#RRGGBB` (one
+# letter each; `.` is always transparent), one blank line, then the grid: one letter per
+# pixel, every row as long. The agent is told the format and an 8x8 example in its turn
+# prompt (node `compose`); `instructions` adds the art brief rules on top. The grid IS
+# the preview: it is plain text a judge or a person reads.
+#
+# Each turn: the agent gets the task, the format and the last result, and writes
+# `sprite_file` in `workdir`. The gate `render` runs the embedded renderer (python3,
+# zlib + struct): it checks the file (palette lines, a blank line, a rectangular grid,
+# every letter with a color, at most `max_size` pixels a side and `max_pixels` PNG pixels
+# in all), writes `output` (RGBA PNG, each pixel `scale` x `scale`) and exits 0; it is
+# killed past `render_timeout_ms`. `sprite_file` and `output` must be relative paths
+# that stay inside `workdir` (links resolved): any other is refused, so `png` always
+# names the file that was written. Anything wrong prints "render failed: <why>" and
+# exits 1, which goes back to the loop as the next turn's feedback (as Ralph's gate). A rendered sprite is read back and shown, with the task, to the reviewer the
+# hole `review` picks:
+# - `judge` (default): a `judge` node with `criteria` and verdicts pass, fail, on its own
+#   provider (`judge_preset`, `judge_base_url`, `judge_credential`, `judge_model`, as in
+#   evaluator-optimizer). Verdict and feedback go back as "verdict <pass|fail>".
+# - `human`: a `review` of the `human` module. `regulus human list`, then
+#   `regulus human answer <id> approve` passes it as it is; to send it back with notes,
+#   approve with the text edited (`--text` or `--file`), writing the notes under its last
+#   line, "@@ REVIEWER NOTES below this line … @@"; `reject` sends it back without notes.
+#   The notes reach the agent as they are written. Editing the grid without notes
+#   approves the sprite as it was rendered (the PNG is already out): it is not re-rendered.
+# "verdict pass" ends the loop on `done` and `png` says where the PNG is; otherwise the
+# next turn, up to `max_turns` (then `exhausted`). A failed prompt goes back the same way.
+#
+# See it: `--set serve_port=8000` starts `python3 -m http.server 8000 --bind 127.0.0.1`
+# in `workdir` when the run starts: http://127.0.0.1:8000/<output> (the PNG) and
+# http://127.0.0.1:8000/<sprite_file>. 0 (the default) starts nothing. It serves every
+# file of `workdir` to whoever reaches 127.0.0.1 on this machine; `regulus stop` ends it.
+#
+# Out of scope: GIF and animation (claude-pxl's frames), JSON export, and the `pxl` CLI
+# from npm: one still PNG per run, from a format of Regulus' own. A frame per file and a
+# second gate that joins them would be the way to animation.
+#
+# Risks: `permissions = "allow"` (default) says yes to everything the agent asks, writing
+# files and running commands, unattended, in `workdir` and wherever its tools reach, with
+# the user's own opencode setup; `reject` keeps it from writing the sprite at all with
+# most engines. The renderer only reads `sprite_file` and writes `output`, both inside
+# `workdir`: both are refused if absolute or outside it. The judge never verifies alone (§6): here the
+# renderer is the deterministic check and the judge only says whether it looks right.
+# `turn_timeout_ms` ends a turn that hangs (a provider past its quota) as a failure.
+#
+# Holes: `workdir` (required, absolute, existing), `model`, `permissions`, `fresh_context`,
+# `turn_timeout_ms`, `instructions`, `sprite_file`, `output`, `scale`, `max_size`,
+# `max_pixels`, `render_timeout_ms`,
+# `max_turns`, `review` (judge | human; another value passes `profile.check` and fails to
+# start), `criteria`, `judge_preset`, `judge_base_url`, `judge_credential`, `judge_model`
+# (empty: the first model the endpoint offers), `review_timeout_ms`, `serve_port`. Values
+# may not hold `"` or `\` (docs/11-composition.md §7). Another engine: replace the node
+# `engine` (e.g. `engine-claude`, no `model` field). With `review = human` the judge's
+# provider still starts: leave `judge_credential` empty or point it at a local server.
+#
+# Run (2026-11-08, engine `engine-claude`, `review = human`, 2 turns, ~11 min of which ~10 were
+# the reviewer's): `send go "A 16x16 red mushroom with white spots, black outline."`
+# 20:01:26 → agent.reply 20:01:54 (28 s) → render.exit 0 in 34 ms (16x16, 4 colors, PNG
+# 128x128 RGBA) → human.pending; approved with the note "The stem should be wider: make it
+# 9 pixels wide instead of 7" → notes.fail → "verdict fail" → second turn: agent.reply in
+# ~30 s, stem now 9 wide, render 0 in 40 ms → human.pending; approved as it is →
+# notes.pass → loop.done → self.done "verdict pass", self.png = <workdir>/sprite.png.
+# Both review paths (notes back, approve) and the render went as drawn above; the free
+# opencode model had answered "Free usage limit reached", so Claude ran it. The render,
+# the gate and the wiring are also tested without an agent
+# (crates/regulus-cli/tests/template_pxl.rs). To run it:
+#
+#   regulus template apply pxl --set workdir=<dir> --set review=judge \
+#     --set judge_base_url=<openai-compatible url> --set judge_model=<model>
+#   regulus run pxl --detach                                # exec-1  pxl  running
+#   regulus send exec-1 go "A 16x16 red mushroom with white spots, black outline."
+#   regulus events --execution exec-1 | grep -E "render.exit|judge|loop.done|self.png"
+id = "pxl"
+name = "Pixel art in {{workdir}}"
+main_workflow_id = "pxl"
+
+[template]
+name = "pxl"
+description = "pxl: an agent draws pixel art as text, a renderer makes the PNG, a judge or a person reviews it"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/process", version = ">=0.1" },
+  { module = "regulus/judge", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/human", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path of an existing folder: the agent works there, the sprite and the PNG are written there" }
+model = { description = "model of the engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+permissions = { description = "what the agent answers when its tools ask for permission: allow (it must write the sprite) or reject", default = "allow" }
+fresh_context = { description = "yes: a new agent session every turn; no: one session that remembers", default = "yes" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
+instructions = { description = "extra rules for the artist, one line: style, size, colors", default = "Keep it small and readable: a clear silhouette, a dark outline, few colors. Reply with one line saying what you drew." }
+sprite_file = { description = "the sprite file the agent writes, a relative path that stays inside workdir", default = "sprite.px.txt" }
+output = { description = "the PNG the renderer writes, a relative path that stays inside workdir", default = "sprite.png" }
+scale = { description = "PNG pixels per sprite pixel, a side", default = 8 }
+max_size = { description = "most sprite pixels a side; a larger grid fails the render", default = 64 }
+max_pixels = { description = "most PNG pixels (width x height after scale); a larger PNG fails the render", default = 16000000 }
+render_timeout_ms = { description = "milliseconds the renderer may run before it is killed and the render fails", default = 60000 }
+max_turns = { description = "most turns before the loop gives up on exhausted", default = 5 }
+review = { description = "who looks at a rendered sprite: judge (a model) or human (regulus human answer)", default = "judge" }
+criteria = { description = "what the judge checks the sprite against; it also sees the task", default = "The sprite clearly shows what the task asks for, reads well at its size, and has no stray pixels." }
+judge_preset = { description = "provider template of the judge, from the providers module's presets.toml (ollama, openrouter-openai, anthropic...)", default = "ollama" }
+judge_base_url = { description = "base URL of the judge's provider; empty: the preset's", default = "" }
+judge_credential = { description = "the judge provider's key as secret:<name>; empty: none (a local model)", default = "" }
+judge_model = { description = "model id the judge asks, as its provider names it; empty: the first one the endpoint offers", default = "" }
+review_timeout_ms = { description = "milliseconds a person has to review; past it the sprite goes back as rejected. 0: no limit", default = 0 }
+serve_port = { description = "port of a local web server on workdir to see the PNG (127.0.0.1 only); 0: none", default = 0 }
+
+[[workflows]]
+id = "pxl"
+name = "pxl"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "done", capability = "text@1", direction = "output", kind = "then" },
+  { id = "png", capability = "path@1", direction = "output", kind = "then" },
+  { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "serving", capability = "job@1", direction = "output", kind = "then" },
+  { id = "viewer_failed", capability = "exit@1", direction = "output", kind = "then" },
+]
+
+  # The drawing asked for, kept for every turn and for the reviewer.
+  [[workflows.nodes]]
+  id = "task"
+  name = "Task"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { name = "task" }
+  ports = [
+    { id = "set", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "first"
+  name = "First turn"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 150 }
+  config = { conversion = "template", template = "none yet: this is the first turn" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Turns. What comes back on `back` is the last result; "verdict pass" ends on `done`.
+  [[workflows.nodes]]
+  id = "loop"
+  name = "Loop"
+  type = "loop"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 150 }
+  config = { max = {{max_turns}}, until = { op = "regex", value = '^verdict pass\b' } }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "back", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The same variable as `task` (variables are shared by name within the execution).
+  [[workflows.nodes]]
+  id = "task_turn"
+  name = "Task (turn)"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 50 }
+  config = { name = "task" }
+  ports = [
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join"
+  name = "Task + last result"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 500, y = 150 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "task", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "feedback", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The format and its example live here, not in a hole: holes take one line without quotes.
+  [[workflows.nodes]]
+  id = "compose"
+  name = "Turn prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Format\n\nWrite the sprite to the file {{sprite_file}} in your working directory, replacing it if it exists. It is plain text: first the palette, one line per color, LETTER=#RRGGBB (one letter or digit each; . is always transparent and needs no line); then one blank line; then the grid, one letter per pixel, every row the same length, at most {{max_size}} pixels a side. Example, an 8x8 heart:\n\nr=#e03030\nk=#401010\n\n.kk..kk.\nkrrkkrrk\nkrrrrrrk\nkrrrrrrk\n.krrrrk.\n..krrk..\n...kk...\n........\n\n{{instructions}}\n\n# Result of the last turn\n\n{{/feedback}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Writes `sprite_file` in `workdir`. `allow`: it acts there unattended.
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Artist"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 800, y = 150 }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The engine: the only node that knows the CLI. Swap it for another engine node.
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 800, y = 20 }
+  config = { model = "{{model}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" },
+  ]
+
+  # The deterministic renderer: python3, standard library only. It checks the sprite and
+  # writes the PNG; "render failed: <why>" and exit 1 otherwise. Edit it here; the test
+  # (crates/regulus-cli/tests/template_pxl.rs) runs this very script.
+  [[workflows.nodes]]
+  id = "render"
+  name = "Render"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 950, y = 150 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "exit", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+    [workflows.nodes.config]
+    command = "python3"
+    cwd = "{{workdir}}"
+    timeout_ms = {{render_timeout_ms}}
+    args = ["-c", '''
+import os, sys, zlib, struct
+
+def fail(message):
+    print("render failed: " + message)
+    sys.exit(1)
+
+if len(sys.argv) != 6:
+    fail("usage: render SPRITE OUTPUT SCALE MAX_SIZE MAX_PIXELS")
+try:
+    scale, top, most = int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
+except ValueError:
+    fail("scale, max_size and max_pixels must be whole numbers")
+if scale < 1 or top < 1 or most < 1:
+    fail("scale, max_size and max_pixels must be at least 1")
+base = os.path.realpath(os.getcwd())
+
+def inside(path, what):
+    if not path or os.path.isabs(path):
+        fail("%s %r must be a path relative to workdir" % (what, path))
+    real = os.path.realpath(os.path.join(base, path))
+    if os.path.commonpath([base, real]) != base:
+        fail("%s %r leaves workdir %s" % (what, path, base))
+    return real
+
+src = inside(sys.argv[1], "sprite_file")
+out = inside(sys.argv[2], "output")
+try:
+    with open(src, encoding="utf-8") as f:
+        text = f.read()
+except (OSError, UnicodeDecodeError) as e:
+    fail("cannot read %s: %s" % (src, e))
+lines = [l.rstrip() for l in text.replace("\r", "").split("\n")]
+palette = {".": (0, 0, 0, 0)}
+i = 0
+while i < len(lines) and not lines[i].strip():
+    i += 1
+while i < len(lines) and lines[i].strip():
+    line = lines[i].strip()
+    i += 1
+    if "=" not in line:
+        fail("line %d: a palette line is LETTER=#RRGGBB, not %r; a blank line goes between the palette and the grid" % (i, line))
+    key, color = [p.strip() for p in line.split("=", 1)]
+    hexa = color[1:] if color.startswith("#") else color
+    if len(key) != 1 or key == "." or key == "=":
+        fail("line %d: %r is not one letter (. is transparent and needs no line)" % (i, key))
+    if len(hexa) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexa):
+        fail("line %d: %r is not a color #RRGGBB" % (i, color))
+    palette[key] = (int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16), 255)
+grid = [l.strip() for l in lines[i:] if l.strip()]
+if len(palette) == 1:
+    fail("no palette: start with lines like a=#ff0000, then a blank line, then the grid")
+if not grid:
+    fail("no grid after the palette and its blank line")
+width, height = len(grid[0]), len(grid)
+for n, row in enumerate(grid, 1):
+    if len(row) != width:
+        fail("grid row %d has %d pixels and row 1 has %d: every row must be as long" % (n, len(row), width))
+    for c in row:
+        if c not in palette:
+            fail("grid row %d: %r has no color in the palette" % (n, c))
+if width > top or height > top:
+    fail("the grid is %dx%d, above max_size %d" % (width, height, top))
+if width * scale * height * scale > most:
+    fail("%dx%d at scale %d is %d PNG pixels, above max_pixels %d" % (width, height, scale, width * scale * height * scale, most))
+raw = bytearray()
+for row in grid:
+    pixels = bytearray()
+    for c in row:
+        pixels += bytes(palette[c]) * scale
+    for _ in range(scale):
+        raw += b"\x00" + pixels
+
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+header = struct.pack(">IIBBBBB", width * scale, height * scale, 8, 6, 0, 0, 0)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b"")
+try:
+    with open(out, "wb") as f:
+        f.write(png)
+except OSError as e:
+    fail("cannot write %s: %s" % (out, e))
+print("rendered %s: %dx%d pixels, %d colors, PNG %dx%d in %s" % (src, width, height, len(palette) - 1, width * scale, height * scale, out))
+''', "{{sprite_file}}", "{{output}}", "{{scale}}", "{{max_size}}", "{{max_pixels}}"]
+
+  [[workflows.nodes]]
+  id = "rendered"
+  name = "Rendered?"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1100, y = 150 }
+  config = { mode = "rules", cases = [{ port = "ok", op = "equals", path = "/code", value = 0 }], fallback = "bad" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ok", capability = "exit@1", direction = "output", kind = "then" },
+    { id = "bad", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "render_report"
+  name = "Render result"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1100, y = 300 }
+  config = { conversion = "template", template = "render exit {{/code}}\n\n{{/stdout}}\n{{/stderr}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent_report"
+  name = "Agent failure"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 950, y = 300 }
+  config = { conversion = "template", template = "agent failed\n\n{{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The grid as text: the preview the reviewer reads. Its `in` takes the gate's exit@1
+  # (the manifest's default is text@1): with `path` set, any value only triggers a new
+  # read and is not read itself (`files` reads a value as a path only with `path` empty),
+  # so no convert is needed in between.
+  [[workflows.nodes]]
+  id = "sprite"
+  name = "Sprite"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 1250, y = 100 }
+  config = { path = "{{sprite_file}}", dir = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "task_review"
+  name = "Task (review)"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 20 }
+  config = { name = "task" }
+  ports = [
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "preview_join"
+  name = "Task + sprite"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1400, y = 100 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "task", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "sprite", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "preview"
+  name = "Preview"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1550, y = 100 }
+  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Sprite ({{sprite_file}}, rendered to {{output}})\n\n{{/sprite}}\n\n@@ REVIEWER NOTES below this line (leave empty to approve as it is) @@\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # review = judge: verdict and feedback on the sprite as text.
+  [[workflows.nodes]]
+  id = "judge"
+  name = "Judge"
+  type = "judge"
+  module_id = "regulus/judge@0.1.0"
+  position = { x = 1700, y = 50 }
+  config = { criteria = "{{criteria}} The input is the task and the sprite as text: a palette of LETTER=#RRGGBB lines, then the grid, one letter per pixel; ignore the REVIEWER NOTES line.", verdicts = "pass, fail", model = "{{judge_model}}" }
+  ports = [
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+    { id = "feedback", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "judge_provider"
+  name = "Judge provider"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 1700, y = -80 }
+  config = { preset = "{{judge_preset}}", base_url = "{{judge_base_url}}", credential = "{{judge_credential}}", model = "{{judge_model}}" }
+  ports = [
+    { id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "tag_pass"
+  name = "Pass"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1850, y = 0 }
+  config = { conversion = "template", template = "verdict pass" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "tag_fail"
+  name = "Fail"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1850, y = 80 }
+  config = { conversion = "template", template = "verdict fail" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Pairs each verdict with its feedback, whichever comes first.
+  [[workflows.nodes]]
+  id = "verdict_join"
+  name = "Verdict + feedback"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2000, y = 50 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "verdict", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "feedback", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "verdict"
+  name = "Verdict"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2150, y = 50 }
+  config = { conversion = "template", template = "{{/verdict}}\n\n{{/feedback}}" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # review = human: a person approves, edits in notes, or rejects.
+  [[workflows.nodes]]
+  id = "human"
+  name = "Review"
+  type = "review"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 1700, y = 250 }
+  config = { prompt = "Sprite: approve as it is, approve with notes after the last line, or reject", timeout_ms = {{review_timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Text under the marker line is the person's notes: the sprite goes back.
+  [[workflows.nodes]]
+  id = "notes"
+  name = "Notes?"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1850, y = 250 }
+  config = { mode = "rules", cases = [{ port = "fail", op = "regex", value = '(?m)^@@ REVIEWER NOTES below this line[^\n]*@@[ \t]*$\s*\S' }], fallback = "pass" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "human_pass"
+  name = "Approved"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2000, y = 200 }
+  config = { conversion = "template", template = "verdict pass\n\napproved by the reviewer" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "human_fail"
+  name = "Notes"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2000, y = 280 }
+  config = { conversion = "template", template = "verdict fail\n\nThe reviewer sent it back. What they wrote, after the sprite:\n\n{{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "human_rejected"
+  name = "Rejected"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2000, y = 360 }
+  config = { conversion = "template", template = "verdict fail\n\nThe reviewer rejected the sprite without notes. Try another take on the task." }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "png_path"
+  name = "PNG path"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 300 }
+  config = { conversion = "template", template = "{{workdir}}/{{output}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # serve_port ≠ 0: a local web server on workdir for the PNG. 0: it exits at once.
+  [[workflows.nodes]]
+  id = "viewer"
+  name = "Viewer"
+  type = "job"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 50, y = 300 }
+  config = { command = "sh", args = ["-c", "test \"$0\" = 0 && exit 0; exec python3 -m http.server \"$0\" --bind 127.0.0.1", "{{serve_port}}"], cwd = "{{workdir}}", autostart = "yes" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "started", capability = "job@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "judge-provider"
+  kind = "uses"
+  from = { node_id = "judge_provider", port_id = "endpoint" }
+  to = { node_id = "judge", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "go-task"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "task", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "go-first"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "first", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "first-loop"
+  kind = "then"
+  from = { node_id = "first", port_id = "out" }
+  to = { node_id = "loop", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "loop-feedback"
+  kind = "then"
+  from = { node_id = "loop", port_id = "body" }
+  to = { node_id = "join", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "loop-task"
+  kind = "then"
+  from = { node_id = "loop", port_id = "body" }
+  to = { node_id = "task_turn", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "task-join"
+  kind = "then"
+  from = { node_id = "task_turn", port_id = "value" }
+  to = { node_id = "join", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "join-compose"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "compose", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "compose-agent"
+  kind = "then"
+  from = { node_id = "compose", port_id = "out" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-render"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "render", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-fail"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "agent_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-back"
+  kind = "then"
+  from = { node_id = "agent_report", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "render-rendered"
+  kind = "then"
+  from = { node_id = "render", port_id = "exit" }
+  to = { node_id = "rendered", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "bad-report"
+  kind = "then"
+  from = { node_id = "rendered", port_id = "bad" }
+  to = { node_id = "render_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "report-back"
+  kind = "then"
+  from = { node_id = "render_report", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "ok-sprite"
+  kind = "then"
+  from = { node_id = "rendered", port_id = "ok" }
+  to = { node_id = "sprite", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "sprite-preview"
+  kind = "then"
+  from = { node_id = "sprite", port_id = "out" }
+  to = { node_id = "preview_join", port_id = "sprite" }
+
+  [[workflows.wires]]
+  id = "sprite-task"
+  kind = "then"
+  from = { node_id = "sprite", port_id = "out" }
+  to = { node_id = "task_review", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "task-preview"
+  kind = "then"
+  from = { node_id = "task_review", port_id = "value" }
+  to = { node_id = "preview_join", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "preview-format"
+  kind = "then"
+  from = { node_id = "preview_join", port_id = "out" }
+  to = { node_id = "preview", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "preview-review"
+  kind = "then"
+  from = { node_id = "preview", port_id = "out" }
+  to = { node_id = "{{review}}", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "judge-pass"
+  kind = "then"
+  from = { node_id = "judge", port_id = "pass" }
+  to = { node_id = "tag_pass", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "judge-fail"
+  kind = "then"
+  from = { node_id = "judge", port_id = "fail" }
+  to = { node_id = "tag_fail", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pass-verdict"
+  kind = "then"
+  from = { node_id = "tag_pass", port_id = "out" }
+  to = { node_id = "verdict_join", port_id = "verdict" }
+
+  [[workflows.wires]]
+  id = "fail-verdict"
+  kind = "then"
+  from = { node_id = "tag_fail", port_id = "out" }
+  to = { node_id = "verdict_join", port_id = "verdict" }
+
+  [[workflows.wires]]
+  id = "feedback-verdict"
+  kind = "then"
+  from = { node_id = "judge", port_id = "feedback" }
+  to = { node_id = "verdict_join", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "verdict-format"
+  kind = "then"
+  from = { node_id = "verdict_join", port_id = "out" }
+  to = { node_id = "verdict", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "verdict-back"
+  kind = "then"
+  from = { node_id = "verdict", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "judge-error"
+  kind = "then"
+  from = { node_id = "judge", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "human-notes"
+  kind = "then"
+  from = { node_id = "human", port_id = "out" }
+  to = { node_id = "notes", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "human-pending"
+  kind = "then"
+  from = { node_id = "human", port_id = "pending" }
+  to = { node_id = "self", port_id = "pending" }
+
+  [[workflows.wires]]
+  id = "notes-pass"
+  kind = "then"
+  from = { node_id = "notes", port_id = "pass" }
+  to = { node_id = "human_pass", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "notes-fail"
+  kind = "then"
+  from = { node_id = "notes", port_id = "fail" }
+  to = { node_id = "human_fail", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "rejected"
+  kind = "then"
+  from = { node_id = "human", port_id = "rejected" }
+  to = { node_id = "human_rejected", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pass-back"
+  kind = "then"
+  from = { node_id = "human_pass", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "fail-back"
+  kind = "then"
+  from = { node_id = "human_fail", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "rejected-back"
+  kind = "then"
+  from = { node_id = "human_rejected", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "loop-done"
+  kind = "then"
+  from = { node_id = "loop", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "done-png"
+  kind = "then"
+  from = { node_id = "loop", port_id = "done" }
+  to = { node_id = "png_path", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "png-out"
+  kind = "then"
+  from = { node_id = "png_path", port_id = "out" }
+  to = { node_id = "self", port_id = "png" }
+
+  [[workflows.wires]]
+  id = "loop-exhausted"
+  kind = "then"
+  from = { node_id = "loop", port_id = "exhausted" }
+  to = { node_id = "self", port_id = "exhausted" }
+
+  [[workflows.wires]]
+  id = "viewer-started"
+  kind = "then"
+  from = { node_id = "viewer", port_id = "started" }
+  to = { node_id = "self", port_id = "serving" }
+
+  [[workflows.wires]]
+  id = "viewer-fail"
+  kind = "then"
+  from = { node_id = "viewer", port_id = "fail" }
+  to = { node_id = "self", port_id = "viewer_failed" }
