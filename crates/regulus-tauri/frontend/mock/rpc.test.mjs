@@ -199,3 +199,59 @@ test("human methods list nothing pending; module methods without their module ar
   state.modules = state.modules.filter((module) => !module.id.startsWith("regulus/agent@"));
   assert.equal(session(request("agent.prompt", { execution_id: "exec-1", node_id: "agent", text: "x" })).error.code, -32601);
 });
+
+// A profile with a greeter wired "then" to a writer, plus an agent box whose required
+// "uses" input has no wire: what the canvas builds and saves.
+const edited = () => ({
+  id: "edited", name: "Edited", project_id: null, extends: null, main_workflow_id: "main",
+  workflows: [{
+    id: "main", name: "Main", kind: "main", module_id: null, layout: { x: 0, y: 0, width: 0, height: 0 },
+    nodes: [
+      { id: "write", type: "write", name: "Write", module_id: "regulus/files@0.1.0", resource: null, config: { path: "out.md" }, position: { x: 300, y: 0 }, internal_workflow_id: null, exposed_parameters: [],
+        ports: manifests[1].node.find((node) => node.type === "write").port },
+      { id: "agent", type: "agent", name: "Agent", module_id: "regulus/agent@0.1.0", resource: null, config: {}, position: { x: 0, y: 200 }, internal_workflow_id: null, exposed_parameters: [],
+        ports: [{ id: "engine", name: "engine", capability: "agent.engine@1", direction: "input", kind: "uses", required: true }] },
+      { id: "read", type: "read", name: "Read", module_id: "regulus/files@0.1.0", resource: null, config: {}, position: { x: 0, y: 0 }, internal_workflow_id: null, exposed_parameters: [],
+        ports: manifests[1].node.find((node) => node.type === "read").port },
+    ],
+    wires: [{ id: "read-write", kind: "then", from: { node_id: "read", port_id: "out" }, to: { node_id: "write", port_id: "in" } }],
+  }],
+});
+
+test("profile.check reports what the core would: missing module, unwired required input", () => {
+  const state = createState();
+  const session = negotiatedSession(state);
+  assert.equal(session(request("profile.check", { id: "missing" })).error.code, -32602);
+  const [{ id }] = session(request("profile.list")).result;
+  assert.deepEqual(session(request("profile.check", { id })).result, []);
+  const profile = edited();
+  profile.workflows[0].nodes.push({ id: "gone", type: "x", name: "Gone", module_id: "regulus/nowhere@0.1.0", resource: null, config: {}, position: { x: 0, y: 400 }, internal_workflow_id: null, exposed_parameters: [], ports: [] });
+  const saved = session(request("profile.save", { profile })).result;
+  const codes = saved.diagnostics.map((item) => [item.severity, item.code, item.node_id]);
+  assert.deepEqual(codes, [["info", "node.module_not_installed", "gone"], ["warning", "port.required_unwired", "agent"]]);
+  assert.deepEqual(session(request("profile.check", { id: "edited" })).result, saved.diagnostics);
+  for (const item of saved.diagnostics) assert.deepEqual(Object.keys(item).sort(), ["code", "message", "node_id", "severity", "wire_id", "workflow_id"]);
+});
+
+test("profile.save refuses a profile with errors, with the core's message", () => {
+  const session = negotiatedSession();
+  const profile = edited();
+  profile.workflows[0].wires.push({ id: "bad", kind: "then", from: { node_id: "write", port_id: "written" }, to: { node_id: "read", port_id: "in" } });
+  const refused = session(request("profile.save", { profile }));
+  assert.equal(refused.error.code, -32008);
+  assert.match(refused.error.message, /^profile `edited` has errors: `path@1` does not fit into `text@1` \(wire\.capability_mismatch\)$/);
+  profile.workflows[0].wires.push({ id: "bad2", kind: "then", from: { node_id: "read", port_id: "out" }, to: { node_id: "write", port_id: "nope" } });
+  assert.match(session(request("profile.save", { profile })).error.message, /wire\.endpoint_missing/);
+});
+
+test("execution.start records an execution of the main workflow with its disabled nodes", () => {
+  const state = createState();
+  const session = negotiatedSession(state);
+  session(request("profile.save", { profile: edited() }));
+  assert.equal(session(request("execution.start", { profile_id: "nope" })).error.code, -32602);
+  assert.equal(session(request("execution.start", { profile_id: "edited", workflow_id: "nope" })).error.code, -32602);
+  const started = session(request("execution.start", { profile_id: "edited" })).result;
+  assert.deepEqual(started, { id: "exec-1", profile_id: "edited", workflow_id: "main", project_id: null, state: { status: "running" }, disabled: [{ node_id: "agent", missing: ["engine"] }] });
+  assert.deepEqual(session(request("execution.list")).result, [started]);
+  assert.equal(session(request("profile.delete", { id: "edited" })).error.code, -32009);
+});

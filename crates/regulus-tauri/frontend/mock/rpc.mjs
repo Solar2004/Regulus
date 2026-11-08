@@ -41,6 +41,61 @@ function normalize(profile) {
   return profile;
 }
 
+// A subset of `profile.check` (regulus_core::graph): same codes, severities and fields.
+const SELF = "self";
+function diagnose(profile, modules) {
+  const found = [];
+  const push = (severity, code, message, workflow_id = null, node_id = null, wire_id = null) =>
+    found.push({ severity, code, message, workflow_id, node_id, wire_id });
+  const workflow = (id) => profile.workflows.find((item) => item.id === id);
+  if (!workflow(profile.main_workflow_id)) {
+    push("error", "profile.main_missing", `main workflow \`${profile.main_workflow_id}\` does not exist`);
+  }
+  const installed = (id) => modules.some((module) => baseId(module.id) === baseId(id));
+  const portsOf = (node) => (node.ports ?? []).length || node.module_id || !node.internal_workflow_id
+    ? node.ports ?? [] : workflow(node.internal_workflow_id)?.ports ?? [];
+  for (const flow of profile.workflows) {
+    const nodes = flow.nodes ?? [];
+    const endpoint = (end) => {
+      if (end.node_id === SELF) {
+        const port = (flow.ports ?? []).find((item) => item.id === end.port_id);
+        return port && { port, direction: port.direction === "input" ? "output" : "input" };
+      }
+      const node = nodes.find((item) => item.id === end.node_id);
+      const port = node && portsOf(node).find((item) => item.id === end.port_id);
+      return port && { port, direction: port.direction };
+    };
+    for (const node of nodes) {
+      if (node.module_id && !installed(node.module_id)) {
+        push("info", "node.module_not_installed", `module \`${node.module_id}\` is not installed`, flow.id, node.id);
+      }
+      if (node.internal_workflow_id && !workflow(node.internal_workflow_id)) {
+        push("error", "node.internal_workflow_missing", `internal workflow \`${node.internal_workflow_id}\` does not exist`, flow.id, node.id);
+      }
+    }
+    const incoming = new Map();
+    for (const wire of flow.wires ?? []) {
+      const from = endpoint(wire.from);
+      const to = endpoint(wire.to);
+      if (!from || !to) {
+        push("error", "wire.endpoint_missing", `wire joins \`${wire.from.node_id}.${wire.from.port_id}\` to \`${wire.to.node_id}.${wire.to.port_id}\`, but one of those ports does not exist`, flow.id, null, wire.id);
+        continue;
+      }
+      const key = `${wire.to.node_id}.${wire.to.port_id}`;
+      incoming.set(key, (incoming.get(key) ?? 0) + 1);
+      if (from.direction !== "output" || to.direction !== "input") push("error", "wire.direction", "a wire must go from an output to an input", flow.id, null, wire.id);
+      if (from.port.kind !== wire.kind || to.port.kind !== wire.kind) push("error", "wire.kind_mismatch", "both ports must be of the same kind as the wire", flow.id, null, wire.id);
+      if (from.port.capability !== to.port.capability) push("error", "wire.capability_mismatch", `\`${from.port.capability}\` does not fit into \`${to.port.capability}\``, flow.id, null, wire.id);
+    }
+    for (const node of nodes) for (const port of portsOf(node).filter((item) => item.direction === "input")) {
+      const count = incoming.get(`${node.id}.${port.id}`) ?? 0;
+      if (count > 1 && port.cardinality !== "many") push("error", "port.too_many_wires", `input \`${port.id}\` accepts one wire and has ${count}`, flow.id, node.id);
+      if (count === 0 && port.required) push("warning", "port.required_unwired", `required input \`${port.id}\` (${port.capability}) has no wire; the node will be disabled`, flow.id, node.id);
+    }
+  }
+  return found;
+}
+
 /** In-memory state of the mock core: what `profile.save` and `profile.delete` change. */
 export function createState() {
   const operate = operateState();
@@ -95,8 +150,10 @@ export function createSession(state = createState()) {
         if (!isObject(profile) || typeof profile.id !== "string" || typeof profile.main_workflow_id !== "string" ||
             !Array.isArray(profile.workflows)) return error(id, -32602, "Invalid params");
         if (badId(profile.id)) return error(id, -32602, `profile id \`${profile.id}\` cannot be a file name`);
-        if (!profile.workflows.some((workflow) => workflow.id === profile.main_workflow_id)) {
-          return error(id, -32008, `profile \`${profile.id}\` has errors: main workflow \`${profile.main_workflow_id}\` does not exist (profile.main_missing)`);
+        const found = diagnose(profile, state.modules);
+        const errors = found.filter((item) => item.severity === "error");
+        if (errors.length) {
+          return error(id, -32008, `profile \`${profile.id}\` has errors: ${errors.map((item) => `${item.message} (${item.code})`).join("; ")}`);
         }
         if (profile.workflows.some((workflow) => (workflow.nodes ?? []).some((node) => nullIn(node.config ?? {})))) {
           return error(id, -32602, `profile \`${profile.id}\` cannot be written as TOML: a node config holds null`);
@@ -108,7 +165,7 @@ export function createSession(state = createState()) {
         }
         const saved = normalize(structuredClone(profile));
         if (at >= 0) state.profiles[at] = saved; else state.profiles.push(saved);
-        result = { profile_id: profile.id, path, diagnostics: [] };
+        result = { profile_id: profile.id, path, diagnostics: found };
         break;
       }
       case "profile.delete": {
@@ -123,6 +180,13 @@ export function createSession(state = createState()) {
         break;
       }
       case "execution.list": result = state.executions; break;
+      case "profile.check": {
+        const profile = state.profiles.find((item) => item.id === params.id);
+        if (!profile) return error(id, -32602, "Unknown profile");
+        result = diagnose(profile, state.modules);
+        break;
+      }
+      // execution.start and the other Operate methods live in operate.mjs.
       default: {
         const answer = operateMethod(state, method, params);
         if (!answer) return error(id, -32601, "Method not found");

@@ -160,3 +160,29 @@ los mismos métodos; ninguno es nuevo.
   Ralph hasta `self.done`, `agent.prompt` → `pong`). El mock imita los métodos con datos
   de `mock/operate.json`.
 
+---
+
+## 9. Canvas editable (2026-11-08)
+
+✅ **Hecho.** La vista Canvas edita el perfil entero y lo guarda en el core; cada acción es
+un método que la CLI también llama. **Qué se edita:** perfil nuevo (nombre → id, un
+workflow principal vacío); nodos desde la paleta (los tipos de `module.manifest`, por
+módulo y con su estado de `module.list`; se arrastran o se pulsan, con los puertos del
+manifiesto y los defaults de sus campos como `config`); mover, seleccionar varios y borrar
+(Supr o botón); cables de salida a entrada solo si coinciden capacidad y tipo (`uses` con
+`uses`, `then` con `then`) y la entrada tiene sitio (`cardinality`), si no se dice por qué;
+el inspector edita nombre, cada campo según su tipo (texto, número, `select`, `map`,
+`workflow`; lo desconocido como texto crudo) con su default y "reset", el workflow interno
+(una caja) y, con el workflow elegido, sus puertos propios (`self`). Workflows extra se
+crean y se borran (el principal no). Un nodo de un módulo ausente sale *no instalado* y se
+sigue editando. **Cómo guarda:** un documento único en el cliente (`composition/editor/`,
+funciones puras con tests); Guardar (`Ctrl/Cmd+S`) manda `profile.save` (sin `force` si es
+nuevo) y enseña los `diagnostics` o el error del core tal cual; Comprobar (`profile.check`,
+sobre lo guardado) marca los nodos que nombra; Ejecutar (`execution.start`) dice la
+ejecución y los nodos desactivados; Borrar (`profile.delete`) pregunta antes. Con cambios
+sin guardar, cambiar de perfil pregunta. **Ajustes** (en el dispositivo, botón de ajustes
+del canvas): zoom mínimo y máximo (0.15 / 1.8), rejilla y ajuste a ella (16 px, apagado),
+ancho de nodo (250), separación al añadir (40), agrupación de la paleta (por módulo),
+autoguardado (apagado, 30 000 ms tras el último cambio), teclas de borrar (`Delete`,
+`Backspace`) y de guardar (`s`). La vista "Todos los workflows" es de solo lectura: pulsar
+un nodo abre su workflow.

@@ -143,3 +143,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   del workflow, conversación con un agente, canal y decisiones de `human`) y Plantillas
   (lista, fichero, aplicar con formulario de variables, abrir en el canvas o ejecutar).
   Ajustes de la vista guardados en el dispositivo. `pnpm test` (vitest) en el frontend.
+- **Canvas editable** (`docs/04-client.md` §9): en Composición se crea un perfil, se añaden
+  nodos desde una paleta de manifiestos (buscable, con el estado del módulo), se mueven, se
+  borran y se cablean (un cable que no encaja por capacidad, tipo o cardinalidad se rechaza
+  con el motivo); el inspector edita nombre, campos del manifiesto, workflow interno y los
+  puertos propios de un workflow. Guardar (`Ctrl/Cmd+S`), Comprobar, Ejecutar y Borrar
+  llaman a `profile.save`, `profile.check`, `execution.start` y `profile.delete`. Ajustes
+  del canvas (zoom, rejilla, ancho de nodo, agrupación, autoguardado) en el dispositivo. El
+  mock suma `profile.check` y los diagnósticos de `profile.save`; `pnpm test` (vitest)
+  prueba la lógica.
