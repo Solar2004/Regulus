@@ -11,7 +11,7 @@
 #     │ get ←─ pick.out ←─ pick (extractor) ⇠ judge_model ←──────────────────┘
 #     │          └→ winner_id → winner (variable) ─┐
 #     └→ split ─each→ pair ←── winner.get ─────────┘
-#                      └→ is_pick (gate: id == winner?) ─fail→ self.losers
+#                      └→ is_pick (switch: id == winner?) ─fail→ self.losers
 #                              └pass→ to_info → info_json → queue ─check→ tests (gate) ─pass/fail→ queue
 #                                                             └→ merged / conflict / rejected
 #   attempt (child, one execution each):
@@ -25,9 +25,9 @@
 # from `base`, prompts its own agent with the task and the worktree's path, stages
 # everything (`git add -A`) and answers `{ summary, diff }`. The barrier waits for the `n`
 # answers; the extractor (a Judge-module node, strict schema `{ winner, reason }`) names
-# the winner by its workspace id. Each candidate is then paired with that id and a shell
-# gate compares the two: the winner's `info` goes to the merge queue, the others leave on
-# `losers` (their branches and worktrees stay for a look). The queue sends the winner to
+# the winner by its workspace id. Each candidate is then paired with that id and a
+# `switch` compares the two (a rule with `value_path`): the winner's `info` goes to the
+# merge queue, the others leave on `losers` (their branches and worktrees stay for a look). The queue sends the winner to
 # `tests` (`test_command` inside its worktree); exit 0 merges it into `base` (`merged`),
 # anything else rejects it (`rejected`).
 #
@@ -36,10 +36,10 @@
 #    opens in its own worktree (the `workdir` field, `worktrees`, is only where it would
 #    run if no path came). The cwd is where the agent starts, not a fence: with `allow` it
 #    can still write elsewhere by absolute path.
-# 2. No box picks element n of an array, and `flow` rules compare a value with a constant
-#    only, so matching each candidate to the winner is a shell gate (`is_pick`) on the
-#    JSON. Fix: a `switch`/`loop` rule `op` that compares two paths of the value
-#    (`{ op = "equals", path = "/a", other = "/b" }`), or a `convert` that indexes by a path.
+# 2. Fixed: matching each candidate to the winner is a `switch` (`is_pick`) whose rule
+#    compares two paths of the same value (`path` and `value_path`), no shell. No box
+#    picks element n of an array yet, so the candidates still go one by one through a
+#    split and a pair.
 # 3. The merge queue merges only the first in line (`check` goes to the head), so the
 #    losers are never queued: they would block it. Fix: none needed if only the winner is
 #    queued; a `fail` naming each loser's `entry` would do it otherwise.
@@ -56,8 +56,7 @@
 # context (Ollama's default) cuts it silently, so raise its context or lower
 # `max_diff_bytes` (8000 by default). opencode's free models are not reachable outside
 # opencode, so the judge needs its own provider (default `ollama`, local and free; or a
-# paid one with `secret:`). `is_pick` reads the candidate on stdin, so its size is not
-# bound by the per-argument limit.
+# paid one with `secret:`).
 #
 # Risks: `permissions = "allow"` lets every agent edit files and run commands unattended,
 # from its worktree, with the user's own opencode setup. The winner is merged into `base`
@@ -103,8 +102,8 @@
 #   After the review fixes (17:35), a second run with n=2 stalled in the agents: opencode's
 #   log said "Free usage limit reached" for glm-5.3-flash-free (the barrier waits, limit
 #   4). The changed gates were run on their own with the applied profile's args: `is_pick`
-#   on a 600 KB candidate on stdin passes the winner (exit 0) and fails the other (exit 1);
-#   `tests` with test_command="echo first; sh <check>/check.sh" ran both in the worktree.
+#   (then a shell gate, now a `switch`) on a 600 KB candidate on stdin passed the winner
+#   and failed the other; `tests` with test_command="echo first; sh <check>/check.sh" ran both in the worktree.
 id = "best-of-n"
 name = "Best-of-N on {{repo}}"
 main_workflow_id = "best-of-n"
@@ -290,16 +289,16 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
-  # Deterministic: is this candidate's workspace id the one the judge named? The value
-  # passes through unchanged. A winner that names no candidate passes none. The value comes
-  # on stdin: a long candidate would not fit in one argument.
+  # Deterministic: is this candidate's workspace id the one the judge named? A `flow`
+  # rule that compares two paths of the same value (`value_path`); the value passes
+  # through unchanged. A winner that names no candidate passes none: all go to `fail`.
   [[workflows.nodes]]
   id = "is_pick"
   name = "Is the pick?"
-  type = "gate"
-  module_id = "regulus/process@0.1.0"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
   position = { x = 1250, y = 350 }
-  config = { command = "sh", args = ["-c", 'v=$(cat); w=$(printf %s "$v" | sed -n "s/.*\"winner\":\"\([^\"]*\)\".*/\1/p"); i=$(printf %s "$v" | sed -n "s/.*\"info\":{[^}]*\"id\":\"\([^\"]*\)\".*/\1/p"); echo "winner=$w candidate=$i"; [ -n "$w" ] && [ "$w" = "$i" ]'], stdin = "yes", max_running = {{n}} }
+  config = { mode = "rules", cases = [{ port = "pass", op = "equals", path = "/candidate/summary/info/id", value_path = "/winner" }], fallback = "fail" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "pass", capability = "json@1", direction = "output", kind = "then" },

@@ -79,7 +79,11 @@ name = "Switch"
 
   # Each case: `{ port, op, value, path }`. `op` is one of equals, not_equals, contains,
   # regex, exists, empty, greater, less; `path` a JSON Pointer (`/verdict`) or dotted
-  # path (`verdict.score`) into the value, empty for the whole value.
+  # path (`verdict.score`) into the value, empty for the whole value. To compare two
+  # parts of the same value, `value_path` instead of `value`: another path into it,
+  # whose target is what `path`'s is compared with, e.g.
+  # `{ port = "same", op = "equals", path = "/candidate/id", value_path = "/winner" }`.
+  # A `value_path` that points at nothing fails the case, whatever the op.
   [[node.field]]
   id      = "cases"
   type    = "rules"
@@ -159,7 +163,8 @@ name = "Loop"
   type    = "number"
   default = 10
 
-  # A rule, as one case of `switch` without `port`: `{ op = "contains", value = "DONE" }`.
+  # A rule, as one case of `switch` without `port`: `{ op = "contains", value = "DONE" }`
+  # (or `value_path` to compare with another part of the value).
   # Empty: only `max` ends it.
   [[node.field]]
   id      = "until"
