@@ -1,0 +1,454 @@
+# Custom chat CLI (docs/13-blocks.md §5 row 8): your own harness, talked to from the app,
+# the TUI or `regulus send`. Every message goes through a supervisor that decides which
+# tools the answer needs, then to an agent in an isolated profile that sees a fixed
+# document as its system prompt. Source: Alexander's idea, "tu harness, hablado desde la
+# app" (docs/13-blocks.md §1).
+#
+#   self.chat → chat ─message─┬→ SYSTEM.md (read) ─┐
+#                             └────────────────────┴→ join ─→ {{router}}
+#                                                              ├─notes─→ compose → agent_notes ⇢ engine_notes
+#                                                              │                     ⇢ toolset ⇢ tools ⇢ memory, mcp
+#                                                              ├─other─→ compose → agent ⇢ engine
+#                                                              └─error─→ "supervisor failed"
+#   agent.reply, agent_notes.reply (or failed) → chat.reply → chat.out → self.reply
+#
+# Each message: the chat box records it (transcript per execution, `triggers.transcript`)
+# and sends it on; SYSTEM.md is read again (edit it while you chat) and joined with it;
+# the router picks a branch, and that branch's agent gets the system document and the
+# message. Each agent keeps its own session between messages (no `fresh_context`), so a
+# conversation goes on as long as the router keeps sending it to the same agent; with
+# `history_turns` above 0 the chat box also puts the last turns before every message.
+#
+# The supervisor and the toolset switch. Tools are mounted when an agent's session opens,
+# not per message: no box can mount or unmount a toolset on a live session. So "the
+# supervisor decides which toolset to mount" is built as one agent per toolset, mounted
+# from the start, and a router that picks the agent: `notes` goes to the agent with the
+# memory tools (memory_list, memory_read, memory_search, memory_write, memory_delete, over
+# MCP through `tools` and `tools-mcp`), anything else to the agent without tools. More
+# toolsets are more labels, more outputs and more agents. Two routers come wired, and the
+# hole `router` picks the one the join feeds:
+# - `supervisor` (default): a `classifier` of `judge` asking the model behind the
+#   provider node (`supervisor_*` holes; default the `ollama` preset, local and keyless,
+#   with a model you pulled) for one label, `notes` or `other`. If the model fails, the
+#   reason reaches the person as the reply ("supervisor failed: …").
+# - `keywords`: a `switch` of `flow` with one regex (`keywords`) on the message: no model,
+#   no cost, no judgement. The free path, and the one the run below used.
+#
+# Risk: `permissions = "allow"` says yes to everything the agents ask, unattended, in
+# `workdir` and wherever their tools reach; `reject` keeps them to answering and to the
+# Regulus tools (opencode does not ask before an MCP tool). The memory is the project's:
+# what one chat writes, the next one reads.
+#
+# Another engine: replace the nodes `engine` and `engine_notes` (e.g. `engine-claude`; it
+# has no `model` field, its setup picks the model). Another model: `--set model=…`.
+# Model slots: wire a `provider` node of `providers` into an agent's `provider`, `fast` or
+# `subagent` input (docs/12-agents.md §6.5); a wired provider wins over `model`. With
+# Claude, SYSTEM.md can be a `document` node of `files` on the agents' `hooks` input
+# instead of the read and join (hooks do not reach opencode yet). Values with a double
+# quote or a backslash are refused (docs/11-composition.md §7).
+#
+# Run (2026-11-08, debug build, `regulus serve --port 0` with a temporary --home whose
+# config.toml has `[templates] paths` on this folder; <dir>/SYSTEM.md says "You are Tiny,
+# a terse assistant. Answer in at most two sentences."). Keywords, the free path:
+#
+#   regulus template apply chat-cli --set workdir=<dir> --set router=keywords --id chat-kw
+#   regulus call profile.check '{"id":"chat-kw"}'    # []
+#   regulus run chat-kw --detach                       # exec-7  chat  running
+#   regulus send exec-7 chat "Hi, who are you?"
+#     join.out emitted {"system":"You are Tiny…","message":"Hi, who are you?"}
+#     keywords.other emitted … · compose.out emitted "# System\n\nYou are Tiny…"
+#     agent.reply emitted "I'm Tiny, a coding assistant running in opencode…"
+#     self.reply emitted "I'm Tiny, …"                ← 6 s after send, engine start included
+#   regulus send exec-7 chat "Please remember that my cat is called Tom."
+#     keywords.notes emitted … · agent_notes.reply emitted "Noted — your cat is called Tom."
+#   regulus call memory.entries '{"execution_id":"exec-7","node_id":"memory"}'
+#     [{"key":"cat-name","text":"User's cat is called Tom.","by":"agent_notes",…}]
+#
+# The supervisor, against a stand-in OpenAI endpoint that answers {"label":…} (no free
+# model endpoint was reachable: opencode Zen refuses keyless calls outside opencode with
+# FreeUsageLimitError, and no Ollama model was pulled), in a new execution:
+#
+#   regulus template apply chat-cli --set workdir=<dir> --id chat-sup \
+#     --set supervisor_base_url=http://127.0.0.1:11493/v1 --set supervisor_model=fake
+#   regulus send exec-8 chat "What is my cat called? Recall it from your notes."
+#     supervisor.notes emitted … · agent_notes.reply emitted "Your cat is called Tom."  ← 4 s
+#   regulus send exec-8 chat "Thanks, bye."
+#     supervisor.other emitted … · agent.reply emitted "You're welcome! Goodbye."      ← 4 s
+#   (endpoint stopped) regulus send exec-8 chat "Hello again"
+#     self.reply emitted "supervisor failed: classifier `supervisor`: no valid answer in
+#     2 attempt(s): …: Connection refused (os error 111)"
+#
+# Both engines ran with `profile = isolated` and `permissions = reject`; memory_write and
+# memory_read went through MCP all the same. `triggers.transcript` lists the turns. The
+# memory outlived its execution (scope `project`). Without workdir: "template `chat-cli`
+# needs a value for var `workdir`".
+id = "chat-cli"
+name = "Chat CLI in {{workdir}}"
+main_workflow_id = "chat"
+
+[template]
+name = "chat-cli"
+description = "A chat CLI of your own: supervisor, system document, agents with and without tools"
+requires = [
+  { module = "regulus/triggers", version = ">=0.1" },
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/judge", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+  { module = "regulus/memory", version = ">=0.1" },
+  { module = "regulus/tools", version = ">=0.1" },
+  { module = "regulus/tools-mcp", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path the agents work in; the system document is read there" }
+system_prompt = { description = "the system document, relative to workdir; it must exist (a few lines are enough)", default = "SYSTEM.md" }
+model = { description = "model of both engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+profile = { description = "engine profile: isolated (only what is wired in) or user (your own opencode setup)", default = "isolated" }
+permissions = { description = "what the agents answer when asked for permission: reject or allow", default = "reject" }
+history_turns = { description = "earlier turns the chat box puts before every message; 0 leaves history to each agent's session", default = 0 }
+router = { description = "which router decides the branch: supervisor (classifier on a model) or keywords (regex, no model)", default = "supervisor" }
+supervisor_preset = { description = "provider template of the supervisor's model (crates/modules/providers/presets.toml)", default = "ollama" }
+supervisor_base_url = { description = "the supervisor endpoint, over the preset's; empty keeps the preset's", default = "" }
+supervisor_credential = { description = "secret:<name> with the supervisor's key; empty for a keyless endpoint", default = "" }
+supervisor_model = { description = "the supervisor's model id on that endpoint", default = "qwen3:4b" }
+supervisor_instructions = { description = "how the supervisor tells the labels apart", default = "notes: the message asks to remember, note, recall, look up or forget something kept between chats. other: anything else." }
+keywords = { description = "keywords router: a regex on the message that sends it to the agent with the memory tools", default = "(?i)(remember|note|recall|forget)" }
+memory = { description = "name of the memory the notes agent reads and writes (shared by every chat of the project)", default = "chat-notes" }
+
+[[workflows]]
+id = "chat"
+name = "Chat"
+kind = "main"
+ports = [
+  { id = "chat", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "chat"
+  name = "Chat"
+  type = "chat"
+  module_id = "regulus/triggers@0.1.0"
+  position = { x = 50, y = 200 }
+  config = { history_turns = {{history_turns}} }
+  ports = [
+    { id = "user", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "message", capability = "text@1", direction = "output", kind = "then" },
+    { id = "reply", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The fixed document, read again for every message.
+  [[workflows.nodes]]
+  id = "system"
+  name = "SYSTEM.md"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 200, y = 100 }
+  config = { path = "{{system_prompt}}", dir = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join"
+  name = "System + message"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 200 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "system", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "message", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # Router 1, the supervisor: one label per message from the model behind `model`.
+  [[workflows.nodes]]
+  id = "supervisor_model"
+  name = "Supervisor model"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 500, y = 20 }
+  config = { preset = "{{supervisor_preset}}", base_url = "{{supervisor_base_url}}", credential = "{{supervisor_credential}}", model = "{{supervisor_model}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "supervisor"
+  name = "Supervisor"
+  type = "classifier"
+  module_id = "regulus/judge@0.1.0"
+  position = { x = 500, y = 150 }
+  config = { labels = "notes", instructions = "The input has the system document (system) and the user's message (message): classify the message. {{supervisor_instructions}}", model = "{{supervisor_model}}" }
+  ports = [
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "notes", capability = "json@1", direction = "output", kind = "then" },
+    { id = "other", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Router 2, keywords: a regex on the message, no model.
+  [[workflows.nodes]]
+  id = "keywords"
+  name = "Keywords"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 500, y = 300 }
+  config = { mode = "rules", cases = [{ port = "notes", op = "regex", value = "{{keywords}}", path = "/message" }], fallback = "other" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "notes", capability = "json@1", direction = "output", kind = "then" },
+    { id = "other", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "supervisor_failed"
+  name = "Supervisor failed"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 450 }
+  config = { conversion = "template", template = "supervisor failed: {{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Branch `other`: the agent without tools.
+  [[workflows.nodes]]
+  id = "compose"
+  name = "Prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 300 }
+  config = { conversion = "template", template = "# System\n\n{{/system}}\n\n# Message\n\n{{/message}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 800, y = 300 }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 800, y = 400 }
+  config = { model = "{{model}}", profile = "{{profile}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # Branch `notes`: the same agent with the memory tools mounted.
+  [[workflows.nodes]]
+  id = "compose_notes"
+  name = "Prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { conversion = "template", template = "# System\n\n{{/system}}\n\nYou have memory tools (memory_list, memory_read, memory_search, memory_write, memory_delete): use them for what this message asks to keep or find.\n\n# Message\n\n{{/message}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent_notes"
+  name = "Agent with notes"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 800, y = 150 }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_notes"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 800, y = 20 }
+  config = { model = "{{model}}", profile = "{{profile}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # The toolset: memory's operations, gathered by the tools box, carried over MCP.
+  [[workflows.nodes]]
+  id = "memory"
+  name = "Memory"
+  type = "store"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 1100, y = 20 }
+  config = { memory = "{{memory}}", scope = "project", agent_writes = "yes" }
+  ports = [{ id = "tools", capability = "tool@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "tools"
+  name = "Tools"
+  type = "tools"
+  module_id = "regulus/tools@0.1.0"
+  position = { x = 950, y = 20 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "engine", capability = "tools.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "toolset", capability = "toolset@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mcp"
+  name = "MCP"
+  type = "tools-mcp"
+  module_id = "regulus/tools-mcp@0.1.0"
+  position = { x = 1100, y = 120 }
+  ports = [{ id = "engine", capability = "tools.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "notes-engine"
+  kind = "uses"
+  from = { node_id = "engine_notes", port_id = "engine" }
+  to = { node_id = "agent_notes", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "notes-toolset"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "agent_notes", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "memory-tools"
+  kind = "uses"
+  from = { node_id = "memory", port_id = "tools" }
+  to = { node_id = "tools", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "mcp-tools"
+  kind = "uses"
+  from = { node_id = "mcp", port_id = "engine" }
+  to = { node_id = "tools", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "supervisor-model"
+  kind = "uses"
+  from = { node_id = "supervisor_model", port_id = "endpoint" }
+  to = { node_id = "supervisor", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "chat-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "chat" }
+  to = { node_id = "chat", port_id = "user" }
+
+  [[workflows.wires]]
+  id = "message-system"
+  kind = "then"
+  from = { node_id = "chat", port_id = "message" }
+  to = { node_id = "system", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "message-join"
+  kind = "then"
+  from = { node_id = "chat", port_id = "message" }
+  to = { node_id = "join", port_id = "message" }
+
+  [[workflows.wires]]
+  id = "system-join"
+  kind = "then"
+  from = { node_id = "system", port_id = "out" }
+  to = { node_id = "join", port_id = "system" }
+
+  [[workflows.wires]]
+  id = "join-router"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "{{router}}", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "router-notes"
+  kind = "then"
+  from = { node_id = "{{router}}", port_id = "notes" }
+  to = { node_id = "compose_notes", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "router-other"
+  kind = "then"
+  from = { node_id = "{{router}}", port_id = "other" }
+  to = { node_id = "compose", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "supervisor-error"
+  kind = "then"
+  from = { node_id = "supervisor", port_id = "error" }
+  to = { node_id = "supervisor_failed", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "supervisor-failed-reply"
+  kind = "then"
+  from = { node_id = "supervisor_failed", port_id = "out" }
+  to = { node_id = "chat", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "compose-agent"
+  kind = "then"
+  from = { node_id = "compose", port_id = "out" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "notes-agent"
+  kind = "then"
+  from = { node_id = "compose_notes", port_id = "out" }
+  to = { node_id = "agent_notes", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-reply"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "chat", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "agent-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "chat", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "notes-reply"
+  kind = "then"
+  from = { node_id = "agent_notes", port_id = "reply" }
+  to = { node_id = "chat", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "notes-failed"
+  kind = "then"
+  from = { node_id = "agent_notes", port_id = "failed" }
+  to = { node_id = "chat", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "chat-out"
+  kind = "then"
+  from = { node_id = "chat", port_id = "out" }
+  to = { node_id = "self", port_id = "reply" }
