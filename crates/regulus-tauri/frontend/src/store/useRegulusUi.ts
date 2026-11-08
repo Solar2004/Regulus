@@ -57,10 +57,11 @@ export const useRegulusUi = create<RegulusUiState>()(persist((set, get) => ({
     const preferences = saved as Partial<RegulusUiState> | undefined;
     const startPage = preferences?.startPage === "composition" ? "composition" : "home";
     const density = preferences?.density === "compact" ? "compact" : "comfortable";
-    // Saved before `startPageChosen` existed: the page was there, so the person may have
-    // chosen it, and the person wins over config.toml.
+    // Saved before `startPageChosen` existed: the default page was always written, so only
+    // a page other than the default tells that the person chose it. The person wins over
+    // config.toml; a saved default lets `start_view` act, as it does for a new install.
     const startPageChosen = preferences?.startPageChosen === true
-      || (preferences?.startPage !== undefined && preferences?.startPageChosen === undefined);
+      || (preferences?.startPageChosen === undefined && startPage !== "home");
     return { ...current, startPage, startPageChosen, density, view: startPage };
   },
 }));

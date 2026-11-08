@@ -290,7 +290,8 @@ core, la leen del fichero.
 - **`start_view` se aplica una vez,** con la primera respuesta tras abrir la app: la del
   proyecto que estaba elegido si lo había, si no la global, y solo si la persona no eligió
   página de inicio en Ajustes (una guardada antes de existir `start_view` cuenta como
-  elegida) ni se movió aún. Cambiar de proyecto después no cambia de vista.
+  elegida solo si no es la de por defecto) ni se movió aún. Cambiar de proyecto después no
+  cambia de vista.
 - **Nada rígido:** el core no decide qué entiende un cliente. Una clave que no conoce se
   conserva, se sirve tal cual y se avisa ("kept for clients", en `warnings` de
   `config.client` y al arrancar). Lo que la TUI no entiende en `keys` o `tui` (una acción

@@ -40,12 +40,20 @@ test("settings saved with overrides come back as they were", async () => {
   expect(useOperateSettings.getState().eventKeep).toBe(300);
 });
 
-test("a start page saved before startPageChosen existed counts as chosen, so start_view does not move it", async () => {
-  saved.set("regulus-shell-preferences", JSON.stringify({ state: { startPage: "home", density: "comfortable" }, version: 0 }));
+test("a non-default start page saved before startPageChosen existed counts as chosen, so start_view does not move it", async () => {
+  saved.set("regulus-shell-preferences", JSON.stringify({ state: { startPage: "composition", density: "comfortable" }, version: 0 }));
   const { useRegulusUi } = await import("@/store/useRegulusUi");
   expect(useRegulusUi.getState().startPageChosen).toBe(true);
   useRegulusUi.getState().applyStartView("operate");
-  expect(useRegulusUi.getState().view).toBe("home");
+  expect(useRegulusUi.getState().view).toBe("composition");
+});
+
+test("the default start page saved before startPageChosen existed does not count as chosen", async () => {
+  saved.set("regulus-shell-preferences", JSON.stringify({ state: { startPage: "home", density: "comfortable" }, version: 0 }));
+  const { useRegulusUi } = await import("@/store/useRegulusUi");
+  expect(useRegulusUi.getState().startPageChosen).toBe(false);
+  useRegulusUi.getState().applyStartView("operate");
+  expect(useRegulusUi.getState().view).toBe("operate");
 });
 
 test("with nothing saved, start_view opens the app", async () => {
