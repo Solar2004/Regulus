@@ -498,6 +498,15 @@ impl<E: AcpEngine> Module for EngineModule<E> {
                 };
                 json(contract::Status { state })
             }
+            contract::SESSION_CANCEL => {
+                let call: NodeCall = parse(params)?;
+                let args: contract::CancelArgs = parse(call.args)?;
+                if self.sessions.cancel(&args.session_id) {
+                    Ok(Value::Null)
+                } else {
+                    Err(failed(format!("no live session `{}`", args.session_id)))
+                }
+            }
             contract::SESSION_STOP => {
                 let call: NodeCall = parse(params)?;
                 let args: contract::StopArgs = parse(call.args)?;

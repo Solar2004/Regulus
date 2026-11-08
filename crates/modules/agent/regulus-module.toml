@@ -161,6 +161,23 @@ name = "Agent"
   type    = "number"
   default = 2000
 
+  # Milliseconds one turn may take (a provider past its quota, a hung adapter). When they
+  # run out the turn is cancelled (`engine.session.cancel`, ACP `session/cancel`) and
+  # leaves on `failed` as "turn timed out after N ms"; it never gives `reply`. 0: no
+  # limit.
+  [[node.field]]
+  id      = "turn_timeout_ms"
+  type    = "number"
+  default = 0
+
+  # Milliseconds a timed-out turn has to end once cancelled. An engine without cancel, or
+  # a turn still running past this, loses its session (the process ends) and the next
+  # turn opens a new one, without the context.
+  [[node.field]]
+  id      = "cancel_grace_ms"
+  type    = "number"
+  default = 5000
+
   # Where the agent works until a value reaches the `workdir` input. Empty: the user's
   # home directory.
   [[node.field]]

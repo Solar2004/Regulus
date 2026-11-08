@@ -142,6 +142,7 @@ permissions = { description = "what the agents answer when their tools ask for p
 quota_bytes = { description = "bytes each worktree may hold before it says quota_exceeded", default = 1073741824 }
 max_diff_bytes = { description = "bytes of each attempt's diff the judge sees", default = 8000 }
 input = { description = "do not set: keeps {{input}} of the process nodes, the value they receive", default = "{{input}}" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "best-of-n"
@@ -635,7 +636,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 500, y = 150 }
-  config = { workdir = "{{worktrees}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { workdir = "{{worktrees}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },

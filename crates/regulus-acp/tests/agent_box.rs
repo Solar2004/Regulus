@@ -43,7 +43,7 @@ impl AcpEngine for Fake {
     }
 }
 
-fn profile(wired: bool) -> Profile {
+fn profile(wired: bool, config: Value) -> Profile {
     let wires = if wired {
         json!([{ "id": "w", "kind": "uses",
                  "from": { "node_id": "engine", "port_id": "engine" },
@@ -59,7 +59,7 @@ fn profile(wired: bool) -> Profile {
             "kind": "main",
             "nodes": [
                 { "id": "agent", "type": "agent", "module_id": "regulus/agent@0.1.0",
-                  "config": { "workdir": "/tmp", "permissions": "allow" },
+                  "config": config,
                   "ports": [{ "id": "engine", "capability": "agent.engine@1", "direction": "input", "kind": "uses", "required": true }] },
                 { "id": "engine", "type": "engine-fake", "module_id": "test/engine-fake@0.1.0",
                   "ports": [{ "id": "engine", "capability": "agent.engine@1", "direction": "output", "kind": "uses" }] }
@@ -71,12 +71,16 @@ fn profile(wired: bool) -> Profile {
 }
 
 fn core(wired: bool) -> std::sync::Arc<Core> {
+    core_with(wired, json!({ "workdir": "/tmp", "permissions": "allow" }))
+}
+
+fn core_with(wired: bool, config: Value) -> std::sync::Arc<Core> {
     let modules: Vec<Box<dyn Module>> = vec![
         Box::new(regulus_module_agent::Agent::new()),
         Box::new(EngineModule::new(parse_manifest(MANIFEST).unwrap(), Fake)),
     ];
     let mut profiles = ProfileStore::default();
-    profiles.insert(profile(wired)).unwrap();
+    profiles.insert(profile(wired, config)).unwrap();
     Core::build(modules, &[], profiles)
 }
 
@@ -144,4 +148,27 @@ fn engines_report_what_they_find_without_an_execution() {
     let core = core(true);
     let detected = core.dispatch("fake.detect", json!({})).unwrap();
     assert_eq!(detected["installations"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_turn_past_its_time_is_cancelled_over_acp_or_its_agent_dropped() {
+    let config = json!({ "workdir": "/tmp", "turn_timeout_ms": 300, "cancel_grace_ms": 2000 });
+    let core = core_with(true, config);
+    let execution = core
+        .dispatch(method::EXECUTION_START, json!({ "profile_id": "agents" }))
+        .unwrap();
+    let id = execution["id"].as_str().unwrap();
+    // `hang` ends its turn on `session/cancel`: the session goes on.
+    let error = prompt(&core, id, "hang").unwrap_err().message;
+    assert!(
+        error.contains("turn timed out after 300 ms (it was cancelled)"),
+        "{error}"
+    );
+    assert_eq!(prompt(&core, id, "hello").unwrap()["text"], "echo: hello");
+    // `deaf` never ends it: the agent is dropped and the next turn has a new one.
+    let error = prompt(&core, id, "deaf").unwrap_err().message;
+    assert!(error.contains("its session was dropped"), "{error}");
+    assert_eq!(prompt(&core, id, "hello").unwrap()["text"], "echo: hello");
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
 }

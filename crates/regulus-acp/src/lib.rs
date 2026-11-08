@@ -15,9 +15,10 @@ use std::time::Duration;
 pub mod engine;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, EnvVariable, InitializeRequest, McpServer, McpServerStdio,
-    NewSessionRequest, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    CancelNotification, ContentBlock, ContentChunk, EnvVariable, InitializeRequest, McpServer,
+    McpServerStdio, NewSessionRequest, PermissionOptionKind, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionNotification, SessionUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
@@ -167,6 +168,8 @@ pub struct Session {
     id: String,
     agent: AgentInfo,
     prompts: async_mpsc::UnboundedSender<(String, Reply)>,
+    /// Asks the turn in flight to end (`session/cancel`).
+    cancels: async_mpsc::UnboundedSender<()>,
     cancel: Mutex<Option<oneshot::Sender<()>>>,
     outcome: Arc<Outcome>,
     /// Prompts sent and not answered yet, the one in its turn included.
@@ -180,6 +183,7 @@ impl Session {
         let startup = options.startup;
         let (ready_tx, ready_rx) = mpsc::channel();
         let (prompts, prompt_rx) = async_mpsc::unbounded();
+        let (cancels, cancels_rx) = async_mpsc::unbounded();
         let (cancel, cancel_rx) = oneshot::channel();
         let agent = AcpAgent::new(config(&launch));
         let outcome = Arc::new(Outcome::default());
@@ -188,7 +192,7 @@ impl Session {
             .name("regulus-acp".into())
             .spawn(move || {
                 let failed = ready_tx.clone();
-                let run = Box::pin(run(agent, options, ready_tx, prompt_rx));
+                let run = Box::pin(run(agent, options, ready_tx, prompt_rx, cancels_rx));
                 // Losing the race to `cancel` drops the connection, which kills the agent.
                 let result = futures::executor::block_on(futures::future::select(run, cancel_rx));
                 let reason = match result {
@@ -205,6 +209,7 @@ impl Session {
             id: String::new(),
             agent: AgentInfo::default(),
             prompts,
+            cancels,
             cancel: Mutex::new(Some(cancel)),
             outcome,
             pending: AtomicUsize::new(0),
@@ -252,6 +257,13 @@ impl Session {
         } else {
             State::Idle
         }
+    }
+
+    /// Asks the agent to end the turn in flight (ACP `session/cancel`); the prompt waiting
+    /// on it returns when the agent answers, usually with stop reason `cancelled`. With no
+    /// turn in flight it does nothing. False if the session is gone.
+    pub fn cancel(&self) -> bool {
+        !self.outcome.is_done() && self.cancels.unbounded_send(()).is_ok()
     }
 
     /// Kills the agent. A prompt waiting on it returns `Closed`.
@@ -324,6 +336,7 @@ async fn run(
     options: SessionOptions,
     ready: mpsc::Sender<Result<(String, AgentInfo), Error>>,
     mut prompts: async_mpsc::UnboundedReceiver<(String, Reply)>,
+    mut cancels: async_mpsc::UnboundedReceiver<()>,
 ) -> Result<(), agent_client_protocol::Error> {
     let permissions = options.permissions;
     Client
@@ -372,19 +385,53 @@ async fn run(
                 .await?;
             let _ = ready.send(Ok((session.session_id().to_string(), info)));
             while let Some((text, reply)) = prompts.next().await {
-                let _ = reply.send(turn(&mut session, text).await);
+                // A cancel asked between turns is for a turn that already ended.
+                while cancels.try_recv().is_ok() {}
+                let _ = reply.send(turn(&mut session, &mut cancels, text).await);
             }
             Ok(())
         })
         .await
 }
 
-async fn turn(session: &mut ActiveSession<'static, Agent>, text: String) -> Result<Turn, Error> {
+async fn turn(
+    session: &mut ActiveSession<'static, Agent>,
+    cancels: &mut async_mpsc::UnboundedReceiver<()>,
+    text: String,
+) -> Result<Turn, Error> {
     let failed = |e: agent_client_protocol::Error| Error::Protocol(e.to_string());
     session.send_prompt(text).map_err(failed)?;
     let mut output = String::new();
+    let mut cancellable = true;
     loop {
-        match session.read_update().await.map_err(failed)? {
+        // Reading an update is cancel-safe (a channel), so a cancel can cut in between.
+        let update = if cancellable {
+            let read = session.read_update();
+            futures::pin_mut!(read);
+            match futures::future::select(read, cancels.next()).await {
+                futures::future::Either::Left((update, _)) => Ok(update),
+                futures::future::Either::Right((asked, _)) => Err(asked),
+            }
+        } else {
+            Ok(session.read_update().await)
+        };
+        let update = match update {
+            Ok(update) => update,
+            Err(Some(())) => {
+                let id = session.session_id().clone();
+                session
+                    .connection()
+                    .send_notification(CancelNotification::new(id))
+                    .map_err(failed)?;
+                continue;
+            }
+            // Nobody can cancel anymore: stop asking.
+            Err(None) => {
+                cancellable = false;
+                continue;
+            }
+        };
+        match update.map_err(failed)? {
             SessionMessage::SessionMessage(dispatch) => MatchDispatch::new(dispatch)
                 .if_notification(async |note: SessionNotification| {
                     if let SessionUpdate::AgentMessageChunk(ContentChunk {
@@ -443,6 +490,11 @@ impl Sessions {
     pub fn prompt(&self, key: &str, text: &str) -> Result<Turn, Error> {
         let session = self.live().get(key).cloned().ok_or(Error::Closed)?;
         session.prompt(text)
+    }
+
+    /// Asks the session's turn in flight to end. False if the session is unknown or gone.
+    pub fn cancel(&self, key: &str) -> bool {
+        self.live().get(key).is_some_and(|s| s.cancel())
     }
 
     /// Where a session stands; a session closed or never opened has ended.

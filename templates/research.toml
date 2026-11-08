@@ -62,9 +62,9 @@
 # `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
 # researcher gets the first chunk only, the rest is dropped (a truncation, not paging).
 # (e) a provider that keeps retrying inside the turn (the free model past its quota)
-# hangs the agent: the Agent box gets neither `reply` nor `failed`, and `guards` can
-# only report it (`watchdog`, `timeout` forward and warn, they cannot end a turn), so
-# the flow waits until `regulus stop`. (f) the close writer → report_check → rubric has
+# hangs the agent: with `turn_timeout_ms` set, the Agent box cancels the turn after that
+# long and sends it to `failed` ("turn timed out after N ms"); with 0 (the default) the
+# flow waits until `regulus stop`. (f) the close writer → report_check → rubric has
 # NOT run end to end (see the run below). The orchestrator and the researchers run in
 # `workdir`; the experimenter and the writer in the workspace folder (`workspace.ready` →
 # their `workdir` input), and the prompt names it too. `experiment_command` and `report_check` may not hold `"` or
@@ -143,6 +143,7 @@ judge_preset = { description = "provider template (presets.toml) of the judge, O
 judge_credential = { description = "the judge's key as secret:<name> (set it with regulus secret set <name>); empty: none, for quality_by = gate or a local endpoint", default = "secret:openrouter" }
 permissions = { description = "what the agents answer when their tools ask for permission: allow or reject", default = "allow" }
 input = { description = "kept as is: the {{input}} of the nodes that take the value", default = "{{input}}" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "research"
@@ -190,7 +191,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 250, y = 50 }
-  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -391,7 +392,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 2250, y = 50 }
-  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -497,7 +498,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 3250, y = 450 }
-  config = { name = "writer", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "writer", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -1134,7 +1135,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 850, y = 150 }
-  config = { name = "researcher", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "researcher", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },

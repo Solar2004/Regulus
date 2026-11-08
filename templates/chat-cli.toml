@@ -124,6 +124,7 @@ memory_scope = { description = "project: every chat of the project shares the me
 memory_agent_writes = { description = "yes: the notes agent may write and delete entries; no: it only reads", default = "yes" }
 chat_prompt = { description = "what the agent without tools is told between the system document and the message; empty says nothing", default = "" }
 notes_prompt = { description = "what the agent with the memory tools is told between the system document and the message", default = "You have memory tools (memory_list, memory_read, memory_search, memory_write, memory_delete): use them for what this message asks to keep or find." }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "chat"
@@ -244,7 +245,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 800, y = 300 }
-  config = { workdir = "{{workdir}}", permissions = "{{permissions}}" }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -280,7 +281,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 800, y = 150 }
-  config = { workdir = "{{workdir}}", permissions = "{{permissions}}" }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },

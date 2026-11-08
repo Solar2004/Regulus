@@ -157,7 +157,7 @@ nada más. El código ACP es una librería compartida por los motores, no un mó
 
 **El contrato `agent.engine@1`:** `engine.detect` (instalaciones del PC),
 `engine.session.start` (`cwd`, `permissions`), `engine.session.prompt` (`text` →
-`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional) y `engine.session.stop`. `StartArgs.tools` lleva los montajes de herramientas (`11-composition.md` §3.0). Cambiar su forma es `agent.engine@2`. Los
+`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional), `engine.session.cancel` (pide que acabe el turno en curso, `session/cancel` de ACP; el turno responde, normalmente con `cancelled`; opcional, 2026-11-08) y `engine.session.stop`. `StartArgs.tools` lleva los montajes de herramientas (`11-composition.md` §3.0). Cambiar su forma es `agent.engine@2`. Los
 contratos de capacidad viven en `crates/contracts/<capacidad>`, no dentro de ningún módulo.
 
 **Cada motor anuncia además su propio método de detección** (`claude.detect`,
@@ -201,6 +201,16 @@ es un directorio absoluto existente se rechaza al llegar y se guarda igual: los 
 siguientes fallan por `failed` en vez de correr en otro sitio. El cwd es dónde empieza el
 agente, no una valla: con `allow` puede escribir fuera por ruta absoluta. Lo usan
 `best-of-n`, `team` y `research` (`13-blocks.md` §5).
+
+✅ **Turno con tope (2026-11-08).** Campo `turn_timeout_ms` (0 = sin límite): un turno que
+no da ni `reply` ni `failed` en ese tiempo (proveedor sin cuota que reintenta por dentro,
+adaptador colgado) se cancela con `engine.session.cancel` y sale por `failed` como
+"turn timed out after N ms (it was cancelled)". Si el motor no tiene cancelar, o el turno
+sigue vivo pasado `cancel_grace_ms` (5000), la caja cierra la sesión ("… (its session was
+dropped)") y el turno siguiente abre otra, sin contexto. Vale para los tres caminos de
+prompt (`prompt`, `agent.prompt`, canal). `regulus-acp` lo sirve: el turno escucha la
+cancelación mientras lee y manda `session/cancel` al agente. Probado contra un motor
+falso y contra el agente ACP de prueba (`hang` responde a la cancelación, `deaf` no).
 
 ## 6. Proveedores
 

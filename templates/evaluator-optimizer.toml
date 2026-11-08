@@ -100,6 +100,7 @@ permissions = { description = "what the agent answers when its tools ask for per
 fresh_context = { description = "yes: a new engine session each turn (the prompt carries the last draft); no: one session for the whole run", default = "yes" }
 max_turns = { description = "most drafts before the loop gives up on exhausted", default = 3 }
 max_ms = { description = "milliseconds from the first turn after which no turn starts", default = 1800000 }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "evaluator-optimizer"
@@ -204,7 +205,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 800, y = 200 }
-  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },

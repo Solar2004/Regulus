@@ -53,8 +53,9 @@
 # from the base as it was and a conflict repeats until `max_attempts`; only one task per
 # polecat has been run (below). A worktree that cannot be made (`ws_N.error`) fails the
 # task like a failed prompt; `queue.error` and `refinery.error` only reach `self.error`.
-# The witness only reports: nothing cancels an agent's turn, the claim's `lease_ms` is
-# the real recovery.
+# The witness only reports; what ends a stuck turn is `turn_timeout_ms` (the Agent box
+# cancels it and sends it to `failed`, which fails the task), 0 by default; otherwise the
+# claim's `lease_ms` is the recovery.
 #
 # Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field).
 # Another model: `--set model=provider/model` (all three; give each engine node its own
@@ -62,7 +63,8 @@
 # with `polecat-3` in the name, branch and folder, a case in each route switch, and its
 # participant into the channel. A template has no repetition, so N is drawn, not a hole.
 # Witness as a restarter: `restart = "yes"` on `witness_N` and a wire from its `restart`
-# to `polecat_N.prompt` (the Agent box cannot cancel a turn, so the retry queues).
+# to `polecat_N.prompt` (the retry queues behind the stuck turn: set `turn_timeout_ms`
+# so that turn ends).
 #
 # Run (2026-11-08, debug build, `serve --port 0`, temporary --home with `[templates]
 # paths` on this folder; <repo> a git repo on `master` with one commit, <work> empty):
@@ -130,6 +132,7 @@ fresh_context = { description = "yes: each agent starts a new session for every 
 mayor_brief = { description = "one line added to the mayor's prompt (house rules, scope)", default = "Prefer tasks that touch different files." }
 polecat_brief = { description = "one line added to every polecat's prompt", default = "Keep the change small and do not commit." }
 input = { description = "kept as is: the gate's own {{input}}, the path of the worktree it checks", default = "{{input}}" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "team"
@@ -166,7 +169,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 250, y = 50 }
-  config = { name = "mayor", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  config = { name = "mayor", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
@@ -408,7 +411,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 1150, y = 200 }
-  config = { name = "polecat-1", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  config = { name = "polecat-1", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
@@ -541,7 +544,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 1150, y = 600 }
-  config = { name = "polecat-2", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  config = { name = "polecat-2", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },

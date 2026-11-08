@@ -127,3 +127,23 @@ fn a_setup_request_the_agent_refuses_fails_the_start() {
     }];
     assert!(Session::start(launch(), options).is_err());
 }
+
+#[test]
+fn a_cancel_ends_the_turn_in_flight_and_the_session_goes_on() {
+    let session =
+        std::sync::Arc::new(Session::start(launch(), options(Permissions::Reject)).unwrap());
+    // Nothing in flight: a cancel then is not kept for the next turn.
+    assert!(session.cancel());
+    assert_eq!(session.prompt("hello").unwrap().text, "echo: hello");
+    let turn = {
+        let session = session.clone();
+        std::thread::spawn(move || session.prompt("hang"))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!turn.is_finished(), "the agent holds the turn");
+    assert!(session.cancel());
+    let turn = turn.join().unwrap().unwrap();
+    assert_eq!(turn.stop_reason, "cancelled");
+    assert_eq!(turn.text, "hung until cancelled");
+    assert_eq!(session.prompt("again").unwrap().text, "echo: again");
+}

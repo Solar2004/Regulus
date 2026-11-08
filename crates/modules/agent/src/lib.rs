@@ -14,7 +14,8 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use regulus_contract_agent_engine as engine;
 use regulus_contract_llm_endpoint as llm;
@@ -69,6 +70,12 @@ const USAGE_KEYS: [(&str, [&str; 2]); 2] = [
 ];
 /// The threads that prompt values from `prompt`.
 const THREAD: &str = "regulus-agent";
+/// The threads that wait on a turn with a time limit.
+const TURN_THREAD: &str = "regulus-agent-turn";
+/// Milliseconds a turn may take before it is cancelled and fails; 0: no limit.
+const TURN_TIMEOUT_FIELD: &str = "turn_timeout_ms";
+/// Milliseconds a cancelled turn has to end before its session is dropped.
+const CANCEL_GRACE_FIELD: &str = "cancel_grace_ms";
 /// What the box says it is to channels.
 const KIND: &str = "agent";
 
@@ -85,6 +92,8 @@ struct Running {
     cwd: PathBuf,
     /// The last value of the `workdir` input, if one came: it wins over the field.
     workdir: Option<String>,
+    /// The session was dropped after a turn ran out of time: the next turn opens another.
+    dropped: bool,
     /// Held for a whole prompt: one turn at a time per node, whoever sends it.
     turn: Arc<Mutex<()>>,
 }
@@ -343,6 +352,7 @@ impl Inner {
                 used: false,
                 cwd,
                 workdir: None,
+                dropped: false,
                 turn: Arc::default(),
             },
         );
@@ -553,7 +563,7 @@ impl Inner {
             .map(|r| r.turn.clone())
             .ok_or_else(|| Self::not_running(&me))?;
         let _turn = lock(&turn);
-        let (engine, session_id, renew) = {
+        let renewed = {
             let mut running = self.running();
             let found = running.get_mut(&me).ok_or_else(|| Self::not_running(&me))?;
             // A `workdir` that names no directory fails the turn: it never runs elsewhere.
@@ -565,18 +575,98 @@ impl Inner {
                 .and_then(Value::as_str)
                 == Some(YES);
             // A session keeps the directory it opened in: moving is opening another.
-            let renew = (fresh && used || cwd != found.cwd).then(|| (found.node.clone(), cwd));
-            (found.engine.clone(), found.session_id.clone(), renew)
+            let renew = (fresh && used || cwd != found.cwd || found.dropped)
+                .then(|| (found.node.clone(), cwd));
+            (
+                found.engine.clone(),
+                found.session_id.clone(),
+                found.node.clone(),
+                renew,
+            )
         };
+        let (engine, session_id, node, renew) = renewed;
         let (engine, session_id) = match renew {
             Some((node, cwd)) => self.renew(&me, &node, &cwd, engine, session_id)?,
             None => (engine, session_id),
         };
-        let args = engine::PromptArgs {
-            session_id,
-            text: params.text,
-        };
-        self.ctx.call(&engine, engine::SESSION_PROMPT, json(args)?)
+        self.timed_turn(&me, &node, engine, session_id, params.text)
+    }
+
+    /// The engine's turn, bounded by `turn_timeout_ms`. When it runs out, the turn is
+    /// cancelled (`engine.session.cancel`) and given `cancel_grace_ms` to end; an engine
+    /// without cancel, or a turn that still does not end, loses its session, and the next
+    /// turn opens another. Either way the turn fails.
+    fn timed_turn(
+        &self,
+        me: &NodeRef,
+        node: &Node,
+        engine: Endpoint,
+        session_id: String,
+        text: String,
+    ) -> Result<Value, ModuleError> {
+        let args = json(engine::PromptArgs {
+            session_id: session_id.clone(),
+            text,
+        })?;
+        let limit = self.count(node, TURN_TIMEOUT_FIELD);
+        if limit == 0 {
+            return self.ctx.call(&engine, engine::SESSION_PROMPT, args);
+        }
+        // The engine's call blocks until the turn ends, so it waits on a thread of its own.
+        let (answer, answered) = mpsc::channel();
+        let (ctx, to) = (self.ctx.clone(), engine.clone());
+        std::thread::Builder::new()
+            .name(TURN_THREAD.into())
+            .spawn(move || {
+                let _ = answer.send(ctx.call(&to, engine::SESSION_PROMPT, args));
+            })
+            .map_err(|e| ModuleError::Failed(format!("cannot start a turn thread: {e}")))?;
+        match answered.recv_timeout(Duration::from_millis(limit)) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ModuleError::Failed(
+                "the turn ended without an answer".into(),
+            )),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let grace = Duration::from_millis(self.count(node, CANCEL_GRACE_FIELD));
+                let cancel = json(engine::CancelArgs {
+                    session_id: session_id.clone(),
+                })?;
+                let ended = self
+                    .ctx
+                    .call(&engine, engine::SESSION_CANCEL, cancel)
+                    .is_ok()
+                    && answered.recv_timeout(grace).is_ok();
+                let how = if ended {
+                    "it was cancelled"
+                } else {
+                    self.drop_session(me, &engine, session_id);
+                    "its session was dropped"
+                };
+                Err(ModuleError::Failed(format!(
+                    "turn timed out after {limit} ms ({how})"
+                )))
+            }
+        }
+    }
+
+    /// Ends a session whose turn would not end; the node's next turn opens another.
+    fn drop_session(&self, me: &NodeRef, engine: &Endpoint, session_id: String) {
+        if let Some(found) = self
+            .running()
+            .get_mut(me)
+            .filter(|found| found.session_id == session_id)
+        {
+            found.dropped = true;
+        }
+        let args = engine::StopArgs { session_id };
+        if let Err(error) =
+            json(args).and_then(|args| self.ctx.call(engine, engine::SESSION_STOP, args))
+        {
+            eprintln!(
+                "regulus: agent `{}`: cannot drop its session: {error}",
+                me.node_id
+            );
+        }
     }
 
     /// Ends the node's session and opens another, so the next turn starts from nothing.
@@ -603,6 +693,7 @@ impl Inner {
                 found.session_id = session_id.clone();
                 found.used = true;
                 found.cwd = cwd.to_path_buf();
+                found.dropped = false;
                 Ok((engine, session_id))
             }
             None => {

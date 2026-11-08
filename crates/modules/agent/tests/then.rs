@@ -21,6 +21,8 @@ struct Seen {
     /// The directory each session opened in, in the order they opened.
     cwds: Vec<PathBuf>,
     stopped: Vec<String>,
+    /// Sessions whose turn was asked to end.
+    cancelled: Vec<String>,
     slow_began: usize,
     slow_returned: usize,
     /// Lets every `slow` turn finish.
@@ -56,7 +58,8 @@ impl Shared {
 
 /// An engine that answers `<session>:<turn in that session>:<text>`, fails on `boom`,
 /// reports usage on `count`, and holds `slow` until opened or its session stops (then it
-/// fails, like a closed ACP session).
+/// fails, like a closed ACP session). `hang` holds until cancelled (then ends the turn as
+/// `cancelled`) and `deaf` until its session stops, whatever is asked.
 struct FakeEngine {
     manifest: Manifest,
     shared: Arc<Shared>,
@@ -89,6 +92,21 @@ impl Module for FakeEngine {
                 if args.text == "boom" {
                     return Err(ModuleError::Failed("the engine blew up".into()));
                 }
+                if args.text == "hang" || args.text == "deaf" {
+                    let hears = args.text == "hang";
+                    let mut seen = self.shared.seen();
+                    let done = |seen: &Seen| {
+                        seen.stopped.contains(&args.session_id)
+                            || (hears && seen.cancelled.contains(&args.session_id))
+                    };
+                    while !done(&seen) {
+                        seen = self.shared.wake.wait(seen).unwrap();
+                    }
+                    if seen.stopped.contains(&args.session_id) {
+                        return Err(ModuleError::Failed("the agent session is closed".into()));
+                    }
+                    return Ok(json!({ "stop_reason": "cancelled", "text": "" }));
+                }
                 if args.text == "slow" {
                     let mut seen = self.shared.seen();
                     seen.slow_began += 1;
@@ -117,6 +135,12 @@ impl Module for FakeEngine {
                     turn["usage"] = json!({ "inputTokens": 12, "outputTokens": 3 });
                 }
                 Ok(turn)
+            }
+            engine::SESSION_CANCEL => {
+                let args: engine::CancelArgs = serde_json::from_value(call.args).unwrap();
+                self.shared.seen().cancelled.push(args.session_id);
+                self.shared.wake.notify_all();
+                Ok(Value::Null)
             }
             engine::SESSION_STOP => {
                 let args: engine::StopArgs = serde_json::from_value(call.args).unwrap();
@@ -457,4 +481,46 @@ fn a_workdir_value_moves_the_following_turns_to_a_session_opened_there() {
         .unwrap();
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn a_turn_past_turn_timeout_ms_is_cancelled_or_loses_its_session_and_fails() {
+    let data = data_dir("timeout");
+    let config = json!({ "workdir": "/", "turn_timeout_ms": 100, "cancel_grace_ms": 100 });
+    let (core, id, engine) = start_with(config, &data);
+    // An engine that hears the cancel ends the turn: the session stays.
+    send(&core, &id, "hang");
+    send(&core, &id, "one");
+    let out = outputs(&core, &id, 2);
+    assert_eq!(out[0].0, "failed");
+    let error = out[0].1.as_str().unwrap();
+    assert!(
+        error.contains("turn timed out after 100 ms") && error.contains("cancelled"),
+        "{error}"
+    );
+    assert_eq!(out[1], reply("s1:1:one"));
+    // One that does not loses its session; the next turn opens another.
+    send(&core, &id, "deaf");
+    send(&core, &id, "two");
+    let out = outputs(&core, &id, 4);
+    assert_eq!(out[2].0, "failed");
+    let error = out[2].1.as_str().unwrap();
+    assert!(
+        error.contains("turn timed out after 100 ms") && error.contains("dropped"),
+        "{error}"
+    );
+    assert_eq!(out[3], reply("s2:1:two"));
+    {
+        let seen = engine.seen();
+        assert_eq!(seen.cancelled, ["s1", "s1"]);
+        assert_eq!(seen.started, ["s1", "s2"]);
+        assert!(
+            seen.stopped.starts_with(&["s1".to_string()]),
+            "{:?}",
+            seen.stopped
+        );
+    }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
 }
