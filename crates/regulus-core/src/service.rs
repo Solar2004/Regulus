@@ -405,6 +405,10 @@ impl Core {
         if let Some(home) = &home {
             projects::remember(&home.config, &home.home, &root)?;
         }
+        self.projects
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove_failed(None, Some(&root));
         let (id, dirs) = (project.id.clone(), project.profiles.clone());
         self.projects
             .write()
@@ -428,12 +432,29 @@ impl Core {
     /// in its folder is touched.
     fn close_project(&self, params: IdParams) -> Result<ProjectSummary, RpcError> {
         let _writing = self.writing();
-        let project = self.project(&params.id)?;
         let home = self
             .project_home
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
+        // One that did not open on start is only forgotten.
+        let failed = self
+            .projects()
+            .failed()
+            .iter()
+            .find(|f| f.id == params.id)
+            .cloned();
+        if let Some(failed) = failed {
+            if let Some(home) = &home {
+                projects::forget(&home.config, &home.home, &failed.root)?;
+            }
+            self.projects
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove_failed(Some(&failed.id), None);
+            return Ok(failed.summary());
+        }
+        let project = self.project(&params.id)?;
         if let Some(home) = &home {
             projects::forget(&home.config, &home.home, &project.root)?;
         }
@@ -835,12 +856,12 @@ impl Core {
                 let profile = self.profile(parse(params)?)?;
                 json(self.check(&profile))
             }
-            method::PROJECT_LIST => json(
-                self.projects()
-                    .iter()
-                    .map(|p| self.project_summary(p))
-                    .collect::<Vec<_>>(),
-            ),
+            method::PROJECT_LIST => {
+                let projects = self.projects();
+                let open = projects.iter().map(|p| self.project_summary(p));
+                let failed = projects.failed().iter().map(|f| f.summary());
+                json(open.chain(failed).collect::<Vec<_>>())
+            }
             method::PROJECT_GET => {
                 let params: IdParams = parse(params)?;
                 let project = self.project(&params.id)?;

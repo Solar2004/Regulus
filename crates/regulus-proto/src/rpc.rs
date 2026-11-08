@@ -129,7 +129,8 @@ pub mod code {
     pub const PROFILE_IN_USE: i32 = -32009;
     /// No open project has that id, or the path to open is not a folder.
     pub const PROJECT_NOT_FOUND: i32 = -32010;
-    /// The project's id cannot be used: it must be a plain name, safe as a file name.
+    /// The project cannot open: its `regulus.toml` cannot be read or is not TOML, or its id
+    /// cannot be used (it must be a plain name, safe as a file name).
     pub const PROJECT_INVALID: i32 = -32011;
     /// Another open project has that id.
     pub const PROJECT_EXISTS: i32 = -32012;
@@ -381,6 +382,11 @@ pub struct ProjectSummary {
     pub path: String,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Set when a folder of `[projects] paths` did not open on start (an unreadable
+    /// `regulus.toml`, an invalid id, a folder that is gone): it is listed so a client can
+    /// show it, but nothing of it is loaded. `project.open` tries again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// The answer of `project.get`: the project's `regulus.toml` as the core resolved it.

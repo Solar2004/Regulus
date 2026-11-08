@@ -346,9 +346,10 @@ fn resolve(
 }
 
 impl Project {
-    /// Reads the project in `root`. A file that is missing, unreadable or not TOML leaves
-    /// every default in place and says why; a key of the wrong type is ignored and said.
-    /// Only an id that cannot be used is an error.
+    /// Reads the project in `root`. A missing file leaves every default in place and says
+    /// so; a key of the wrong type is ignored and said. A file that cannot be read or is not
+    /// TOML, and an id that cannot be used, are errors: the project does not open rather
+    /// than run without the veto it may hold.
     pub fn load(root: &Path) -> Result<Self, ProjectError> {
         let changed = modified(root);
         let parsed = match read(root) {
@@ -359,12 +360,7 @@ impl Project {
                 warnings: vec![format!("{PROJECT_FILE} missing; every default applies")],
                 problems: Vec::new(),
             },
-            Read::Broken(why) => Parsed {
-                file: ProjectFile::default(),
-                raw: toml::Table::new(),
-                warnings: vec![format!("{why}; every default applies")],
-                problems: Vec::new(),
-            },
+            Read::Broken(why) => return Err(ProjectError::Invalid(why)),
         };
         Self::build(root, parsed, changed)
     }
@@ -495,6 +491,7 @@ impl Project {
             name: self.name.clone(),
             path: self.root.display().to_string(),
             warnings,
+            error: None,
         }
     }
 
@@ -592,12 +589,38 @@ pub fn ensure_file(root: &Path) -> Result<(), ProjectError> {
 #[derive(Debug, Default)]
 pub struct Projects {
     open: Vec<Arc<Project>>,
+    /// Folders of `[projects] paths` that did not open on start, with why. They are listed
+    /// with an error so a client can show them; `project.open` tries again, `project.close`
+    /// forgets them.
+    failed: Vec<Failed>,
+}
+
+/// A folder of `[projects] paths` that did not open.
+#[derive(Debug, Clone)]
+pub struct Failed {
+    /// The folder's name: what `project.close` takes.
+    pub id: String,
+    pub root: PathBuf,
+    pub error: String,
+}
+
+impl Failed {
+    pub fn summary(&self) -> ProjectSummary {
+        ProjectSummary {
+            id: self.id.clone(),
+            name: self.id.clone(),
+            path: self.root.display().to_string(),
+            warnings: vec![self.error.clone()],
+            error: Some(self.error.clone()),
+        }
+    }
 }
 
 impl Projects {
-    /// Opens every folder in `paths` (already resolved). A folder that is gone, an id that
-    /// cannot be used or one already taken is skipped with a warning; the path stays in
-    /// `config.toml`.
+    /// Opens every folder in `paths` (already resolved). One that is gone, has a
+    /// `regulus.toml` that cannot be read, an id that cannot be used or one already taken is
+    /// not loaded (no profiles, no veto) and is kept in [`Projects::failed`] with a warning;
+    /// the path stays in `config.toml`.
     pub fn load(paths: &[PathBuf]) -> (Self, Vec<String>) {
         let mut projects = Self::default();
         let mut warnings = Vec::new();
@@ -607,6 +630,14 @@ impl Projects {
                 .and_then(|project| projects.insert(project));
             if let Err(error) = opened {
                 warnings.push(format!("project {} is not open: {error}", path.display()));
+                projects.failed.push(Failed {
+                    id: path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    root: path.clone(),
+                    error: error.to_string(),
+                });
             }
         }
         (projects, warnings)
@@ -632,6 +663,20 @@ impl Projects {
     pub fn remove(&mut self, id: &str) -> Option<Arc<Project>> {
         let position = self.open.iter().position(|p| p.id == id)?;
         Some(self.open.remove(position))
+    }
+
+    /// The folders that did not open on start.
+    pub fn failed(&self) -> &[Failed] {
+        &self.failed
+    }
+
+    /// Takes a folder out of the failed ones, by id or by folder.
+    pub fn remove_failed(&mut self, id: Option<&str>, root: Option<&Path>) -> Option<Failed> {
+        let position = self.failed.iter().position(|f| {
+            id.is_some_and(|id| f.id == id)
+                || root.is_some_and(|r| f.root == r || f.root.canonicalize().is_ok_and(|c| c == r))
+        })?;
+        Some(self.failed.remove(position))
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Project>> {
@@ -840,17 +885,20 @@ x = 1
     }
 
     #[test]
-    fn a_broken_file_leaves_the_defaults_and_says_why() {
+    fn a_file_that_is_not_toml_does_not_open() {
         let root = temp("broken").join("demo");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join(PROJECT_FILE), "[project\nname=").unwrap();
-        let project = Project::load(&root).unwrap();
-        assert_eq!(project.id, "demo");
-        assert!(
-            project.warnings[0].contains("is not valid TOML"),
-            "{:?}",
-            project.warnings
-        );
+        match Project::load(&root) {
+            Err(ProjectError::Invalid(why)) => assert!(why.contains("is not valid TOML"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        let (projects, warnings) = Projects::load(std::slice::from_ref(&root));
+        assert_eq!(projects.iter().count(), 0);
+        assert!(warnings[0].contains("is not open"), "{warnings:?}");
+        let failed = projects.failed()[0].summary();
+        assert_eq!(failed.id, "demo");
+        assert!(failed.error.unwrap().contains("is not valid TOML"));
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 

@@ -774,7 +774,12 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
 /// `regulus project`: the `project.*` methods of the running core. Warnings go to stderr.
 async fn project(client: &Client<'_>, command: ProjectCommand) -> Result<()> {
     let summary = |p: ProjectSummary| {
-        println!("{:<20} {:<24} {}", p.id, p.name, p.path);
+        let failed = if p.error.is_some() {
+            "  [error: not loaded]"
+        } else {
+            ""
+        };
+        println!("{:<20} {:<24} {}{failed}", p.id, p.name, p.path);
         for warning in p.warnings {
             eprintln!("warning: {}: {warning}", p.id);
         }

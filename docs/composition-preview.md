@@ -45,7 +45,7 @@ negociar un major compatible.
 | `module.manifest` *(1.11)* | `id?` (con o sin versión) | El `Manifest` del módulo con los nombres del TOML (`module`, `node[]` con `type`, `name`, `port[]`, `field[]`: `id`, `type`, `default`, `options`); sin `id`, la lista de todos. También de un módulo `broken` o `incompatible` |
 | `profile.save` *(1.11)* | `profile` (el perfil entero, como lo da `profile.get`), `force?` | `profile_id`, `path` y `diagnostics`, como `template.apply` |
 | `profile.delete` *(1.11)* | `id` | `profile_id` y `path` (el fichero borrado) |
-| `project.list` *(1.12)* | — | Proyectos abiertos: `id`, `name`, `path` (la carpeta) y `warnings` |
+| `project.list` *(1.12)* | — | Proyectos abiertos: `id`, `name`, `path` (la carpeta), `warnings` y `error?`: una carpeta de `[projects] paths` que no abrió al arrancar (`regulus.toml` ilegible o no TOML, id inválido, carpeta que no está) sale con `error` y nada suyo cargado; `project.open` lo reintenta y `project.close` la olvida |
 | `project.get` *(1.12)* | `id` | El `regulus.toml` resuelto: `id`, `name`, `path`, `file`, `profiles` y `templates` (rutas absolutas), `disable`, `enable?`, `local` (tal cual, sin cargar), `client` (tabla libre), `content` (el fichero entero con las claves desconocidas) y `warnings` |
 | `project.open` *(1.12)* | `path` (carpeta o su `regulus.toml`; relativa al home del core) | Como una entrada de `project.list`. Abrir una carpeta ya abierta no cambia nada |
 | `project.close` *(1.12)* | `id` | Como una entrada de `project.list`; no borra nada en disco |
@@ -83,7 +83,8 @@ de perfiles *(1.11)*: `-32007` también si el perfil vive donde no se puede pisa
 errores de `profile.check`, `-32009` el perfil que se borra está en uso; un id que no puede ser
 nombre de fichero o un `null` en un `config` (TOML no lo tiene) es `-32602`; de proyectos
 *(1.12)*: `-32010` no hay proyecto abierto con ese id o la ruta no es una carpeta, `-32011` el
-id no vale como nombre de fichero, `-32012` otro proyecto abierto tiene ese id, `-32013`
+proyecto no abre: su `regulus.toml` no se lee o no es TOML (el error de TOML va en el mensaje)
+o su id no vale como nombre de fichero, `-32012` otro proyecto abierto tiene ese id, `-32013`
 `execution.start` rechaza un nodo cuyo módulo está vetado en el proyecto; no poder escribir
 `config.toml` es `-32003`. Además pide el token de `<home>/token` en el upgrade
 (`?token=` desde la webview).

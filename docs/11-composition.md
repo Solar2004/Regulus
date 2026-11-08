@@ -458,7 +458,9 @@ tolerancia; `ProcessModule` no.
   `.regulus/profiles` y `.regulus/templates`. El id se valida como el de un perfil; dos
   proyectos con el mismo id no se abren a la vez.
 - **Tolerancia:** clave desconocida en cualquier nivel → se conserva (`project.get` la da en
-  `content`) y avisa; un `regulus.toml` roto deja los valores por defecto y avisa;
+  `content`) y avisa, igual que una clave de tipo equivocado; un `regulus.toml` que no se lee
+o no es TOML, o un id inválido, **no abre** (`project.open` da `-32011`; al arrancar, el
+proyecto sale en `project.list` con `error` y sin nada cargado), para no correr sin su veto;
   `[[modules.local]]` se lee, se devuelve y avisa "local modules are not supported yet";
   `[client]` se devuelve tal cual (nadie lo consume aún). `config.toml` igual: avisa al
   arrancar (`regulus: … unknown key`) y sigue; `hello` no devuelve avisos, no tenía dónde.

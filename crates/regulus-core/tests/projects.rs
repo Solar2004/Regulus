@@ -568,3 +568,76 @@ fn open_refuses_any_file_but_regulus_toml_and_a_broken_config() {
     assert_eq!(refused.unwrap_err().0, code::MODULE_FAILED);
     assert!(!demo.join("regulus.toml").exists());
 }
+
+#[test]
+fn a_regulus_toml_that_is_not_toml_is_refused_on_open_and_listed_as_failed_on_start() {
+    let s = Setup::new("not-toml");
+    let demo = s.folder("demo");
+    fs::write(
+        demo.join("regulus.toml"),
+        "[modules\ndisable = [\"test/echo\"]\n",
+    )
+    .unwrap();
+    let (code_, message) = s
+        .call(method::PROJECT_OPEN, json!({ "path": demo }))
+        .unwrap_err();
+    assert_eq!(code_, code::PROJECT_INVALID);
+    assert!(message.contains("is not valid TOML"), "{message}");
+    assert!(!s.dir.join("home/config.toml").exists());
+
+    // On start: a folder in [projects] paths whose file does not parse is listed with its
+    // error and loads nothing; the core goes on.
+    let dir = demo.join(".regulus/profiles");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("mine.toml"), profile_text("mine")).unwrap();
+    fs::write(
+        s.dir.join("home/config.toml"),
+        format!("[projects]\npaths = [{:?}]\n", demo.display().to_string()),
+    )
+    .unwrap();
+    let config = regulus_core::Config::load(&s.dir.join("home")).unwrap();
+    let (core, warnings) = regulus_core::assemble(&config, Vec::new());
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("is not open") && w.contains("not valid TOML")),
+        "{warnings:?}"
+    );
+    let list = core.dispatch(method::PROJECT_LIST, Value::Null).unwrap();
+    assert_eq!(list[0]["id"], "demo");
+    assert!(list[0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("not valid TOML"));
+    let profiles = core.dispatch(method::PROFILE_LIST, json!({})).unwrap();
+    assert!(profiles.as_array().unwrap().is_empty(), "{profiles}");
+    let get = core.dispatch(method::PROJECT_GET, json!({ "id": "demo" }));
+    assert_eq!(get.unwrap_err().code, code::PROJECT_NOT_FOUND);
+
+    // Fixed, open tries again and it loads; or close forgets it.
+    fs::write(demo.join("regulus.toml"), "[modules]\n").unwrap();
+    let opened = core
+        .dispatch(method::PROJECT_OPEN, json!({ "path": demo }))
+        .unwrap();
+    assert!(opened.get("error").is_none(), "{opened}");
+    let list = core.dispatch(method::PROJECT_LIST, Value::Null).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    let profiles = core.dispatch(method::PROFILE_LIST, json!({})).unwrap();
+    assert_eq!(profiles.as_array().unwrap().len(), 1, "{profiles}");
+
+    fs::write(demo.join("regulus.toml"), "[modules\n").unwrap();
+    let (core, _) = regulus_core::assemble(&config, Vec::new());
+    let closed = core
+        .dispatch(method::PROJECT_CLOSE, json!({ "id": "demo" }))
+        .unwrap();
+    assert!(closed["error"].is_string());
+    assert!(core
+        .dispatch(method::PROJECT_LIST, Value::Null)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let config: toml::Table =
+        toml::from_str(&fs::read_to_string(s.dir.join("home/config.toml")).unwrap()).unwrap();
+    assert!(config["projects"]["paths"].as_array().unwrap().is_empty());
+}
