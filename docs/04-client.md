@@ -280,11 +280,22 @@ core, la leen del fichero.
   sale cada valor (`config.toml` o `regulus.toml`), por `clave` o `tabla.clave`. Así la app
   distingue un valor del fichero de su propio default y lo dice junto al campo ("From
   config.toml"). Un proyecto que ya no está abierto cae al global.
+- **Cuándo se lee.** El core lee el `[client]` global una vez, al arrancar: cambiarlo pide
+  reiniciar el core. El del proyecto se relee en vivo (§13 de `11-composition.md`). La app
+  pide `config.client` al conectar (también al reconectar) y al cambiar de proyecto; un fallo
+  que no sea `-32010` (proyecto cerrado: cae al global) deja los valores que tenía.
+- **Límites de la app.** La app recorta cada número a sus propios límites, que no son los de
+  la TUI: `tui.event_page = 5` se ve como 10 en la app (con "From config.toml") y como 5 en
+  la TUI.
+- **`start_view` se aplica una vez,** con la primera respuesta tras abrir la app: la del
+  proyecto que estaba elegido si lo había, si no la global, y solo si la persona no eligió
+  página de inicio en Ajustes (una guardada antes de existir `start_view` cuenta como
+  elegida) ni se movió aún. Cambiar de proyecto después no cambia de vista.
 - **Nada rígido:** el core no decide qué entiende un cliente. Una clave que no conoce se
-  conserva, se sirve tal cual y se avisa (`warnings` de `config.client` y al arrancar). Lo
-  que la TUI no entiende en `keys` o `tui` (una acción que no existe, un número < 1 donde no
-  vale, dos acciones con la misma tecla) la para al arrancar, antes de tomar la terminal,
-  con el fichero y la clave: `…/config.toml: [client] tui.event_pag: no such setting`.
+  conserva, se sirve tal cual y se avisa ("kept for clients", en `warnings` de
+  `config.client` y al arrancar). Lo que la TUI no entiende en `keys` o `tui` (una acción
+  que no existe, un número < 1 donde no vale, dos acciones con la misma tecla) la para al
+  arrancar, antes de tomar la terminal, con el fichero y la clave: `…/config.toml: [client] tui.event_pag: no such setting`.
 - **Código:** `ClientConfig` y `layer_client` en `regulus-core/src/config.rs`;
   `tui::client_table` y `tui::options` en la CLI; `src/core/clientConfig.ts`,
   `src/operate/settings.ts` y `applyStartView` (`src/store/useRegulusUi.ts`) en la app; el
