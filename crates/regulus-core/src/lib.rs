@@ -41,9 +41,12 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
     // Global profiles first: on a clash of ids, the first one stays, as between files.
     let (mut projects, found) = projects::Projects::load(&config.projects.paths);
     warnings.extend(found);
-    for project in projects.iter_mut() {
-        let found = profiles.load_project(&project.id, &project.profiles);
-        project.notes.extend(found);
+    let loaded: Vec<(String, Vec<String>)> = projects
+        .iter()
+        .map(|p| (p.id.clone(), profiles.load_project(&p.id, &p.profiles)))
+        .collect();
+    for (id, found) in loaded {
+        projects.note(&id, found);
     }
     let store = match Store::open(&config.store_dir(), &config.store) {
         Ok(store) => {

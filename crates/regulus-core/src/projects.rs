@@ -2,14 +2,19 @@
 //! file is optional and the file tolerates what it does not understand: unknown keys are
 //! kept and reported, never fatal. The folders that are open live in `config.toml`,
 //! `[projects] paths`.
+//!
+//! Once a project is open, a later version of its file that cannot be used (missing,
+//! unreadable, or with a key of the wrong type) never replaces the last good one: the veto
+//! of `[modules]` must not fall away because of a typo.
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use regulus_proto::{ProjectDetails, ProjectSummary};
-use serde::{Deserialize, Serialize};
 
 use crate::registry::base_id;
 
@@ -35,36 +40,31 @@ pub enum ProjectError {
     Io(String),
 }
 
-/// `regulus.toml` as read. Keys the core does not know stay in `extra`, where they were.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+/// `regulus.toml` as the core understood it. Keys it does not know stay in `extra`.
+#[derive(Debug, Clone, Default)]
 pub struct ProjectFile {
     pub project: ProjectTable,
     pub modules: ModulesTable,
     /// Free: handed to clients as it is.
     pub client: toml::Table,
-    #[serde(flatten)]
     pub extra: toml::Table,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct ProjectTable {
     /// Defaults to the folder's name.
     pub id: Option<String>,
     pub name: Option<String>,
-    /// Files or directories with profiles, relative to the file. Empty means
+    /// Folders or files with profiles, inside the project. Empty means
     /// `.regulus/profiles`.
     pub profiles: Vec<PathBuf>,
-    /// Files or directories with templates, relative to the file. Empty means
+    /// Folders or files with templates, inside the project. Empty means
     /// `.regulus/templates`.
     pub templates: Vec<PathBuf>,
-    #[serde(flatten)]
     pub extra: toml::Table,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct ModulesTable {
     /// Module ids (`author/module`, any version) whose nodes do not run in this project.
     pub disable: Vec<String>,
@@ -72,17 +72,202 @@ pub struct ModulesTable {
     pub enable: Option<Vec<String>>,
     /// Modules of this project only, run out of process. Kept, not loaded yet.
     pub local: Vec<LocalModule>,
-    #[serde(flatten)]
     pub extra: toml::Table,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct LocalModule {
     pub manifest: Option<PathBuf>,
     pub command: Vec<String>,
-    #[serde(flatten)]
     pub extra: toml::Table,
+}
+
+/// Reading `regulus.toml`: what was understood, the file as it is, the keys it did not
+/// know and the keys it could not use (`problems`: the wrong type).
+struct Parsed {
+    file: ProjectFile,
+    raw: toml::Table,
+    warnings: Vec<String>,
+    problems: Vec<String>,
+}
+
+/// One known key of a table: taken out of it and converted; the wrong type is a problem
+/// and the key is dropped.
+struct Taker<'a> {
+    at: &'a str,
+    problems: &'a mut Vec<String>,
+}
+
+impl Taker<'_> {
+    fn take<T>(
+        &mut self,
+        table: &mut toml::Table,
+        key: &str,
+        what: &str,
+        convert: impl Fn(toml::Value) -> Option<T>,
+    ) -> Option<T> {
+        let value = table.remove(key)?;
+        let shown = value.to_string();
+        let converted = convert(value);
+        if converted.is_none() {
+            self.problems.push(format!(
+                "{PROJECT_FILE}: `{}{key}` must be {what}, not {shown}; ignored",
+                self.at
+            ));
+        }
+        converted
+    }
+
+    fn text(&mut self, table: &mut toml::Table, key: &str) -> Option<String> {
+        self.take(table, key, "text", |v| match v {
+            toml::Value::String(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// A list of text; one text alone is a list of one.
+    fn list(&mut self, table: &mut toml::Table, key: &str) -> Option<Vec<String>> {
+        self.take(table, key, "a list of text", |v| match v {
+            toml::Value::String(s) => Some(vec![s]),
+            toml::Value::Array(items) => items
+                .into_iter()
+                .map(|i| match i {
+                    toml::Value::String(s) => Some(s),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        })
+    }
+
+    fn table(&mut self, table: &mut toml::Table, key: &str) -> Option<toml::Table> {
+        self.take(table, key, "a table", |v| match v {
+            toml::Value::Table(t) => Some(t),
+            _ => None,
+        })
+    }
+}
+
+fn paths(list: Option<Vec<String>>) -> Vec<PathBuf> {
+    list.unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn unknown(warnings: &mut Vec<String>, at: &str, extra: &toml::Table) {
+    for key in extra.keys() {
+        warnings.push(format!(
+            "{PROJECT_FILE}: unknown key `{at}{key}`; kept and ignored"
+        ));
+    }
+}
+
+/// Reads the text of a `regulus.toml`. Only a file that is not TOML at all is an error.
+fn parse(text: &str) -> Result<Parsed, String> {
+    let raw: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut problems = Vec::new();
+    let mut top = raw.clone();
+    let mut t = Taker {
+        at: "",
+        problems: &mut problems,
+    };
+    let mut project = t.table(&mut top, "project").unwrap_or_default();
+    let mut modules = t.table(&mut top, "modules").unwrap_or_default();
+    let client = t.table(&mut top, "client").unwrap_or_default();
+    let mut t = Taker {
+        at: "project.",
+        problems: &mut problems,
+    };
+    let project_table = ProjectTable {
+        id: t.text(&mut project, "id"),
+        name: t.text(&mut project, "name"),
+        profiles: paths(t.list(&mut project, "profiles")),
+        templates: paths(t.list(&mut project, "templates")),
+        extra: project,
+    };
+    let mut t = Taker {
+        at: "modules.",
+        problems: &mut problems,
+    };
+    let disable = t.list(&mut modules, "disable").unwrap_or_default();
+    let enable = t.list(&mut modules, "enable");
+    let entries = t
+        .take(&mut modules, "local", "a list of tables", |v| match v {
+            toml::Value::Array(items) => items
+                .into_iter()
+                .map(|i| match i {
+                    toml::Value::Table(t) => Some(t),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>(),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut local = Vec::with_capacity(entries.len());
+    for (i, mut entry) in entries.into_iter().enumerate() {
+        let at = format!("modules.local[{i}].");
+        let mut t = Taker {
+            at: &at,
+            problems: &mut problems,
+        };
+        local.push(LocalModule {
+            manifest: t.text(&mut entry, "manifest").map(PathBuf::from),
+            command: t.list(&mut entry, "command").unwrap_or_default(),
+            extra: entry,
+        });
+    }
+    let file = ProjectFile {
+        project: project_table,
+        modules: ModulesTable {
+            disable,
+            enable,
+            local,
+            extra: modules,
+        },
+        client,
+        extra: top,
+    };
+    let mut warnings = Vec::new();
+    unknown(&mut warnings, "", &file.extra);
+    unknown(&mut warnings, "project.", &file.project.extra);
+    unknown(&mut warnings, "modules.", &file.modules.extra);
+    for (i, local) in file.modules.local.iter().enumerate() {
+        unknown(&mut warnings, &format!("modules.local[{i}]."), &local.extra);
+    }
+    if !file.modules.local.is_empty() {
+        warnings.push(format!(
+            "{PROJECT_FILE}: local modules are not supported yet; {} [[modules.local]] \
+             kept, not loaded",
+            file.modules.local.len()
+        ));
+    }
+    Ok(Parsed {
+        file,
+        raw,
+        warnings,
+        problems,
+    })
+}
+
+/// What reading `root`'s `regulus.toml` gave.
+enum Read {
+    Missing,
+    /// Unreadable or not TOML: why.
+    Broken(String),
+    Parsed(Box<Parsed>),
+}
+
+fn read(root: &Path) -> Read {
+    let path = root.join(PROJECT_FILE);
+    match fs::read_to_string(&path) {
+        Ok(text) => match parse(&text) {
+            Ok(parsed) => Read::Parsed(Box::new(parsed)),
+            Err(e) => Read::Broken(format!("{} is not valid TOML: {e}", path.display())),
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Read::Missing,
+        Err(e) => Read::Broken(format!("cannot read {}: {e}", path.display())),
+    }
 }
 
 /// An open project: its folder, its file and what the core made of it.
@@ -90,16 +275,20 @@ pub struct LocalModule {
 pub struct Project {
     pub id: String,
     pub name: String,
-    /// The folder, as it was opened (absolute).
+    /// The folder, as it was opened (absolute and canonical).
     pub root: PathBuf,
     pub file: ProjectFile,
-    /// `[project] profiles` and `templates`, resolved against the folder.
+    /// The file as it was read, unknown keys included; empty if there was none.
+    pub raw: toml::Table,
+    /// `[project] profiles` and `templates`, resolved inside the folder.
     pub profiles: Vec<PathBuf>,
     pub templates: Vec<PathBuf>,
     /// What the core did not understand or could not use in the file. Never fatal.
     pub warnings: Vec<String>,
-    /// What loading its profiles found, and anything else the core noticed since.
+    /// What loading its profiles found.
     pub notes: Vec<String>,
+    /// Why the file on disk now is not the one in use, if it is not.
+    pub stale: Option<String>,
     /// When the file was last changed as the core read it; `None` if it had none.
     pub modified: Option<SystemTime>,
 }
@@ -109,14 +298,6 @@ fn modified(root: &Path) -> Option<SystemTime> {
     fs::metadata(root.join(PROJECT_FILE))
         .and_then(|m| m.modified())
         .ok()
-}
-
-fn unknown(warnings: &mut Vec<String>, at: &str, extra: &toml::Table) {
-    for key in extra.keys() {
-        warnings.push(format!(
-            "{PROJECT_FILE}: unknown key `{at}{key}`; kept and ignored"
-        ));
-    }
 }
 
 /// A project id is a profile id: one plain name that is safe as a file name.
@@ -129,53 +310,77 @@ pub fn check_id(id: &str) -> Result<(), ProjectError> {
     })
 }
 
-fn resolve(root: &Path, paths: &[PathBuf], default: &str) -> Vec<PathBuf> {
-    if paths.is_empty() {
-        return vec![root.join(default)];
+/// The `profiles` or `templates` entries of `key`, inside `root`: an absolute path, one
+/// that climbs (`..`) or one that leads out through a link is refused with a warning, since
+/// the core writes and deletes profiles there. None left means the default.
+fn resolve(
+    root: &Path,
+    key: &str,
+    paths: &[PathBuf],
+    default: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut inside = Vec::new();
+    for path in paths {
+        let plain = path
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+        let joined = root.join(path);
+        let escapes = joined
+            .canonicalize()
+            .is_ok_and(|real| !real.starts_with(root));
+        if plain && !escapes && !path.as_os_str().is_empty() {
+            inside.push(joined);
+        } else {
+            warnings.push(format!(
+                "{PROJECT_FILE}: `project.{key}` entry `{}` is not inside the project; \
+                 ignored (use a path relative to the folder, without `..`)",
+                path.display()
+            ));
+        }
     }
-    paths.iter().map(|p| root.join(p)).collect()
+    if inside.is_empty() {
+        inside.push(root.join(default));
+    }
+    inside
 }
 
 impl Project {
-    /// Reads the project in `root`. A file that is missing or cannot be read leaves every
-    /// default in place and says why; only an id that cannot be used is an error.
+    /// Reads the project in `root`. A file that is missing, unreadable or not TOML leaves
+    /// every default in place and says why; a key of the wrong type is ignored and said.
+    /// Only an id that cannot be used is an error.
     pub fn load(root: &Path) -> Result<Self, ProjectError> {
-        let path = root.join(PROJECT_FILE);
         let changed = modified(root);
-        let mut warnings = Vec::new();
-        let file = match fs::read_to_string(&path) {
-            Ok(text) => match toml::from_str::<ProjectFile>(&text) {
-                Ok(file) => file,
-                Err(e) => {
-                    warnings.push(format!(
-                        "{} cannot be read, so every default applies: {e}",
-                        path.display()
-                    ));
-                    ProjectFile::default()
-                }
+        let parsed = match read(root) {
+            Read::Parsed(parsed) => *parsed,
+            Read::Missing => Parsed {
+                file: ProjectFile::default(),
+                raw: toml::Table::new(),
+                warnings: vec![format!("{PROJECT_FILE} missing; every default applies")],
+                problems: Vec::new(),
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => ProjectFile::default(),
-            Err(e) => {
-                warnings.push(format!(
-                    "cannot read {}, so every default applies: {e}",
-                    path.display()
-                ));
-                ProjectFile::default()
-            }
+            Read::Broken(why) => Parsed {
+                file: ProjectFile::default(),
+                raw: toml::Table::new(),
+                warnings: vec![format!("{why}; every default applies")],
+                problems: Vec::new(),
+            },
         };
-        unknown(&mut warnings, "", &file.extra);
-        unknown(&mut warnings, "project.", &file.project.extra);
-        unknown(&mut warnings, "modules.", &file.modules.extra);
-        for (i, local) in file.modules.local.iter().enumerate() {
-            unknown(&mut warnings, &format!("modules.local[{i}]."), &local.extra);
-        }
-        if !file.modules.local.is_empty() {
-            warnings.push(format!(
-                "{PROJECT_FILE}: local modules are not supported yet; {} [[modules.local]] \
-                 kept, not loaded",
-                file.modules.local.len()
-            ));
-        }
+        Self::build(root, parsed, changed)
+    }
+
+    fn build(
+        root: &Path,
+        parsed: Parsed,
+        changed: Option<SystemTime>,
+    ) -> Result<Self, ProjectError> {
+        let Parsed {
+            file,
+            raw,
+            mut warnings,
+            problems,
+        } = parsed;
+        warnings.extend(problems);
         let id = match &file.project.id {
             Some(id) => id.clone(),
             None => root
@@ -184,15 +389,31 @@ impl Project {
                 .unwrap_or_default(),
         };
         check_id(&id)?;
+        let profiles = resolve(
+            root,
+            "profiles",
+            &file.project.profiles,
+            DEFAULT_PROFILES,
+            &mut warnings,
+        );
+        let templates = resolve(
+            root,
+            "templates",
+            &file.project.templates,
+            DEFAULT_TEMPLATES,
+            &mut warnings,
+        );
         Ok(Self {
             name: file.project.name.clone().unwrap_or_else(|| id.clone()),
             id,
             root: root.to_path_buf(),
-            profiles: resolve(root, &file.project.profiles, DEFAULT_PROFILES),
-            templates: resolve(root, &file.project.templates, DEFAULT_TEMPLATES),
+            profiles,
+            templates,
             file,
+            raw,
             warnings,
             notes: Vec::new(),
+            stale: None,
             modified: changed,
         })
     }
@@ -200,6 +421,37 @@ impl Project {
     /// Whether its file changed since the core read it.
     pub fn is_stale(&self) -> bool {
         modified(&self.root) != self.modified
+    }
+
+    /// Reads the file again after it changed. A version that cannot be used (missing,
+    /// unreadable, not TOML, a key of the wrong type, another id) leaves this one in use
+    /// and says why; a good one takes its place.
+    fn refreshed(&self) -> Self {
+        let changed = modified(&self.root);
+        let keep = |why: String| Self {
+            stale: Some(format!("{why}; still using the last good {PROJECT_FILE}")),
+            modified: changed,
+            ..self.clone()
+        };
+        let parsed = match read(&self.root) {
+            Read::Missing => return keep(format!("{PROJECT_FILE} missing")),
+            Read::Broken(why) => return keep(why),
+            Read::Parsed(parsed) if !parsed.problems.is_empty() => {
+                return keep(parsed.problems.join("; "))
+            }
+            Read::Parsed(parsed) => *parsed,
+        };
+        match Self::build(&self.root, parsed, changed) {
+            Ok(fresh) if fresh.id == self.id => Self {
+                notes: self.notes.clone(),
+                ..fresh
+            },
+            Ok(fresh) => keep(format!(
+                "{PROJECT_FILE} now says id `{}`; close and open the project to use it",
+                fresh.id
+            )),
+            Err(error) => keep(error.to_string()),
+        }
     }
 
     /// Whether this project keeps a module's nodes from running: `disable` names it, or
@@ -219,6 +471,7 @@ impl Project {
     /// The warnings, plus a `disable` or `enable` entry that names no loaded module.
     pub fn warnings(&self, is_installed: impl Fn(&str) -> bool) -> Vec<String> {
         let mut warnings = self.warnings.clone();
+        warnings.extend(self.stale.iter().cloned());
         warnings.extend(self.notes.iter().cloned());
         let modules = &self.file.modules;
         let lists = [
@@ -247,6 +500,13 @@ impl Project {
 
     pub fn details(&self, warnings: Vec<String>) -> ProjectDetails {
         let shown = |paths: &[PathBuf]| paths.iter().map(|p| p.display().to_string()).collect();
+        let local = self
+            .raw
+            .get("modules")
+            .and_then(|m| m.get("local"))
+            .and_then(toml::Value::as_array)
+            .map(|items| items.iter().map(json).collect())
+            .unwrap_or_default();
         ProjectDetails {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -256,27 +516,34 @@ impl Project {
             templates: shown(&self.templates),
             disable: self.file.modules.disable.clone(),
             enable: self.file.modules.enable.clone(),
-            local: self.file.modules.local.iter().map(json).collect(),
+            local,
             client: match json(&self.file.client) {
                 serde_json::Value::Object(map) => map,
                 _ => serde_json::Map::new(),
             },
-            content: json(&self.file),
+            content: json(&self.raw),
             warnings,
         }
     }
 }
 
 /// What TOML holds, as JSON; it always converts.
-fn json(value: &impl Serialize) -> serde_json::Value {
+fn json(value: &impl serde::Serialize) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or_default()
 }
 
-/// The folder a client means: a relative path is resolved against `base`, and a path to a
-/// file (its `regulus.toml`) means the folder holding it. It must exist.
+/// The folder a client means: a relative path is resolved against `base`, and a path to
+/// its `regulus.toml` means the folder holding it; any other file is refused. It must
+/// exist.
 pub fn folder(base: &Path, path: &Path) -> Result<PathBuf, ProjectError> {
     let path = base.join(path);
     let path = if path.is_file() {
+        if path.file_name() != Some(PROJECT_FILE.as_ref()) {
+            return Err(ProjectError::NotFound(format!(
+                "{} is a file; open a folder or its {PROJECT_FILE}",
+                path.display()
+            )));
+        }
         path.parent().map(Path::to_path_buf).unwrap_or(path)
     } else {
         path
@@ -324,7 +591,7 @@ pub fn ensure_file(root: &Path) -> Result<(), ProjectError> {
 /// The open projects, in the order of `[projects] paths`.
 #[derive(Debug, Default)]
 pub struct Projects {
-    open: Vec<Project>,
+    open: Vec<Arc<Project>>,
 }
 
 impl Projects {
@@ -358,62 +625,46 @@ impl Projects {
                 other.root.display()
             )));
         }
-        self.open.push(project);
+        self.open.push(Arc::new(project));
         Ok(())
     }
 
-    pub fn remove(&mut self, id: &str) -> Option<Project> {
+    pub fn remove(&mut self, id: &str) -> Option<Arc<Project>> {
         let position = self.open.iter().position(|p| p.id == id)?;
         Some(self.open.remove(position))
     }
 
-    pub fn get(&self, id: &str) -> Option<&Project> {
-        self.open.iter().find(|p| p.id == id)
+    pub fn get(&self, id: &str) -> Option<Arc<Project>> {
+        self.open.iter().find(|p| p.id == id).cloned()
     }
 
-    pub fn by_root(&self, root: &Path) -> Option<&Project> {
-        self.open.iter().find(|p| p.root == root)
+    pub fn by_root(&self, root: &Path) -> Option<Arc<Project>> {
+        self.open.iter().find(|p| p.root == root).cloned()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Project> {
-        self.open.iter()
+        self.open.iter().map(Arc::as_ref)
     }
 
-    /// Reads again every file that changed since it was read, so an edit to
-    /// `regulus.toml` counts without reopening. An id cannot change while open: the old one
-    /// stays, with a note to close and open the project. Profiles folders are read on open
-    /// only; templates folders, on every use.
-    pub fn refresh(&mut self) {
-        for project in self.open.iter_mut().filter(|p| p.is_stale()) {
-            match Project::load(&project.root) {
-                Ok(mut fresh) if fresh.id == project.id => {
-                    fresh.notes = std::mem::take(&mut project.notes);
-                    *project = fresh;
-                }
-                Ok(fresh) => {
-                    project.modified = fresh.modified;
-                    project.notes.push(format!(
-                        "{PROJECT_FILE} now says id `{}`; close and open the project to use it",
-                        fresh.id
-                    ));
-                }
-                Err(error) => {
-                    project.modified = modified(&project.root);
-                    project
-                        .notes
-                        .push(format!("{PROJECT_FILE} changed: {error}"));
-                }
-            }
+    /// Adds what loading a project's profiles found to its notes.
+    pub fn note(&mut self, id: &str, notes: Vec<String>) {
+        if let Some(project) = self.open.iter_mut().find(|p| p.id == id) {
+            Arc::make_mut(project).notes.extend(notes);
         }
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Project> {
-        self.open.iter_mut()
+    /// Reads again every file that changed since it was read, so an edit to
+    /// `regulus.toml` counts without reopening ([`Project`] keeps the last good one).
+    /// Profiles folders are read on open only; templates folders, on every use.
+    pub fn refresh(&mut self) {
+        for project in self.open.iter_mut().filter(|p| p.is_stale()) {
+            *project = Arc::new(project.refreshed());
+        }
     }
 }
 
 /// Reads `config.toml` as a table, or an empty one if it does not exist.
-fn read_config(path: &Path) -> Result<toml::Table, ProjectError> {
+pub fn read_config(path: &Path) -> Result<toml::Table, ProjectError> {
     match fs::read_to_string(path) {
         Ok(text) => toml::from_str(&text)
             .map_err(|e| ProjectError::Io(format!("cannot edit {}: {e}", path.display()))),
@@ -433,7 +684,12 @@ fn write_config(path: &Path, table: &toml::Table) -> Result<(), ProjectError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let temp = path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)
             .map_err(|e| ProjectError::Io(format!("cannot create {}: {e}", dir.display())))?;
@@ -526,7 +782,10 @@ mod tests {
         assert_eq!(project.name, "demo");
         assert_eq!(project.profiles, vec![root.join(".regulus/profiles")]);
         assert_eq!(project.templates, vec![root.join(".regulus/templates")]);
-        assert!(project.warnings.is_empty(), "{:?}", project.warnings);
+        assert_eq!(
+            project.warnings,
+            ["regulus.toml missing; every default applies"]
+        );
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 
@@ -588,7 +847,7 @@ x = 1
         let project = Project::load(&root).unwrap();
         assert_eq!(project.id, "demo");
         assert!(
-            project.warnings[0].contains("cannot be read"),
+            project.warnings[0].contains("is not valid TOML"),
             "{:?}",
             project.warnings
         );
@@ -656,6 +915,112 @@ x = 1
         assert!(table["projects"]["paths"].as_array().unwrap().is_empty());
         assert_eq!(table["profiles"]["paths"][0].as_str(), Some("p"));
         let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_key_of_the_wrong_type_is_ignored_and_one_text_is_a_list_of_one() {
+        let root = temp("types");
+        fs::write(
+            root.join(PROJECT_FILE),
+            "[project]\nprofiles = 3\nname = 7\n[modules]\ndisable = \"a/web\"\nenable = [1]\n",
+        )
+        .unwrap();
+        let project = Project::load(&root).unwrap();
+        assert!(project.vetoes("a/web@0.1.0"));
+        assert_eq!(project.file.modules.enable, None);
+        assert_eq!(project.profiles, vec![root.join(".regulus/profiles")]);
+        let all = project.warnings.join("\n");
+        for key in [
+            "`project.profiles` must be",
+            "`project.name` must be",
+            "`modules.enable` must be",
+        ] {
+            assert!(all.contains(key), "{key} in {all}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profiles_and_templates_stay_inside_the_project() {
+        let root = temp("inside");
+        let outside = temp("inside-out");
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        fs::write(
+            root.join(PROJECT_FILE),
+            format!(
+                "[project]\nprofiles = [\"/etc\", \"../../x\", \"a/../../b\", \"link\", \"ok\"]\n\
+                 templates = [\"{}\"]\n",
+                outside.display()
+            ),
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
+        let project = Project::load(&root).unwrap();
+        assert_eq!(project.profiles, vec![root.join("ok")]);
+        assert_eq!(project.templates, vec![root.join(".regulus/templates")]);
+        let refused = project
+            .warnings
+            .iter()
+            .filter(|w| w.contains("is not inside the project"))
+            .count();
+        assert_eq!(refused, 5, "{:?}", project.warnings);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_file_that_turns_bad_after_opening_keeps_the_last_good_one() {
+        let root = temp("refresh");
+        let file = root.join(PROJECT_FILE);
+        fs::write(&file, "[modules]\ndisable = [\"a/web\"]\n").unwrap();
+        let mut projects = Projects::default();
+        projects.insert(Project::load(&root).unwrap()).unwrap();
+        let bad = [
+            "[modules]\ndisable = 3\n",
+            "[modules\n",
+            "[project]\nid = \"other\"\n",
+        ];
+        for text in bad {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            fs::write(&file, text).unwrap();
+            projects.refresh();
+            let project = projects.get(&root_id(&root)).unwrap();
+            assert!(project.vetoes("a/web"), "after {text:?}");
+            assert!(
+                project.stale.as_deref().unwrap().contains("last good"),
+                "{text:?}"
+            );
+        }
+        fs::remove_file(&file).unwrap();
+        projects.refresh();
+        let project = projects.get(&root_id(&root)).unwrap();
+        assert!(project.vetoes("a/web"));
+        assert!(project.stale.as_deref().unwrap().contains("missing"));
+        fs::write(&file, "[modules]\n").unwrap();
+        projects.refresh();
+        let project = projects.get(&root_id(&root)).unwrap();
+        assert!(!project.vetoes("a/web"));
+        assert_eq!(project.stale, None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn root_id(root: &Path) -> String {
+        root.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn only_a_folder_or_its_regulus_toml_opens() {
+        let root = temp("folder");
+        fs::write(root.join("notes.txt"), "x").unwrap();
+        assert!(folder(Path::new(""), &root.join("notes.txt")).is_err());
+        fs::write(root.join(PROJECT_FILE), "").unwrap();
+        let real = root.canonicalize().unwrap();
+        assert_eq!(
+            folder(Path::new(""), &root.join(PROJECT_FILE)).unwrap(),
+            real
+        );
+        assert_eq!(folder(Path::new(""), &root).unwrap(), real);
         let _ = fs::remove_dir_all(&root);
     }
 

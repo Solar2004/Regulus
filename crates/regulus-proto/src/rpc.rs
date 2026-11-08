@@ -131,7 +131,7 @@ pub mod code {
     pub const PROJECT_NOT_FOUND: i32 = -32010;
     /// The project's id cannot be used: it must be a plain name, safe as a file name.
     pub const PROJECT_INVALID: i32 = -32011;
-    /// Another open project has that id, or that folder is open under another id.
+    /// Another open project has that id.
     pub const PROJECT_EXISTS: i32 = -32012;
     /// `execution.start`: a node's module is disabled in the profile's project
     /// (`[modules] disable` or `enable` in its `regulus.toml`).

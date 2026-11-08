@@ -359,10 +359,9 @@ impl Core {
         self.projects.read().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn project(&self, id: &str) -> Result<Project, RpcError> {
+    fn project(&self, id: &str) -> Result<Arc<Project>, RpcError> {
         self.projects()
             .get(id)
-            .cloned()
             .ok_or_else(|| ProjectError::NotFound(format!("no open project `{id}`")).into())
     }
 
@@ -387,10 +386,14 @@ impl Core {
         let base = home.as_ref().map_or(PathBuf::new(), |h| h.home.clone());
         let root = projects::folder(&base, Path::new(&params.path))?;
         if let Some(open) = self.projects().by_root(&root) {
-            return Ok(self.project_summary(open));
+            return Ok(self.project_summary(&open));
+        }
+        // config.toml must take the folder before the folder gets a file.
+        if let Some(home) = &home {
+            projects::read_config(&home.config)?;
         }
         projects::ensure_file(&root)?;
-        let mut project = Project::load(&root)?;
+        let project = Project::load(&root)?;
         if let Some(other) = self.projects().get(&project.id) {
             return Err(ProjectError::Exists(format!(
                 "project `{}` is already open at {}; give this one another `[project] id`",
@@ -402,18 +405,23 @@ impl Core {
         if let Some(home) = &home {
             projects::remember(&home.config, &home.home, &root)?;
         }
-        let found = self
-            .profiles
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .load_project(&project.id, &project.profiles);
-        project.notes.extend(found);
-        let summary = self.project_summary(&project);
+        let (id, dirs) = (project.id.clone(), project.profiles.clone());
         self.projects
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(project)?;
-        Ok(summary)
+        let found = self
+            .profiles
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .load_project(&id, &dirs);
+        let mut projects = self.projects.write().unwrap_or_else(|p| p.into_inner());
+        projects.note(&id, found);
+        let project = projects.get(&id).ok_or_else(|| {
+            RpcError::from(ProjectError::NotFound(format!("no open project `{id}`")))
+        })?;
+        drop(projects);
+        Ok(self.project_summary(&project))
     }
 
     /// `project.close`: stops serving a project and forgets it in `config.toml`. Nothing
@@ -452,7 +460,8 @@ impl Core {
     }
 
     /// Where templates are looked up, with the project each place belongs to: `first`'s
-    /// templates (an open project), then the global ones, then every other open project's.
+    /// templates (an open project) and the global ones; without it, the global ones, then
+    /// every open project's.
     fn template_sources(&self, first: Option<&str>) -> Vec<(Places, Option<String>)> {
         let global = self.template_places();
         let project_places = |project: &Project| Places {
@@ -462,11 +471,13 @@ impl Core {
         let projects = self.projects();
         let mut sources = Vec::new();
         if let Some(project) = first.and_then(|id| projects.get(id)) {
-            sources.push((project_places(project), Some(project.id.clone())));
+            sources.push((project_places(&project), Some(project.id.clone())));
         }
         sources.push((global.clone(), None));
-        for project in projects.iter().filter(|p| Some(p.id.as_str()) != first) {
-            sources.push((project_places(project), Some(project.id.clone())));
+        if first.is_none() {
+            for project in projects.iter() {
+                sources.push((project_places(project), Some(project.id.clone())));
+            }
         }
         sources
     }
@@ -511,7 +522,7 @@ impl Core {
     /// Where a profile of `project_id` is written: the first profiles path of its project
     /// if it is open, else the first `[profiles] paths` entry.
     fn profiles_dir(&self, project_id: Option<&str>) -> Result<PathBuf, RpcError> {
-        if let Some(project) = project_id.and_then(|id| self.projects().get(id).cloned()) {
+        if let Some(project) = project_id.and_then(|id| self.projects().get(id)) {
             return project.profiles.first().cloned().ok_or_else(|| {
                 TemplateError::Io(format!(
                     "project `{}` has no profiles path to write to",
@@ -593,8 +604,8 @@ impl Core {
     }
 
     /// The open project with this id, if any.
-    fn project_of(&self, project_id: Option<&str>) -> Option<Project> {
-        project_id.and_then(|id| self.projects().get(id).cloned())
+    fn project_of(&self, project_id: Option<&str>) -> Option<Arc<Project>> {
+        project_id.and_then(|id| self.projects().get(id))
     }
 
     /// Why a workflow about to run cannot: the nodes of it whose module its project keeps

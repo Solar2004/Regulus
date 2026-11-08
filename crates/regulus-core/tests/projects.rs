@@ -476,3 +476,95 @@ fn a_vetoed_module_is_disabled_in_check_and_refused_on_start() {
     s.call(method::EXECUTION_START, json!({ "profile_id": "mine" }))
         .unwrap();
 }
+
+#[test]
+fn the_veto_holds_when_regulus_toml_turns_bad_or_goes_away_after_opening() {
+    let s = Setup::new("hold");
+    let demo = s.folder("demo");
+    let dir = demo.join(".regulus/profiles");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("mine.toml"), profile_text("mine")).unwrap();
+    fs::write(
+        demo.join("regulus.toml"),
+        "[modules]\ndisable = [\"test/echo\"]\n",
+    )
+    .unwrap();
+    open(&s, &demo);
+    let bad: [Option<&str>; 3] = [Some("[modules]\ndisable = 3\n"), Some("[modules\n"), None];
+    for text in bad {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        match text {
+            Some(text) => fs::write(demo.join("regulus.toml"), text).unwrap(),
+            None => fs::remove_file(demo.join("regulus.toml")).unwrap(),
+        }
+        let details = s
+            .call(method::PROJECT_GET, json!({ "id": "demo" }))
+            .unwrap();
+        assert!(
+            details["warnings"]
+                .to_string()
+                .contains("last good regulus.toml"),
+            "{text:?}: {details}"
+        );
+        assert_eq!(details["disable"], json!(["test/echo"]));
+        let check = s
+            .call(method::PROFILE_CHECK, json!({ "id": "mine" }))
+            .unwrap();
+        assert!(
+            check.to_string().contains("node.module_disabled"),
+            "{text:?}: {check}"
+        );
+        let refused = s.call(method::EXECUTION_START, json!({ "profile_id": "mine" }));
+        assert_eq!(refused.unwrap_err().0, code::MODULE_DISABLED, "{text:?}");
+    }
+    let missing = s
+        .call(method::PROJECT_GET, json!({ "id": "demo" }))
+        .unwrap();
+    let missing = missing["warnings"].to_string();
+    assert!(missing.contains("regulus.toml missing"), "{missing}");
+}
+
+#[test]
+fn a_template_of_another_project_is_not_applied_into_this_one() {
+    let s = Setup::new("other-template");
+    let a = s.folder("a");
+    let b = s.folder("b");
+    fs::create_dir_all(b.join(".regulus/templates")).unwrap();
+    fs::write(
+        b.join(".regulus/templates/only-b.toml"),
+        template_text("only-b"),
+    )
+    .unwrap();
+    open(&s, &a);
+    open(&s, &b);
+    let refused = s.call(
+        method::TEMPLATE_APPLY,
+        json!({ "template": "only-b", "project_id": "a" }),
+    );
+    assert_eq!(refused.unwrap_err().0, code::TEMPLATE_NOT_FOUND);
+    let applied = s
+        .call(method::TEMPLATE_APPLY, json!({ "template": "only-b" }))
+        .unwrap();
+    assert!(applied["path"]
+        .as_str()
+        .unwrap()
+        .starts_with(&b.canonicalize().unwrap().display().to_string()));
+}
+
+#[test]
+fn open_refuses_any_file_but_regulus_toml_and_a_broken_config() {
+    let s = Setup::new("refuse");
+    let demo = s.folder("demo");
+    fs::write(demo.join("notes.txt"), "x").unwrap();
+    let refused = s.call(
+        method::PROJECT_OPEN,
+        json!({ "path": demo.join("notes.txt") }),
+    );
+    assert_eq!(refused.unwrap_err().0, code::PROJECT_NOT_FOUND);
+    assert!(!demo.join("regulus.toml").exists());
+
+    fs::write(s.dir.join("home/config.toml"), "[server\n").unwrap();
+    let refused = s.call(method::PROJECT_OPEN, json!({ "path": demo }));
+    assert_eq!(refused.unwrap_err().0, code::MODULE_FAILED);
+    assert!(!demo.join("regulus.toml").exists());
+}
