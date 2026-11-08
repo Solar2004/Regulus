@@ -39,8 +39,8 @@ del proyecto encima y el origen de cada valor; la TUI toma teclas y números, la
 valores de Operar y la primera vista. **Siete de las ocho plantillas de `13-blocks.md` §5
 están construidas** (2026-11-08, datos TOML en `templates/`, sin Rust nuevo): Ralph, SDD,
 evaluador-optimizador, best-of-N, equipo, research (cerrada de punta a punta con Claude) y
-CLI chateable; pxl va como plantilla también (Agente escribe la rejilla, un script la
-convierte en PNG, juez o revisión humana), en la rama `feat/pxl`. **Los huecos que las
+CLI chateable y pxl (Agente escribe la rejilla, un script la convierte en PNG, juez o
+revisión humana; `65e0091`). **Las ocho están.** **Los huecos que las
 plantillas anotaron están cerrados** (2026-11-08, `47d98bd`): entrada "luego" `workdir` en la
 caja Agente, `value_path` en las reglas de `flow`, `timeout_ms` en la barrera de `join`, y
 un turno colgado por el proveedor cierra en `failed` (`turn_timeout_ms`). **Los módulos
@@ -194,7 +194,7 @@ Co-Authored-By: Tu nombre <email>
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
 | 1 | **Release**: `scripts/release.sh`, `regulus update` (firma minisign, `[update]` de `config.toml`) y "Buscar actualizaciones" en Ajustes de la app (`06-stack.md` §5, `04-client.md` §11) | en la rama `feat/release` |
-| 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~; pxl en la rama `feat/pxl` (vuelta con agente y merge) | nada |
+| 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~, ~~pxl~~. **Las ocho hechas** (2026-11-08) | — |
 | 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); queda mostrar el estado `blocked` con su acción "confiar" en Ajustes, y pulir con uso real | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
