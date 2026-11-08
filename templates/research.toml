@@ -1,0 +1,1114 @@
+# Research (docs/13-blocks.md §5 row 7): a question is split into sub-questions, each one
+# investigated by a sub-agent of its own over the web, the notes go into a workspace with
+# a quota, an experimenter writes a script there that a long job runs, a writer turns it
+# all into a report, and a rubric judges the report only at the close. Rebuilds AI
+# Scientist v2 (arxiv.org/html/2504.08066: stages with rules, the judge only at the end),
+# Agent Laboratory (arxiv.org/html/2501.04227: literature, experiment, report) and open
+# deep research (langchain.com/blog/open-deep-research: planner, parallel researchers).
+#
+#   self.question → plan_prompt → orchestrator ─reply→ split → fanout → budget ─→ call
+#        │                                                      exceeded ┘     │ (one child
+#        └→ question (variable)          gather (barrier, `questions`) ← out ┘  per line)
+#   self.paper → pdf → paper.md            │ notes
+#                                          ▼
+#   notes_file + notes → notes_write → workspace (folder, quota) ─written→ notes_path
+#                                           └→ exp_prompt → experimenter ─reply│failed┐
+#   job (experiment_command in the workspace) ← notes_path ←────────────────────────┘
+#     │ done│fail│timeout ──→ "experiment" gate result ──→ rubric.gate
+#     └→ question, notes path ─→ writer_join → writer_prompt → writer ─reply→ report
+#   report (report.md) → report_gate (report_check) → "report_check" (and stand-in) ─┐
+#     report text (variable) ─────────────────────────────────────────→ rubric ←────┘
+#                                     provider ⇢ model ┘ pass│fail│score│error → self
+#
+#   investigate (child workflow, one per sub-question):
+#   self.in → source (web fetch of `search_url`) ─out│error→ join ← self.in
+#     join → prompt → researcher ─reply│failed→ self.out
+#
+# Stages: (1) plan: the orchestrator answers with `questions` sub-questions, one per
+# line. (2) investigate: each line, through the budget (at most `questions` of them and
+# `max_ms` from the first), runs the child workflow `investigate` (`call`, flow): a web
+# fetch of `search_url` (Wikipedia's search API by default, no key) and a researcher agent
+# that reads it and may fetch more with its own tools; children run side by side. The
+# barrier waits for `questions` answers. (3) notes: written as notes.md into a folder
+# workspace `<workdir>/<execution>` with `quota_bytes`. (4) experiment: an experimenter
+# agent writes a script there; a job runs `experiment_command` in that folder, killed
+# after `job_timeout_ms`; its exit becomes the rubric's `experiment` gate. (5) report: a
+# writer agent reads the notes and the job's output and replies with the report, written
+# to `<workdir>/<report_file>`; the gate `report_check` runs on it (default: it cites a
+# URL). (6) close: the rubric scores the report: `experiment` and `report_check` by gate,
+# `quality` by the judge (a provider on `model`), weighted; `threshold` decides pass or
+# fail. `self.paper` (a PDF path or URL) is read into `<workdir>/paper.md` for the agents.
+#
+# Judge, and its free stand-in: the rubric's `quality` leaf is `criteria` by default, so
+# a provider must answer (`judge_preset`, `judge_credential`: an OpenAI-protocol endpoint
+# and a secret set with `regulus secret set`; a provider whose secret is missing does not
+# start, and the execution fails at `run`; no provider in presets.toml is free). With
+# `--set quality_by=gate --set judge_credential=` the same leaf becomes a gate named
+# after `quality`, fed by the `report_check` exit: no model, no key, and the judgement is
+# only deterministic. The provider node stays, without a key, and is never asked.
+#
+# Risks: `permissions = "allow"` says yes to everything the agents ask, unattended, with
+# the user's own opencode setup; the experiment runs whatever the experimenter wrote,
+# with the user's rights (no isolation, docs/11-composition.md §12; the quota measures,
+# it does not stop other programs). The agents start in `workdir` and are told the
+# workspace in the prompt. If the orchestrator gives fewer lines than `questions`, the
+# barrier waits until `regulus stop`; more, and the extras go out on `exceeded`.
+# `experiment_command` and `report_check` may not hold `"` or `\`: use a script.
+#
+# Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field);
+# the child's researcher has its own engine node. Another model: `--set model=…` (all
+# four agents). Another search: change `search_url`, or replace `source` with a web
+# `search` node and a `searxng` engine node (needs a SearXNG instance).
+#
+# Run (2026-11-08, debug build, `serve --port 0`, temporary --home with `[templates]
+# paths` on this folder; <work> an empty folder). The flow ran through stage 5; the
+# writer's turn and every later rerun stalled on "Free usage limit reached" of the free
+# model (opencode retries inside the turn, so the Agent box gets neither `reply` nor
+# `failed`). The close (report → report_check → rubric) has not run end to end.
+#
+#   regulus template apply research --set workdir=<work> --set questions=2 \
+#     --set quality_by=gate --set judge_credential=   # profile.check: []
+#   regulus run research --detach                   # exec-5  research  running
+#   regulus send exec-5 question "What is the Tokio runtime in Rust?"
+#   regulus events --execution exec-5 | grep emitted   # (prompts left out)
+#     orchestrator.reply "What is the Tokio runtime in Rust\nTokio Rust async runtime features"
+#     split.out ["What is the Tokio runtime in Rust","Tokio Rust async runtime features"]
+#     budget.out … (twice)                  → exec-6, exec-7 investigate (children of exec-5)
+#     call.out "**Answer:** Tokio is an open-source asynchronous runtime library for Rust…"
+#     call.out "# Notes: Tokio Rust async runtime features\n\n**Answer:** Tokio is…"
+#     gather.out [ …two notes… ]  notes_write.out {"path":"notes.md","text":"…"}
+#     workspace.written "<work>/exec-5/notes.md"
+#     experimenter.reply "Checks the notes' claim that Tokio's latest stable release is
+#       1.54.1 by querying the crates.io API and comparing its reported max stable version."
+#     job.done {"code":0,"ms":1501,…,"tail":"CLAIM VERIFIED: crates.io max stable version…"}
+#     exp_json.out {"name":"experiment","exit_code":0}         → rubric.gate
+#     writer_join.out {"question":…,"notes":"<work>/exec-5/notes.md","experiment":{"code":0…}}
+#     writer_prompt.out → writer.prompt  (≈ 50 s after send; then the quota stall)
+#   <work>/exec-5: notes.md and run.sh, written by the agents. Without workdir:
+#   "template `research` needs a value for var `workdir`". A provider whose secret is not
+#   set (judge_credential default) fails the run at start: "node `judge_provider` failed
+#   to start: secret `openrouter` is not set".
+id = "research"
+name = "Research in {{workdir}}"
+main_workflow_id = "research"
+
+[template]
+name = "research"
+description = "Research: plan, parallel sub-agents on the web, experiment job, report, rubric"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+  { module = "regulus/web", version = ">=0.1" },
+  { module = "regulus/workspace", version = ">=0.1" },
+  { module = "regulus/process", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/guards", version = ">=0.1" },
+  { module = "regulus/judge", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path of an existing folder: the agents start there, the workspaces go in <workdir>/<execution>, paper.md and the report are written there" }
+model = { description = "model of the engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+questions = { description = "sub-questions the orchestrator is asked for; the barrier waits for this many answers", default = 3 }
+max_ms = { description = "milliseconds from the first sub-question after which no other starts", default = 1800000 }
+search_url = { description = "URL each sub-question is fetched from; {{input}} is the sub-question, percent-encoded", default = "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch={{input}}" }
+source_chars = { description = "characters of the fetched page a researcher gets", default = 6000 }
+quota_bytes = { description = "bytes the workspace may hold before it says so and refuses writes", default = 1073741824 }
+experiment_command = { description = "shell line the job runs inside the workspace after the experimenter's turn", default = "sh run.sh" }
+job_timeout_ms = { description = "milliseconds before the experiment job is killed", default = 600000 }
+report_file = { description = "file under workdir the report is written to", default = "report.md" }
+report_check = { description = "shell line run on the report, its path in $0; exit 0 passes the report_check leaf", default = "grep -q http $0" }
+quality = { description = "what the judge checks in the report (the quality leaf)", default = "The report answers the question and every claim comes from the notes or the experiment" }
+quality_by = { description = "criteria: the judge decides the quality leaf; gate: report_check stands in for it (no model)", default = "criteria" }
+threshold = { description = "weighted score from which the report passes", default = 0.7 }
+judge_preset = { description = "provider template (presets.toml) of the judge, OpenAI protocol", default = "openrouter-openai" }
+judge_credential = { description = "the judge's key as secret:<name> (set it with regulus secret set <name>); empty: none, for quality_by = gate or a local endpoint", default = "secret:openrouter" }
+input = { description = "kept as is: the {{input}} of the nodes that take the value", default = "{{input}}" }
+
+[[workflows]]
+id = "research"
+name = "Research"
+kind = "main"
+ports = [
+  { id = "question", capability = "text@1", direction = "input", kind = "then" },
+  { id = "paper", capability = "text@1", direction = "input", kind = "then" },
+  { id = "passed", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  { id = "score", capability = "json@1", direction = "output", kind = "then" },
+  { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  # ── 1. Plan ─────────────────────────────────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "question"
+  name = "The question"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 300 }
+  ports = [
+    { id = "set", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "plan_prompt"
+  name = "Plan prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { conversion = "template", template = "You plan a piece of research. Split the question below into exactly {{questions}} sub-questions that can be looked up independently, each a short search query of a few words. Reply with the sub-questions only: one per line, no numbering, no bullets, no blank lines, no other text.\n\n# Question\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "orchestrator"
+  name = "Orchestrator"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_orchestrator"
+  name = "opencode (orchestrator)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 250, y = -80 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # ── 2. Investigate: one child per line, through the budget ──────────────────────────
+
+  [[workflows.nodes]]
+  id = "split"
+  name = "Lines"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 450, y = 50 }
+  config = { conversion = "split", separator = "\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "fanout"
+  name = "One per line"
+  type = "fanout"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 50 }
+  config = { mode = "split" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # At most `questions` sub-agents, and none after `max_ms`.
+  [[workflows.nodes]]
+  id = "budget"
+  name = "Budget"
+  type = "budget"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 850, y = 50 }
+  config = { max_items = {{questions}}, max_ms = {{max_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "call"
+  name = "Investigate"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1050, y = 50 }
+  config = { workflow = "investigate" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "gather"
+  name = "All the notes"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 50 }
+  config = { mode = "barrier", count = {{questions}}, shape = "array" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "notes"
+  name = "Notes"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1450, y = 50 }
+  config = { conversion = "join", separator = "\n\n---\n\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # ── 3. Notes into the workspace ─────────────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "notes_file"
+  name = "notes.md"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1450, y = 150 }
+  config = { conversion = "template", template = "notes.md" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # `{ path, text }` for the workspace's `write`.
+  [[workflows.nodes]]
+  id = "notes_write"
+  name = "Notes to write"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1650, y = 100 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "path", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "text", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "workspace"
+  name = "Workspace"
+  type = "workspace"
+  module_id = "regulus/workspace@0.1.0"
+  position = { x = 1850, y = 100 }
+  config = { engine = "folder", root = "{{workdir}}", autostart = "yes", quota_bytes = {{quota_bytes}} }
+  ports = [
+    { id = "write", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+    { id = "quota_exceeded", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The path of notes.md, for the job (and, by the same name, for the writer).
+  [[workflows.nodes]]
+  id = "notes_path"
+  name = "notes.md path"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2050, y = 200 }
+  config = { name = "notes_path" }
+  ports = [
+    { id = "set", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # ── 4. Experiment ───────────────────────────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "exp_prompt"
+  name = "Experiment prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2050, y = 50 }
+  config = { conversion = "template", template = "You run the experiment of a piece of research. Your folder is the one holding {{.}}: read the notes there (and paper.md in {{workdir}}, if it exists). Write in that folder a small, quick script that checks one claim of the notes and prints what it found; the command that runs it is: {{experiment_command}}. Do not run it yourself. Reply with one line saying what it checks.\n" }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "experimenter"
+  name = "Experimenter"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 2250, y = 50 }
+  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_experimenter"
+  name = "opencode (experimenter)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 2250, y = -80 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # The long job, in the workspace ($0 is notes.md, so its folder).
+  [[workflows.nodes]]
+  id = "job"
+  name = "Experiment job"
+  type = "job"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 2450, y = 200 }
+  config = { command = "sh", args = ["-c", "cd \"$(dirname \"$0\")\" && {{experiment_command}}", "{{input}}"], timeout_ms = {{job_timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "done", capability = "exit@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "exit@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "exp_code"
+  name = "Experiment result"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2650, y = 300 }
+  config = { conversion = "template", template = "{\"name\": \"experiment\", \"exit_code\": {{/code}}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "exp_json"
+  name = "Experiment gate"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2850, y = 300 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # ── 5. Report ───────────────────────────────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "notes_path_w"
+  name = "notes.md path (writer)"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2650, y = 450 }
+  config = { name = "notes_path" }
+  ports = [
+    { id = "set", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "writer_join"
+  name = "What the writer gets"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 2850, y = 450 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "question", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "notes", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "experiment", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "writer_prompt"
+  name = "Report prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 3050, y = 450 }
+  config = { conversion = "template", template = "You write the report of a piece of research. Read the notes at {{/notes}} (and paper.md in {{workdir}}, if it exists). Use only what the notes and the experiment below say, and cite the URLs the notes give.\n\n# Question\n\n{{/question}}\n\n# Experiment (exit code {{/experiment/code}})\n\n{{/experiment/tail}}\n\nReply with the report only, in Markdown, short: the answer first, then the evidence with its sources.\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "writer"
+  name = "Writer"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 3250, y = 450 }
+  config = { name = "writer", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_writer"
+  name = "opencode (writer)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 3250, y = 320 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "report"
+  name = "Report"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 3450, y = 450 }
+  config = { path = "{{report_file}}", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "report_text"
+  name = "Report text"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 3450, y = 600 }
+  ports = [
+    { id = "set", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The deterministic check of the report ($0 is its path).
+  [[workflows.nodes]]
+  id = "report_gate"
+  name = "Report check"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 3650, y = 450 }
+  config = { command = "sh", args = ["-c", "{{report_check}}", "{{input}}"] }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "exit", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "rc_code"
+  name = "Report check result"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 3850, y = 400 }
+  config = { conversion = "template", template = "{\"name\": \"report_check\", \"exit_code\": {{/code}}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "rc_json"
+  name = "Report check gate"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 4050, y = 400 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The stand-in for the judge (quality_by = gate): the same exit, under the quality
+  # leaf's name. With quality_by = criteria nobody reads it.
+  [[workflows.nodes]]
+  id = "q_code"
+  name = "Quality stand-in"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 3850, y = 550 }
+  config = { conversion = "template", template = "{\"name\": \"{{quality}}\", \"exit_code\": {{/code}}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "q_json"
+  name = "Quality stand-in gate"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 4050, y = 550 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # ── 6. Close: the rubric ────────────────────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "rubric"
+  name = "Rubric"
+  type = "rubric"
+  module_id = "regulus/judge@0.1.0"
+  position = { x = 4250, y = 450 }
+  config = { threshold = {{threshold}}, rubric = { id = "research", children = [
+    { id = "experiment", weight = 1, gate = "experiment" },
+    { id = "report_check", weight = 1, gate = "report_check" },
+    { id = "quality", weight = 2, {{quality_by}} = "{{quality}}" },
+  ] } }
+  ports = [
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "gate", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "score", capability = "json@1", direction = "output", kind = "then" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "judge_provider"
+  name = "Judge's provider"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 4250, y = 300 }
+  config = { preset = "{{judge_preset}}", credential = "{{judge_credential}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  # ── The paper, if any ───────────────────────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "pdf"
+  name = "PDF"
+  type = "pdf"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 50, y = 450 }
+  config = { dir = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "paper"
+  name = "paper.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 250, y = 450 }
+  config = { path = "paper.md", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+  ]
+
+  # ── Wires ───────────────────────────────────────────────────────────────────────────
+
+  [[workflows.wires]]
+  id = "question-plan"
+  kind = "then"
+  from = { node_id = "self", port_id = "question" }
+  to = { node_id = "plan_prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "question-keep"
+  kind = "then"
+  from = { node_id = "self", port_id = "question" }
+  to = { node_id = "question", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "plan-orchestrator"
+  kind = "then"
+  from = { node_id = "plan_prompt", port_id = "out" }
+  to = { node_id = "orchestrator", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "orchestrator-engine"
+  kind = "uses"
+  from = { node_id = "engine_orchestrator", port_id = "engine" }
+  to = { node_id = "orchestrator", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "orchestrator-split"
+  kind = "then"
+  from = { node_id = "orchestrator", port_id = "reply" }
+  to = { node_id = "split", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "orchestrator-error"
+  kind = "then"
+  from = { node_id = "orchestrator", port_id = "failed" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "split-fanout"
+  kind = "then"
+  from = { node_id = "split", port_id = "out" }
+  to = { node_id = "fanout", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "fanout-budget"
+  kind = "then"
+  from = { node_id = "fanout", port_id = "out" }
+  to = { node_id = "budget", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "budget-call"
+  kind = "then"
+  from = { node_id = "budget", port_id = "out" }
+  to = { node_id = "call", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "budget-exceeded"
+  kind = "then"
+  from = { node_id = "budget", port_id = "exceeded" }
+  to = { node_id = "self", port_id = "exceeded" }
+
+  [[workflows.wires]]
+  id = "call-gather"
+  kind = "then"
+  from = { node_id = "call", port_id = "out" }
+  to = { node_id = "gather", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gather-notes"
+  kind = "then"
+  from = { node_id = "gather", port_id = "out" }
+  to = { node_id = "notes", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "notes-file"
+  kind = "then"
+  from = { node_id = "notes", port_id = "out" }
+  to = { node_id = "notes_file", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "notes-text"
+  kind = "then"
+  from = { node_id = "notes", port_id = "out" }
+  to = { node_id = "notes_write", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "file-path"
+  kind = "then"
+  from = { node_id = "notes_file", port_id = "out" }
+  to = { node_id = "notes_write", port_id = "path" }
+
+  [[workflows.wires]]
+  id = "notes-workspace"
+  kind = "then"
+  from = { node_id = "notes_write", port_id = "out" }
+  to = { node_id = "workspace", port_id = "write" }
+
+  [[workflows.wires]]
+  id = "workspace-error"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "written-path"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "written" }
+  to = { node_id = "notes_path", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "written-exp"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "written" }
+  to = { node_id = "exp_prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "exp-experimenter"
+  kind = "then"
+  from = { node_id = "exp_prompt", port_id = "out" }
+  to = { node_id = "experimenter", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "experimenter-engine"
+  kind = "uses"
+  from = { node_id = "engine_experimenter", port_id = "engine" }
+  to = { node_id = "experimenter", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "experimenter-reply"
+  kind = "then"
+  from = { node_id = "experimenter", port_id = "reply" }
+  to = { node_id = "notes_path", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "experimenter-failed"
+  kind = "then"
+  from = { node_id = "experimenter", port_id = "failed" }
+  to = { node_id = "notes_path", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "path-job"
+  kind = "then"
+  from = { node_id = "notes_path", port_id = "value" }
+  to = { node_id = "job", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "job-done-code"
+  kind = "then"
+  from = { node_id = "job", port_id = "done" }
+  to = { node_id = "exp_code", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "job-fail-code"
+  kind = "then"
+  from = { node_id = "job", port_id = "fail" }
+  to = { node_id = "exp_code", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "job-timeout-code"
+  kind = "then"
+  from = { node_id = "job", port_id = "timeout" }
+  to = { node_id = "exp_code", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "exp_code-json"
+  kind = "then"
+  from = { node_id = "exp_code", port_id = "out" }
+  to = { node_id = "exp_json", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "exp_json-rubric"
+  kind = "then"
+  from = { node_id = "exp_json", port_id = "out" }
+  to = { node_id = "rubric", port_id = "gate" }
+
+  [[workflows.wires]]
+  id = "job-done-writer"
+  kind = "then"
+  from = { node_id = "job", port_id = "done" }
+  to = { node_id = "writer_join", port_id = "experiment" }
+
+  [[workflows.wires]]
+  id = "job-fail-writer"
+  kind = "then"
+  from = { node_id = "job", port_id = "fail" }
+  to = { node_id = "writer_join", port_id = "experiment" }
+
+  [[workflows.wires]]
+  id = "job-timeout-writer"
+  kind = "then"
+  from = { node_id = "job", port_id = "timeout" }
+  to = { node_id = "writer_join", port_id = "experiment" }
+
+  [[workflows.wires]]
+  id = "job-done-question"
+  kind = "then"
+  from = { node_id = "job", port_id = "done" }
+  to = { node_id = "question", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "job-fail-question"
+  kind = "then"
+  from = { node_id = "job", port_id = "fail" }
+  to = { node_id = "question", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "job-timeout-question"
+  kind = "then"
+  from = { node_id = "job", port_id = "timeout" }
+  to = { node_id = "question", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "job-done-notes"
+  kind = "then"
+  from = { node_id = "job", port_id = "done" }
+  to = { node_id = "notes_path_w", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "job-fail-notes"
+  kind = "then"
+  from = { node_id = "job", port_id = "fail" }
+  to = { node_id = "notes_path_w", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "job-timeout-notes"
+  kind = "then"
+  from = { node_id = "job", port_id = "timeout" }
+  to = { node_id = "notes_path_w", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "question-writer"
+  kind = "then"
+  from = { node_id = "question", port_id = "value" }
+  to = { node_id = "writer_join", port_id = "question" }
+
+  [[workflows.wires]]
+  id = "notes-writer"
+  kind = "then"
+  from = { node_id = "notes_path_w", port_id = "value" }
+  to = { node_id = "writer_join", port_id = "notes" }
+
+  [[workflows.wires]]
+  id = "writer_join-prompt"
+  kind = "then"
+  from = { node_id = "writer_join", port_id = "out" }
+  to = { node_id = "writer_prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "writer_prompt-writer"
+  kind = "then"
+  from = { node_id = "writer_prompt", port_id = "out" }
+  to = { node_id = "writer", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "writer-engine"
+  kind = "uses"
+  from = { node_id = "engine_writer", port_id = "engine" }
+  to = { node_id = "writer", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "writer-failed"
+  kind = "then"
+  from = { node_id = "writer", port_id = "failed" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "writer-keep"
+  kind = "then"
+  from = { node_id = "writer", port_id = "reply" }
+  to = { node_id = "report_text", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "writer-report"
+  kind = "then"
+  from = { node_id = "writer", port_id = "reply" }
+  to = { node_id = "report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "report-gate"
+  kind = "then"
+  from = { node_id = "report", port_id = "written" }
+  to = { node_id = "report_gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-rc"
+  kind = "then"
+  from = { node_id = "report_gate", port_id = "exit" }
+  to = { node_id = "rc_code", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-q"
+  kind = "then"
+  from = { node_id = "report_gate", port_id = "exit" }
+  to = { node_id = "q_code", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "rc_code-json"
+  kind = "then"
+  from = { node_id = "rc_code", port_id = "out" }
+  to = { node_id = "rc_json", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "q_code-json"
+  kind = "then"
+  from = { node_id = "q_code", port_id = "out" }
+  to = { node_id = "q_json", port_id = "in" }
+
+  # Gate results first; the report follows one step behind, so the rubric has them.
+  [[workflows.wires]]
+  id = "rc_json-rubric"
+  kind = "then"
+  from = { node_id = "rc_json", port_id = "out" }
+  to = { node_id = "rubric", port_id = "gate" }
+
+  [[workflows.wires]]
+  id = "q_json-rubric"
+  kind = "then"
+  from = { node_id = "q_json", port_id = "out" }
+  to = { node_id = "rubric", port_id = "gate" }
+
+  [[workflows.wires]]
+  id = "q_json-report"
+  kind = "then"
+  from = { node_id = "q_json", port_id = "out" }
+  to = { node_id = "report_text", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "report_text-rubric"
+  kind = "then"
+  from = { node_id = "report_text", port_id = "value" }
+  to = { node_id = "rubric", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "rubric-model"
+  kind = "uses"
+  from = { node_id = "judge_provider", port_id = "endpoint" }
+  to = { node_id = "rubric", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "rubric-pass"
+  kind = "then"
+  from = { node_id = "rubric", port_id = "pass" }
+  to = { node_id = "self", port_id = "passed" }
+
+  [[workflows.wires]]
+  id = "rubric-fail"
+  kind = "then"
+  from = { node_id = "rubric", port_id = "fail" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "rubric-score"
+  kind = "then"
+  from = { node_id = "rubric", port_id = "score" }
+  to = { node_id = "self", port_id = "score" }
+
+  [[workflows.wires]]
+  id = "rubric-error"
+  kind = "then"
+  from = { node_id = "rubric", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "paper-pdf"
+  kind = "then"
+  from = { node_id = "self", port_id = "paper" }
+  to = { node_id = "pdf", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pdf-paper"
+  kind = "then"
+  from = { node_id = "pdf", port_id = "out" }
+  to = { node_id = "paper", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pdf-error"
+  kind = "then"
+  from = { node_id = "pdf", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+# One sub-question: what the web says, read by a researcher of its own.
+[[workflows]]
+id = "investigate"
+name = "Investigate"
+kind = "main"
+ports = [
+  { id = "in", capability = "text@1", direction = "input", kind = "then" },
+  { id = "out", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "source"
+  name = "Source"
+  type = "fetch"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { url = "{{search_url}}", format = "markdown", paginate = "yes", chunk_chars = {{source_chars}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join"
+  name = "Question + source"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 450, y = 150 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "question", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "source", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "prompt"
+  name = "Researcher prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { conversion = "template", template = "You research one sub-question. Below is what a web search returned for it (or why it failed). You may fetch the pages it points to. Write short notes: the answer, the facts that support it, and the URL of each source. No preamble.\n\n# Sub-question\n\n{{/question}}\n\n# Search results\n\n{{/source}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "researcher"
+  name = "Researcher"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 850, y = 150 }
+  config = { name = "researcher", workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_researcher"
+  name = "opencode (researcher)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 850, y = 20 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "in-source"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "source", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "in-join"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "join", port_id = "question" }
+
+  [[workflows.wires]]
+  id = "source-join"
+  kind = "then"
+  from = { node_id = "source", port_id = "out" }
+  to = { node_id = "join", port_id = "source" }
+
+  [[workflows.wires]]
+  id = "source-error"
+  kind = "then"
+  from = { node_id = "source", port_id = "error" }
+  to = { node_id = "join", port_id = "source" }
+
+  [[workflows.wires]]
+  id = "join-prompt"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "prompt-researcher"
+  kind = "then"
+  from = { node_id = "prompt", port_id = "out" }
+  to = { node_id = "researcher", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "researcher-engine"
+  kind = "uses"
+  from = { node_id = "engine_researcher", port_id = "engine" }
+  to = { node_id = "researcher", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "researcher-out"
+  kind = "then"
+  from = { node_id = "researcher", port_id = "reply" }
+  to = { node_id = "self", port_id = "out" }
+
+  [[workflows.wires]]
+  id = "researcher-failed"
+  kind = "then"
+  from = { node_id = "researcher", port_id = "failed" }
+  to = { node_id = "self", port_id = "out" }
