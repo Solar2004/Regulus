@@ -124,3 +124,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   manda sobre él). Ejemplo en `crates/modules/agent/examples/then.toml`. Arreglo: el nodo
   `command` (y los demás de `process`) da al hijo `PWD` igual a su `cwd` salvo que `env`
   lo fije; antes heredaba el de `serve` y opencode trabajaba en otro directorio.
+- **Plantilla Ralph** (`docs/13-blocks.md` §5, fila 2): `templates/ralph.toml`. Bucle de
+  `max_turns` vueltas que relee `PROMPT.md`, lo junta con el último resultado del gate, se
+  lo da a la caja Agente con `fresh_context = "yes"` (sesión nueva cada vuelta; motor
+  `engine-opencode`, modelo `model`, por defecto `opencode/glm-5.3-flash-free`), añade la respuesta a
+  `fix_plan.md` y corre `test_command` en `workdir`: código 0 acaba en `done`; si no, su
+  salida es el feedback de la vuelta siguiente. Presupuesto por tiempo (`max_ms`).
+  `regulus template apply ralph --set workdir=<repo>`.
