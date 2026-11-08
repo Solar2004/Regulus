@@ -74,9 +74,12 @@ forbidden_push_prefixes = fixup! squash! WIP wip!
 # `assets/` guarda fuentes editables, no exportaciones de 40 MB.
 max_file_kb = 2048
 
+# Desde 2026-11-08 clippy y los tests los corre la CI de GitHub en cada push
+# (.github/workflows/ci.yml): en local los hooks se quedan con lo que tarda segundos
+# (formato, mensajes, secretos). Vuelve a `auto` si trabajas sin CI.
 run_rust_fmt = auto
-run_rust_clippy = auto
-run_rust_tests_on_push = auto
+run_rust_clippy = never
+run_rust_tests_on_push = never
 run_js_checks = auto
 run_secrets_scan = always
 

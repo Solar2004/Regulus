@@ -176,6 +176,9 @@ $EDITOR .gitconventions     # efecto inmediato, sin reinstalar nada
 Los hooks **no contienen literales de política**: si para cambiar una regla hay que editar
 un `.sh`, eso es un bug del harness. Lo mismo vale para el presupuesto de tiempo
 (`hook_time_budget`): un hook lento se acaba saltando, y un hook que se salta no existe.
+Por eso, desde que hay CI (2026-11-08), `run_rust_clippy` y `run_rust_tests_on_push` están
+en `never`: clippy y los tests tardaban 15 s y 60 s en cada commit y push, y la CI los corre
+igual en GitHub. En local quedan formato, mensajes y secretos, dentro del presupuesto.
 
 ---
 
