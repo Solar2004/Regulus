@@ -117,6 +117,42 @@ código 2, como antes; los comandos (`run`, `msg send`…) no cambian.
 - La conversación con un agente es de la sesión de la TUI: el core aún no guarda los
   turnos. Las ejecuciones necesitan `profile_id` (protocolo 1.4) para saber sus nodos.
 
+**Segunda versión (2026-11-08).** La TUI hace lo que la app (§8, §9), con los mismos
+métodos; ninguno nuevo en el core.
+
+- **Editar** (`e` sobre un perfil, `n` para uno nuevo: nombre → id). Tres paneles: el árbol
+  workflow → nodos; el inspector (nombre, cada campo del manifiesto según su tipo —texto,
+  número, `select`/bool, `workflow`, `map` como JSON, lo desconocido como texto crudo— con
+  su default y *reset*, el workflow interno; con un workflow elegido, sus puertos `self`);
+  y los cables del workflow. La paleta sale de `module.manifest` con el estado de cada
+  módulo (§3): lo no instalado se ve y no se añade; los workflows con puertos entran como
+  caja. Un cable se elige salida → entrada y cada entrada dice si encaja o por qué no (las
+  razones de `connect.ts`). Los nodos nuevos se colocan en cascada (paso 40, huella de la
+  app) para que el canvas no los solape. Guardar es `profile.save` (sin `force` si es
+  nuevo) con sus `diagnostics`; comprobar, `profile.check` sobre lo guardado; ejecutar,
+  `execution.start` del workflow elegido; salir con cambios pregunta. El documento se
+  edita con funciones puras (`tui/document.rs`, `tui/catalog.rs`) con tests contra
+  `check_profile` del core.
+- **Plantillas** (`t`). `template.list` con `requires` marcado (instalado / no instalado /
+  roto) y variables con su default; Enter abre el formulario (`*` obligatoria, `id`
+  opcional, *replace* = `force`) y aplica con `template.apply`. El error se dice por su
+  código (`-32004`…`-32007`, `-32602`). Tras aplicar: `e` lo abre en Editar, Enter lo
+  ejecuta y vuelve a Operar.
+- **Operar gana** abajo los **eventos** de la ejecución elegida (`event.list` con cursor
+  `since`/`next`, valor compacto, `/` filtra por nodo, ↑↓ desplaza) y las **decisiones**
+  de `human` (`human.list`; `y` aprueba, `n` rechaza con `human.answer`). `w` manda un
+  valor a una entrada propia del workflow (`workflow.send`: `text@` lleva el texto, lo
+  demás JSON). Sin el módulo: *□ not installed* (`-32601`) o *✗ unavailable* con la razón
+  (`-32002`), por el código, nunca por el id del módulo.
+- **Teclas y números configurables** en `tui/keys.rs` (`Keys`, `Tuning`), leídos de una
+  tabla opcional con `keys` y `tui` (`tui::run_with`). Por defecto: `e` editar, `n` nuevo,
+  `t` plantillas, `/` filtro, `y`/`n` decidir, `w` enviar; en Editar `a` añadir, `d` borrar,
+  `w` workflow, `r` renombrar, `c` cable, `x` quitar, `p` puerto, `u` reset, `Ctrl+S`
+  guardar, `k` comprobar, Enter ejecutar (en el inspector, editar la fila), `Esc` volver.
+  Números: `event_page` 200, `event_keep` 1000, `value_max` 240, `cascade_step` 40,
+  `node_width` 250, `node_height` 160. 🔶 Falta leerlos de `config.toml` (`[client.keys]`,
+  `[client.tui]`): `config.rs` aún no los lleva.
+
 ---
 
 ## 8. Operar e instalar plantillas en la app (2026-11-08)
