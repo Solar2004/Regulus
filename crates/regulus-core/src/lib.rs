@@ -7,6 +7,7 @@ pub mod config;
 pub mod graph;
 pub mod local;
 pub mod module;
+pub mod process;
 pub mod profiles;
 pub mod projects;
 pub mod registry;
@@ -21,7 +22,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-pub use config::{BusConfig, CallConfig, Config, HooksConfig};
+pub use config::{BusConfig, CallConfig, Config, HooksConfig, LocalModulesConfig};
 pub use module::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 pub use profiles::ProfileStore;
 pub use registry::Registry;
@@ -74,6 +75,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
         config.hooks.clone(),
     );
     core.set_template_places(config.template_places());
+    core.set_local_modules(config.local_modules.clone());
     core.set_client(config.client.written.clone(), config.client_warnings());
     for project in projects.iter() {
         let found = project.warnings(|id| core.registry().is_installed(id));
@@ -86,6 +88,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
             home: config.home.clone(),
         },
     );
+    core.start_local_modules();
     (core, warnings)
 }
 

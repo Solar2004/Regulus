@@ -20,15 +20,16 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::bus::{self, ChildNews, Journal, Listing, Pending};
-use crate::config::{BusConfig, CallConfig, HooksConfig, Resume};
+use crate::config::{BusConfig, CallConfig, HooksConfig, LocalModulesConfig, Resume};
 use crate::graph::{
     boundary, check_fields, check_profile, check_vetoed, flatten, missing_workflow, start_order,
     wire_end, End,
 };
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
+use crate::process::{LocalSpec, ProcessModule};
 use crate::profiles::ProfileStore;
 use crate::projects::{self, Project, ProjectError, Projects};
-use crate::registry::{base_id, CallError, Registry};
+use crate::registry::{base_id, CallError, Local, Registry};
 use crate::secrets::{SecretError, Secrets};
 use crate::store::{ModuleStore, Store, StoreError, StoredExecution};
 use crate::templates::{self, Places, TemplateError};
@@ -233,6 +234,8 @@ pub struct Core {
     /// `[client]` of `config.toml` as written, and what it has that the core does not know
     /// (`set_client`).
     client: RwLock<GlobalClient>,
+    /// How the processes of local modules are run (`set_local_modules`).
+    local_modules: RwLock<LocalModulesConfig>,
     storage: Storage,
     bus: BusConfig,
     call: CallConfig,
@@ -327,6 +330,7 @@ impl Core {
             projects: RwLock::default(),
             project_home: RwLock::default(),
             client: RwLock::default(),
+            local_modules: RwLock::default(),
             storage,
             executions: Mutex::default(),
             journal: Mutex::new(journal),
@@ -353,6 +357,86 @@ impl Core {
     pub fn set_projects(&self, projects: Projects, home: ProjectHome) {
         *self.projects.write().unwrap_or_else(|p| p.into_inner()) = projects;
         *self.project_home.write().unwrap_or_else(|p| p.into_inner()) = Some(home);
+    }
+
+    /// `[local_modules]` of `config.toml`: how the processes of local modules are run.
+    pub fn set_local_modules(&self, config: LocalModulesConfig) {
+        *self
+            .local_modules
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = config;
+    }
+
+    /// Starts the local modules (`[[modules.local]]`) of every open project. A module that
+    /// cannot start is listed broken with why; nothing else is affected.
+    pub fn start_local_modules(&self) {
+        let open: Vec<Arc<Project>> = self
+            .projects()
+            .iter()
+            .filter_map(|p| self.projects().get(&p.id))
+            .collect();
+        for project in open {
+            self.start_locals(&project);
+        }
+    }
+
+    /// Starts the local modules of one project, unless `--without` leaves them out.
+    fn start_locals(&self, project: &Project) {
+        let config = self
+            .local_modules
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let specs: Vec<LocalSpec> = project
+            .file
+            .modules
+            .local
+            .iter()
+            .filter(|local| local.unusable().is_none())
+            .filter_map(|local| {
+                Some(LocalSpec {
+                    project_id: project.id.clone(),
+                    root: project.root.clone(),
+                    id: local.id.clone()?,
+                    command: local.command.clone(),
+                    cwd: local.cwd.clone(),
+                    env: local.env.clone(),
+                    version: local.version.clone(),
+                    manifest: local.manifest.clone(),
+                })
+            })
+            .filter(|spec| !self.registry.excludes(&spec.base_id()))
+            .collect();
+        // In parallel: starting them all takes as long as the slowest, not their sum.
+        let started: Vec<Local> = std::thread::scope(|scope| {
+            let spawning: Vec<_> = specs
+                .iter()
+                .map(|spec| (spec, scope.spawn(|| ProcessModule::spawn(spec, &config))))
+                .collect();
+            spawning
+                .into_iter()
+                .map(|(spec, handle)| {
+                    let spawned = handle
+                        .join()
+                        .unwrap_or_else(|_| Err("starting it panicked".into()));
+                    match spawned {
+                        Ok(module) => Local {
+                            manifest: module.manifest().clone(),
+                            health: Some(module.health()),
+                            module: Box::new(module),
+                            broken: None,
+                        },
+                        Err(reason) => Local {
+                            manifest: spec.placeholder(),
+                            module: Box::new(Unstarted(spec.placeholder())),
+                            broken: Some(reason),
+                            health: None,
+                        },
+                    }
+                })
+                .collect()
+        });
+        self.registry.add_local(&project.id, started);
     }
 
     /// `[client]` of `config.toml` as written, and the warnings about it, for
@@ -459,6 +543,7 @@ impl Core {
             RpcError::from(ProjectError::NotFound(format!("no open project `{id}`")))
         })?;
         drop(projects);
+        self.start_locals(&project);
         Ok(self.project_summary(&project))
     }
 
@@ -500,6 +585,7 @@ impl Core {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove_project(&project.id, &project.profiles);
+        self.registry.remove_local(&project.id);
         Ok(self.project_summary(&project))
     }
 
@@ -613,7 +699,8 @@ impl Core {
             };
             values.insert(name, text);
         }
-        templates::check_requires(&template.requires, self.registry.ids())?;
+        let installed = self.registry.ids();
+        templates::check_requires(&template.requires, installed.iter().map(String::as_str))?;
         let mut text = templates::render(&template, &values)?;
         if let Some(project) = &project {
             text = templates::set_project(&text, project);
@@ -923,10 +1010,16 @@ impl Core {
             method::MODULE_MANIFEST => {
                 let params: ModuleManifestParams = parse(params)?;
                 match params.id {
-                    Some(id) => json(self.registry.manifest(&id).ok_or_else(|| {
+                    Some(id) => json(&*self.registry.manifest(&id).ok_or_else(|| {
                         RpcError::invalid_params(format!("Unknown module `{id}`"))
                     })?),
-                    None => json(self.registry.manifests().collect::<Vec<_>>()),
+                    None => json(
+                        self.registry
+                            .manifests()
+                            .iter()
+                            .map(|m| &**m)
+                            .collect::<Vec<_>>(),
+                    ),
                 }
             }
             method::PROFILE_SAVE => json(self.save_profile(parse(params)?)?),
@@ -2631,5 +2724,26 @@ fn child_self(child_id: &str, port: &str) -> PortRef {
     PortRef {
         node_id: format!("{child_id}{BOX_SEPARATOR}{WORKFLOW_SELF}"),
         port_id: port.into(),
+    }
+}
+
+/// The module behind a local module whose process could not start: it is listed broken
+/// with why, and never called.
+struct Unstarted(regulus_proto::Manifest);
+
+impl Module for Unstarted {
+    fn manifest(&self) -> &regulus_proto::Manifest {
+        &self.0
+    }
+    fn init(&mut self, _: &ModuleCtx) -> Result<(), ModuleError> {
+        Ok(())
+    }
+    fn call(&self, method: &str, _: Value) -> Result<Value, ModuleError> {
+        Err(ModuleError::Failed(format!(
+            "`{method}`: the local module did not start"
+        )))
+    }
+    fn shutdown(&mut self) -> Result<(), ModuleError> {
+        Ok(())
     }
 }

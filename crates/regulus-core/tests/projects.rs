@@ -131,7 +131,7 @@ fn opening_a_folder_gives_it_a_file_and_remembers_it() {
 }
 
 #[test]
-fn unknown_keys_and_local_modules_are_warnings() {
+fn unknown_keys_and_unusable_local_modules_are_warnings() {
     let s = Setup::new("warn");
     let demo = s.folder("demo");
     fs::write(
@@ -144,7 +144,10 @@ fn unknown_keys_and_local_modules_are_warnings() {
     assert_eq!(opened["name"], "Demo");
     let warnings = opened["warnings"].to_string();
     assert!(warnings.contains("project.foo"), "{warnings}");
-    assert!(warnings.contains("not supported yet"), "{warnings}");
+    assert!(
+        warnings.contains("modules.local[0] has no `id`"),
+        "{warnings}"
+    );
     assert!(
         warnings.contains("`web`, which is not loaded"),
         "{warnings}"

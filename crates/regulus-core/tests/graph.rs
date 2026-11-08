@@ -620,5 +620,8 @@ fn a_workflow_field_must_name_a_workflow_with_an_output() {
     assert_eq!(check(json!("")), ["field.workflow_unset"]);
     // A module that is not loaded is not checked.
     let profile: Profile = serde_json::from_value(boxed()).unwrap();
-    assert!(regulus_core::graph::check_fields(&profile, |_| None).is_empty());
+    assert!(
+        regulus_core::graph::check_fields(&profile, |_| None::<&regulus_proto::Manifest>)
+            .is_empty()
+    );
 }

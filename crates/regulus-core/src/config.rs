@@ -245,6 +245,39 @@ impl Default for HooksConfig {
     }
 }
 
+/// Local modules (`[[modules.local]]` of a project's `regulus.toml`): how the core talks to
+/// the processes it starts for them (docs/03-modules.md §6).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LocalModulesConfig {
+    /// Milliseconds a local module has to start and answer `manifest`; past it, it is
+    /// broken and its process is killed.
+    pub start_timeout_ms: u64,
+    /// Milliseconds a local module has to answer one `call`. 0 means no limit: a node may
+    /// work for as long as it needs, as an in-process one does.
+    pub call_timeout_ms: u64,
+    /// When it stops: milliseconds it has to answer `stop`, and then to end after SIGTERM
+    /// before it is killed.
+    pub stop_grace_ms: u64,
+    /// Lines of its stderr kept to say why it broke.
+    pub stderr_lines: usize,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
+}
+
+impl Default for LocalModulesConfig {
+    fn default() -> Self {
+        Self {
+            start_timeout_ms: 10_000,
+            call_timeout_ms: 0,
+            stop_grace_ms: 2_000,
+            stderr_lines: 20,
+            unknown: toml::Table::new(),
+        }
+    }
+}
+
 /// What happens on start to the executions that were running when the core went down
 /// (docs/02-architecture.md §6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -367,6 +400,7 @@ pub struct Config {
     pub bus: BusConfig,
     pub call: CallConfig,
     pub hooks: HooksConfig,
+    pub local_modules: LocalModulesConfig,
     pub store: StoreConfig,
     pub client: ClientConfig,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
@@ -463,7 +497,7 @@ impl Config {
 
     /// One warning per key no section knows, as `section.key`.
     fn unknown_keys(&self, path: &Path) -> Vec<String> {
-        let sections: [(&str, &toml::Table); 12] = [
+        let sections: [(&str, &toml::Table); 13] = [
             ("", &self.unknown),
             ("server.", &self.server.unknown),
             ("profiles.", &self.profiles.unknown),
@@ -475,6 +509,7 @@ impl Config {
             ("bus.", &self.bus.unknown),
             ("call.", &self.call.unknown),
             ("hooks.", &self.hooks.unknown),
+            ("local_modules.", &self.local_modules.unknown),
             ("store.", &self.store.unknown),
         ];
         let mut warnings: Vec<String> = sections
