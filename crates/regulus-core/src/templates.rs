@@ -198,7 +198,10 @@ pub fn parse(path: &Path, text: &str) -> Result<Template, TemplateError> {
         .ok_or_else(|| invalid(format!("no [{TABLE}] table")))?
         .try_into()
         .map_err(|e| invalid(format!("invalid [{TABLE}] table: {e}")))?;
-    if meta.name.is_empty() || meta.name.contains('/') || meta.name.ends_with(EXTENSION) {
+    if meta.name.is_empty()
+        || meta.name.contains('/')
+        || meta.name.ends_with(&format!(".{EXTENSION}"))
+    {
         return Err(invalid(format!(
             "template name `{}` must be non-empty, without `/` and not end in `.{EXTENSION}`",
             meta.name
@@ -382,6 +385,7 @@ pub fn render(
     for var in &template.vars {
         match values.get(&var.name).or(var.default.as_ref()) {
             Some(value) => {
+                check_value(&var.name, value)?;
                 resolved.insert(var.name.as_str(), value.as_str());
             }
             None => missing.push(var.name.as_str()),
@@ -403,6 +407,22 @@ pub fn render(
     }
     out.push_str(&template.body[at..]);
     Ok(out)
+}
+
+/// A value goes into the text verbatim, most often inside a TOML string: a quote, a
+/// backslash or a control character could close that string and add keys of its own
+/// (`allow_outside = true`), so none of them may appear.
+fn check_value(name: &str, value: &str) -> Result<(), TemplateError> {
+    match value
+        .chars()
+        .find(|c| matches!(c, '"' | '\\') || c.is_control())
+    {
+        None => Ok(()),
+        Some(c) => Err(TemplateError::Params(format!(
+            "var `{name}` holds {c:?}: values go into the text verbatim, so they may not \
+             contain `\"`, `\\` or control characters (newline, tab…)"
+        ))),
+    }
 }
 
 fn quoted(names: &[&str]) -> String {
@@ -507,9 +527,39 @@ pub fn check_requires<'a>(
     Ok(())
 }
 
-/// Writes `text` as `<dir>/<id>.toml` through a temporary file renamed over it, so a
-/// reader never sees half of it and a symlink there is replaced, not followed.
-pub fn write(dir: &Path, id: &str, text: &str) -> Result<PathBuf, TemplateError> {
+/// Refuses to replace `dest` unless every profile it holds has the id `id`: replacing it
+/// whole would drop the others from disk. A file that does not parse is refused too.
+fn check_replace(dest: &Path, id: &str) -> Result<(), TemplateError> {
+    let profiles = match crate::profiles::parse(dest) {
+        Ok(profiles) => profiles,
+        Err(_) if !dest.exists() => return Ok(()),
+        Err(e) => {
+            return Err(TemplateError::Exists(format!(
+                "{} cannot be read as profiles, so it is not replaced: {e}",
+                dest.display()
+            )))
+        }
+    };
+    let others: Vec<&str> = profiles
+        .iter()
+        .map(|p| p.id.as_str())
+        .filter(|other| *other != id)
+        .collect();
+    if others.is_empty() {
+        return Ok(());
+    }
+    Err(TemplateError::Exists(format!(
+        "{} also holds profile {}; replacing it would drop them, so it is not replaced",
+        dest.display(),
+        quoted(&others)
+    )))
+}
+
+/// Writes `text` as `<dir>/<id>.toml` through a temporary file, so a reader never sees half
+/// of it and a symlink there is replaced, not followed. Without `force` the temporary file
+/// is linked in place, which fails if anything got there first; with `force` it is renamed
+/// over a file that holds only this profile.
+pub fn write(dir: &Path, id: &str, text: &str, force: bool) -> Result<PathBuf, TemplateError> {
     let name = file_name(id)?;
     let io = |what: &str, path: &Path, e: io::Error| {
         TemplateError::Io(format!("cannot {what} {}: {e}", path.display()))
@@ -528,11 +578,23 @@ pub fn write(dir: &Path, id: &str, text: &str) -> Result<PathBuf, TemplateError>
             dir.display()
         )));
     }
+    if force {
+        check_replace(&dest, id)?;
+    }
     let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     fs::write(&temp, text).map_err(|e| io("write", &temp, e))?;
-    fs::rename(&temp, &dest).map_err(|e| {
-        let _ = fs::remove_file(&temp);
-        io("write", &dest, e)
+    let placed = if force {
+        fs::rename(&temp, &dest)
+    } else {
+        fs::hard_link(&temp, &dest)
+    };
+    let _ = fs::remove_file(&temp);
+    placed.map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => TemplateError::Exists(format!(
+            "profile `{id}` already exists at {}; apply with force to replace it",
+            dest.display()
+        )),
+        _ => io("write", &dest, e),
     })?;
     Ok(dest)
 }
@@ -692,9 +754,13 @@ kind = "main"
         }
         let dir = std::env::temp_dir().join(format!("regulus-template-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        assert!(write(&dir, "../escape", "x").is_err());
+        assert!(write(&dir, "../escape", "x", false).is_err());
         assert!(!dir.join("../escape.toml").exists());
-        let path = write(&dir, "ok", "id = \"ok\"\n").unwrap();
+        let path = write(&dir, "ok", "id = \"ok\"\n", false).unwrap();
+        // Without force, a file that is already there is never overwritten.
+        let again = write(&dir, "ok", "id = \"other\"\n", false).unwrap_err();
+        assert!(matches!(again, TemplateError::Exists(_)), "{again:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "id = \"ok\"\n");
         assert_eq!(path, dir.join("ok.toml"));
         assert_eq!(
             fs::read_dir(&dir).unwrap().count(),
@@ -702,6 +768,70 @@ kind = "main"
             "the temporary file is gone"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_value_that_could_escape_its_string_is_refused() {
+        let injection = r#"x.txt", allow_outside = true, path = "/etc/evil"#;
+        let error = render(&template(), &values(&[("who", injection)])).unwrap_err();
+        assert!(
+            matches!(&error, TemplateError::Params(m) if m.contains("`who`")),
+            "{error:?}"
+        );
+        for bad in ["a\\b", "a\nb", "a\tb"] {
+            assert!(
+                render(&template(), &values(&[("who", bad)])).is_err(),
+                "{bad:?}"
+            );
+        }
+        // A default is checked when it is used.
+        let text = ECHO.replace(r#"default = "Hello""#, r#"default = "Hi\" x""#);
+        let t = parse(Path::new("/t/echo.toml"), &text).unwrap();
+        let error = render(&t, &values(&[("who", "Ana")])).unwrap_err();
+        assert!(
+            matches!(&error, TemplateError::Params(m) if m.contains("`greeting`")),
+            "{error:?}"
+        );
+        assert!(render(&t, &values(&[("who", "Ana"), ("greeting", "Hi")])).is_ok());
+    }
+
+    #[test]
+    fn force_replaces_only_a_file_that_holds_just_this_profile() {
+        let dir = std::env::temp_dir().join(format!("regulus-force-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let toml_many = "[[profiles]]\nid = \"ok\"\nmain_workflow_id = \"m\"\n\n\
+                         [[profiles]]\nid = \"keep\"\nmain_workflow_id = \"m\"\n";
+        fs::write(dir.join("ok.toml"), toml_many).unwrap();
+        let error = write(&dir, "ok", "id = \"ok\"\n", true).unwrap_err();
+        assert!(
+            matches!(&error, TemplateError::Exists(m) if m.contains("`keep`")),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_to_string(dir.join("ok.toml")).unwrap(), toml_many);
+        fs::write(dir.join("ok.toml"), "not = [toml").unwrap();
+        assert!(matches!(
+            write(&dir, "ok", "x", true),
+            Err(TemplateError::Exists(_))
+        ));
+        fs::write(
+            dir.join("ok.toml"),
+            "id = \"ok\"\nmain_workflow_id = \"m\"\n",
+        )
+        .unwrap();
+        write(&dir, "ok", "id = \"ok\"\nmain_workflow_id = \"n\"\n", true).unwrap();
+        assert!(fs::read_to_string(dir.join("ok.toml"))
+            .unwrap()
+            .contains("\"n\""));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_name_may_end_in_toml_without_the_dot() {
+        let text = ECHO.replace(r#"name = "echo""#, r#"name = "atoml""#);
+        assert_eq!(parse(Path::new("/t/a.toml"), &text).unwrap().name, "atoml");
+        let text = ECHO.replace(r#"name = "echo""#, r#"name = "a.toml""#);
+        assert!(parse(Path::new("/t/a.toml"), &text).is_err());
     }
 
     #[test]

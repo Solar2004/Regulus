@@ -385,7 +385,12 @@ impl Core {
             ))
             .into());
         }
-        let written = templates::write(&dir, &id, &(templates::provenance(&template) + &text))?;
+        let written = templates::write(
+            &dir,
+            &id,
+            &(templates::provenance(&template) + &text),
+            params.force,
+        )?;
         store.replace(profile, written.clone());
         Ok(TemplateApplied {
             profile_id: id,

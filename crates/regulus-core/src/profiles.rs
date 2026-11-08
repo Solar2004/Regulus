@@ -68,7 +68,7 @@ pub(crate) fn normalize(profile: &mut Profile) {
     }
 }
 
-fn parse(path: &Path) -> Result<Vec<Profile>, String> {
+pub(crate) fn parse(path: &Path) -> Result<Vec<Profile>, String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let file: ProfileFile = match path.extension().and_then(|e| e.to_str()) {

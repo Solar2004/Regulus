@@ -258,7 +258,8 @@ file = { description = "...", default = "greeting.txt" }
 ```
 
 - **Huecos:** `{{nombre}}` en cualquier sitio del resto del texto. Sustitución **literal**
-  en una pasada: el valor entra tal cual (comillas TOML incluidas) y no se vuelve a leer.
+  en una pasada: el valor entra tal cual y no se vuelve a leer; por eso un valor (o el
+  default que se use) con `"`, `\` o caracteres de control se rechaza.
   Sin escapes ni expresiones. `{{…}}` que no es un nombre (`{{.}}`, `{{json.q}}`) se deja.
   Un hueco sin declarar, una var sin valor ni default o un `--set` que no existe son error.
   Para dejar el `{{input}}` de un módulo: `input = { default = "{{input}}" }`.
