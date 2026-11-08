@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 /// adds workflow ports (`Workflow.ports`, inner wires to `self`) and `workflow.send`; 1.8
 /// adds child executions: `Execution.parent` and `node/child` (`ChildEvent`); 1.9 adds
 /// the `hook@1` relay: `hook.dispatch` and `node/hook`; 1.10 adds templates:
-/// `template.list`, `template.get` and `template.apply`.
-pub const PROTOCOL: &str = "1.10";
+/// `template.list`, `template.get` and `template.apply`; 1.11 adds what the app needs to
+/// edit: `module.manifest`, `profile.save` and `profile.delete`.
+pub const PROTOCOL: &str = "1.11";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -39,6 +40,14 @@ pub mod method {
     /// Renders a template into a profile file and loads it (`TemplateApplyParams` →
     /// `TemplateApplied`).
     pub const TEMPLATE_APPLY: &str = "template.apply";
+    /// The manifest of one loaded module, or of all of them (`ModuleManifestParams` →
+    /// `Manifest` or `Vec<Manifest>`), whatever their state.
+    pub const MODULE_MANIFEST: &str = "module.manifest";
+    /// Writes a whole profile to the first `[profiles] paths` entry and loads it
+    /// (`ProfileSaveParams` → `ProfileSaved`).
+    pub const PROFILE_SAVE: &str = "profile.save";
+    /// Removes a profile's file and unloads it (`IdParams` → `ProfileDeleted`).
+    pub const PROFILE_DELETE: &str = "profile.delete";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -59,6 +68,9 @@ pub mod method {
         TEMPLATE_LIST,
         TEMPLATE_GET,
         TEMPLATE_APPLY,
+        MODULE_MANIFEST,
+        PROFILE_SAVE,
+        PROFILE_DELETE,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -92,9 +104,14 @@ pub mod code {
     pub const TEMPLATE_INVALID: i32 = -32005;
     /// A module the template `requires` is not installed, or not at a version it accepts.
     pub const TEMPLATE_UNMET: i32 = -32006;
-    /// The profile the template would write already exists and `force` was not given, or
-    /// another file defines a profile with that id.
+    /// The profile `template.apply` or `profile.save` would write already exists and
+    /// `force` was not given, or it lives where the core may not replace or remove it:
+    /// another file, a file shared with other profiles, or no file at all.
     pub const PROFILE_EXISTS: i32 = -32007;
+    /// `profile.save`: the profile has errors (`profile.check`); nothing is written.
+    pub const PROFILE_INVALID: i32 = -32008;
+    /// `profile.delete`: an execution of the profile is starting or running.
+    pub const PROFILE_IN_USE: i32 = -32009;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +302,34 @@ pub struct TemplateApplied {
     pub profile_id: String,
     pub path: String,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// `module.manifest`: one module by id (with or without the version), or every loaded
+/// module without it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleManifestParams {
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// `profile.save`: the whole profile, as `profile.get` returns it. A profile that is not
+/// loaded yet is written as is; one that is loaded is only replaced with `force`, and only
+/// in the file that holds it alone in the first `[profiles] paths` entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileSaveParams {
+    pub profile: crate::Profile,
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// The answer of `profile.save`: the same as `template.apply`'s.
+pub type ProfileSaved = TemplateApplied;
+
+/// The answer of `profile.delete`: the profile no longer loaded and the file removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileDeleted {
+    pub profile_id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

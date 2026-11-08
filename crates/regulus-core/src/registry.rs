@@ -238,6 +238,11 @@ impl Registry {
             .map(|e| &e.manifest)
     }
 
+    /// The manifests of every loaded module, whatever its state, in load order.
+    pub fn manifests(&self) -> impl Iterator<Item = &Manifest> {
+        self.entries.iter().map(|e| &e.manifest)
+    }
+
     /// Whether a module with this id (any version) is loaded, whatever its state.
     pub fn is_installed(&self, id: &str) -> bool {
         let wanted = base_id(id);

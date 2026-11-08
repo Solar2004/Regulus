@@ -68,6 +68,69 @@ pub(crate) fn normalize(profile: &mut Profile) {
     }
 }
 
+/// What a saved file holds: the profile as a client sent it, minus what [`normalize`]
+/// fills in on load. A box node keeps no copy of its workflow's ports, so it follows them
+/// when they change; loading the file gives back the same profile.
+pub(crate) fn denormalize(profile: &mut Profile) {
+    let ports: HashMap<String, Vec<Port>> = profile
+        .workflows
+        .iter()
+        .map(|w| (w.id.clone(), w.ports.clone()))
+        .collect();
+    for node in profile.workflows.iter_mut().flat_map(|w| &mut w.nodes) {
+        let inner = node
+            .internal_workflow_id
+            .as_ref()
+            .and_then(|id| ports.get(id));
+        if node.is_box() && inner == Some(&node.ports) {
+            node.ports.clear();
+        }
+    }
+}
+
+/// The first line of a file written by `profile.save`: the file is rewritten whole from the
+/// profile, so whatever else was in it does not survive the next save.
+pub(crate) const SAVED_HEADER: &str =
+    "# Saved by Regulus (profile.save). Comments and layout are not kept on the next save.\n";
+
+/// The TOML file of a profile, as `profile.save` writes it. TOML has no null, so a null
+/// anywhere in a node's config is refused with where it is.
+pub(crate) fn to_toml(profile: &Profile) -> Result<String, String> {
+    fn null_at(value: &serde_json::Value, path: String) -> Option<String> {
+        match value {
+            serde_json::Value::Null => Some(path),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .find_map(|(i, item)| null_at(item, format!("{path}[{i}]"))),
+            serde_json::Value::Object(map) => map
+                .iter()
+                .find_map(|(key, item)| null_at(item, format!("{path}.{key}"))),
+            _ => None,
+        }
+    }
+    for workflow in &profile.workflows {
+        for node in &workflow.nodes {
+            if let Some(at) = node
+                .config
+                .iter()
+                .find_map(|(key, value)| null_at(value, key.clone()))
+            {
+                return Err(format!(
+                    "node `{}` of workflow `{}` has null at config.{at}; TOML has no null: \
+                     leave the key out instead",
+                    node.id, workflow.id
+                ));
+            }
+        }
+    }
+    let mut file = profile.clone();
+    denormalize(&mut file);
+    toml::to_string(&file)
+        .map(|text| format!("{SAVED_HEADER}{text}"))
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn parse(path: &Path) -> Result<Vec<Profile>, String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -156,6 +219,14 @@ impl ProfileStore {
             Some(slot) => *slot = profile,
             None => self.profiles.push(profile),
         }
+    }
+
+    /// Takes a profile out, with the file it came from. Executions already running keep
+    /// the copy they started with.
+    pub fn remove(&mut self, id: &str) -> Option<(Arc<Profile>, Option<PathBuf>)> {
+        let position = self.profiles.iter().position(|p| p.id == id)?;
+        let profile = self.profiles.remove(position);
+        Some((profile, self.origins.remove(id)))
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Profile>> {

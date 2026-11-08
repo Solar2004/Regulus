@@ -272,6 +272,13 @@ file = { description = "...", default = "greeting.txt" }
 - `regulus template ls` · `show <nombre>` · `apply <nombre|ruta> --set k=v [--id x]
   [--force]`; por RPC, `template.list`, `template.get` y `template.apply`.
 
+**Guardar desde la app** ✅ (2026-11-08): la app guarda el perfil entero (`profile.save`,
+mismas reglas de escritura que `apply`) y lo borra (`profile.delete`, no mientras corre). El
+fichero se reescribe desde el perfil: **los comentarios se pierden**, la copia es de la app.
+Lo que ya corre sigue con el workflow con que arrancó; una ejecución hija que arranque
+después lee el perfil guardado. CLI: `regulus profile save <fichero|-> [--force]` ·
+`profile rm <id>` · `module show <id>` (el manifiesto, `module.manifest`).
+
 ---
 
 ## 8. Ejecuciones: el plano y lo que corre

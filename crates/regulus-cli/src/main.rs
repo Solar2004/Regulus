@@ -13,9 +13,10 @@ use regulus_cli::modules::TOOLS_MCP_COMMAND;
 use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
-    method, BusEvent, BusEventKind, Direction, EventPage, Execution, ExecutionState, ModuleSummary,
-    Profile, ProfileSummary, Severity, TemplateApplied, TemplateSummary, TemplateText, WireKind,
-    WorkflowSent, PROTOCOL, WORKFLOW_SELF,
+    method, BusEvent, BusEventKind, Diagnostic, Direction, EventPage, Execution, ExecutionState,
+    Manifest, ModuleSummary, Profile, ProfileDeleted, ProfileSaved, ProfileSummary, Severity,
+    TemplateApplied, TemplateSummary, TemplateText, WireKind, WorkflowSent, PROTOCOL,
+    WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -311,6 +312,12 @@ enum MsgCommand {
 enum ModuleCommand {
     /// List modules and their state.
     Ls,
+    /// Print a module's manifest as TOML: its node types with ports, fields, defaults and
+    /// options. JSON with `regulus call module.manifest '{"id":"<id>"}'`.
+    Show {
+        /// The module id, with or without the version (`regulus/flow`).
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -346,6 +353,17 @@ enum ProfileCommand {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Write a whole profile to the profiles directory and load it. The core rewrites the
+    /// file from the profile: comments are not kept.
+    Save {
+        /// A profile as TOML or JSON (`.json`), or `-` to read it from stdin.
+        file: String,
+        /// Replace the profile with that id, if its file holds it alone.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Unload a profile and delete its file. Refused while an execution of it runs.
+    Rm { id: String },
 }
 
 #[tokio::main]
@@ -397,6 +415,18 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Module {
+            command: ModuleCommand::Show { id },
+        } => {
+            let params = serde_json::json!({ "id": id });
+            let manifest: Manifest = client.request(method::MODULE_MANIFEST, params).await?;
+            // TOML, as the module wrote it; JSON only if TOML cannot hold a value (null).
+            match toml::to_string(&manifest) {
+                Ok(text) => print!("{text}"),
+                Err(_) => println!("{}", serde_json::to_string_pretty(&manifest)?),
+            }
+            Ok(())
+        }
+        Command::Module {
             command: ModuleCommand::Ls,
         } => {
             let modules: Vec<ModuleSummary> =
@@ -423,6 +453,24 @@ async fn main() -> Result<()> {
             for profile in profiles {
                 println!("{:<24} {}", profile.id, profile.name);
             }
+            Ok(())
+        }
+        Command::Profile {
+            command: ProfileCommand::Save { file, force },
+        } => {
+            let params = serde_json::json!({ "profile": profile_arg(&file)?, "force": force });
+            let saved: ProfileSaved = client.request(method::PROFILE_SAVE, params).await?;
+            println!("profile {}", saved.profile_id);
+            println!("wrote {}", saved.path);
+            print_diagnostics(saved.diagnostics);
+            Ok(())
+        }
+        Command::Profile {
+            command: ProfileCommand::Rm { id },
+        } => {
+            let params = serde_json::json!({ "id": id });
+            let deleted: ProfileDeleted = client.request(method::PROFILE_DELETE, params).await?;
+            println!("removed {}", deleted.path);
             Ok(())
         }
         Command::Template { command } => template(&client, command).await,
@@ -685,22 +733,57 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
             let applied: TemplateApplied = client.request(method::TEMPLATE_APPLY, params).await?;
             println!("profile {}", applied.profile_id);
             println!("wrote {}", applied.path);
-            for d in applied.diagnostics {
-                let severity = match d.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                    Severity::Info => "info",
-                };
-                let at = [d.workflow_id, d.node_id, d.wire_id]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join("/");
-                eprintln!("{severity}: {} ({}) {at}", d.message, d.code);
-            }
+            print_diagnostics(applied.diagnostics);
             Ok(())
         }
     }
+}
+
+/// Warnings and information a write returned, on stderr.
+fn print_diagnostics(diagnostics: Vec<Diagnostic>) {
+    for d in diagnostics {
+        let severity = match d.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
+        };
+        let at = [d.workflow_id, d.node_id, d.wire_id]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("/");
+        eprintln!("{severity}: {} ({}) {at}", d.message, d.code);
+    }
+}
+
+/// The profile `regulus profile save` sends: a file (JSON if it ends in `.json`, TOML
+/// otherwise) or stdin (`-`, JSON if it parses as JSON, TOML otherwise). A file with
+/// several profiles or a template is refused here, where it is clearer.
+fn profile_arg(file: &str) -> Result<Value> {
+    let (text, json) = if file == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .context("cannot read the profile from stdin")?;
+        let json = serde_json::from_str::<Value>(&text).is_ok();
+        (text, json)
+    } else {
+        let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {file}"))?;
+        (text, file.ends_with(".json"))
+    };
+    let profile: Value = if json {
+        serde_json::from_str(&text).with_context(|| format!("{file} is not valid JSON"))?
+    } else {
+        let table: toml::Table =
+            toml::from_str(&text).with_context(|| format!("{file} is not valid TOML"))?;
+        serde_json::to_value(table)?
+    };
+    if profile.get("profiles").is_some() {
+        bail!("{file} holds several profiles; `profile save` takes one");
+    }
+    if profile.get("template").is_some() {
+        bail!("{file} is a template; apply it with `regulus template apply`");
+    }
+    Ok(profile)
 }
 
 fn policy_arg(text: Option<&str>) -> Result<regulus_module_service::policy::Policy> {
