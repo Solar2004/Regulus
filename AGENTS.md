@@ -174,7 +174,7 @@ Co-Authored-By: Tu nombre <email>
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
 | 1 | **Plantillas 3-8** de `13-blocks.md` §5 (~~mecanismo~~, ~~Ralph~~, ~~app~~) | pxl: `claude-pxl` no instalado |
-| 2 | **Pulir la app** con uso real: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~ (2026-11-08); queda la app misma por configuración (`00-principles.md` §4) y probar `pnpm tauri:dev` | nada |
+| 2 | **Pulir la app** con uso real: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~ (2026-11-08); ~~`pnpm tauri:dev`~~ (abre, lanza su core, conecta); queda la app misma por configuración (`00-principles.md` §4) | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
