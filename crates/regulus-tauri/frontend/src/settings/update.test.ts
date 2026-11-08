@@ -52,7 +52,7 @@ describe("check on start", () => {
     expect(invoke).not.toHaveBeenCalled();
     useUpdates.setState({ found: { current: "0.1.0", available: "0.2.0", notes: null, date: null } });
     await useUpdates.getState().install(updateApi(invoke as never));
-    expect(invoke).toHaveBeenCalledWith(commands.install);
+    expect(invoke).toHaveBeenCalledWith(commands.install, { version: "0.2.0" });
     expect(useUpdates.getState()).toMatchObject({ phase: "idle", error: "download failed" });
   });
 });

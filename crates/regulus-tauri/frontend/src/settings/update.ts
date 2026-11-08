@@ -31,7 +31,8 @@ export function updateApi(invoke: Invoke) {
   return {
     settings: () => invoke<UpdateSettings>(commands.settings),
     check: () => invoke<UpdateFound>(commands.check),
-    install: () => invoke<void>(commands.install),
+    /** `version`: the one the user saw; the shell refuses to install another. */
+    install: (version: string) => invoke<void>(commands.install, { version }),
   };
 }
 
@@ -108,10 +109,11 @@ export const useUpdates = create<UpdateStore>()((set, get) => ({
     catch (error) { set({ error: message(error), phase: "idle" }); }
   },
   install: async (api) => {
-    if (get().phase !== "idle" || !get().found?.available) return;
+    const version = get().found?.available;
+    if (get().phase !== "idle" || !version) return;
     set({ phase: "installing", error: null });
     // On success the shell restarts the app: nothing after this runs.
-    try { await api.install(); }
+    try { await api.install(version); }
     catch (error) { set({ error: message(error), phase: "idle" }); }
   },
 }));

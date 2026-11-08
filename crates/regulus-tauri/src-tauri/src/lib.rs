@@ -3,8 +3,6 @@
 //! It also updates the app itself, from `[update]` of the same `config.toml`
 //! (docs/06-stack.md §5.4).
 
-use std::time::Duration;
-
 use regulus_core::config::{default_home, UpdateConfig};
 use regulus_core::local::{self, Endpoint};
 use regulus_core::Config;
@@ -87,13 +85,18 @@ async fn find_update(app: &tauri::AppHandle) -> Result<Option<Update>, String> {
             config.config_path().display()
         ));
     }
+    update.url_allowed(base)?;
     let endpoint = format!("{base}/{}/{LATEST_FILE}", update.channel);
     let endpoint = endpoint.parse().map_err(|e| format!("{endpoint}: {e}"))?;
-    app.updater_builder()
+    let mut builder = app
+        .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| e.to_string())?
-        .pubkey(update.tauri_public_key())
-        .timeout(Duration::from_millis(update.timeout_ms))
+        .pubkey(update.tauri_public_key());
+    if let Some(timeout) = update.timeout() {
+        builder = builder.timeout(timeout);
+    }
+    builder
         .build()
         .map_err(|e| e.to_string())?
         .check()
@@ -112,12 +115,20 @@ async fn update_check(app: tauri::AppHandle) -> Result<UpdateFound, String> {
     })
 }
 
-/// Downloads, verifies and installs the newer release, then restarts into it.
+/// Downloads, verifies and installs the release Settings showed (`version`), then restarts
+/// into it. The endpoint is read again; if it now announces another version, nothing is
+/// installed: the user accepts what they saw, not whatever is there by then.
 #[tauri::command]
-async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
+async fn update_install(app: tauri::AppHandle, version: String) -> Result<(), String> {
     let Some(update) = find_update(&app).await? else {
         return Err("already up to date".into());
     };
+    if update.version != version {
+        return Err(format!(
+            "the channel now offers {} instead of {version}; check again before installing",
+            update.version
+        ));
+    }
     update
         .download_and_install(|_, _| {}, || {})
         .await
