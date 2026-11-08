@@ -36,9 +36,15 @@ como la app** (2026-11-08, `04-client.md` §7): vistas Editar y Plantillas, Oper
 y decisiones, teclas y números en un solo sitio. **Los clientes leen `[client]` de
 `config.toml`** (2026-11-08, `04-client.md` §11): el core lo sirve como `config.client` con el
 del proyecto encima y el origen de cada valor; la TUI toma teclas y números, la app los
-valores de Operar y la primera vista. **Lo siguiente:** las plantillas 3-8 de `13-blocks.md`
-§5 (son datos) y `ProcessModule` para `[[modules.local]]`. La pasarela de proveedores queda
-aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+valores de Operar y la primera vista. **Siete de las ocho plantillas de `13-blocks.md` §5
+están construidas** (2026-11-08, datos TOML en `templates/`, sin Rust nuevo): Ralph, SDD,
+evaluador-optimizador, best-of-N, equipo, research (cierre sin probar: cuota gratis) y CLI
+chateable; falta pxl (`claude-pxl` no instalado). Cada una anota en su fila los huecos del
+sistema que encontró (`workdir` del Agente fijo, reglas de `flow` solo contra constantes,
+barreras sin `timeout`, un turno colgado por el proveedor no cierra en `failed`). **Lo
+siguiente:** esos arreglos del core o `ProcessModule` para `[[modules.local]]`; lo decide
+Alexander. La pasarela de proveedores queda aplazada. Plan y orden en
+[`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -182,7 +188,8 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Plantillas 3-8** de `13-blocks.md` §5 (~~mecanismo~~, ~~Ralph~~, ~~app~~) | pxl: `claude-pxl` no instalado |
+| 1 | **Arreglos del core que pidieron las plantillas** (`13-blocks.md` §5, filas 5-7): entrada "luego" `workdir` (`path@1`) en la caja Agente; `op` de `flow` que compare dos rutas; `timeout` en la barrera de `join`; que un turno de agente colgado por el proveedor cierre en `failed`. Y repetir el cierre de research con la cuota libre | nada |
+| 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~; queda pxl | pxl: `claude-pxl` no instalado |
 | 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11); queda `ProcessModule` para `[[modules.local]]` (`11-composition.md` §13, ~2-3 días) y pulir con uso real | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
