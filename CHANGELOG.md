@@ -108,3 +108,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   estados y dependencias, Reclamar con lock y lease (un lease vencido cuenta como intento; `max_attempts`, 3), y Ledger de hechos, plan y progreso que
   también se inyecta como hook (`tasks.list`, `tasks.ledger`). Ejemplos en
   `crates/modules/workspace/examples/worktree.toml` y `crates/modules/tasks/examples/queue.toml`.
+- **Plantillas en el core** (`docs/11-composition.md` §7, protocolo `1.10`): un perfil TOML
+  con huecos `{{nombre}}` y una tabla `[template]` (`name`, `description`, `requires` con
+  versión semver, `vars` con `default` opcional). `template.list`, `template.get` y
+  `template.apply` las leen de `[templates] paths` (por defecto `<home>/templates`) solo al
+  pedirlas; aplicar sustituye literalmente, comprueba módulos y perfil, escribe
+  `<id>.toml` en la primera ruta de `[profiles] paths` y lo carga sin reiniciar. Nueva
+  dependencia: `semver`. CLI: `regulus template ls|show|apply <nombre|ruta> [--set k=v]
+  [--id] [--force]`. Las plantillas del repo viven en `templates/`; la primera,
+  `templates/greeting.toml`.

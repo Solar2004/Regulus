@@ -246,6 +246,13 @@ impl Registry {
             .any(|entry| base_id(&entry.manifest.module.id) == wanted)
     }
 
+    /// The ids (`author/module@version`) of every loaded module, whatever its state.
+    pub fn ids(&self) -> impl Iterator<Item = &str> + Clone {
+        self.entries
+            .iter()
+            .map(|entry| entry.manifest.module.id.as_str())
+    }
+
     pub fn summaries(&self) -> Vec<ModuleSummary> {
         self.entries
             .iter()

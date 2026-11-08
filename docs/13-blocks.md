@@ -158,6 +158,9 @@ de arriba:
 Datos, no código (`11-composition.md` §7): un workflow guardado con huecos y `requires`.
 Orden de construcción por tamaño; **cada una corre por CLI/TUI antes de la siguiente**.
 
+Cada plantilla es un fichero en `templates/` y se aplica con `regulus template apply
+<nombre> --set hueco=valor`, que escribe la copia como perfil (`11-composition.md` §7).
+
 | # | Plantilla | Piezas | Reconstruye |
 |---|---|---|---|
 | 1 | **pxl** | Agente + skill `pxl` ⇢ proveedor → Script `pxl build` (gate) → Fichero→prompt (`pxl ascii`) → Juez → bucle; Job largo `pxl serve` para el humano | [claude-pxl](https://github.com/crsolver/claude-pxl): la IA escribe `.px.js`, un CLI determinista genera PNG/GIF/JSON. Prueba que un dominio no-código se arma con las mismas piezas |

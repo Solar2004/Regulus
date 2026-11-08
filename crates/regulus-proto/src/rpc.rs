@@ -11,8 +11,9 @@ use serde::{Deserialize, Serialize};
 /// adds the `interrupted` state and `NodeStart` for nodes resumed from a checkpoint; 1.7
 /// adds workflow ports (`Workflow.ports`, inner wires to `self`) and `workflow.send`; 1.8
 /// adds child executions: `Execution.parent` and `node/child` (`ChildEvent`); 1.9 adds
-/// the `hook@1` relay: `hook.dispatch` and `node/hook`.
-pub const PROTOCOL: &str = "1.9";
+/// the `hook@1` relay: `hook.dispatch` and `node/hook`; 1.10 adds templates:
+/// `template.list`, `template.get` and `template.apply`.
+pub const PROTOCOL: &str = "1.10";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -31,6 +32,13 @@ pub mod method {
     /// Relays a `HookRequest` to the `hook@1` nodes wired into a node and returns their
     /// answers (`HookDispatchParams` → `HookDispatched`).
     pub const HOOK_DISPATCH: &str = "hook.dispatch";
+    /// Templates found in `[templates] paths` (→ `Vec<TemplateSummary>`).
+    pub const TEMPLATE_LIST: &str = "template.list";
+    /// The raw text of one template (`TemplateParams` → `TemplateText`).
+    pub const TEMPLATE_GET: &str = "template.get";
+    /// Renders a template into a profile file and loads it (`TemplateApplyParams` →
+    /// `TemplateApplied`).
+    pub const TEMPLATE_APPLY: &str = "template.apply";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -48,6 +56,9 @@ pub mod method {
         EVENT_LIST,
         WORKFLOW_SEND,
         HOOK_DISPATCH,
+        TEMPLATE_LIST,
+        TEMPLATE_GET,
+        TEMPLATE_APPLY,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -74,6 +85,16 @@ pub mod code {
     pub const MODULE_UNAVAILABLE: i32 = -32002;
     /// The module returned an error or panicked.
     pub const MODULE_FAILED: i32 = -32003;
+    /// No template has that name, or the path holds no readable template.
+    pub const TEMPLATE_NOT_FOUND: i32 = -32004;
+    /// The template is malformed: its `[template]` table, a hole it does not declare, a
+    /// rendered text that is not a profile, or a profile the check finds errors in.
+    pub const TEMPLATE_INVALID: i32 = -32005;
+    /// A module the template `requires` is not installed, or not at a version it accepts.
+    pub const TEMPLATE_UNMET: i32 = -32006;
+    /// The profile the template would write already exists and `force` was not given, or
+    /// another file defines a profile with that id.
+    pub const PROFILE_EXISTS: i32 = -32007;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +211,80 @@ pub enum ChildEventKind {
     /// The child is no longer live: `stopped` after it returned or was stopped,
     /// `failed` if a node of it failed to start.
     Ended { state: crate::ExecutionState },
+}
+
+/// A hole a template declares (`[template.vars]`). Without a default, applying it needs a
+/// value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateVar {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+/// A module a template needs: its id (`author/module`) and a semver requirement on the
+/// installed version, e.g. `>=0.1`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateRequire {
+    pub module: String,
+    pub version: String,
+}
+
+/// One entry of `template.list`. A file that cannot be read as a template is listed by
+/// its file name with `error` set, so the user sees why it is not usable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateSummary {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub path: String,
+    #[serde(default)]
+    pub vars: Vec<TemplateVar>,
+    #[serde(default)]
+    pub requires: Vec<TemplateRequire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `template.get`: a template by name, or by path when it contains `/` or ends in
+/// `.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateParams {
+    pub template: String,
+}
+
+/// The answer of `template.get`: the file as it is on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateText {
+    pub name: String,
+    pub path: String,
+    pub text: String,
+}
+
+/// `template.apply`: renders `template` with `vars` and writes the profile to the first
+/// `[profiles] paths` entry as `<id>.toml`. `id` defaults to the template's profile id; an
+/// existing profile is only replaced with `force`. Var values are text; a number or a
+/// boolean is taken as its JSON text.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TemplateApplyParams {
+    pub template: String,
+    #[serde(default)]
+    pub vars: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// The answer of `template.apply`: the profile now loaded, where it was written, and what
+/// the check found short of an error (warnings and information).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateApplied {
+    pub profile_id: String,
+    pub path: String,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -243,6 +243,35 @@ módulo y workflow interno sigue siendo del módulo.
 módulos que necesita (`requires`, con versión). Aplicarla copia; el proyecto es dueño de
 su copia.
 
+**Plantilla, construida** ✅ (Alexander, 2026-11-08: opción 1A, la aplica el core, no un
+módulo). Es un fichero de perfil TOML con una tabla más, `[template]`, que se quita antes
+de leerlo como perfil:
+
+```toml
+[template]
+name = "greeting"                     # lo que se escribe en `apply <nombre>`
+description = "..."
+requires = [{ module = "regulus/files", version = ">=0.1" }]   # id y requisito semver
+[template.vars]
+who  = { description = "..." }                         # sin default: obligatoria
+file = { description = "...", default = "greeting.txt" }
+```
+
+- **Huecos:** `{{nombre}}` en cualquier sitio del resto del texto. Sustitución **literal**
+  en una pasada: el valor entra tal cual y no se vuelve a leer; por eso un valor (o el
+  default que se use) con `"`, `\` o caracteres de control se rechaza.
+  Sin escapes ni expresiones. `{{…}}` que no es un nombre (`{{.}}`, `{{json.q}}`) se deja.
+  Un hueco sin declarar, una var sin valor ni default o un `--set` que no existe son error.
+  Para dejar el `{{input}}` de un módulo: `input = { default = "{{input}}" }`.
+- **Dónde:** `[templates] paths` (por defecto `<home>/templates`), leídas solo al pedirlas;
+  las del repo, en `templates/`. `apply` acepta también una ruta.
+- **Aplicar** comprueba `requires` contra el registro (id y versión del manifiesto) y
+  `profile.check` (un error no escribe; los avisos vuelven como `diagnostics`), y escribe
+  `<id>.toml` en la primera ruta de `[profiles] paths`, cargado sin reiniciar. Nunca pisa
+  sin `--force`; el id es un nombre de fichero simple.
+- `regulus template ls` · `show <nombre>` · `apply <nombre|ruta> --set k=v [--id x]
+  [--force]`; por RPC, `template.list`, `template.get` y `template.apply`.
+
 ---
 
 ## 8. Ejecuciones: el plano y lo que corre

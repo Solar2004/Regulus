@@ -3,13 +3,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
 
 use regulus_proto::{
     code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, Direction, DisabledNode,
     EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, HookAnswer,
     HookDispatchParams, HookDispatched, HookReply, IdParams, NameParams, Node, NodeCall, NodeEvent,
-    NodeStart, PortRef, ProjectFilter, SecretSetParams, WireKind, Workflow, WorkflowSendParams,
+    NodeStart, PortRef, Profile, ProjectFilter, SecretSetParams, Severity, TemplateApplied,
+    TemplateApplyParams, TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams,
     WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
@@ -26,6 +27,7 @@ use crate::profiles::ProfileStore;
 use crate::registry::{base_id, CallError, Registry};
 use crate::secrets::{SecretError, Secrets};
 use crate::store::{ModuleStore, Store, StoreError, StoredExecution};
+use crate::templates::{self, Places, TemplateError};
 
 /// JSON-RPC "method not found".
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -66,6 +68,20 @@ impl From<CallError> for RpcError {
             other => other.to_string(),
         };
         Self::new(code, message)
+    }
+}
+
+impl From<TemplateError> for RpcError {
+    fn from(error: TemplateError) -> Self {
+        let code = match error {
+            TemplateError::NotFound(_) => code::TEMPLATE_NOT_FOUND,
+            TemplateError::Invalid(_) => code::TEMPLATE_INVALID,
+            TemplateError::Params(_) => code::INVALID_PARAMS,
+            TemplateError::Unmet(_) => code::TEMPLATE_UNMET,
+            TemplateError::Exists(_) => code::PROFILE_EXISTS,
+            TemplateError::Io(_) => code::MODULE_FAILED,
+        };
+        Self::new(code, error.to_string())
     }
 }
 
@@ -169,7 +185,10 @@ pub struct Core {
     /// This core, for the threads that drain the bus.
     me: Weak<Core>,
     registry: Registry,
-    profiles: ProfileStore,
+    /// Written only by `template.apply`; executions copy what they run.
+    profiles: RwLock<ProfileStore>,
+    /// Where templates are read from and applied ones written (`set_template_places`).
+    places: RwLock<Places>,
     storage: Storage,
     bus: BusConfig,
     call: CallConfig,
@@ -258,7 +277,8 @@ impl Core {
         Arc::new_cyclic(|core| Self {
             me: core.clone(),
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
-            profiles,
+            profiles: RwLock::new(profiles),
+            places: RwLock::default(),
             storage,
             executions: Mutex::default(),
             journal: Mutex::new(journal),
@@ -275,25 +295,140 @@ impl Core {
         &self.registry
     }
 
+    /// Where `template.*` reads templates and writes applied ones. Without it, the list is
+    /// empty and applying is refused.
+    pub fn set_template_places(&self, places: Places) {
+        *self.places.write().unwrap_or_else(|p| p.into_inner()) = places;
+    }
+
+    fn profile_store(&self) -> RwLockReadGuard<'_, ProfileStore> {
+        self.profiles.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn template_places(&self) -> Places {
+        self.places
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// `template.apply`: renders, checks the modules it requires and the profile it makes,
+    /// then writes the copy and loads it. Nothing is written unless every check passes, and
+    /// an existing profile is only replaced with `force`.
+    fn apply_template(&self, params: TemplateApplyParams) -> Result<TemplateApplied, RpcError> {
+        let places = self.template_places();
+        let template = templates::find(&places, &params.template)?;
+        let mut values = std::collections::BTreeMap::new();
+        for (name, value) in params.vars {
+            let text = match value {
+                Value::String(text) => text,
+                Value::Number(_) | Value::Bool(_) => value.to_string(),
+                other => {
+                    return Err(RpcError::invalid_params(format!(
+                        "var `{name}` must be text, a number or a boolean, not {other}"
+                    )))
+                }
+            };
+            values.insert(name, text);
+        }
+        templates::check_requires(&template.requires, self.registry.ids())?;
+        let mut text = templates::render(&template, &values)?;
+        let mut profile = templates::profile_of(&template, &text)?;
+        if let Some(id) = params.id.filter(|id| *id != profile.id) {
+            templates::file_name(&id)?;
+            text = templates::rename(&text, &id)?;
+            profile = templates::profile_of(&template, &text)?;
+        }
+        let id = profile.id.clone();
+        templates::file_name(&id)
+            .map_err(|e| TemplateError::Invalid(format!("template `{}`: {e}", template.name)))?;
+        crate::profiles::normalize(&mut profile);
+        let mut found = check_profile(&profile, |id| self.registry.is_installed(id));
+        found.extend(check_fields(&profile, |id| self.registry.manifest(id)));
+        let (errors, diagnostics): (Vec<_>, Vec<_>) = found
+            .into_iter()
+            .partition(|d| d.severity == Severity::Error);
+        if !errors.is_empty() {
+            let messages: Vec<String> = errors
+                .iter()
+                .map(|d| format!("{} ({})", d.message, d.code))
+                .collect();
+            return Err(TemplateError::Invalid(format!(
+                "template `{}` renders a profile with errors: {}",
+                template.name,
+                messages.join("; ")
+            ))
+            .into());
+        }
+        let dir = places.profiles_dir.ok_or_else(|| {
+            TemplateError::Io("no [profiles] paths entry to write the profile to".into())
+        })?;
+        let dest = dir.join(templates::file_name(&id)?);
+        let mut store = self.profiles.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(origin) = store.origin(&id).filter(|origin| *origin != dest) {
+            return Err(TemplateError::Exists(format!(
+                "profile `{id}` is already defined in {}; choose another id",
+                origin.display()
+            ))
+            .into());
+        }
+        if store.get(&id).is_some() && store.origin(&id).is_none() {
+            return Err(TemplateError::Exists(format!(
+                "profile `{id}` is already loaded; choose another id"
+            ))
+            .into());
+        }
+        if !params.force && (dest.exists() || store.get(&id).is_some()) {
+            return Err(TemplateError::Exists(format!(
+                "profile `{id}` already exists at {}; apply with force to replace it",
+                dest.display()
+            ))
+            .into());
+        }
+        let written = templates::write(
+            &dir,
+            &id,
+            &(templates::provenance(&template) + &text),
+            params.force,
+        )?;
+        store.replace(profile, written.clone());
+        Ok(TemplateApplied {
+            profile_id: id,
+            path: written.display().to_string(),
+            diagnostics,
+        })
+    }
+
     /// Answers every method except `hello`, which belongs to the connection.
     pub fn dispatch(&self, name: &str, params: Value) -> Result<Value, RpcError> {
         match name {
             method::PROFILE_LIST => {
                 let filter: ProjectFilter = parse(params)?;
                 json(
-                    self.profiles
+                    self.profile_store()
                         .list(filter.project_id.as_deref())
                         .map(|p| p.summary())
                         .collect::<Vec<_>>(),
                 )
             }
-            method::PROFILE_GET => json(self.profile(parse(params)?)?),
+            method::PROFILE_GET => json(&*self.profile(parse(params)?)?),
             method::PROFILE_CHECK => {
                 let profile = self.profile(parse(params)?)?;
-                let mut found = check_profile(profile, |id| self.registry.is_installed(id));
-                found.extend(check_fields(profile, |id| self.registry.manifest(id)));
+                let mut found = check_profile(&profile, |id| self.registry.is_installed(id));
+                found.extend(check_fields(&profile, |id| self.registry.manifest(id)));
                 json(found)
             }
+            method::TEMPLATE_LIST => json(templates::list(&self.template_places())),
+            method::TEMPLATE_GET => {
+                let params: TemplateParams = parse(params)?;
+                let template = templates::find(&self.template_places(), &params.template)?;
+                json(TemplateText {
+                    name: template.name,
+                    path: template.path.display().to_string(),
+                    text: template.text,
+                })
+            }
+            method::TEMPLATE_APPLY => json(self.apply_template(parse(params)?)?),
             method::MODULE_LIST => json(self.registry.summaries()),
             method::EXECUTION_LIST => {
                 let filter: ProjectFilter = parse(params)?;
@@ -341,8 +476,8 @@ impl Core {
         }
     }
 
-    fn profile(&self, params: IdParams) -> Result<&regulus_proto::Profile, RpcError> {
-        self.profiles
+    fn profile(&self, params: IdParams) -> Result<Arc<Profile>, RpcError> {
+        self.profile_store()
             .get(&params.id)
             .ok_or_else(|| RpcError::invalid_params("Unknown profile"))
     }
@@ -452,9 +587,10 @@ impl Core {
     /// did: a wire that does not fit fails visibly on the bus and the rest keeps working.
     fn start(&self, params: ExecutionStartParams) -> Result<Execution, RpcError> {
         let profile = self
-            .profiles
+            .profile_store()
             .get(&params.profile_id)
             .ok_or_else(|| RpcError::invalid_params("Unknown profile"))?;
+        let profile = profile.as_ref();
         let workflow_id = params
             .workflow_id
             .unwrap_or_else(|| profile.main_workflow_id.clone());
@@ -1238,11 +1374,12 @@ impl Core {
             )));
         }
         let profile = self
-            .profiles
+            .profile_store()
             .get(&parent.execution.profile_id)
             .ok_or_else(|| {
                 ModuleError::Failed(format!("profile `{}` is gone", parent.execution.profile_id))
             })?;
+        let profile = profile.as_ref();
         let target = profile.workflow(workflow_id).ok_or_else(|| {
             ModuleError::InvalidParams(format!(
                 "profile `{}` has no workflow `{workflow_id}`",

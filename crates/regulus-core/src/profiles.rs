@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use regulus_proto::{Port, Profile};
 use serde::Deserialize;
@@ -19,12 +20,14 @@ enum ProfileFile {
 
 #[derive(Debug, Default)]
 pub struct ProfileStore {
-    profiles: Vec<Profile>,
+    profiles: Vec<Arc<Profile>>,
+    /// The file each profile was read from or written to, by profile id.
+    origins: HashMap<String, PathBuf>,
 }
 
 /// Fills what a file left out, so every client gets something to show: names, and the
 /// ports of a box node that declares none, which are those of its workflow.
-fn normalize(profile: &mut Profile) {
+pub(crate) fn normalize(profile: &mut Profile) {
     fn name_ports(ports: &mut [Port]) {
         for port in ports {
             if port.name.is_empty() {
@@ -65,7 +68,7 @@ fn normalize(profile: &mut Profile) {
     }
 }
 
-fn parse(path: &Path) -> Result<Vec<Profile>, String> {
+pub(crate) fn parse(path: &Path) -> Result<Vec<Profile>, String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let file: ProfileFile = match path.extension().and_then(|e| e.to_str()) {
@@ -107,17 +110,24 @@ impl ProfileStore {
         for path in paths {
             let found = files(path).and_then(|files| {
                 files
-                    .iter()
-                    .map(|file| parse(file))
+                    .into_iter()
+                    .map(|file| parse(&file).map(|all| (file, all)))
                     .collect::<Result<Vec<_>, _>>()
-                    .map(|all| all.concat())
             });
             match found {
-                Ok(profiles) => profiles.into_iter().for_each(|profile| {
-                    if let Err(warning) = store.insert(profile) {
-                        warnings.push(warning);
+                Ok(found) => {
+                    for (file, profiles) in found {
+                        for profile in profiles {
+                            let id = profile.id.clone();
+                            match store.insert(profile) {
+                                Ok(()) => {
+                                    store.origins.insert(id, file.to_path_buf());
+                                }
+                                Err(warning) => warnings.push(warning),
+                            }
+                        }
                     }
-                }),
+                }
                 Err(warning) => warnings.push(warning),
             }
         }
@@ -132,12 +142,33 @@ impl ProfileStore {
             ));
         }
         normalize(&mut profile);
-        self.profiles.push(profile);
+        self.profiles.push(Arc::new(profile));
         Ok(())
     }
 
-    pub fn get(&self, id: &str) -> Option<&Profile> {
-        self.profiles.iter().find(|profile| profile.id == id)
+    /// Puts `profile`, read from or written to `origin`, in place of the one with its id,
+    /// or adds it. Executions already running keep the copy they started with.
+    pub fn replace(&mut self, mut profile: Profile, origin: PathBuf) {
+        normalize(&mut profile);
+        self.origins.insert(profile.id.clone(), origin);
+        let profile = Arc::new(profile);
+        match self.profiles.iter_mut().find(|p| p.id == profile.id) {
+            Some(slot) => *slot = profile,
+            None => self.profiles.push(profile),
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<Arc<Profile>> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+    }
+
+    /// The file a profile was read from or written to; `None` for one inserted in memory
+    /// or unknown.
+    pub fn origin(&self, id: &str) -> Option<&Path> {
+        self.origins.get(id).map(PathBuf::as_path)
     }
 
     /// Profiles of one project, or of every project when `project_id` is `None`.
@@ -145,7 +176,7 @@ impl ProfileStore {
         &'a self,
         project_id: Option<&'a str>,
     ) -> impl Iterator<Item = &'a Profile> + 'a {
-        self.profiles.iter().filter(move |p| {
+        self.profiles.iter().map(Arc::as_ref).filter(move |p| {
             project_id.is_none_or(|wanted| p.project_id.as_deref() == Some(wanted))
         })
     }
