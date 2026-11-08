@@ -5,7 +5,13 @@ export interface Port {
   direction: "input" | "output";
   kind: "uses" | "then";
   required: boolean;
+  /** Absent means "one": the input takes a single wire. */
+  cardinality?: "one" | "many";
+  lazy?: boolean;
 }
+
+/** What a node config holds: any JSON value but `null` (TOML has none). */
+export type ConfigValue = string | number | boolean | ConfigValue[] | { [key: string]: ConfigValue };
 
 export interface CompositionNode {
   id: string;
@@ -14,7 +20,7 @@ export interface CompositionNode {
   module_id: string | null;
   resource: string | null;
   ports: Port[];
-  config: Record<string, string | number | boolean>;
+  config: Record<string, ConfigValue>;
   position: { x: number; y: number };
   internal_workflow_id: string | null;
   exposed_parameters: string[];
@@ -48,11 +54,65 @@ export interface Profile {
   workflows: Workflow[];
 }
 
+export type ModuleState =
+  | { status: "active"; since: number }
+  | { status: "idle"; last_used: number | null }
+  | { status: "disabled"; missing: string[] }
+  | { status: "broken"; reason: string }
+  | { status: "incompatible"; requires: string; have: string };
+
 export interface ModuleDefinition {
   id: string;
   name: string;
   node_types: string[];
   workflow_id: string | null;
+  /** Absent in the mock's example modules: they read as installed and idle. */
+  state?: ModuleState;
+}
+
+/** A field of a node type, as `module.manifest` gives it (TOML names). */
+export interface ManifestField {
+  id: string;
+  type: string;
+  default?: ConfigValue | null;
+  options?: ConfigValue[];
+}
+
+export interface ManifestNodeType {
+  type: string;
+  name: string;
+  port?: Port[];
+  field?: ManifestField[];
+}
+
+export interface Manifest {
+  module: { id: string; name: string; requires_proto?: string | null; methods?: string[]; workflow_id?: string | null };
+  node?: ManifestNodeType[];
+}
+
+export interface Diagnostic {
+  severity: "error" | "warning" | "info";
+  code: string;
+  message: string;
+  workflow_id: string | null;
+  node_id: string | null;
+  wire_id: string | null;
+}
+
+/** What `profile.save` and `template.apply` answer. */
+export interface ProfileSaved {
+  profile_id: string;
+  path: string;
+  diagnostics: Diagnostic[];
+}
+
+export interface Execution {
+  id: string;
+  profile_id: string;
+  workflow_id: string;
+  project_id: string | null;
+  state: { status: string; reason?: string };
+  disabled?: { node_id: string; missing: string[] }[];
 }
 
 export interface ProfileSummary {
