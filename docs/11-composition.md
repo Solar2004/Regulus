@@ -389,3 +389,62 @@ La base deja sitio para todo y decide lo mínimo (guardarraíl de `00-principles
     **quien crea el módulo**, una vez al crearlo o publicarlo. **Quien lo usa** solo toca
     lo que el módulo expone, que se guarda en fichero y se aplica sin recompilar.
 - ❓ **Aislamiento de ejecución** (§9, nivel 2): fuera de v1. Se decide más adelante.
+
+---
+
+## 13. Proyectos y `regulus.toml` (2026-11-08)
+
+🔶 **PROPUESTO** — Alexander pidió (2026-11-08) que un proyecto tenga su `regulus.toml`,
+que pueda traer módulos solo suyos y que nada sea rígido. Lo que hay hoy, lo que se propone y
+lo que cuesta.
+
+**Lo que ya existe en el código.** Un proyecto es solo un `project_id: Option<String>` en
+perfiles, ejecuciones y eventos (`regulus-proto/src/graph.rs`); `profile.list`,
+`execution.list` y `event.list` filtran por él, el store le da `store/projects/<id>.db` y los
+nodos `data/projects/<id>/…`. No hay `struct Project`, ni carpeta de proyecto, ni fichero:
+`02-architecture.md` §4 describe un `Project { root, vcs }` que no se construyó. Y toda la
+configuración (`config.toml`) rechaza claves desconocidas (`deny_unknown_fields`): un error
+tipográfico tumba el core y la app.
+
+**La forma.** Un proyecto es **una carpeta con `regulus.toml`**. Todo es opcional; el id es el
+nombre de la carpeta si no se dice; las rutas son relativas al fichero; **las claves que el
+core no entiende se conservan y se avisan, nunca tumban**. Tres capas, la más cercana gana:
+`config.toml` global → `regulus.toml` del proyecto → el perfil.
+
+```toml
+[project]
+id = "mi-proyecto"              # por defecto, el nombre de la carpeta
+name = "Mi proyecto"
+profiles = [".regulus/profiles"]    # listas: igual que [profiles].paths del global
+templates = [".regulus/templates"]  # cajas y plantillas solo de este proyecto
+
+[modules]
+disable = ["web"]               # los nodos de `web` no corren en perfiles de este proyecto
+# enable = [...]                # si está, solo estos
+
+[[modules.local]]               # módulo solo de este proyecto, fuera de proceso
+manifest = "tools/mi-modulo/manifest.toml"
+command = ["tools/mi-modulo/run"]
+
+[client]                        # pisa el [client] global solo aquí (§14 de 04-client, cuando exista)
+start_view = "operate"
+```
+
+**Qué hace el core con cada parte, y cuánto cuesta:**
+
+| Parte | Qué | Coste |
+|---|---|---|
+| Registro | `project.list`, `project.get`, `project.open { path }`, `project.close` en el core; la lista de carpetas abiertas vive en `config.toml` `[projects] paths = []` (el cliente la pide, el core la sirve: decisión #15). CLI `regulus project ls\|open\|close\|show`. | ~1 día |
+| Perfiles y plantillas del proyecto | Al abrir, el core suma sus carpetas a las fuentes de `profile.*` y `template.*` con `project_id` fijado. Una **caja guardada como plantilla del proyecto es ya un "módulo especial solo para este"**: sin compilar nada ni cambiar el core. | incluido |
+| `[modules] disable/enable` | El core carga los módulos una vez (lista estática, decisión #10). Por proyecto no se descargan: se **vetan**: `profile.check` marca los nodos de un módulo vetado como *desactivado* con la razón "disabled in this project" y `execution.start` los rechaza con ese diagnóstico. Honesto y sin tocar el registro. | ~medio día |
+| `[[modules.local]]` | **`ProcessModule`** (§10 opción C, la puerta abierta de `02-architecture.md` §2): el core lanza `command`, habla JSON-RPC por stdio con el mismo contrato de `Module` (manifest, `call`, estados), lo lista como `<project>/<id>` y lo quita al cerrar el proyecto. Cualquier lenguaje. La ablación lo cubre: quitarlo deja el resto igual. | ~2-3 días, se hace después del resto |
+| Tolerancia | `regulus.toml` se lee con `#[serde(flatten)] extra: toml::Table` y aviso por clave desconocida. **Se propone lo mismo para `config.toml`**: avisar en vez de fallar. | ~1 h |
+
+**Lo que no se decide aquí:** el aislamiento de ejecución (§9 nivel 2, fuera de v1); los
+`.toml` de perfil siguen siendo los de §7, no cambian.
+
+**Preguntas cerradas para Alexander** (por defecto en negrita):
+1. Id del proyecto: **el nombre de la carpeta** · o siempre explícito en `[project] id`.
+2. `config.toml` con clave desconocida: **avisar y seguir** · seguir fallando.
+3. Orden: **registro + perfiles/plantillas + veto primero, `ProcessModule` después** · todo
+   junto.
