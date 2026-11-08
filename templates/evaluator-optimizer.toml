@@ -1,0 +1,532 @@
+# Evaluator-optimizer (docs/13-blocks.md §5 row 4): one agent drafts, a judge says pass or
+# fail with feedback, and the draft goes back with that feedback until it passes or a cap
+# is hit. Sources: Anthropic "Building effective agents", evaluator-optimizer workflow
+# (https://www.anthropic.com/engineering/building-effective-agents); Self-Refine
+# (generate, feedback, refine); CrewAI guardrails.
+#
+#   self.go ─→ task (variable) ─────────────────────────┐
+#        └─→ start → loop ─body→ budget → join_turn ←───┘ → compose → agent ─reply→ draft file
+#                     ▲                                       engine ⇢ ┘ │ failed  │
+#                     │                       task_judge ─→ join_judge ←┼─────────┘
+#                     │                                         ▼        │
+#                     │   report ← join_verdict ← tag_pass/tag_fail ← judge ⇠ judge_model
+#                     ├────┘              ▲                     │ feedback
+#                     │                   └─────────────────────┘
+#                     └──────── agent_report ←───────────────────────────┘
+#
+# Each turn: the task (what was sent to `go`, kept in a Variable) is joined with the last
+# evaluation ("none yet" on turn 1) and prompted to the generator. Its reply is the draft:
+# it is written to `output_file` in `workdir` (overwritten, also out on `draft`) and
+# joined with the task as `{ task, draft }` for the judge, which answers a verdict from
+# "pass, fail" under a strict schema plus feedback. The verdict and the feedback are
+# paired by a barrier into "verdict <pass|fail>", the draft and the feedback, which goes
+# back to the loop: `until` = regex `^verdict pass\b` ends it on `done` with the accepted
+# draft; otherwise it is the next turn's "last evaluation", up to `max_turns` (then
+# `exhausted`). A failed prompt goes back the same way ("agent failed"). The budget stops
+# new turns after `max_ms` (`exceeded`); by time only, as no engine reports usage yet. A
+# judge that cannot answer (provider down, out of schema twice) sends the reason to
+# `error` and the loop waits: `regulus stop` it.
+#
+# The judge needs a model: `judge_model` is required, `judge_preset` defaults to the
+# local `ollama` template (free, no key). For a hosted judge: `--set
+# judge_preset=openrouter-openai --set judge_credential=secret:openrouter --set
+# judge_model=z-ai/glm-5.3`. opencode's free models are not reachable outside opencode
+# (Zen answers FreeUsageLimitError "Free models work in OpenCode"), so the free generator
+# cannot be the judge's provider. Another judge engine: first add the port `engine`
+# (judge.engine@1, uses) to the `judge` node, then wire a `judge.engine@1` node into it; it
+# wins over `model`.
+#
+# Risks: with `permissions = "allow"` the agent says yes to whatever its tools ask, in
+# `workdir`, unattended; the default `reject` suits a text draft. The engine runs with the
+# user's own opencode setup. The judge never verifies alone (§6): when the draft is code
+# with tests, add a process `gate` before the judge, as Ralph does.
+#
+# Another engine: replace the node `engine` (e.g. `engine-claude`; it has no `model`
+# field, its setup picks the model). Another model: `--set model=provider/model`. Values
+# with a double quote or a backslash are refused (docs/11-composition.md §7), so
+# `criteria` and `instructions` cannot quote; longer criteria go in the profile copy.
+#
+# Run (2026-11-08, debug build, `regulus serve --port 0` with a temporary --home whose
+# config.toml has `[templates] paths` on this folder; the judge is a fake OpenAI-compatible
+# server on 127.0.0.1:11471 that answers pass only when the draft's first line is "RAIN",
+# so turn 1 must fail; the generator is opencode with the free model):
+#
+#   regulus template apply evaluator-optimizer --set workdir=<dir> \
+#     --set judge_model=fake-judge --set judge_base_url=http://127.0.0.1:11471/v1 \
+#     --set max_turns=3                               # profile.check: []
+#   regulus run evaluator-optimizer --detach          # exec-1  running
+#   regulus send exec-1 go "Write a haiku about rain."            # 17:16:46
+#   regulus events --execution exec-1 | grep emitted  # (task, budget, joins left out)
+#     agent.reply emitted text@1 "Whispers touch the earth—\ngray curtains drift…"
+#     join_judge.out emitted json@1 {"task":"Write a haiku about rain.","draft":"Whispers…"}
+#     judge.feedback emitted text@1 "the first line must be the title RAIN, alone, in capitals"
+#     judge.fail emitted json@1 {"task":…,"draft":…}
+#     loop.body emitted text@1 "verdict fail\n\n# Your last draft\n\n…# Evaluator feedback…"
+#     agent.reply emitted text@1 "RAIN\n\nWhispers touch the earth—…"       ← turn 2
+#     judge.feedback emitted text@1 "the title line is there"
+#     judge.pass emitted json@1 {"task":…,"draft":"RAIN\n\n…"}
+#     loop.done emitted text@1 "verdict pass\n\n# Accepted draft\n\nRAIN…"
+#     self.done emitted text@1 "verdict pass…"                   ← 17:17:01, 15 s after send
+#   <dir>/draft.md holds the accepted draft; self.draft fired once per turn.
+#   Without judge_model: "template `evaluator-optimizer` needs a value for var `judge_model`".
+id = "evaluator-optimizer"
+name = "Evaluator-optimizer in {{workdir}}"
+main_workflow_id = "evaluator-optimizer"
+
+[template]
+name = "evaluator-optimizer"
+description = "Evaluator-optimizer: an agent drafts, a judge says pass or fail with feedback, until pass or a cap"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/guards", version = ">=0.1" },
+  { module = "regulus/judge", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path of an existing folder the agent works in; the draft is written there" }
+judge_model = { description = "model id the judge asks, as its provider names it (an Ollama model you pulled, an OpenRouter id...)" }
+model = { description = "model of the generator's engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+judge_preset = { description = "provider template of the judge, from the providers module's presets.toml (ollama, openrouter-openai, anthropic...)", default = "ollama" }
+judge_base_url = { description = "base URL of the judge's provider; empty: the preset's", default = "" }
+judge_credential = { description = "the judge provider's key as secret:<name>; empty: none (a local model)", default = "" }
+criteria = { description = "what the judge checks each draft against; it also sees the task", default = "The draft does everything the task asks, correctly and completely, and needs no further change." }
+instructions = { description = "what the generator is told about its answer, after the task and the last evaluation", default = "Reply with the complete draft and nothing else: your reply is judged as it is. If the last evaluation rejected a draft, fix what its feedback says." }
+output_file = { description = "file in workdir that holds the latest draft (overwritten each turn)", default = "draft.md" }
+permissions = { description = "what the agent answers when its tools ask for permission: reject or allow", default = "reject" }
+fresh_context = { description = "yes: a new engine session each turn (the prompt carries the last draft); no: one session for the whole run", default = "yes" }
+max_turns = { description = "most drafts before the loop gives up on exhausted", default = 3 }
+max_ms = { description = "milliseconds from the first turn after which no turn starts", default = 1800000 }
+
+[[workflows]]
+id = "evaluator-optimizer"
+name = "Evaluator-optimizer"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "done", capability = "text@1", direction = "output", kind = "then" },
+  { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  { id = "draft", capability = "path@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  # The task, kept for the whole run: every turn's prompt and every judgement read it.
+  [[workflows.nodes]]
+  id = "task"
+  name = "Task"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { name = "task", scope = "execution" }
+  ports = [
+    { id = "set", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Turn 1 has no evaluation yet.
+  [[workflows.nodes]]
+  id = "start"
+  name = "First turn"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 200 }
+  config = { conversion = "template", template = "none yet: this is the first draft" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Turns. What comes back on `back` is the last evaluation; "verdict pass" ends the run.
+  [[workflows.nodes]]
+  id = "loop"
+  name = "Loop"
+  type = "loop"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 200 }
+  config = { max = {{max_turns}}, until = { op = "regex", value = '^verdict pass\b' } }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "back", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Wall clock since the first turn; past it, the turn goes to `exceeded` and stops there.
+  [[workflows.nodes]]
+  id = "budget"
+  name = "Budget"
+  type = "budget"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 350, y = 200 }
+  config = { max_items = 0, max_ms = {{max_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The task and the last evaluation, together.
+  [[workflows.nodes]]
+  id = "join_turn"
+  name = "Task + evaluation"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 500, y = 200 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "task", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "feedback", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "compose"
+  name = "Turn prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 200 }
+  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Last evaluation\n\n{{/feedback}}\n\n# How to answer\n\n{{instructions}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The generator. Its reply is the draft.
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Generator"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 800, y = 200 }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The engine: the only node that knows the CLI. Swap it for another engine node.
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 800, y = 50 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # The latest draft, on disk.
+  [[workflows.nodes]]
+  id = "draft"
+  name = "Draft file"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 950, y = 100 }
+  config = { path = "{{output_file}}", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # The same task again, for the judge.
+  [[workflows.nodes]]
+  id = "task_judge"
+  name = "Task (judge)"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 950, y = 300 }
+  config = { name = "task", scope = "execution" }
+  ports = [
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join_judge"
+  name = "Task + draft"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1100, y = 200 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "task", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "draft", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The evaluator: a verdict from a closed list plus feedback, under a strict schema.
+  # It gets `{ task, draft }` and sends that same object out on `pass` or `fail`.
+  [[workflows.nodes]]
+  id = "judge"
+  name = "Evaluator"
+  type = "judge"
+  module_id = "regulus/judge@0.1.0"
+  position = { x = 1250, y = 200 }
+  config = { criteria = "{{criteria}} The input is the task and the draft that answers it; judge the draft.", verdicts = "pass, fail" }
+  ports = [
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "json@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "json@1", direction = "output", kind = "then" },
+    { id = "feedback", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The judge's model: a provider template. Any `llm.endpoint@1` fits here.
+  [[workflows.nodes]]
+  id = "judge_model"
+  name = "Judge model"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 1250, y = 50 }
+  config = { preset = "{{judge_preset}}", base_url = "{{judge_base_url}}", credential = "{{judge_credential}}", model = "{{judge_model}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "tag_pass"
+  name = "Passed"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1400, y = 150 }
+  config = { conversion = "template", template = "pass\n\n# Accepted draft\n\n{{/draft}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "tag_fail"
+  name = "Failed"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1400, y = 250 }
+  config = { conversion = "template", template = "fail\n\n# Your last draft\n\n{{/draft}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # One verdict and its feedback per judgement: the barrier pairs them.
+  [[workflows.nodes]]
+  id = "join_verdict"
+  name = "Verdict + feedback"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1550, y = 200 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "verdict", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "feedback", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "report"
+  name = "Evaluation"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1550, y = 350 }
+  config = { conversion = "template", template = "verdict {{/verdict}}\n# Evaluator feedback\n\n{{/feedback}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent_report"
+  name = "Generator failure"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 800, y = 350 }
+  config = { conversion = "template", template = "agent failed: no draft this turn\n\n{{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "go-task"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "task", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "go-start"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "start", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "start-loop"
+  kind = "then"
+  from = { node_id = "start", port_id = "out" }
+  to = { node_id = "loop", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "loop-budget"
+  kind = "then"
+  from = { node_id = "loop", port_id = "body" }
+  to = { node_id = "budget", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "budget-task"
+  kind = "then"
+  from = { node_id = "budget", port_id = "out" }
+  to = { node_id = "task", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "budget-feedback"
+  kind = "then"
+  from = { node_id = "budget", port_id = "out" }
+  to = { node_id = "join_turn", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "task-join"
+  kind = "then"
+  from = { node_id = "task", port_id = "value" }
+  to = { node_id = "join_turn", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "join-compose"
+  kind = "then"
+  from = { node_id = "join_turn", port_id = "out" }
+  to = { node_id = "compose", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "compose-agent"
+  kind = "then"
+  from = { node_id = "compose", port_id = "out" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "agent-draft"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "draft", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "draft-out"
+  kind = "then"
+  from = { node_id = "draft", port_id = "written" }
+  to = { node_id = "self", port_id = "draft" }
+
+  [[workflows.wires]]
+  id = "agent-task"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "task_judge", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "agent-judged"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "join_judge", port_id = "draft" }
+
+  [[workflows.wires]]
+  id = "task-judged"
+  kind = "then"
+  from = { node_id = "task_judge", port_id = "value" }
+  to = { node_id = "join_judge", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "judge-in"
+  kind = "then"
+  from = { node_id = "join_judge", port_id = "out" }
+  to = { node_id = "judge", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "judge-model"
+  kind = "uses"
+  from = { node_id = "judge_model", port_id = "endpoint" }
+  to = { node_id = "judge", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "judge-pass"
+  kind = "then"
+  from = { node_id = "judge", port_id = "pass" }
+  to = { node_id = "tag_pass", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "judge-fail"
+  kind = "then"
+  from = { node_id = "judge", port_id = "fail" }
+  to = { node_id = "tag_fail", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pass-verdict"
+  kind = "then"
+  from = { node_id = "tag_pass", port_id = "out" }
+  to = { node_id = "join_verdict", port_id = "verdict" }
+
+  [[workflows.wires]]
+  id = "fail-verdict"
+  kind = "then"
+  from = { node_id = "tag_fail", port_id = "out" }
+  to = { node_id = "join_verdict", port_id = "verdict" }
+
+  [[workflows.wires]]
+  id = "judge-feedback"
+  kind = "then"
+  from = { node_id = "judge", port_id = "feedback" }
+  to = { node_id = "join_verdict", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "verdict-report"
+  kind = "then"
+  from = { node_id = "join_verdict", port_id = "out" }
+  to = { node_id = "report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "report-back"
+  kind = "then"
+  from = { node_id = "report", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "agent-fail"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "agent_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-back"
+  kind = "then"
+  from = { node_id = "agent_report", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "judge-error"
+  kind = "then"
+  from = { node_id = "judge", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "loop-done"
+  kind = "then"
+  from = { node_id = "loop", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "loop-exhausted"
+  kind = "then"
+  from = { node_id = "loop", port_id = "exhausted" }
+  to = { node_id = "self", port_id = "exhausted" }
+
+  [[workflows.wires]]
+  id = "budget-exceeded"
+  kind = "then"
+  from = { node_id = "budget", port_id = "exceeded" }
+  to = { node_id = "self", port_id = "exceeded" }
