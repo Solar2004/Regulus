@@ -38,12 +38,17 @@ y decisiones, teclas y números en un solo sitio. **Los clientes leen `[client]`
 del proyecto encima y el origen de cada valor; la TUI toma teclas y números, la app los
 valores de Operar y la primera vista. **Siete de las ocho plantillas de `13-blocks.md` §5
 están construidas** (2026-11-08, datos TOML en `templates/`, sin Rust nuevo): Ralph, SDD,
-evaluador-optimizador, best-of-N, equipo, research (cierre sin probar: cuota gratis) y CLI
-chateable; falta pxl (`claude-pxl` no instalado). Cada una anota en su fila los huecos del
-sistema que encontró (`workdir` del Agente fijo, reglas de `flow` solo contra constantes,
-barreras sin `timeout`, un turno colgado por el proveedor no cierra en `failed`). **Lo
-siguiente:** esos arreglos del core o `ProcessModule` para `[[modules.local]]`; lo decide
-Alexander. La pasarela de proveedores queda aplazada. Plan y orden en
+evaluador-optimizador, best-of-N, equipo, research (cerrada de punta a punta con Claude) y
+CLI chateable; pxl va como plantilla también (Agente escribe la rejilla, un script la
+convierte en PNG, juez o revisión humana), en la rama `feat/pxl`. **Los huecos que las
+plantillas anotaron están cerrados** (2026-11-08, `47d98bd`): entrada "luego" `workdir` en la
+caja Agente, `value_path` en las reglas de `flow`, `timeout_ms` en la barrera de `join`, y
+un turno colgado por el proveedor cierra en `failed` (`turn_timeout_ms`). **Los módulos
+locales de un proyecto corren como procesos** (2026-11-08, `87dcee5`, `03-modules.md` §6,
+`11-composition.md` §13): JSON-RPC por stdio, solo en proyectos de confianza
+(`regulus project trust`), protocolo 1.14 con el estado `blocked`. **Lo siguiente:** build
+release y `regulus update` (rama `feat/release`), y pulir con uso real. La pasarela de
+proveedores queda aplazada. Plan y orden en
 [`docs/plan.md`](docs/plan.md).
 
 ---
@@ -188,9 +193,9 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Arreglos del core que pidieron las plantillas** (`13-blocks.md` §5, filas 5-7): entrada "luego" `workdir` (`path@1`) en la caja Agente; `op` de `flow` que compare dos rutas; `timeout` en la barrera de `join`; que un turno de agente colgado por el proveedor cierre en `failed`. Y repetir el cierre de research con la cuota libre | nada |
-| 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~; queda pxl | pxl: `claude-pxl` no instalado |
-| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11); queda `ProcessModule` para `[[modules.local]]` (`11-composition.md` §13, ~2-3 días) y pulir con uso real | nada |
+| 1 | **Release**: `scripts/release.sh`, `regulus update` (firma minisign, `[update]` de `config.toml`) y "Buscar actualizaciones" en Ajustes de la app (`06-stack.md` §5, `04-client.md` §11) | en la rama `feat/release` |
+| 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~; pxl en la rama `feat/pxl` (vuelta con agente y merge) | nada |
+| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); queda mostrar el estado `blocked` con su acción "confiar" en Ajustes, y pulir con uso real | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
