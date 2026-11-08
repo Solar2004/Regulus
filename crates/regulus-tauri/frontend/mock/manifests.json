@@ -1,0 +1,256 @@
+[
+  {
+    "module": {
+      "id": "regulus/flow@0.1.0",
+      "name": "Flow",
+      "requires_proto": "^1.8",
+      "methods": [],
+      "workflow_id": null
+    },
+    "node": [
+      {
+        "type": "call",
+        "name": "Call",
+        "port": [
+          {
+            "id": "in",
+            "name": "in",
+            "capability": "text@1",
+            "direction": "input",
+            "kind": "then",
+            "required": false,
+            "cardinality": "many"
+          },
+          {
+            "id": "out",
+            "name": "out",
+            "capability": "text@1",
+            "direction": "output",
+            "kind": "then",
+            "required": false
+          },
+          {
+            "id": "done",
+            "name": "done",
+            "capability": "execution.end@1",
+            "direction": "output",
+            "kind": "then",
+            "required": false
+          }
+        ],
+        "field": [
+          {
+            "id": "workflow",
+            "type": "workflow",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "type": "switch",
+        "name": "Switch",
+        "port": [
+          {
+            "id": "in",
+            "name": "in",
+            "capability": "text@1",
+            "direction": "input",
+            "kind": "then",
+            "required": false,
+            "cardinality": "many"
+          },
+          {
+            "id": "other",
+            "name": "other",
+            "capability": "text@1",
+            "direction": "output",
+            "kind": "then",
+            "required": false
+          }
+        ],
+        "field": [
+          {
+            "id": "mode",
+            "type": "select",
+            "default": "rules",
+            "options": [
+              "rules",
+              "enum"
+            ]
+          },
+          {
+            "id": "cases",
+            "type": "rules",
+            "default": []
+          },
+          {
+            "id": "path",
+            "type": "text",
+            "default": ""
+          },
+          {
+            "id": "match",
+            "type": "select",
+            "default": "first",
+            "options": [
+              "first",
+              "all"
+            ]
+          },
+          {
+            "id": "fallback",
+            "type": "text",
+            "default": "other"
+          },
+          {
+            "id": "regex_size_limit",
+            "type": "number",
+            "default": 1048576
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "module": {
+      "id": "regulus/files@0.1.0",
+      "name": "Files",
+      "requires_proto": "^1.9",
+      "methods": [],
+      "workflow_id": null
+    },
+    "node": [
+      {
+        "type": "read",
+        "name": "File to prompt",
+        "port": [
+          {
+            "id": "in",
+            "name": "in",
+            "capability": "text@1",
+            "direction": "input",
+            "kind": "then",
+            "required": false,
+            "cardinality": "many"
+          },
+          {
+            "id": "out",
+            "name": "out",
+            "capability": "text@1",
+            "direction": "output",
+            "kind": "then",
+            "required": false
+          }
+        ],
+        "field": [
+          {
+            "id": "path",
+            "type": "text",
+            "default": ""
+          },
+          {
+            "id": "dir",
+            "type": "text",
+            "default": ""
+          },
+          {
+            "id": "each",
+            "type": "select",
+            "default": "no",
+            "options": [
+              "no",
+              "yes"
+            ]
+          },
+          {
+            "id": "separator",
+            "type": "text",
+            "default": "\n\n"
+          },
+          {
+            "id": "max_bytes",
+            "type": "number",
+            "default": 1048576
+          },
+          {
+            "id": "max_files",
+            "type": "number",
+            "default": 100
+          },
+          {
+            "id": "max_total_bytes",
+            "type": "number",
+            "default": 8388608
+          },
+          {
+            "id": "allow_outside",
+            "type": "select",
+            "default": "no",
+            "options": [
+              "no",
+              "yes"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "write",
+        "name": "Prompt to file",
+        "port": [
+          {
+            "id": "in",
+            "name": "in",
+            "capability": "text@1",
+            "direction": "input",
+            "kind": "then",
+            "required": false,
+            "cardinality": "many"
+          },
+          {
+            "id": "written",
+            "name": "written",
+            "capability": "path@1",
+            "direction": "output",
+            "kind": "then",
+            "required": false
+          }
+        ],
+        "field": [
+          {
+            "id": "path",
+            "type": "text",
+            "default": "output.md"
+          },
+          {
+            "id": "dir",
+            "type": "text",
+            "default": ""
+          },
+          {
+            "id": "mode",
+            "type": "select",
+            "default": "overwrite",
+            "options": [
+              "overwrite",
+              "append"
+            ]
+          },
+          {
+            "id": "separator",
+            "type": "text",
+            "default": "\n"
+          },
+          {
+            "id": "allow_outside",
+            "type": "select",
+            "default": "no",
+            "options": [
+              "no",
+              "yes"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
