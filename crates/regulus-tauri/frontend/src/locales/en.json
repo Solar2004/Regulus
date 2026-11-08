@@ -281,5 +281,12 @@
   "templates.error.unmet": "A required module is missing or its version does not fit.",
   "templates.error.exists": "That profile already exists. Tick replace, or give another id.",
   "templates.error.params": "A variable is missing or invalid.",
-  "templates.error.other": "The core could not apply the template."
+  "templates.error.other": "The core could not apply the template.",
+  "operate.retry": "Check again",
+  "operate.required": "required",
+  "operate.human.kind.approval": "Approval",
+  "operate.human.kind.review": "Review",
+  "templates.severity.error": "Error",
+  "templates.severity.warning": "Warning",
+  "templates.severity.info": "Info"
 }

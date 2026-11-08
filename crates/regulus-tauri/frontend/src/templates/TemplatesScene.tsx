@@ -64,21 +64,25 @@ function Applied({ applied }: { applied: TemplateApplied }) {
   const setView = useRegulusUi((s) => s.setView);
   const startTimeoutMs = useOperateSettings((s) => s.startTimeoutMs);
   const [ran, setRan] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const run = async () => {
     if (!client) return;
     setBusy(true);
-    try { const execution = await operateApi(client).start(applied.profile_id, undefined, startTimeoutMs); setRan(fill(t("operate.started"), { id: execution.id })); }
-    catch (error) { setRan(errorText(error)); } finally { setBusy(false); }
+    try {
+      const execution = await operateApi(client).start(applied.profile_id, undefined, startTimeoutMs);
+      setRan(fill(t("operate.started"), { id: execution.id })); setRunError(null);
+    } catch (error) { setRunError(errorText(error)); } finally { setBusy(false); }
   };
   return <div className="template-applied" role="status">
     <p><CircleCheck size={14} /> {fill(t("templates.applied"), { id: applied.profile_id, path: applied.path })}</p>
-    {applied.diagnostics.length > 0 && <ul className="diagnostics">{applied.diagnostics.map((item, index) => <li key={index} className={`tone-${item.severity === "error" ? "danger" : item.severity === "warning" ? "warning" : "info"}`}><strong>{item.severity}</strong> <code>{item.code}</code> {item.message}</li>)}</ul>}
+    {applied.diagnostics.length > 0 && <ul className="diagnostics">{applied.diagnostics.map((item, index) => <li key={index} className={`tone-${item.severity === "error" ? "danger" : item.severity === "warning" ? "warning" : "info"}`}><strong>{t(`templates.severity.${item.severity}` as LocaleKey)}</strong> <code>{item.code}</code> {item.message}</li>)}</ul>}
     <div className="decision-actions">
       <Button variant="outline" size="sm" onClick={() => openInCanvas(applied.profile_id)}><GitBranch size={14} />{t("templates.openCanvas")}</Button>
       <Button size="sm" disabled={busy} onClick={() => void run()}><Play size={14} />{t("templates.runNow")}</Button>
-      {ran && <Button variant="ghost" size="sm" onClick={() => setView("operate")}>{ran} · {t("templates.goOperate")}</Button>}
+      {ran && <><span className="operate-subtle">{ran}</span><Button variant="ghost" size="sm" onClick={() => setView("operate")}>{t("templates.goOperate")}</Button></>}
     </div>
+    {runError && <div className="operate-error" role="alert"><code className="operate-reason">{runError}</code></div>}
   </div>;
 }
 

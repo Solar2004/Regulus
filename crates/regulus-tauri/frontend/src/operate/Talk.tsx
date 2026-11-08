@@ -3,7 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { Bot, Check, MessagesSquare, Send, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { t } from "@/lib/i18n";
+import { t, type LocaleKey } from "@/lib/i18n";
 import type { OperateApi } from "./client";
 import { agentAnswer, canTalk, errorText, fill, unavailableOf, type NodeRow, type Unavailable } from "./logic";
 import type { ChannelMessage, Participant, PendingDecision } from "./model";
@@ -11,7 +11,7 @@ import { NotAvailable } from "./NotAvailable";
 import { isThinking, turnsOf, useOperateSession } from "./session";
 import { useOperateSettings } from "./settings";
 import { NodeStateMark, nodeReason } from "./StateMark";
-import { usePolling } from "./usePolling";
+import { usePolling, type StillCurrent } from "./usePolling";
 import { ValueView } from "./ValueView";
 
 function Composer({ label, busy, onSend }: { label: string; busy?: boolean; onSend: (text: string) => Promise<boolean> }) {
@@ -49,7 +49,8 @@ function AgentChat({ api, executionId, row }: { api: OperateApi; executionId: st
     }
     return true;
   };
-  if (missing) return <NotAvailable kind={missing.kind} reason={missing.reason} />;
+  // The module may come back: retry clears the state and the next prompt checks again.
+  if (missing) return <NotAvailable kind={missing.kind} reason={missing.reason} onRetry={() => setMissing(null)} />;
   return <>
     <ol className="operate-turns" aria-live="polite">
       {turns.length === 0 && <li className="operate-empty">{t("operate.agent.empty")}</li>}
@@ -69,12 +70,17 @@ function ChannelPanel({ api, executionId, row }: { api: OperateApi; executionId:
   const [state, setState] = useState<{ messages: ChannelMessage[]; participants: Participant[] } | null>(null);
   const [missing, setMissing] = useState<{ kind: Unavailable; reason: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const load = async () => {
-    try { setState(await api.channel(executionId, row.id)); setError(null); }
-    catch (failure) { const kind = unavailableOf(failure); if (kind) setMissing({ kind, reason: errorText(failure) }); else setError(errorText(failure)); }
+  const load = async (current: StillCurrent = () => true) => {
+    try { const loaded = await api.channel(executionId, row.id); if (current()) { setState(loaded); setError(null); } }
+    catch (failure) {
+      if (!current()) return;
+      const kind = unavailableOf(failure);
+      if (kind) setMissing({ kind, reason: errorText(failure) }); else setError(errorText(failure));
+    }
   };
-  usePolling(load, refreshMs, [executionId, row.id, api]);
-  if (missing) return <NotAvailable kind={missing.kind} reason={missing.reason} />;
+  // No polling while the module is absent: retry starts it again.
+  usePolling(load, refreshMs, [executionId, row.id, api], { enabled: !missing });
+  if (missing) return <NotAvailable kind={missing.kind} reason={missing.reason} onRetry={() => setMissing(null)} />;
   const send = async (text: string) => {
     try { await api.say(executionId, row.id, text); setError(null); await load(); return true; }
     catch (failure) { setError(errorText(failure)); return false; }
@@ -114,6 +120,10 @@ export function NodePanel({ api, executionId, row }: { api: OperateApi; executio
   </section>;
 }
 
+const humanKinds: Record<string, LocaleKey> = { approval: "operate.human.kind.approval", review: "operate.human.kind.review" };
+/** A kind this app knows is translated; another one shows as the module names it. */
+const humanKind = (kind: string) => humanKinds[kind] ? t(humanKinds[kind]) : kind;
+
 function Decision({ api, pending, onDone }: { api: OperateApi; pending: PendingDecision; onDone: () => void }) {
   const fields = Object.entries(pending.form?.properties ?? {});
   const [values, setValues] = useState<Record<string, string>>({});
@@ -130,9 +140,9 @@ function Decision({ api, pending, onDone }: { api: OperateApi; pending: PendingD
   };
   const seconds = (ms: number) => Math.max(0, Math.round(ms / 1000));
   return <li className="decision">
-    <header><strong>{pending.prompt || pending.id}</strong><small>{pending.kind} · {pending.node_id} · {fill(t("operate.human.age"), { seconds: seconds(Date.now() - pending.created_ms) })}{pending.deadline_ms ? ` · ${fill(t("operate.human.deadline"), { seconds: seconds(pending.deadline_ms - Date.now()) })}` : ""}</small></header>
+    <header><strong>{pending.prompt || pending.id}</strong><small>{humanKind(pending.kind)} · {pending.node_id} · {fill(t("operate.human.age"), { seconds: seconds(Date.now() - pending.created_ms) })}{pending.deadline_ms ? ` · ${fill(t("operate.human.deadline"), { seconds: seconds(pending.deadline_ms - Date.now()) })}` : ""}</small></header>
     {pending.kind !== "review" && <ValueView value={pending.value} />}
-    {fields.map(([name, field]) => <label key={name} className="operate-field"><span>{name}{pending.form?.required?.includes(name) ? " *" : ""}</span>
+    {fields.map(([name, field]) => <label key={name} className="operate-field"><span>{name}{pending.form?.required?.includes(name) && <em className="required"> {t("operate.required")}</em>}</span>
       <input value={values[name] ?? ""} onChange={(e) => setValues({ ...values, [name]: e.target.value })} placeholder={field.type} />
       {field.description && <small>{field.description}</small>}</label>)}
     <label className="operate-field"><span>{t(pending.kind === "review" ? "operate.human.edit" : "operate.human.comment")}</span>
@@ -150,11 +160,12 @@ export function Decisions({ api, executionId }: { api: OperateApi; executionId: 
   const refreshMs = useOperateSettings((s) => s.refreshMs);
   const [pending, setPending] = useState<PendingDecision[]>([]);
   const [absent, setAbsent] = useState(false);
-  const load = async () => {
-    try { setPending(await api.decisions(executionId)); }
-    catch (error) { if (unavailableOf(error)) setAbsent(true); }
+  const load = async (current: StillCurrent = () => true) => {
+    try { const listed = await api.decisions(executionId); if (current()) setPending(listed); }
+    catch (error) { if (current() && unavailableOf(error)) setAbsent(true); }
   };
-  usePolling(load, refreshMs, [executionId, api]);
+  // Without the human module there is nothing to ask for until the execution changes.
+  usePolling(load, refreshMs, [executionId, api], { enabled: !absent });
   if (absent || pending.length === 0) return null;
   return <section className="operate-panel" aria-label={t("operate.human.title")}>
     <header><UserRound size={16} /><h3>{t("operate.human.title")}</h3><span className="operate-count">{pending.length}</span></header>

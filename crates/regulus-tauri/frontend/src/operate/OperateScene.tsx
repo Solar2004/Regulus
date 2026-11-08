@@ -82,14 +82,15 @@ function EventLog({ api, execution, nodes }: { api: OperateApi; execution: Execu
   const [pending, setPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [node, setNode] = useState("");
-  usePolling(async () => {
+  usePolling(async (current) => {
     try {
       const page = await api.eventsAfter(execution.id, cursor.current, eventPageSize);
+      if (!current()) return;
       setEvents((current) => mergeEvents(current, page.events, eventKeep));
       cursor.current = page.next;
       setPending(page.pending);
       setError(null);
-    } catch (failure) { setError(errorText(failure)); }
+    } catch (failure) { if (current()) setError(errorText(failure)); }
   }, refreshMs, [api, execution.id, eventPageSize, eventKeep]);
   const shown = node ? events.filter((event) => eventTouches(event, node)) : events;
   return <section className="operate-panel events" aria-label={t("operate.events.title")}>
@@ -174,15 +175,16 @@ export default function OperateScene() {
     try { setProfiles(await api.profiles()); } catch (error) { setNotice({ tone: "danger", text: errorText(error) }); setProfiles((current) => current ?? []); }
   };
   useEffect(() => { setProfiles(null); void loadProfiles(); }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
-  usePolling(async () => {
+  usePolling(async (current) => {
     if (!api) return;
     try {
       const [listed, installed] = await Promise.all([api.executions(settings.projectId), api.modules()]);
+      if (!current()) return;
       setExecutions(listed);
       setModules(installed);
       // An execution of a profile not seen yet (applied or saved elsewhere): reload them, as the TUI does.
       if (profiles && listed.some((execution) => !profiles.some((profile) => profile.id === execution.profile_id))) void loadProfiles();
-    } catch (error) { setNotice({ tone: "danger", text: errorText(error) }); }
+    } catch (error) { if (current()) setNotice({ tone: "danger", text: errorText(error) }); }
   }, settings.refreshMs, [api, settings.projectId, profiles]);
 
   const run = async (profile: Profile, workflowId: string | undefined) => {
