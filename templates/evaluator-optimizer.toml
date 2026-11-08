@@ -32,8 +32,9 @@
 # judge_preset=openrouter-openai --set judge_credential=secret:openrouter --set
 # judge_model=z-ai/glm-5.3`. opencode's free models are not reachable outside opencode
 # (Zen answers FreeUsageLimitError "Free models work in OpenCode"), so the free generator
-# cannot be the judge's provider. Another judge engine: wire a `judge.engine@1` node into
-# the judge's `engine` input, it wins over `model`.
+# cannot be the judge's provider. Another judge engine: first add the port `engine`
+# (judge.engine@1, uses) to the `judge` node, then wire a `judge.engine@1` node into it; it
+# wins over `model`.
 #
 # Risks: with `permissions = "allow"` the agent says yes to whatever its tools ask, in
 # `workdir`, unattended; the default `reject` suits a text draft. The engine runs with the
