@@ -62,24 +62,47 @@
 # `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
 # researcher gets the first chunk only, the rest is dropped (a truncation, not paging).
 # (e) a provider that keeps retrying inside the turn (the free model past its quota)
-# hangs the agent: with `turn_timeout_ms` set, the Agent box cancels the turn after that
-# long and sends it to `failed` ("turn timed out after N ms"); with 0 (the default) the
-# flow waits until `regulus stop`. (f) the close writer → report_check → rubric has
-# NOT run end to end (see the run below). The orchestrator and the researchers run in
-# `workdir`; the experimenter and the writer in the workspace folder (`workspace.ready` →
-# their `workdir` input), and the prompt names it too. `experiment_command` and `report_check` may not hold `"` or
-# `\`: use a script.
+# hangs the agent (it is what stalled the opencode run below): with `turn_timeout_ms`
+# set, the Agent box cancels the turn after that long and sends it to `failed` ("turn
+# timed out after N ms"), which is the fix for that stall; with 0 (the default) the flow
+# waits until `regulus stop`. (f) the whole flow, close included, has run end to end
+# with Claude Code (below); with opencode's free model it has not, because the shared
+# free quota runs out before the writer (a limit of that provider, not of the flow).
+# The orchestrator and the researchers run in `workdir`; the experimenter and the writer
+# in the workspace folder (`workspace.ready` → their `workdir` input), and the prompt
+# names it too. `experiment_command` and `report_check` may not hold `"` or `\`: use a
+# script.
 #
 # Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field);
 # the child's researcher has its own engine node. Another model: `--set model=…` (all
 # four agents). Another search: change `search_url`, or replace `source` with a web
 # `search` node and a `searxng` engine node (needs a SearXNG instance).
 #
-# Run (2026-11-08, debug build, `serve --port 0`, temporary --home with `[templates]
-# paths` on this folder; <work> an empty folder). The flow ran through stage 5; the
-# writer's turn and every later rerun stalled on "Free usage limit reached" of the free
-# model (opencode retries inside the turn, so the Agent box gets neither `reply` nor
-# `failed`). The close (report → report_check → rubric) has not run end to end.
+# Run end to end (2026-11-08, master 22bd17c, debug build, `serve --port 0`, temporary
+# --home with `[templates] paths` on this folder; <work> an empty folder), with Claude
+# Code over ACP: the four `engine_*` nodes of the applied profile switched to
+# `engine-claude` (`installation` = the user's claude binary, `config_dir` = its
+# profile, `permissions = allow`); the core caches profiles, so it was restarted to
+# read the edit.
+#
+#   regulus template apply research --set workdir=<work> --set questions=2 \
+#     --set quality_by=gate --set judge_credential=   # profile.check: []
+#   regulus send exec-2 question "What is the Tokio runtime in Rust?"     # 19:21:50
+#     orchestrator.reply "Tokio async runtime Rust overview\nTokio runtime scheduler
+#       architecture" → split.out → fanout.out ×2 → lines.other ×2 → budget.out ×2
+#       → children exec-4, exec-5 → call.out ×2 → gather.out → notes_write.out
+#     workspace.written "<work>/exec-2/notes.md"   (19:25:46, 38 lines)
+#     experimenter.reply → run.sh (2354 bytes: reads Tokio's source from the local cargo
+#       registry and checks the notes' constants against it) → job.done {code:0, ms:27}
+#       → exp_json.out → rubric.gate
+#     writer_join.out → writer.reply → report.written "<work>/report.md" (19:27:54,
+#       6159 bytes, 9 URLs) → report_gate.exit code 0 → rc_json.out + q_json.out
+#     rubric.score 1.0 → rubric.pass → self.score 1.0 → self.passed   (~6 min after send)
+#
+# Earlier run with opencode's free model (same setup, engines as shipped): the flow ran
+# through stage 5, then the writer's turn and every later rerun stalled on "Free usage
+# limit reached" (opencode retries inside the turn; `turn_timeout_ms` now ends such a
+# turn). Its first stages:
 #
 #   regulus template apply research --set workdir=<work> --set questions=2 \
 #     --set quality_by=gate --set judge_credential=   # profile.check: []
