@@ -156,6 +156,7 @@ fn steps(home: &Path) {
     assert_wired(
         &copy,
         &[
+            ("ws.ready", "agent.workdir"),
             ("loop.body", "attempts.in"),
             ("loop.body", "loop.back"),
             ("attempts.out", "collect.in"),

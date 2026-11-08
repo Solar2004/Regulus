@@ -6,11 +6,16 @@
 //! its "then" input `prompt`. Values on `prompt` queue per node and run one at a time on a
 //! thread of the box, so the bus that delivered them goes on at once; the answer leaves
 //! by `reply`, or by `failed`, from that thread (a new chain on the bus, depth 0).
+//!
+//! The "then" input `workdir` moves the agent: the next turn runs in a session opened
+//! there (ACP fixes the working directory when a session opens), and so does every turn
+//! after it until another value comes. The `workdir` field is where it starts.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use regulus_contract_agent_engine as engine;
 use regulus_contract_llm_endpoint as llm;
@@ -50,6 +55,10 @@ const ECHO_FIELD: &str = "failed_echo_chars";
 const YES: &str = "yes";
 /// The "then" input whose values are prompted into the session.
 const PROMPT_PORT: &str = "prompt";
+/// The "then" input that moves the following turns to another directory, and the field
+/// that says where the first ones run.
+const WORKDIR_PORT: &str = "workdir";
+const WORKDIR_FIELD: &str = "workdir";
 /// The "then" outputs: the reply, the error instead of it, and the tokens it took.
 const REPLY_PORT: &str = "reply";
 const FAILED_PORT: &str = "failed";
@@ -61,6 +70,12 @@ const USAGE_KEYS: [(&str, [&str; 2]); 2] = [
 ];
 /// The threads that prompt values from `prompt`.
 const THREAD: &str = "regulus-agent";
+/// The threads that wait on a turn with a time limit.
+const TURN_THREAD: &str = "regulus-agent-turn";
+/// Milliseconds a turn may take before it is cancelled and fails; 0: no limit.
+const TURN_TIMEOUT_FIELD: &str = "turn_timeout_ms";
+/// Milliseconds a cancelled turn has to end before its session is dropped.
+const CANCEL_GRACE_FIELD: &str = "cancel_grace_ms";
 /// What the box says it is to channels.
 const KIND: &str = "agent";
 
@@ -73,6 +88,12 @@ struct Running {
     node: Node,
     /// Whether a prompt went into the session: a fresh one is not opened again.
     used: bool,
+    /// The directory the session was opened in.
+    cwd: PathBuf,
+    /// The last value of the `workdir` input, if one came: it wins over the field.
+    workdir: Option<String>,
+    /// The session was dropped after a turn ran out of time: the next turn opens another.
+    dropped: bool,
     /// Held for a whole prompt: one turn at a time per node, whoever sends it.
     turn: Arc<Mutex<()>>,
 }
@@ -191,13 +212,33 @@ impl Drop for Busy<'_> {
     }
 }
 
-fn workdir(setting: Option<&Value>) -> Result<PathBuf, ModuleError> {
+/// The directory a value of `workdir` names: a path as text, or an object with a `path`
+/// (what a workspace's `info` carries). Empty text: back to the field.
+fn workdir_value(value: &Value) -> Result<String, ModuleError> {
+    match value {
+        Value::String(path) => Ok(path.trim().to_string()),
+        Value::Object(map) => match map.get("path") {
+            Some(Value::String(path)) => Ok(path.trim().to_string()),
+            _ => Err(ModuleError::InvalidParams(
+                "a `workdir` object needs a `path` text".into(),
+            )),
+        },
+        other => Err(ModuleError::InvalidParams(format!(
+            "`workdir` takes a path, not {other}"
+        ))),
+    }
+}
+
+/// Whether two paths name one directory: `/a/../b` and `/b`, or a link and its target,
+/// do. A path that cannot be resolved is compared as it is.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    a == b || real(a) == real(b)
+}
+
+fn workdir(setting: Option<&str>) -> Result<PathBuf, ModuleError> {
     let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    let dir = match setting
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    let dir = match setting.map(str::trim).filter(|s| !s.is_empty()) {
         None => home,
         Some(path) => match path.strip_prefix("~/") {
             Some(rest) => home.join(rest),
@@ -306,7 +347,8 @@ impl Inner {
             execution_id: call.execution_id.clone(),
             node_id: call.node.id.clone(),
         };
-        let (engine, started) = self.open(&me, &call.node)?;
+        let cwd = self.cwd(&call.node, None)?;
+        let (engine, started) = self.open(&me, &call.node, &cwd)?;
         let answer = json(&started)?;
         self.running().insert(
             me,
@@ -315,14 +357,31 @@ impl Inner {
                 session_id: started.session_id,
                 node: call.node,
                 used: false,
+                cwd,
+                workdir: None,
+                dropped: false,
                 turn: Arc::default(),
             },
         );
         Ok(answer)
     }
 
-    /// Opens an engine session for `node` with everything wired into it.
-    fn open(&self, me: &NodeRef, node: &Node) -> Result<(Endpoint, engine::Started), ModuleError> {
+    /// Where the node's turns run: the last value of its `workdir` input, else its field.
+    fn cwd(&self, node: &Node, given: Option<&str>) -> Result<PathBuf, ModuleError> {
+        let field = self
+            .manifest
+            .setting(node, WORKDIR_FIELD)
+            .and_then(Value::as_str);
+        workdir(given.filter(|g| !g.is_empty()).or(field))
+    }
+
+    /// Opens an engine session for `node` in `cwd` with everything wired into it.
+    fn open(
+        &self,
+        me: &NodeRef,
+        node: &Node,
+        cwd: &std::path::Path,
+    ) -> Result<(Endpoint, engine::Started), ModuleError> {
         let engine = self
             .ctx
             .resolve(me, ENGINE_PORT)
@@ -379,7 +438,7 @@ impl Inner {
             .collect::<Result<Vec<toolset::Mount>, _>>()?;
         let hooks = self.hooks(me)?;
         let args = engine::StartArgs {
-            cwd: workdir(self.manifest.setting(node, "workdir"))?,
+            cwd: cwd.to_path_buf(),
             permissions,
             provider,
             slots,
@@ -511,27 +570,122 @@ impl Inner {
             .map(|r| r.turn.clone())
             .ok_or_else(|| Self::not_running(&me))?;
         let _turn = lock(&turn);
-        let (engine, session_id, node) = {
+        let renewed = {
             let mut running = self.running();
             let found = running.get_mut(&me).ok_or_else(|| Self::not_running(&me))?;
+            // A `workdir` that names no directory fails the turn: it never runs elsewhere.
+            let cwd = self.cwd(&found.node, found.workdir.as_deref())?;
             let used = std::mem::replace(&mut found.used, true);
             let fresh = self
                 .manifest
                 .setting(&found.node, FRESH_FIELD)
                 .and_then(Value::as_str)
                 == Some(YES);
-            let node = (fresh && used).then(|| found.node.clone());
-            (found.engine.clone(), found.session_id.clone(), node)
+            // A session keeps the directory it opened in: moving is opening another.
+            let renew = (fresh && used || !same_dir(&cwd, &found.cwd) || found.dropped)
+                .then(|| (found.node.clone(), cwd));
+            (
+                found.engine.clone(),
+                found.session_id.clone(),
+                found.node.clone(),
+                renew,
+            )
         };
-        let (engine, session_id) = match node {
-            Some(node) => self.renew(&me, &node, engine, session_id)?,
+        let (engine, session_id, node, renew) = renewed;
+        let (engine, session_id) = match renew {
+            Some((node, cwd)) => self.renew(&me, &node, &cwd, engine, session_id)?,
             None => (engine, session_id),
         };
-        let args = engine::PromptArgs {
-            session_id,
-            text: params.text,
-        };
-        self.ctx.call(&engine, engine::SESSION_PROMPT, json(args)?)
+        self.timed_turn(&me, &node, engine, session_id, params.text)
+    }
+
+    /// The engine's turn, bounded by `turn_timeout_ms`. When it runs out, the turn is
+    /// cancelled (`engine.session.cancel`) and given `cancel_grace_ms` to end; an engine
+    /// without cancel, or a turn that still does not end, loses its session, and the next
+    /// turn opens another. Either way the turn fails.
+    fn timed_turn(
+        &self,
+        me: &NodeRef,
+        node: &Node,
+        engine: Endpoint,
+        session_id: String,
+        text: String,
+    ) -> Result<Value, ModuleError> {
+        let args = json(engine::PromptArgs {
+            session_id: session_id.clone(),
+            text,
+        })?;
+        let limit = self.count(node, TURN_TIMEOUT_FIELD);
+        if limit == 0 {
+            return self.ctx.call(&engine, engine::SESSION_PROMPT, args);
+        }
+        // The engine's call blocks until the turn ends, so it waits on a thread of its own.
+        let (answer, answered) = mpsc::channel();
+        let (ctx, to) = (self.ctx.clone(), engine.clone());
+        std::thread::Builder::new()
+            .name(TURN_THREAD.into())
+            .spawn(move || {
+                let _ = answer.send(ctx.call(&to, engine::SESSION_PROMPT, args));
+            })
+            .map_err(|e| ModuleError::Failed(format!("cannot start a turn thread: {e}")))?;
+        match answered.recv_timeout(Duration::from_millis(limit)) {
+            Ok(outcome) => outcome,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ModuleError::Failed(
+                "the turn ended without an answer".into(),
+            )),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // The answer may have come just as the time ran out: it is the turn's.
+                if let Ok(outcome) = answered.try_recv() {
+                    return outcome;
+                }
+                let grace = self.count(node, CANCEL_GRACE_FIELD);
+                let cancel = json(engine::CancelArgs {
+                    session_id: session_id.clone(),
+                })?;
+                // Only a turn that ends well after the cancel keeps its session; an engine
+                // that cannot cancel, or a session that died meanwhile, loses it.
+                let how = match self.ctx.call(&engine, engine::SESSION_CANCEL, cancel) {
+                    Err(error) => format!("the engine could not cancel it ({error})"),
+                    Ok(_) => match answered.recv_timeout(Duration::from_millis(grace)) {
+                        Ok(Ok(_)) => {
+                            return Err(ModuleError::Failed(format!(
+                                "turn timed out after {limit} ms (it was cancelled)"
+                            )))
+                        }
+                        Ok(Err(error)) => {
+                            format!("it ended with an error once cancelled ({error})")
+                        }
+                        Err(_) => {
+                            format!("it did not end within `{CANCEL_GRACE_FIELD}` ({grace} ms)")
+                        }
+                    },
+                };
+                self.drop_session(me, &engine, session_id);
+                Err(ModuleError::Failed(format!(
+                    "turn timed out after {limit} ms; {how}: its session was dropped"
+                )))
+            }
+        }
+    }
+
+    /// Ends a session whose turn would not end; the node's next turn opens another.
+    fn drop_session(&self, me: &NodeRef, engine: &Endpoint, session_id: String) {
+        if let Some(found) = self
+            .running()
+            .get_mut(me)
+            .filter(|found| found.session_id == session_id)
+        {
+            found.dropped = true;
+        }
+        let args = engine::StopArgs { session_id };
+        if let Err(error) =
+            json(args).and_then(|args| self.ctx.call(engine, engine::SESSION_STOP, args))
+        {
+            eprintln!(
+                "regulus: agent `{}`: cannot drop its session: {error}",
+                me.node_id
+            );
+        }
     }
 
     /// Ends the node's session and opens another, so the next turn starts from nothing.
@@ -540,6 +694,7 @@ impl Inner {
         &self,
         me: &NodeRef,
         node: &Node,
+        cwd: &std::path::Path,
         engine: Endpoint,
         session_id: String,
     ) -> Result<(Endpoint, String), ModuleError> {
@@ -548,7 +703,7 @@ impl Inner {
             engine::SESSION_STOP,
             json(engine::StopArgs { session_id })?,
         )?;
-        let (engine, started) = self.open(me, node)?;
+        let (engine, started) = self.open(me, node, cwd)?;
         let session_id = started.session_id;
         let mut running = self.running();
         match running.get_mut(me) {
@@ -556,6 +711,8 @@ impl Inner {
                 found.engine = engine.clone();
                 found.session_id = session_id.clone();
                 found.used = true;
+                found.cwd = cwd.to_path_buf();
+                found.dropped = false;
                 Ok((engine, session_id))
             }
             None => {
@@ -571,6 +728,9 @@ impl Inner {
     /// of its own that then takes the queue in order.
     fn event(self: &Arc<Self>, call: NodeCall) -> Result<Value, ModuleError> {
         let event: NodeEvent = parse(call.args)?;
+        if event.port == WORKDIR_PORT {
+            return self.move_to(call.execution_id, call.node.id, &event.value);
+        }
         if event.port != PROMPT_PORT {
             return Err(ModuleError::InvalidParams(format!(
                 "`{}` is not an input of the agent",
@@ -615,6 +775,29 @@ impl Inner {
             .spawn(move || inner.drain(me, node, stop, text))
             .map_err(|e| ModuleError::Failed(format!("cannot start an agent thread: {e}")))?;
         Ok(json!({ "prompting": true }))
+    }
+
+    /// A value on `workdir`: the turns that start from now on run there. Kept even when it
+    /// names no directory, so those turns fail instead of running somewhere else; the
+    /// delivery says so at once too.
+    fn move_to(
+        &self,
+        execution_id: String,
+        node_id: String,
+        value: &Value,
+    ) -> Result<Value, ModuleError> {
+        let me = NodeRef {
+            execution_id,
+            node_id,
+        };
+        let path = workdir_value(value)?;
+        let mut running = self.running();
+        let found = running.get_mut(&me).ok_or_else(|| Self::not_running(&me))?;
+        found.workdir = Some(path.clone());
+        let checked = self.cwd(&found.node, Some(&path));
+        drop(running);
+        let cwd = checked?;
+        Ok(json!({ "workdir": cwd }))
     }
 
     /// Prompts `text`, then every value that queued meanwhile, emitting each answer.

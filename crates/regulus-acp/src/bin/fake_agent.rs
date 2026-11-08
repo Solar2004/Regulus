@@ -8,6 +8,8 @@
 //! - `provider` answers what `providers/set` received before the session, or `<unset>`
 //! - `meta` answers the `_meta` of `session/new`
 //! - `exit` kills the process mid-turn, saying so on stderr
+//! - `hang` answers nothing until `session/cancel`, then ends the turn as `cancelled`
+//! - `deaf` never answers, cancel or not
 //! - anything else is echoed back in two chunks
 
 use std::io::{self, BufRead, Write};
@@ -61,6 +63,25 @@ fn main() {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
+                if text == "deaf" {
+                    continue;
+                }
+                if text == "hang" {
+                    let cancelled = lines
+                        .by_ref()
+                        .map_while(Result::ok)
+                        .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
+                        .any(|m| m["method"] == "session/cancel");
+                    if !cancelled {
+                        return;
+                    }
+                    chunk(&mut out, &session, "hung until cancelled");
+                    send(
+                        &mut out,
+                        json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "cancelled" } }),
+                    );
+                    continue;
+                }
                 if text == "exit" {
                     eprintln!("fake-agent: told to exit");
                     std::process::exit(3);

@@ -56,27 +56,53 @@
 # (b) with `quality_by = criteria` the whole report is sent to an external service (the
 # judge's provider, OpenRouter by default). (c) the barrier `gather` waits for exactly
 # `questions` answers: fewer lines from the orchestrator, or `max_ms` running out before
-# every child started (`exceeded` does not feed it), and it waits until `regulus stop`;
-# extra lines go out on `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
+# every child started (`exceeded` does not feed it), and it waits until `regulus stop`
+# unless `join_timeout_ms` is set: then, that long after the first answer, the notes are
+# made of the answers that came (the barrier's `timeout`); extra lines go out on
+# `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
 # researcher gets the first chunk only, the rest is dropped (a truncation, not paging).
 # (e) a provider that keeps retrying inside the turn (the free model past its quota)
-# hangs the agent: the Agent box gets neither `reply` nor `failed`, and `guards` can
-# only report it (`watchdog`, `timeout` forward and warn, they cannot end a turn), so
-# the flow waits until `regulus stop`. (f) the close writer → report_check → rubric has
-# NOT run end to end (see the run below). The agents start in `workdir` and are told the
-# workspace in the prompt. `experiment_command` and `report_check` may not hold `"` or
-# `\`: use a script.
+# hangs the agent (it is what stalled the opencode run below): with `turn_timeout_ms`
+# set, the Agent box cancels the turn after that long and sends it to `failed` ("turn
+# timed out after N ms"), which is the fix for that stall; with 0 (the default) the flow
+# waits until `regulus stop`. (f) the whole flow, close included, has run end to end
+# with Claude Code (below); with opencode's free model it has not, because the shared
+# free quota runs out before the writer (a limit of that provider, not of the flow).
+# The orchestrator and the researchers run in `workdir`; the experimenter and the writer
+# in the workspace folder (`workspace.ready` → their `workdir` input), and the prompt
+# names it too. `experiment_command` and `report_check` may not hold `"` or `\`: use a
+# script.
 #
 # Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field);
 # the child's researcher has its own engine node. Another model: `--set model=…` (all
 # four agents). Another search: change `search_url`, or replace `source` with a web
 # `search` node and a `searxng` engine node (needs a SearXNG instance).
 #
-# Run (2026-11-08, debug build, `serve --port 0`, temporary --home with `[templates]
-# paths` on this folder; <work> an empty folder). The flow ran through stage 5; the
-# writer's turn and every later rerun stalled on "Free usage limit reached" of the free
-# model (opencode retries inside the turn, so the Agent box gets neither `reply` nor
-# `failed`). The close (report → report_check → rubric) has not run end to end.
+# Run end to end (2026-11-08, master 22bd17c, debug build, `serve --port 0`, temporary
+# --home with `[templates] paths` on this folder; <work> an empty folder), with Claude
+# Code over ACP: the four `engine_*` nodes of the applied profile switched to
+# `engine-claude` (`installation` = the user's claude binary, `config_dir` = its
+# profile, `permissions = allow`); the core caches profiles, so it was restarted to
+# read the edit.
+#
+#   regulus template apply research --set workdir=<work> --set questions=2 \
+#     --set quality_by=gate --set judge_credential=   # profile.check: []
+#   regulus send exec-2 question "What is the Tokio runtime in Rust?"     # 19:21:50
+#     orchestrator.reply "Tokio async runtime Rust overview\nTokio runtime scheduler
+#       architecture" → split.out → fanout.out ×2 → lines.other ×2 → budget.out ×2
+#       → children exec-4, exec-5 → call.out ×2 → gather.out → notes_write.out
+#     workspace.written "<work>/exec-2/notes.md"   (19:25:46, 38 lines)
+#     experimenter.reply → run.sh (2354 bytes: reads Tokio's source from the local cargo
+#       registry and checks the notes' constants against it) → job.done {code:0, ms:27}
+#       → exp_json.out → rubric.gate
+#     writer_join.out → writer.reply → report.written "<work>/report.md" (19:27:54,
+#       6159 bytes, 9 URLs) → report_gate.exit code 0 → rc_json.out + q_json.out
+#     rubric.score 1.0 → rubric.pass → self.score 1.0 → self.passed   (~6 min after send)
+#
+# Earlier run with opencode's free model (same setup, engines as shipped): the flow ran
+# through stage 5, then the writer's turn and every later rerun stalled on "Free usage
+# limit reached" (opencode retries inside the turn; `turn_timeout_ms` now ends such a
+# turn). Its first stages:
 #
 #   regulus template apply research --set workdir=<work> --set questions=2 \
 #     --set quality_by=gate --set judge_credential=   # profile.check: []
@@ -124,6 +150,7 @@ requires = [
 workdir = { description = "absolute path of an existing folder: the agents start there, the workspaces go in <workdir>/<execution>, paper.md and the report are written there" }
 model = { description = "model of the engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
 questions = { description = "sub-questions the orchestrator is asked for; the barrier waits for this many answers", default = 3 }
+join_timeout_ms = { description = "milliseconds the notes barrier waits for every sub-question, from the first answer; past it the notes are made of the ones that came. 0: it waits forever", default = 0 }
 max_ms = { description = "milliseconds from the first sub-question after which no other starts", default = 1800000 }
 search_url = { description = "URL each sub-question is fetched from; {{input}} is the sub-question, percent-encoded", default = "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch={{input}}" }
 source_chars = { description = "characters of the fetched page a researcher gets", default = 6000 }
@@ -139,6 +166,7 @@ judge_preset = { description = "provider template (presets.toml) of the judge, O
 judge_credential = { description = "the judge's key as secret:<name> (set it with regulus secret set <name>); empty: none, for quality_by = gate or a local endpoint", default = "secret:openrouter" }
 permissions = { description = "what the agents answer when their tools ask for permission: allow or reject", default = "allow" }
 input = { description = "kept as is: the {{input}} of the nodes that take the value", default = "{{input}}" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "research"
@@ -186,7 +214,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 250, y = 50 }
-  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "orchestrator", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
@@ -276,10 +304,11 @@ ports = [
   type = "join"
   module_id = "regulus/flow@0.1.0"
   position = { x = 1250, y = 50 }
-  config = { mode = "barrier", count = {{questions}}, shape = "array" }
+  config = { mode = "barrier", count = {{questions}}, shape = "array", timeout_ms = {{join_timeout_ms}} }
   ports = [
     { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
@@ -331,6 +360,7 @@ ports = [
   config = { engine = "folder", root = "{{workdir}}", autostart = "yes", quota_bytes = {{quota_bytes}} }
   ports = [
     { id = "write", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ready", capability = "path@1", direction = "output", kind = "then" },
     { id = "written", capability = "path@1", direction = "output", kind = "then" },
     { id = "quota_exceeded", capability = "json@1", direction = "output", kind = "then" },
     { id = "error", capability = "text@1", direction = "output", kind = "then" },
@@ -385,10 +415,11 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 2250, y = 50 }
-  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "experimenter", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
@@ -490,10 +521,11 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 3250, y = 450 }
-  config = { name = "writer", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "writer", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
@@ -726,6 +758,13 @@ ports = [
   from = { node_id = "call", port_id = "out" }
   to = { node_id = "gather", port_id = "in" }
 
+  # The time ran out (`join_timeout_ms`): what came goes on the same way.
+  [[workflows.wires]]
+  id = "gather-notes-timeout"
+  kind = "then"
+  from = { node_id = "gather", port_id = "timeout" }
+  to = { node_id = "notes", port_id = "in" }
+
   [[workflows.wires]]
   id = "gather-notes"
   kind = "then"
@@ -779,6 +818,20 @@ ports = [
   kind = "then"
   from = { node_id = "workspace", port_id = "written" }
   to = { node_id = "notes_path", port_id = "set" }
+
+  # The workspace folder is announced when the run starts (`autostart`), long before
+  # the notes: the experimenter and the writer run in it.
+  [[workflows.wires]]
+  id = "ready-experimenter"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "ready" }
+  to = { node_id = "experimenter", port_id = "workdir" }
+
+  [[workflows.wires]]
+  id = "ready-writer"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "ready" }
+  to = { node_id = "writer", port_id = "workdir" }
 
   [[workflows.wires]]
   id = "written-exp"
@@ -1105,7 +1158,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 850, y = 150 }
-  config = { name = "researcher", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { name = "researcher", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },

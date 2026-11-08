@@ -157,7 +157,7 @@ nada más. El código ACP es una librería compartida por los motores, no un mó
 
 **El contrato `agent.engine@1`:** `engine.detect` (instalaciones del PC),
 `engine.session.start` (`cwd`, `permissions`), `engine.session.prompt` (`text` →
-`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional) y `engine.session.stop`. `StartArgs.tools` lleva los montajes de herramientas (`11-composition.md` §3.0). Cambiar su forma es `agent.engine@2`. Los
+`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional), `engine.session.cancel` (pide que acabe el turno en curso, `session/cancel` de ACP; el turno responde, normalmente con `cancelled`; opcional, 2026-11-08) y `engine.session.stop`. `StartArgs.tools` lleva los montajes de herramientas (`11-composition.md` §3.0). Cambiar su forma es `agent.engine@2`. Los
 contratos de capacidad viven en `crates/contracts/<capacidad>`, no dentro de ningún módulo.
 
 **Cada motor anuncia además su propio método de detección** (`claude.detect`,
@@ -188,6 +188,32 @@ conectado > campo `model` > el setup del propio opencode**. Claude Code no lo ga
 modelo sale de su setup. Ejemplo `crates/modules/agent/examples/then.toml`, probado por
 CLI con el modelo gratis: dos prompts dan dos `reply` y, con `yes`, dos sesiones de
 opencode; con `no`, una.
+
+✅ **Entrada `workdir` (2026-11-08).** `path@1`, "luego", una: mueve al agente. Los
+turnos que empiezan después de que llegue un valor corren en ese directorio, y los
+siguientes también hasta que llegue otro; el campo `workdir` es dónde corre mientras no
+llega nada, y un texto vacío vuelve a él. Acepta la ruta como texto o un objeto con `path`
+(el `info` de un workspace); lo normal es cablear `workspace.ready`. **Cambiar de
+directorio cierra la sesión y abre otra, y el contexto se pierde:** ACP fija el cwd en
+`session/new` (`regulus-acp` lo manda ahí; el proceso del CLI sigue con el cwd de
+`serve`), así que el valor del turno gana abriendo una sesión nueva en él. Un valor que no
+es un directorio absoluto existente se rechaza al llegar y se guarda igual: los turnos
+siguientes fallan por `failed` en vez de correr en otro sitio. El cwd es dónde empieza el
+agente, no una valla: con `allow` puede escribir fuera por ruta absoluta. Lo usan
+`best-of-n`, `team` y `research` (`13-blocks.md` §5).
+
+✅ **Turno con tope (2026-11-08).** Campo `turn_timeout_ms` (0 = sin límite): un turno que
+no da ni `reply` ni `failed` en ese tiempo (proveedor sin cuota que reintenta por dentro,
+adaptador colgado) se cancela con `engine.session.cancel` y sale por `failed` como
+"turn timed out after N ms (it was cancelled)". Si el motor no puede cancelar, el turno
+acaba con error tras la cancelación o sigue vivo pasado `cancel_grace_ms` (5000), la caja
+cierra la sesión ("turn timed out after N ms; <qué pasó>: its session was dropped") y el
+turno siguiente abre otra, sin contexto. Una respuesta que llega justo al vencer es la del
+turno: sale por `reply`. Al comparar directorios para decidir si se mueve, la caja resuelve
+`..` y enlaces: `/a/../b` y `/b` son el mismo y no abren sesión. Vale para los tres caminos de
+prompt (`prompt`, `agent.prompt`, canal). `regulus-acp` lo sirve: el turno escucha la
+cancelación mientras lee y manda `session/cancel` al agente. Probado contra un motor
+falso y contra el agente ACP de prueba (`hang` responde a la cancelación, `deaf` no).
 
 ## 6. Proveedores
 

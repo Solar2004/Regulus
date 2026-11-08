@@ -111,6 +111,7 @@ spec_prompt = { description = "the spec phase (Spec Kit /specify)", default = "Y
 plan_prompt = { description = "the plan phase (Spec Kit /plan)", default = "You are the architect. Write the technical plan for the specification below: stack, structure, files and how each acceptance criterion is checked." }
 tasks_prompt = { description = "the tasks phase (Spec Kit /tasks)", default = "You are the scrum master. Break the plan below into a short numbered list of small tasks, each one with the file it touches and how to check it." }
 implement_prompt = { description = "the implement phase (Spec Kit /implement), every turn of the loop", default = "You are the developer. Implement the tasks below in this project, writing the files yourself. Then make the check pass: the last check says what it wants." }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "sdd"
@@ -793,7 +794,7 @@ ports = [
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 500, y = 100 }
-  config = { workdir = "{{workdir}}", permissions = "{{permissions}}" }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },

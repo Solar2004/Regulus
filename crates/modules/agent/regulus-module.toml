@@ -99,6 +99,20 @@ name = "Agent"
   kind        = "then"
   cardinality = "many"
 
+  # Moves the agent: the turns that start after a value arrives run in that directory, in
+  # a session opened there. ACP fixes a session's directory when it opens, so changing
+  # directory CLOSES the session and opens a new one: the context is lost. A path as text, or an
+  # object with `path` (a workspace's `info`); wire `workspace.ready` here. Empty text:
+  # back to the `workdir` field. A path that is not an existing absolute directory is
+  # refused on arrival and kept, so the turns after it fail on `failed` instead of running
+  # somewhere else.
+  [[node.port]]
+  id         = "workdir"
+  name       = "workdir"
+  capability = "path@1"
+  direction  = "input"
+  kind       = "then"
+
   # The agent's final reply to each value of `prompt`.
   [[node.port]]
   id         = "reply"
@@ -147,7 +161,25 @@ name = "Agent"
   type    = "number"
   default = 2000
 
-  # Where the agent works. Empty: the user's home directory.
+  # Milliseconds one turn may take (a provider past its quota, a hung adapter). When they
+  # run out the turn is cancelled (`engine.session.cancel`, ACP `session/cancel`) and
+  # leaves on `failed` as "turn timed out after N ms"; it never gives `reply`. 0: no
+  # limit.
+  [[node.field]]
+  id      = "turn_timeout_ms"
+  type    = "number"
+  default = 0
+
+  # Milliseconds a timed-out turn has to end once cancelled. An engine without cancel, or
+  # a turn still running past this, loses its session (the process ends) and the next
+  # turn opens a new one, without the context.
+  [[node.field]]
+  id      = "cancel_grace_ms"
+  type    = "number"
+  default = 5000
+
+  # Where the agent works until a value reaches the `workdir` input. Empty: the user's
+  # home directory.
   [[node.field]]
   id      = "workdir"
   type    = "text"

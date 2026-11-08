@@ -18,7 +18,13 @@ const FAKE: &str = "t/fake-engine@1.0.0";
 #[derive(Default)]
 struct Seen {
     started: Vec<String>,
+    /// The directory each session opened in, in the order they opened.
+    cwds: Vec<PathBuf>,
     stopped: Vec<String>,
+    /// Sessions whose turn was asked to end.
+    cancelled: Vec<String>,
+    /// The engine has no cancel: it answers `UnknownMethod`.
+    no_cancel: bool,
     slow_began: usize,
     slow_returned: usize,
     /// Lets every `slow` turn finish.
@@ -54,7 +60,8 @@ impl Shared {
 
 /// An engine that answers `<session>:<turn in that session>:<text>`, fails on `boom`,
 /// reports usage on `count`, and holds `slow` until opened or its session stops (then it
-/// fails, like a closed ACP session).
+/// fails, like a closed ACP session). `hang` holds until cancelled (then ends the turn as
+/// `cancelled`) and `deaf` until its session stops, whatever is asked.
 struct FakeEngine {
     manifest: Manifest,
     shared: Arc<Shared>,
@@ -72,7 +79,9 @@ impl Module for FakeEngine {
         let call: NodeCall = serde_json::from_value(params).unwrap();
         match name {
             engine::SESSION_START => {
+                let args: engine::StartArgs = serde_json::from_value(call.args).unwrap();
                 let mut seen = self.shared.seen();
+                seen.cwds.push(args.cwd);
                 let id = format!("s{}", seen.started.len() + 1);
                 seen.started.push(id.clone());
                 Ok(json!({ "session_id": id, "agent": { "name": "fake", "version": "1" } }))
@@ -84,6 +93,21 @@ impl Module for FakeEngine {
                 }
                 if args.text == "boom" {
                     return Err(ModuleError::Failed("the engine blew up".into()));
+                }
+                if args.text == "hang" || args.text == "deaf" {
+                    let hears = args.text == "hang";
+                    let mut seen = self.shared.seen();
+                    let done = |seen: &Seen| {
+                        seen.stopped.contains(&args.session_id)
+                            || (hears && seen.cancelled.contains(&args.session_id))
+                    };
+                    while !done(&seen) {
+                        seen = self.shared.wake.wait(seen).unwrap();
+                    }
+                    if seen.stopped.contains(&args.session_id) {
+                        return Err(ModuleError::Failed("the agent session is closed".into()));
+                    }
+                    return Ok(json!({ "stop_reason": "cancelled", "text": "" }));
                 }
                 if args.text == "slow" {
                     let mut seen = self.shared.seen();
@@ -114,6 +138,15 @@ impl Module for FakeEngine {
                 }
                 Ok(turn)
             }
+            engine::SESSION_CANCEL if self.shared.seen().no_cancel => {
+                Err(ModuleError::UnknownMethod(name.into()))
+            }
+            engine::SESSION_CANCEL => {
+                let args: engine::CancelArgs = serde_json::from_value(call.args).unwrap();
+                self.shared.seen().cancelled.push(args.session_id);
+                self.shared.wake.notify_all();
+                Ok(Value::Null)
+            }
             engine::SESSION_STOP => {
                 let args: engine::StopArgs = serde_json::from_value(call.args).unwrap();
                 self.shared.seen().stopped.push(args.session_id);
@@ -140,14 +173,20 @@ fn profile(config: Value) -> Profile {
         ("failed", "text@1"),
         ("usage", "json@1"),
     ];
-    let mut own = vec![port("go", "text@1", "input", "then")];
+    let mut own = vec![
+        port("go", "text@1", "input", "then"),
+        port("dir", "path@1", "input", "then"),
+    ];
     let mut ports = vec![
         port("engine", "agent.engine@1", "input", "uses"),
         port("prompt", "text@1", "input", "then"),
+        port("workdir", "path@1", "input", "then"),
     ];
     let mut wires = vec![
         json!({ "id": "w-go", "kind": "then", "from": { "node_id": "self", "port_id": "go" },
                 "to": { "node_id": "a", "port_id": "prompt" } }),
+        json!({ "id": "w-dir", "kind": "then", "from": { "node_id": "self", "port_id": "dir" },
+                "to": { "node_id": "a", "port_id": "workdir" } }),
         json!({ "id": "w-engine", "kind": "uses", "from": { "node_id": "e", "port_id": "engine" },
                 "to": { "node_id": "a", "port_id": "engine" } }),
     ];
@@ -206,9 +245,13 @@ fn start_with(config: Value, data: &Path) -> (Arc<Core>, String, Arc<Shared>) {
 }
 
 fn send(core: &Core, id: &str, text: &str) {
+    send_to(core, id, "go", text);
+}
+
+fn send_to(core: &Core, id: &str, port: &str, text: &str) {
     core.dispatch(
         method::WORKFLOW_SEND,
-        json!({ "execution_id": id, "port": "go", "value": text }),
+        json!({ "execution_id": id, "port": port, "value": text }),
     )
     .unwrap();
 }
@@ -225,7 +268,9 @@ fn outputs(core: &Core, id: &str, count: usize) -> Vec<(String, Value)> {
         let out: Vec<(String, Value)> = page
             .events
             .into_iter()
-            .filter(|e| e.from.node_id == "self" && e.from.port_id != "go")
+            .filter(|e| {
+                e.from.node_id == "self" && !["go", "dir"].contains(&e.from.port_id.as_str())
+            })
             .filter_map(|e| match e.kind {
                 BusEventKind::Emitted { value } => Some((e.from.port_id, value)),
                 _ => None,
@@ -395,5 +440,162 @@ fn stopping_with_a_prompt_in_flight_emits_nothing_and_does_not_hang() {
         .collect();
     assert!(emitted.is_empty(), "{emitted:?}");
     assert_eq!(engine.seen().stopped, ["s1"]);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_workdir_value_moves_the_following_turns_to_a_session_opened_there() {
+    let data = data_dir("workdir");
+    let elsewhere = data_dir("workdir-target");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (core, id, engine) = start("no", &data);
+    send(&core, &id, "one");
+    assert_eq!(outputs(&core, &id, 1), [reply("s1:1:one")]);
+    // Turns after the value run in a session opened there; the next ones stay in it.
+    send_to(&core, &id, "dir", elsewhere.to_str().unwrap());
+    send(&core, &id, "two");
+    send(&core, &id, "three");
+    assert_eq!(
+        outputs(&core, &id, 3)[1..],
+        [reply("s2:1:two"), reply("s2:2:three")]
+    );
+    // A path that is no directory fails the turns instead of running them elsewhere.
+    send_to(&core, &id, "dir", "/no/such/regulus/dir");
+    send(&core, &id, "four");
+    let out = outputs(&core, &id, 4);
+    assert_eq!(out[3].0, "failed");
+    let error = out[3].1.as_str().unwrap();
+    assert!(
+        error.contains("not an existing absolute directory"),
+        "{error}"
+    );
+    // Empty text: back to the field.
+    send_to(&core, &id, "dir", "");
+    send(&core, &id, "five");
+    assert_eq!(outputs(&core, &id, 5)[4], reply("s3:1:five"));
+    {
+        let seen = engine.seen();
+        assert_eq!(seen.started, ["s1", "s2", "s3"]);
+        assert_eq!(
+            seen.cwds,
+            [PathBuf::from("/"), elsewhere.clone(), PathBuf::from("/")]
+        );
+        assert_eq!(seen.stopped, ["s1", "s2"]);
+    }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn a_turn_past_turn_timeout_ms_is_cancelled_or_loses_its_session_and_fails() {
+    let data = data_dir("timeout");
+    // Long enough that the turns that must end well do on a loaded machine.
+    let config = json!({ "workdir": "/", "turn_timeout_ms": 500, "cancel_grace_ms": 500 });
+    let (core, id, engine) = start_with(config, &data);
+    // An engine that hears the cancel ends the turn: the session stays.
+    send(&core, &id, "hang");
+    send(&core, &id, "one");
+    let out = outputs(&core, &id, 2);
+    assert_eq!(out[0].0, "failed");
+    let error = out[0].1.as_str().unwrap();
+    assert!(
+        error.contains("turn timed out after 500 ms") && error.contains("cancelled"),
+        "{error}"
+    );
+    assert_eq!(out[1], reply("s1:1:one"));
+    // One that does not loses its session; the next turn opens another.
+    send(&core, &id, "deaf");
+    send(&core, &id, "two");
+    let out = outputs(&core, &id, 4);
+    assert_eq!(out[2].0, "failed");
+    let error = out[2].1.as_str().unwrap();
+    assert!(
+        error.contains("turn timed out after 500 ms") && error.contains("dropped"),
+        "{error}"
+    );
+    assert_eq!(out[3], reply("s2:1:two"));
+    {
+        let seen = engine.seen();
+        assert_eq!(seen.cancelled, ["s1", "s1"]);
+        assert_eq!(seen.started, ["s1", "s2"]);
+        assert!(
+            seen.stopped.starts_with(&["s1".to_string()]),
+            "{:?}",
+            seen.stopped
+        );
+    }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn an_engine_without_cancel_loses_the_session_of_a_turn_that_ran_out() {
+    let data = data_dir("no-cancel");
+    let config = json!({ "workdir": "/", "turn_timeout_ms": 500, "cancel_grace_ms": 500 });
+    let (core, id, engine) = start_with(config, &data);
+    engine.seen().no_cancel = true;
+    send(&core, &id, "hang");
+    send(&core, &id, "one");
+    let out = outputs(&core, &id, 2);
+    assert_eq!(out[0].0, "failed");
+    let error = out[0].1.as_str().unwrap();
+    assert!(
+        error.contains("could not cancel") && error.contains("its session was dropped"),
+        "{error}"
+    );
+    assert_eq!(out[1], reply("s2:1:one"));
+    assert!(engine.seen().cancelled.is_empty());
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn fresh_context_and_a_move_open_one_session_not_two() {
+    let data = data_dir("fresh-move");
+    let elsewhere = data_dir("fresh-move-target");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (core, id, engine) = start("yes", &data);
+    send(&core, &id, "one");
+    assert_eq!(outputs(&core, &id, 1), [reply("s1:1:one")]);
+    send_to(&core, &id, "dir", elsewhere.to_str().unwrap());
+    send(&core, &id, "two");
+    send(&core, &id, "three");
+    assert_eq!(
+        outputs(&core, &id, 3)[1..],
+        [reply("s2:1:two"), reply("s3:1:three")]
+    );
+    // The same directory spelled another way is no move.
+    let spelled = elsewhere.join("..").join(elsewhere.file_name().unwrap());
+    send_to(&core, &id, "dir", spelled.to_str().unwrap());
+    {
+        let seen = engine.seen();
+        assert_eq!(seen.started, ["s1", "s2", "s3"]);
+        assert_eq!(
+            seen.cwds,
+            [PathBuf::from("/"), elsewhere.clone(), elsewhere.clone()]
+        );
+    }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn the_same_directory_spelled_another_way_keeps_the_session() {
+    let data = data_dir("same-dir");
+    let (core, id, engine) = start("no", &data);
+    send(&core, &id, "one");
+    assert_eq!(outputs(&core, &id, 1), [reply("s1:1:one")]);
+    send_to(&core, &id, "dir", "/tmp/..");
+    send(&core, &id, "two");
+    assert_eq!(outputs(&core, &id, 2)[1], reply("s1:2:two"));
+    assert_eq!(engine.seen().started, ["s1"]);
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
     let _ = std::fs::remove_dir_all(&data);
 }

@@ -8,7 +8,7 @@ use regulus_core::ModuleError;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// `{ op, value, path, port }`, as a node's configuration spells it.
+/// `{ op, value, value_path, path, port }`, as a node's configuration spells it.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct Rule {
     /// A JSON Pointer (`/verdict/score`) or a dotted path (`verdict.score`) into the value.
@@ -19,6 +19,11 @@ pub(crate) struct Rule {
     /// What the subject is compared with; unused by `exists` and `empty`.
     #[serde(default)]
     pub value: Value,
+    /// A path into the same value, like `path`: when set, the subject is compared with
+    /// what it points at instead of `value` (it wins over `value`). If it points at
+    /// nothing, the rule fails. `exists` and `empty` compare with nothing and ignore it.
+    #[serde(default)]
+    pub value_path: String,
     /// For `switch`: the output a value that meets the rule goes out on.
     #[serde(default)]
     pub port: String,
@@ -178,7 +183,16 @@ impl Rule {
             .iter()
             .find(|(name, _)| *name == self.op)
             .ok_or_else(|| ModuleError::InvalidParams(format!("unknown op `{}`", self.op)))?;
-        test(at(value, &self.path), &self.value, matcher)
+        let unary = matches!(self.op.as_str(), "exists" | "empty");
+        let other = if unary || self.value_path.trim().is_empty() {
+            &self.value
+        } else {
+            match at(value, &self.value_path) {
+                Some(other) => other,
+                None => return Ok(false),
+            }
+        };
+        test(at(value, &self.path), other, matcher)
             .map_err(|e| ModuleError::InvalidParams(format!("rule `{}`: {e}", self.op)))
     }
 }
@@ -267,6 +281,38 @@ pub(crate) mod tests {
         assert!(check(
             json!({ "op": "greater", "path": "verdict.score", "value": 5 }),
             value
+        ));
+    }
+
+    #[test]
+    fn value_path_compares_two_parts_of_the_same_value() {
+        let pair = json!({ "candidate": { "info": { "id": "exec-4" } }, "winner": "exec-4" });
+        let rule =
+            |op: &str| json!({ "op": op, "path": "/candidate/info/id", "value_path": "winner" });
+        assert!(check(rule("equals"), pair.clone()));
+        assert!(!check(rule("not_equals"), pair.clone()));
+        let other = json!({ "candidate": { "info": { "id": "exec-3" } }, "winner": "exec-4" });
+        assert!(!check(rule("equals"), other.clone()));
+        assert!(check(rule("not_equals"), other));
+        // Numbers and patterns read the other side the same way.
+        let scores = json!({ "score": 8, "threshold": "7", "name": "v12", "pattern": "^v\\d+$" });
+        assert!(check(
+            json!({ "op": "greater", "path": "score", "value_path": "threshold" }),
+            scores.clone()
+        ));
+        assert!(check(
+            json!({ "op": "regex", "path": "name", "value_path": "pattern" }),
+            scores.clone()
+        ));
+        // A `value_path` that points at nothing fails the rule, whatever the op.
+        assert!(!check(
+            json!({ "op": "not_equals", "path": "score", "value_path": "missing" }),
+            scores.clone()
+        ));
+        // Ops that compare with nothing ignore it.
+        assert!(check(
+            json!({ "op": "exists", "path": "score", "value_path": "missing" }),
+            scores
         ));
     }
 

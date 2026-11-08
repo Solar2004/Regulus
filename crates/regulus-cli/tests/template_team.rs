@@ -167,6 +167,8 @@ fn steps(home: &Path) {
     assert_wired(
         &copy,
         &[
+            ("ws_1.ready", "polecat_1.workdir"),
+            ("ws_2.ready", "polecat_2.workdir"),
             ("mayor.reply", "queue.add"),
             ("claim_1.task", "ws_1.create"),
             ("claim_1.task", "join_1.task"),

@@ -186,6 +186,8 @@ fn wired(copy: &str) {
     assert_wired(
         copy,
         &[
+            ("workspace.ready", "experimenter.workdir"),
+            ("workspace.ready", "writer.workdir"),
             ("orchestrator.reply", "split.in"),
             ("fanout.out", "lines.in"),
             ("lines.other", "budget.in"),

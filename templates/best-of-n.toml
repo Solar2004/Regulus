@@ -11,7 +11,7 @@
 #     │ get ←─ pick.out ←─ pick (extractor) ⇠ judge_model ←──────────────────┘
 #     │          └→ winner_id → winner (variable) ─┐
 #     └→ split ─each→ pair ←── winner.get ─────────┘
-#                      └→ is_pick (gate: id == winner?) ─fail→ self.losers
+#                      └→ is_pick (switch: id == winner?) ─fail→ self.losers
 #                              └pass→ to_info → info_json → queue ─check→ tests (gate) ─pass/fail→ queue
 #                                                             └→ merged / conflict / rejected
 #   attempt (child, one execution each):
@@ -25,28 +25,29 @@
 # from `base`, prompts its own agent with the task and the worktree's path, stages
 # everything (`git add -A`) and answers `{ summary, diff }`. The barrier waits for the `n`
 # answers; the extractor (a Judge-module node, strict schema `{ winner, reason }`) names
-# the winner by its workspace id. Each candidate is then paired with that id and a shell
-# gate compares the two: the winner's `info` goes to the merge queue, the others leave on
-# `losers` (their branches and worktrees stay for a look). The queue sends the winner to
+# the winner by its workspace id. Each candidate is then paired with that id and a
+# `switch` compares the two (a rule with `value_path`): the winner's `info` goes to the
+# merge queue, the others leave on `losers` (their branches and worktrees stay for a look). The queue sends the winner to
 # `tests` (`test_command` inside its worktree); exit 0 merges it into `base` (`merged`),
 # anything else rejects it (`rejected`).
 #
 # Limits, each a gap of the boxes, worked around in data:
-# 1. The Agent box's `workdir` is a fixed field, so it cannot be the worktree each child
-#    makes: every agent runs with cwd `worktrees` and the prompt names its folder. The
-#    isolation is a request to the model, not a fence. Fix: an optional "then" input
-#    `workdir` (path@1) on the agent node that sets the cwd of its next session, wired from
-#    `ws.ready`.
-# 2. No box picks element n of an array, and `flow` rules compare a value with a constant
-#    only, so matching each candidate to the winner is a shell gate (`is_pick`) on the
-#    JSON. Fix: a `switch`/`loop` rule `op` that compares two paths of the value
-#    (`{ op = "equals", path = "/a", other = "/b" }`), or a `convert` that indexes by a path.
+# 1. Fixed: `ws.ready` goes to the Agent box's `workdir` input, so each agent's session
+#    opens in its own worktree (the `workdir` field, `worktrees`, is only where it would
+#    run if no path came). The cwd is where the agent starts, not a fence: with `allow` it
+#    can still write elsewhere by absolute path.
+# 2. Fixed: matching each candidate to the winner is a `switch` (`is_pick`) whose rule
+#    compares two paths of the same value (`path` and `value_path`), no shell. No box
+#    picks element n of an array yet, so the candidates still go one by one through a
+#    split and a pair.
 # 3. The merge queue merges only the first in line (`check` goes to the head), so the
 #    losers are never queued: they would block it. Fix: none needed if only the winner is
 #    queued; a `fail` naming each loser's `entry` would do it otherwise.
-# 4. The barrier waits for exactly `n` answers: a child that never answers (git fails
-#    to make its worktree, the core stops it) stalls the run; `regulus stop` it. Every
-#    other failure still answers (a failed prompt is the reply, `diff` always exits).
+# 4. The barrier waits for `n` answers. A child that never answers (git fails to make
+#    its worktree, the core stops it) stalls the run unless `join_timeout_ms` is set:
+#    then, that long after the first answer, the judge gets the ones that came (fewer
+#    than `n`) by the barrier's `timeout`. 0 (the default) waits forever. Every other
+#    failure still answers (a failed prompt is the reply, `diff` always exits).
 # Also: `n` ≥ 1; 0 means no limit (the loop never stops making attempts). `n` above 4
 # needs care: `call` starts all children at once (n opencode sessions); the loop's depth
 # grows by 2 per turn under `[bus] max_depth`. The merge runs in the checkout of `base` in
@@ -57,11 +58,10 @@
 # context (Ollama's default) cuts it silently, so raise its context or lower
 # `max_diff_bytes` (8000 by default). opencode's free models are not reachable outside
 # opencode, so the judge needs its own provider (default `ollama`, local and free; or a
-# paid one with `secret:`). `is_pick` reads the candidate on stdin, so its size is not
-# bound by the per-argument limit.
+# paid one with `secret:`).
 #
 # Risks: `permissions = "allow"` lets every agent edit files and run commands unattended,
-# from `worktrees`, with the user's own opencode setup. The winner is merged into `base`
+# from its worktree, with the user's own opencode setup. The winner is merged into `base`
 # with no person looking; put a `human` approval as a second gate of the queue
 # (`approved` → `pass_human`, `rejected` → `fail_human`) to review first. The judge never
 # verifies alone (§6), so `test_command` is required: the repo's tests, a build, a lint;
@@ -104,8 +104,8 @@
 #   After the review fixes (17:35), a second run with n=2 stalled in the agents: opencode's
 #   log said "Free usage limit reached" for glm-5.3-flash-free (the barrier waits, limit
 #   4). The changed gates were run on their own with the applied profile's args: `is_pick`
-#   on a 600 KB candidate on stdin passes the winner (exit 0) and fails the other (exit 1);
-#   `tests` with test_command="echo first; sh <check>/check.sh" ran both in the worktree.
+#   (then a shell gate, now a `switch`) on a 600 KB candidate on stdin passed the winner
+#   and failed the other; `tests` with test_command="echo first; sh <check>/check.sh" ran both in the worktree.
 id = "best-of-n"
 name = "Best-of-N on {{repo}}"
 main_workflow_id = "best-of-n"
@@ -125,9 +125,10 @@ requires = [
 
 [template.vars]
 repo = { description = "absolute path of the git repository; its base branch must be checked out and clean for the merge" }
-worktrees = { description = "absolute path of an existing folder for the attempts' worktrees, outside the repo; the agents' cwd" }
+worktrees = { description = "absolute path of an existing folder for the attempts' worktrees, outside the repo; each agent runs in its own worktree under it" }
 judge_model = { description = "model id the judge asks, as its provider names it (an Ollama model you pulled, an OpenRouter id...)" }
 n = { description = "how many agents try the task", default = 3 }
+join_timeout_ms = { description = "milliseconds the barrier waits for the n attempts, from the first one; past it the judge gets the ones that came. 0: it waits forever", default = 0 }
 model = { description = "model of the agents' engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
 judge_preset = { description = "provider template of the judge, from the providers module's presets.toml (ollama, openrouter-openai, anthropic...)", default = "ollama" }
 judge_base_url = { description = "base URL of the judge's provider; empty: the preset's", default = "" }
@@ -141,6 +142,7 @@ permissions = { description = "what the agents answer when their tools ask for p
 quota_bytes = { description = "bytes each worktree may hold before it says quota_exceeded", default = 1073741824 }
 max_diff_bytes = { description = "bytes of each attempt's diff the judge sees", default = 8000 }
 input = { description = "do not set: keeps {{input}} of the process nodes, the value they receive", default = "{{input}}" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 
 [[workflows]]
 id = "best-of-n"
@@ -195,10 +197,11 @@ ports = [
   type = "join"
   module_id = "regulus/flow@0.1.0"
   position = { x = 500, y = 200 }
-  config = { mode = "barrier", count = {{n}}, shape = "array" }
+  config = { mode = "barrier", count = {{n}}, shape = "array", timeout_ms = {{join_timeout_ms}} }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
@@ -291,16 +294,16 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
-  # Deterministic: is this candidate's workspace id the one the judge named? The value
-  # passes through unchanged. A winner that names no candidate passes none. The value comes
-  # on stdin: a long candidate would not fit in one argument.
+  # Deterministic: is this candidate's workspace id the one the judge named? A `flow`
+  # rule that compares two paths of the same value (`value_path`); the value passes
+  # through unchanged. A winner that names no candidate passes none: all go to `fail`.
   [[workflows.nodes]]
   id = "is_pick"
   name = "Is the pick?"
-  type = "gate"
-  module_id = "regulus/process@0.1.0"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
   position = { x = 1250, y = 350 }
-  config = { command = "sh", args = ["-c", 'v=$(cat); w=$(printf %s "$v" | sed -n "s/.*\"winner\":\"\([^\"]*\)\".*/\1/p"); i=$(printf %s "$v" | sed -n "s/.*\"info\":{[^}]*\"id\":\"\([^\"]*\)\".*/\1/p"); echo "winner=$w candidate=$i"; [ -n "$w" ] && [ "$w" = "$i" ]'], stdin = "yes", max_running = {{n}} }
+  config = { mode = "rules", cases = [{ port = "pass", op = "equals", path = "/candidate/summary/info/id", value_path = "/winner" }], fallback = "fail" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "pass", capability = "json@1", direction = "output", kind = "then" },
@@ -403,11 +406,25 @@ ports = [
   from = { node_id = "attempts", port_id = "out" }
   to = { node_id = "collect", port_id = "in" }
 
+  # The time ran out (`join_timeout_ms`): what came goes on the same way.
+  [[workflows.wires]]
+  id = "collect-cands-timeout"
+  kind = "then"
+  from = { node_id = "collect", port_id = "timeout" }
+  to = { node_id = "cands", port_id = "set" }
+
   [[workflows.wires]]
   id = "collect-cands"
   kind = "then"
   from = { node_id = "collect", port_id = "out" }
   to = { node_id = "cands", port_id = "set" }
+
+  # The time ran out (`join_timeout_ms`): what came goes on the same way.
+  [[workflows.wires]]
+  id = "collect-pick-timeout"
+  kind = "then"
+  from = { node_id = "collect", port_id = "timeout" }
+  to = { node_id = "pick", port_id = "in" }
 
   [[workflows.wires]]
   id = "collect-pick"
@@ -597,30 +614,33 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
-  # The agent's cwd cannot follow the worktree (see the header): the prompt names it.
+  # The agent already runs in the worktree (`ws.ready` → `agent.workdir`); the prompt
+  # names it too, so the model knows the rules.
   [[workflows.nodes]]
   id = "compose"
   name = "Prompt"
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 350, y = 150 }
-  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Where\n\nYour own git worktree is {{/info/path}}. Work only inside it: change files there with absolute paths or after cd into it, and do not commit. Other agents do the same task in other worktrees; the best attempt is merged.\n\n# Reply\n\nWhen done, reply with a short summary of what you changed.\n" }
+  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Where\n\nYour own git worktree is {{/info/path}}, your working directory. Work only inside it: change files there with absolute paths or after cd into it, and do not commit. Other agents do the same task in other worktrees; the best attempt is merged.\n\n# Reply\n\nWhen done, reply with a short summary of what you changed.\n" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  # `allow`: the agent edits files and runs commands unattended. Its cwd is `worktrees`.
+  # `allow`: the agent edits files and runs commands unattended. Its cwd is the worktree
+  # that reaches `workdir`; the field is the fallback.
   [[workflows.nodes]]
   id = "agent"
   name = "Agent"
   type = "agent"
   module_id = "regulus/agent@0.1.0"
   position = { x = 500, y = 150 }
-  config = { workdir = "{{worktrees}}", permissions = "{{permissions}}", fresh_context = "yes" }
+  config = { workdir = "{{worktrees}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
@@ -698,6 +718,14 @@ ports = [
   kind = "then"
   from = { node_id = "ws", port_id = "info" }
   to = { node_id = "j_prompt", port_id = "info" }
+
+  # `info` and then `ready` leave `ws` in that order, and the bus delivers in order, so
+  # the agent has moved before the prompt that goes through `j_prompt` reaches it.
+  [[workflows.wires]]
+  id = "ws-workdir"
+  kind = "then"
+  from = { node_id = "ws", port_id = "ready" }
+  to = { node_id = "agent", port_id = "workdir" }
 
   [[workflows.wires]]
   id = "ws-reply"

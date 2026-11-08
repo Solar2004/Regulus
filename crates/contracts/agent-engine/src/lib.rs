@@ -27,6 +27,10 @@ pub const SESSION_PROMPT: &str = "engine.session.prompt";
 pub const SESSION_STATUS: &str = "engine.session.status";
 /// Ends a session and its process: [`StopArgs`] → `null`.
 pub const SESSION_STOP: &str = "engine.session.stop";
+/// Asks the turn in flight to end (ACP `session/cancel`): [`CancelArgs`] → `null`. The
+/// turn still answers, usually with stop reason `cancelled`. Optional: an engine without
+/// it answers `UnknownMethod` and the box drops the session instead.
+pub const SESSION_CANCEL: &str = "engine.session.cancel";
 
 /// The Agent box's provider slots besides the main one (docs/12-agents.md §6.5): each
 /// takes a provider for one purpose. A slot an engine does not know is left out with a
@@ -132,6 +136,11 @@ pub struct Turn {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopArgs {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelArgs {
     pub session_id: String,
 }
 
