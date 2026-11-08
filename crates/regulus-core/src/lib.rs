@@ -34,7 +34,9 @@ pub use store::{ModuleStore, Store, StoreError, StoredExecution};
 /// A store that cannot open is a warning too: the core then keeps executions and bus events
 /// in memory only, as it did before the store existed.
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
-    let (profiles, mut warnings) = ProfileStore::load(&config.profiles.paths);
+    let mut warnings = config.warnings.clone();
+    let (profiles, found) = ProfileStore::load(&config.profiles.paths);
+    warnings.extend(found);
     let store = match Store::open(&config.store_dir(), &config.store) {
         Ok(store) => {
             warnings.extend(store.warnings().iter().cloned());
