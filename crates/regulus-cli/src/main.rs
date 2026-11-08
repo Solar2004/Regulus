@@ -14,9 +14,9 @@ use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
     method, BusEvent, BusEventKind, Diagnostic, Direction, EventPage, Execution, ExecutionState,
-    Manifest, ModuleSummary, Profile, ProfileDeleted, ProfileSaved, ProfileSummary, Severity,
-    TemplateApplied, TemplateSummary, TemplateText, WireKind, WorkflowSent, PROTOCOL,
-    WORKFLOW_SELF,
+    Manifest, ModuleSummary, Profile, ProfileDeleted, ProfileSaved, ProfileSummary, ProjectDetails,
+    ProjectSummary, Severity, TemplateApplied, TemplateSummary, TemplateText, WireKind,
+    WorkflowSent, PROTOCOL, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -68,6 +68,11 @@ enum Command {
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
+    },
+    /// Projects: folders with a `regulus.toml` (docs/11-composition.md §13).
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
     },
     /// Templates: profiles with holes that are applied as a copy (docs/11-composition.md §7).
     Template {
@@ -321,6 +326,19 @@ enum ModuleCommand {
 }
 
 #[derive(Subcommand)]
+enum ProjectCommand {
+    /// List the open projects.
+    Ls,
+    /// Print an open project's `regulus.toml` as the core resolved it.
+    Show { id: String },
+    /// Open a folder as a project (writes a minimal `regulus.toml` if it has none) and
+    /// remember it in `config.toml`.
+    Open { path: PathBuf },
+    /// Forget an open project. Nothing in its folder is deleted.
+    Close { id: String },
+}
+
+#[derive(Subcommand)]
 enum TemplateCommand {
     /// List templates: name, description and the vars that need a value.
     Ls,
@@ -343,6 +361,10 @@ enum TemplateCommand {
         /// Replace a profile with that id written before.
         #[arg(long)]
         force: bool,
+        /// Apply it into this open project: its templates first, written to its profiles
+        /// folder with its `project_id`.
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
@@ -451,7 +473,10 @@ async fn main() -> Result<()> {
             let profiles: Vec<ProfileSummary> =
                 client.request(method::PROFILE_LIST, filter).await?;
             for profile in profiles {
-                println!("{:<24} {}", profile.id, profile.name);
+                let project = profile
+                    .project_id
+                    .map_or(String::new(), |p| format!("  [project {p}]"));
+                println!("{:<24} {}{project}", profile.id, profile.name);
             }
             Ok(())
         }
@@ -474,6 +499,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Template { command } => template(&client, command).await,
+        Command::Project { command } => project(&client, command).await,
         Command::Graph { profile } => {
             let params = serde_json::json!({ "id": profile });
             let profile: Profile = client.request(method::PROFILE_GET, params).await?;
@@ -704,7 +730,11 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
                 } else {
                     format!("  [needs: {}]", required.join(", "))
                 };
-                println!("{:<20} {}{required}", t.name, t.description);
+                let project = t
+                    .project_id
+                    .as_ref()
+                    .map_or(String::new(), |p| format!("  [project {p}]"));
+                println!("{:<20} {}{required}{project}", t.name, t.description);
             }
             Ok(())
         }
@@ -719,6 +749,7 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
             set,
             id,
             force,
+            project,
         } => {
             let mut vars = serde_json::Map::new();
             for pair in set {
@@ -729,6 +760,7 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
             }
             let params = serde_json::json!({
                 "template": template_arg(template)?, "vars": vars, "id": id, "force": force,
+                "project_id": project,
             });
             let applied: TemplateApplied = client.request(method::TEMPLATE_APPLY, params).await?;
             println!("profile {}", applied.profile_id);
@@ -737,6 +769,61 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `regulus project`: the `project.*` methods of the running core. Warnings go to stderr.
+async fn project(client: &Client<'_>, command: ProjectCommand) -> Result<()> {
+    let summary = |p: ProjectSummary| {
+        println!("{:<20} {:<24} {}", p.id, p.name, p.path);
+        for warning in p.warnings {
+            eprintln!("warning: {}: {warning}", p.id);
+        }
+    };
+    match command {
+        ProjectCommand::Ls => {
+            let list: Vec<ProjectSummary> =
+                client.request(method::PROJECT_LIST, Value::Null).await?;
+            list.into_iter().for_each(summary);
+        }
+        ProjectCommand::Show { id } => {
+            let p: ProjectDetails = client
+                .request(method::PROJECT_GET, serde_json::json!({ "id": id }))
+                .await?;
+            println!("id        {}", p.id);
+            println!("name      {}", p.name);
+            println!("path      {}", p.path);
+            println!("file      {}", p.file);
+            println!("profiles  {}", p.profiles.join(", "));
+            println!("templates {}", p.templates.join(", "));
+            if !p.disable.is_empty() {
+                println!("disable   {}", p.disable.join(", "));
+            }
+            if let Some(enable) = &p.enable {
+                println!("enable    {}", enable.join(", "));
+            }
+            if !p.local.is_empty() {
+                println!("local     {} (not loaded yet)", p.local.len());
+            }
+            if !p.client.is_empty() {
+                println!("client    {}", Value::Object(p.client));
+            }
+            for warning in p.warnings {
+                eprintln!("warning: {warning}");
+            }
+        }
+        ProjectCommand::Open { path } => {
+            let path = std::path::absolute(&path)
+                .with_context(|| format!("cannot resolve {}", path.display()))?;
+            let params = serde_json::json!({ "path": path });
+            summary(client.request(method::PROJECT_OPEN, params).await?);
+        }
+        ProjectCommand::Close { id } => {
+            let params = serde_json::json!({ "id": id });
+            let closed: ProjectSummary = client.request(method::PROJECT_CLOSE, params).await?;
+            println!("closed {} ({})", closed.id, closed.path);
+        }
+    }
+    Ok(())
 }
 
 /// Warnings and information a write returned, on stderr.
