@@ -1,0 +1,86 @@
+# CI: the same checks the local hooks run, on every push and pull request.
+# The desktop shell (regulus-tauri) is left out of the Rust job on purpose: it needs
+# webkit2gtk and friends on the runner and adds nothing the frontend job does not cover.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Keep the build inside the runner's memory and disk: two jobs, no debug info.
+  CARGO_BUILD_JOBS: 2
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  rust:
+    name: rust · tests, ablation, clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The repo's .cargo/config.toml is not committed; the workspace target dir is
+          # the default here, so the cache key only depends on the lockfile.
+          cache-on-failure: true
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: tests (the ablation matrix is one of them)
+        run: cargo test --workspace --exclude regulus-tauri
+      - name: clippy
+        run: cargo clippy --workspace --exclude regulus-tauri --all-targets -- -D warnings
+
+  frontend:
+    name: frontend · tsc, vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/regulus-tauri/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/regulus-tauri/frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm test
+
+  rules:
+    name: rules · commit messages, secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: commit messages of this push or pull request
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+          else
+            range="${{ github.sha }}~1..${{ github.sha }}"
+          fi
+          echo "linting $range"
+          scripts/commit-lint.sh --range "$range"
+      - name: secrets in every versioned file
+        run: scripts/secrets-scan.sh --all

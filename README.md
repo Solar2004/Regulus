@@ -1,5 +1,7 @@
 # Regulus
 
+[![ci](https://github.com/Solar2004/Regulus/actions/workflows/ci.yml/badge.svg)](https://github.com/Solar2004/Regulus/actions/workflows/ci.yml)
+
 ![Regulus, visual identity in midnight blue and steel](assets/branding/regulus-logo-concept-v1.png)
 
 > A module host with a visual interface for building, wiring and operating systems of
@@ -211,8 +213,12 @@ scripts/install-hooks.sh     # once per clone: enables the hooks in .githooks/
 
 Commits follow Conventional Commits: `type(scope): subject`, English, imperative, no
 trailers. Three hooks enforce it: `commit-msg` validates the message against
-[`.gitconventions`](.gitconventions), `pre-commit` scans for credentials, `pre-push` re-validates the whole range and runs the tests. There is no
-hosted CI yet; the hooks are the CI. Rules in [`docs/09-git.md`](docs/09-git.md).
+[`.gitconventions`](.gitconventions), `pre-commit` scans for credentials and checks the
+formatting, `pre-push` re-validates the whole range and runs the tests. GitHub Actions
+runs the same checks on every push and pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): the Rust tests with the
+ablation matrix, clippy and fmt; the frontend type check and vitest; the commit
+messages and the secrets scan. Rules in [`docs/09-git.md`](docs/09-git.md).
 
 ## Repository layout
 
