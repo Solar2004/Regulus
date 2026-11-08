@@ -51,6 +51,52 @@ fn stop_cores(home: &Path) {
     }
 }
 
+/// The wires of every workflow in `copy`, as `("node.port", "node.port")`, and the nodes
+/// no wire touches, as `"workflow/node"`.
+fn topology(copy: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let profile: toml::Value = toml::from_str(copy).unwrap();
+    let end = |end: &toml::Value| {
+        format!(
+            "{}.{}",
+            end["node_id"].as_str().unwrap(),
+            end["port_id"].as_str().unwrap()
+        )
+    };
+    let mut wires = Vec::new();
+    let mut lonely = Vec::new();
+    for workflow in profile["workflows"].as_array().unwrap() {
+        let mine: Vec<(String, String)> = workflow["wires"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wire| (end(&wire["from"]), end(&wire["to"])))
+            .collect();
+        for node in workflow["nodes"].as_array().unwrap() {
+            let id = node["id"].as_str().unwrap();
+            let prefix = format!("{id}.");
+            if !mine
+                .iter()
+                .any(|(from, to)| from.starts_with(&prefix) || to.starts_with(&prefix))
+            {
+                lonely.push(format!("{}/{id}", workflow["id"].as_str().unwrap()));
+            }
+        }
+        wires.extend(mine);
+    }
+    (wires, lonely)
+}
+
+fn assert_wired(copy: &str, expected: &[(&str, &str)]) {
+    let (wires, lonely) = topology(copy);
+    assert!(lonely.is_empty(), "nodes without a wire: {lonely:?}");
+    for (from, to) in expected {
+        assert!(
+            wires.iter().any(|(f, t)| f == from && t == to),
+            "no wire {from} → {to}"
+        );
+    }
+}
+
 fn steps(home: &Path) {
     for dir in ["repo", "wt"] {
         std::fs::create_dir_all(home.join(dir)).unwrap();
@@ -61,41 +107,35 @@ fn steps(home: &Path) {
     let ls = regulus(home, &["template", "ls"]);
     assert!(ls.status.success(), "{}", text(&ls));
     assert!(
-        text(&ls).contains("[needs: judge_model, repo, worktrees]"),
+        text(&ls).contains("[needs: judge_model, repo, test_command, worktrees]"),
         "{}",
         text(&ls)
     );
 
-    for (missing, sets) in [
-        ("`judge_model`", [&repo, &worktrees]),
-        ("`repo`", [&worktrees, &"judge_model=m".to_string()]),
-        ("`worktrees`", [&repo, &"judge_model=m".to_string()]),
-    ] {
-        let out = regulus(
-            home,
-            &[
-                "template", "apply", TEMPLATE, "--set", sets[0], "--set", sets[1],
-            ],
-        );
+    let judge = "judge_model=qwen3:0.6b".to_string();
+    let tests = "test_command=cargo test".to_string();
+    let required = [&repo, &worktrees, &judge, &tests];
+    for (left_out, name) in ["`repo`", "`worktrees`", "`judge_model`", "`test_command`"]
+        .iter()
+        .enumerate()
+    {
+        let mut args = vec!["template", "apply", TEMPLATE];
+        for (i, set) in required.iter().enumerate() {
+            if i != left_out {
+                args.extend(["--set", set.as_str()]);
+            }
+        }
+        let out = regulus(home, &args);
         assert!(!out.status.success());
-        assert!(text(&out).contains(missing), "{}", text(&out));
+        assert!(text(&out).contains(name), "{}", text(&out));
     }
     assert!(!home.join("profiles/best-of-n.toml").exists());
 
     let applied = regulus(
         home,
         &[
-            "template",
-            "apply",
-            TEMPLATE,
-            "--set",
-            &repo,
-            "--set",
-            &worktrees,
-            "--set",
-            "judge_model=qwen3:0.6b",
-            "--set",
-            "n=2",
+            "template", "apply", TEMPLATE, "--set", &repo, "--set", &worktrees, "--set", &judge,
+            "--set", &tests, "--set", "n=2",
         ],
     );
     assert!(applied.status.success(), "{}", text(&applied));
@@ -108,15 +148,35 @@ fn steps(home: &Path) {
     assert!(copy.contains("max = 2"), "{copy}");
     assert!(copy.contains("count = 2"), "{copy}");
     assert!(copy.contains(r#""sh", "{{input}}"]"#), "{copy}");
+    assert!(copy.contains("&& ( cargo test )"), "{copy}");
     assert!(copy.contains(r#"workflow = "attempt""#), "{copy}");
     assert!(!copy.contains("\n[template]"), "{copy}");
     assert!(!copy.contains("[template.vars]"), "{copy}");
 
+    assert_wired(
+        &copy,
+        &[
+            ("loop.body", "attempts.in"),
+            ("loop.body", "loop.back"),
+            ("attempts.out", "collect.in"),
+            ("collect.out", "pick.in"),
+            ("is_pick.pass", "to_info.in"),
+            ("info_json.out", "queue.in"),
+            ("queue.check", "check_path.in"),
+            ("check_path.out", "tests.in"),
+            ("tests.pass", "queue.pass"),
+            ("tests.fail", "queue.fail"),
+            ("agent.reply", "j_reply.reply"),
+            ("j_result.out", "self.out"),
+        ],
+    );
+
     let check = regulus(home, &["call", "profile.check", r#"{"id":"best-of-n"}"#]);
     assert!(check.status.success(), "{}", text(&check));
-    assert!(
-        !text(&check).contains(r#""error""#),
-        "profile.check found errors: {}",
+    assert_eq!(
+        String::from_utf8_lossy(&check.stdout).trim(),
+        "[]",
+        "profile.check: {}",
         text(&check)
     );
 }

@@ -50,6 +50,52 @@ fn stop_cores(home: &Path) {
     }
 }
 
+/// The wires of every workflow in `copy`, as `("node.port", "node.port")`, and the nodes
+/// no wire touches, as `"workflow/node"`.
+fn topology(copy: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let profile: toml::Value = toml::from_str(copy).unwrap();
+    let end = |end: &toml::Value| {
+        format!(
+            "{}.{}",
+            end["node_id"].as_str().unwrap(),
+            end["port_id"].as_str().unwrap()
+        )
+    };
+    let mut wires = Vec::new();
+    let mut lonely = Vec::new();
+    for workflow in profile["workflows"].as_array().unwrap() {
+        let mine: Vec<(String, String)> = workflow["wires"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wire| (end(&wire["from"]), end(&wire["to"])))
+            .collect();
+        for node in workflow["nodes"].as_array().unwrap() {
+            let id = node["id"].as_str().unwrap();
+            let prefix = format!("{id}.");
+            if !mine
+                .iter()
+                .any(|(from, to)| from.starts_with(&prefix) || to.starts_with(&prefix))
+            {
+                lonely.push(format!("{}/{id}", workflow["id"].as_str().unwrap()));
+            }
+        }
+        wires.extend(mine);
+    }
+    (wires, lonely)
+}
+
+fn assert_wired(copy: &str, expected: &[(&str, &str)]) {
+    let (wires, lonely) = topology(copy);
+    assert!(lonely.is_empty(), "nodes without a wire: {lonely:?}");
+    for (from, to) in expected {
+        assert!(
+            wires.iter().any(|(f, t)| f == from && t == to),
+            "no wire {from} → {to}"
+        );
+    }
+}
+
 fn steps(home: &Path) {
     let workdir = home.join("work");
     std::fs::create_dir_all(&workdir).unwrap();
@@ -104,14 +150,29 @@ fn steps(home: &Path) {
     assert!(!copy.contains("\n[template]"), "{copy}");
     assert!(!copy.contains("[template.vars]"), "{copy}");
 
+    assert_wired(
+        &copy,
+        &[
+            ("compose.out", "agent.prompt"),
+            ("agent.reply", "draft.in"),
+            ("join_judge.out", "judge.in"),
+            ("judge.pass", "tag_pass.in"),
+            ("judge.fail", "tag_fail.in"),
+            ("judge.feedback", "join_verdict.feedback"),
+            ("report.out", "loop.back"),
+            ("loop.done", "self.done"),
+        ],
+    );
+
     let check = regulus(
         home,
         &["call", "profile.check", r#"{"id":"evaluator-optimizer"}"#],
     );
     assert!(check.status.success(), "{}", text(&check));
-    assert!(
-        !text(&check).contains(r#""error""#),
-        "profile.check found errors: {}",
+    assert_eq!(
+        String::from_utf8_lossy(&check.stdout).trim(),
+        "[]",
+        "profile.check: {}",
         text(&check)
     );
 }
