@@ -46,9 +46,11 @@ caja Agente, `value_path` en las reglas de `flow`, `timeout_ms` en la barrera de
 un turno colgado por el proveedor cierra en `failed` (`turn_timeout_ms`). **Los módulos
 locales de un proyecto corren como procesos** (2026-11-08, `87dcee5`, `03-modules.md` §6,
 `11-composition.md` §13): JSON-RPC por stdio, solo en proyectos de confianza
-(`regulus project trust`), protocolo 1.14 con el estado `blocked`. **Lo siguiente:** build
-release y `regulus update` (rama `feat/release`), y pulir con uso real. La pasarela de
-proveedores queda aplazada. Plan y orden en
+(`regulus project trust`), protocolo 1.14 con el estado `blocked`. **Release y
+actualización** (2026-11-08, `e0dba00`, `06-stack.md` §5.4): `scripts/release.sh` saca
+binario, AppImage y deb con manifiesto firmado (minisign); `regulus update` y Ajustes →
+Updates instalan solo lo que esa firma avala. **Lo siguiente:** pulir con uso real. La
+pasarela de proveedores queda aplazada. Plan y orden en
 [`docs/plan.md`](docs/plan.md).
 
 ---
@@ -193,9 +195,9 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Release**: `scripts/release.sh`, `regulus update` (firma minisign, `[update]` de `config.toml`) y "Buscar actualizaciones" en Ajustes de la app (`06-stack.md` §5, `04-client.md` §11) | en la rama `feat/release` |
+| 1 | **Pulir con uso real**: mostrar el estado `blocked` con su acción "confiar" en Ajustes; instalar una actualización de la app con la app abierta (dos versiones publicadas) | nada |
 | 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~, ~~pxl~~. **Las ocho hechas** (2026-11-08) | — |
-| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); queda mostrar el estado `blocked` con su acción "confiar" en Ajustes, y pulir con uso real | nada |
+| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); ~~release + `regulus update` + Ajustes → Updates~~ (`06-stack.md` §5.4); lo que queda está en la fila 1 | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
