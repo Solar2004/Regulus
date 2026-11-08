@@ -110,17 +110,64 @@ fn render_config(copy: &str) -> toml::Value {
 
 /// Runs the renderer as the gate does: its command and args, in `dir`.
 fn render(config: &toml::Value, dir: &Path) -> Output {
-    let args: Vec<String> = config["args"]
+    render_with(config, dir, &[])
+}
+
+/// The renderer with some of its arguments replaced: `(index in args, value)`. After the
+/// script: sprite_file, output, scale, max_size, max_pixels.
+fn render_with(config: &toml::Value, dir: &Path, changed: &[(usize, &str)]) -> Output {
+    let mut args: Vec<String> = config["args"]
         .as_array()
         .unwrap()
         .iter()
         .map(|a| a.as_str().unwrap().to_string())
         .collect();
+    for (at, value) in changed {
+        args[*at] = value.to_string();
+    }
     Command::new(config["command"].as_str().unwrap())
         .args(&args)
         .current_dir(dir)
         .output()
         .unwrap()
+}
+
+/// Decodes a PNG with python3 (which the template needs anyway; no Rust decoder in the
+/// workspace): every chunk's CRC checked, then the RGBA of pixel (x, y) for each `at`.
+fn decode(png: &Path, at: &[(u32, u32)]) -> String {
+    const DECODER: &str = r#"
+import sys, zlib, struct
+data = open(sys.argv[1], "rb").read()
+pos, idat, width = 8, b"", 0
+while pos < len(data):
+    size, kind = struct.unpack(">I4s", data[pos:pos + 8])
+    body = data[pos + 8:pos + 8 + size]
+    crc = struct.unpack(">I", data[pos + 8 + size:pos + 12 + size])[0]
+    assert zlib.crc32(kind + body) & 0xFFFFFFFF == crc, kind
+    if kind == b"IHDR":
+        width = struct.unpack(">I", body[:4])[0]
+    if kind == b"IDAT":
+        idat += body
+    pos += 12 + size
+raw = zlib.decompress(idat)
+row = 1 + 4 * width
+out = ["crc ok"]
+for arg in sys.argv[2:]:
+    x, y = map(int, arg.split(","))
+    assert raw[y * row] == 0
+    out.append(",".join(str(b) for b in raw[y * row + 1 + 4 * x:y * row + 5 + 4 * x]))
+print(" ".join(out))
+"#;
+    let points: Vec<String> = at.iter().map(|(x, y)| format!("{x},{y}")).collect();
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(DECODER)
+        .arg(png)
+        .args(&points)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn steps(home: &Path) {
@@ -220,6 +267,18 @@ fn steps(home: &Path) {
         copy_human.contains(r#"to = { node_id = "human", port_id = "in" }"#),
         "{copy_human}"
     );
+    assert_wired(
+        &copy_human,
+        &[
+            ("preview.out", "human.in"),
+            ("human.out", "notes.in"),
+            ("notes.pass", "human_pass.in"),
+            ("notes.fail", "human_fail.in"),
+            ("human.rejected", "human_rejected.in"),
+            ("human_pass.out", "loop.back"),
+            ("human.pending", "self.pending"),
+        ],
+    );
     let check = regulus(home, &["call", "profile.check", r#"{"id":"pxl-human"}"#]);
     assert_eq!(
         String::from_utf8_lossy(&check.stdout).trim(),
@@ -244,6 +303,14 @@ fn steps(home: &Path) {
     assert_eq!(&png[12..16], b"IHDR");
     let side = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
     assert_eq!((side(16), side(20)), (16, 16));
+    // Every CRC holds; `.` is transparent, `k` is #401010, each pixel 4 x 4.
+    assert_eq!(
+        decode(
+            &work.join("sprite.png"),
+            &[(0, 0), (3, 3), (4, 0), (7, 3), (8, 4)]
+        ),
+        "crc ok 0,0,0,0 0,0,0,0 64,16,16,255 64,16,16,255 224,48,48,255"
+    );
 
     // A ragged grid fails with a reason, the next turn's feedback.
     std::fs::write(work.join("sprite.px.txt"), "r=#e03030\n\nrr\nr\n").unwrap();
@@ -259,6 +326,30 @@ fn steps(home: &Path) {
     let out = render(&config, &work);
     assert_eq!(out.status.code(), Some(1));
     assert!(text(&out).contains("'x' has no color"), "{}", text(&out));
+
+    // Bounds: a side past `max_size`, a scale of 0, a PNG past `max_pixels` (at once,
+    // not after building it), and paths that leave `workdir`.
+    let wide = format!("r=#e03030\n\n{}\n", "r".repeat(65));
+    std::fs::write(work.join("sprite.px.txt"), wide).unwrap();
+    let refused = |changed: &[(usize, &str)], why: &str| {
+        let began = std::time::Instant::now();
+        let out = render_with(&config, &work, changed);
+        assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+        assert!(text(&out).contains(why), "{why}: {}", text(&out));
+        assert!(began.elapsed() < std::time::Duration::from_secs(10));
+    };
+    refused(&[], "the grid is 65x1, above max_size 64");
+    std::fs::write(work.join("sprite.px.txt"), "r=#e03030\n\nrr\n").unwrap();
+    refused(&[(4, "0")], "must be at least 1");
+    refused(&[(4, "100000")], "above max_pixels 16000000");
+    refused(&[(3, "../escape.png")], "leaves workdir");
+    refused(
+        &[(3, "/tmp/escape.png")],
+        "must be a path relative to workdir",
+    );
+    refused(&[(2, "../../etc/passwd")], "leaves workdir");
+    assert!(!home.join("escape.png").exists());
+    assert_eq!(config["timeout_ms"].as_integer(), Some(60000));
 }
 
 #[test]

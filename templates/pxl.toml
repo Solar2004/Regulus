@@ -27,19 +27,22 @@
 # Each turn: the agent gets the task, the format and the last result, and writes
 # `sprite_file` in `workdir`. The gate `render` runs the embedded renderer (python3,
 # zlib + struct): it checks the file (palette lines, a blank line, a rectangular grid,
-# every letter with a color, at most `max_size` pixels a side), writes `output` (RGBA
-# PNG, each pixel `scale` x `scale`) and exits 0; anything wrong prints "render failed:
-# <why>" and exits 1, which goes back to the loop as the next turn's feedback (as Ralph's
-# gate). A rendered sprite is read back and shown, with the task, to the reviewer the
+# every letter with a color, at most `max_size` pixels a side and `max_pixels` PNG pixels
+# in all), writes `output` (RGBA PNG, each pixel `scale` x `scale`) and exits 0; it is
+# killed past `render_timeout_ms`. `sprite_file` and `output` must be relative paths
+# that stay inside `workdir` (links resolved): any other is refused, so `png` always
+# names the file that was written. Anything wrong prints "render failed: <why>" and
+# exits 1, which goes back to the loop as the next turn's feedback (as Ralph's gate). A rendered sprite is read back and shown, with the task, to the reviewer the
 # hole `review` picks:
 # - `judge` (default): a `judge` node with `criteria` and verdicts pass, fail, on its own
 #   provider (`judge_preset`, `judge_base_url`, `judge_credential`, `judge_model`, as in
 #   evaluator-optimizer). Verdict and feedback go back as "verdict <pass|fail>".
 # - `human`: a `review` of the `human` module. `regulus human list`, then
 #   `regulus human answer <id> approve` passes it as it is; to send it back with notes,
-#   approve with the text edited (`--text` or `--file`), writing the notes after the last
-#   line, "REVIEWER NOTES …:"; `reject` sends it back without notes. The notes reach the
-#   agent as they are written.
+#   approve with the text edited (`--text` or `--file`), writing the notes under its last
+#   line, "@@ REVIEWER NOTES below this line … @@"; `reject` sends it back without notes.
+#   The notes reach the agent as they are written. Editing the grid without notes
+#   approves the sprite as it was rendered (the PNG is already out): it is not re-rendered.
 # "verdict pass" ends the loop on `done` and `png` says where the PNG is; otherwise the
 # next turn, up to `max_turns` (then `exhausted`). A failed prompt goes back the same way.
 #
@@ -56,12 +59,13 @@
 # files and running commands, unattended, in `workdir` and wherever its tools reach, with
 # the user's own opencode setup; `reject` keeps it from writing the sprite at all with
 # most engines. The renderer only reads `sprite_file` and writes `output`, both inside
-# `workdir` unless they are absolute. The judge never verifies alone (§6): here the
+# `workdir`: both are refused if absolute or outside it. The judge never verifies alone (§6): here the
 # renderer is the deterministic check and the judge only says whether it looks right.
 # `turn_timeout_ms` ends a turn that hangs (a provider past its quota) as a failure.
 #
 # Holes: `workdir` (required, absolute, existing), `model`, `permissions`, `fresh_context`,
 # `turn_timeout_ms`, `instructions`, `sprite_file`, `output`, `scale`, `max_size`,
+# `max_pixels`, `render_timeout_ms`,
 # `max_turns`, `review` (judge | human; another value passes `profile.check` and fails to
 # start), `criteria`, `judge_preset`, `judge_base_url`, `judge_credential`, `judge_model`
 # (empty: the first model the endpoint offers), `review_timeout_ms`, `serve_port`. Values
@@ -103,10 +107,12 @@ permissions = { description = "what the agent answers when its tools ask for per
 fresh_context = { description = "yes: a new agent session every turn; no: one session that remembers", default = "yes" }
 turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails (a provider past its quota, a hung CLI); 0: no limit", default = 0 }
 instructions = { description = "extra rules for the artist, one line: style, size, colors", default = "Keep it small and readable: a clear silhouette, a dark outline, few colors. Reply with one line saying what you drew." }
-sprite_file = { description = "the sprite file the agent writes, relative to workdir", default = "sprite.px.txt" }
-output = { description = "the PNG the renderer writes, relative to workdir", default = "sprite.png" }
+sprite_file = { description = "the sprite file the agent writes, a relative path that stays inside workdir", default = "sprite.px.txt" }
+output = { description = "the PNG the renderer writes, a relative path that stays inside workdir", default = "sprite.png" }
 scale = { description = "PNG pixels per sprite pixel, a side", default = 8 }
 max_size = { description = "most sprite pixels a side; a larger grid fails the render", default = 64 }
+max_pixels = { description = "most PNG pixels (width x height after scale); a larger PNG fails the render", default = 16000000 }
+render_timeout_ms = { description = "milliseconds the renderer may run before it is killed and the render fails", default = 60000 }
 max_turns = { description = "most turns before the loop gives up on exhausted", default = 5 }
 review = { description = "who looks at a rendered sprite: judge (a model) or human (regulus human answer)", default = "judge" }
 criteria = { description = "what the judge checks the sprite against; it also sees the task", default = "The sprite clearly shows what the task asks for, reads well at its size, and has no stray pixels." }
@@ -257,22 +263,34 @@ ports = [
     [workflows.nodes.config]
     command = "python3"
     cwd = "{{workdir}}"
+    timeout_ms = {{render_timeout_ms}}
     args = ["-c", '''
-import sys, zlib, struct
+import os, sys, zlib, struct
 
 def fail(message):
     print("render failed: " + message)
     sys.exit(1)
 
-if len(sys.argv) != 5:
-    fail("usage: render SPRITE OUTPUT SCALE MAX_SIZE")
-src, out = sys.argv[1], sys.argv[2]
+if len(sys.argv) != 6:
+    fail("usage: render SPRITE OUTPUT SCALE MAX_SIZE MAX_PIXELS")
 try:
-    scale, top = int(sys.argv[3]), int(sys.argv[4])
+    scale, top, most = int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 except ValueError:
-    fail("scale and max_size must be whole numbers")
-if scale < 1 or top < 1:
-    fail("scale and max_size must be at least 1")
+    fail("scale, max_size and max_pixels must be whole numbers")
+if scale < 1 or top < 1 or most < 1:
+    fail("scale, max_size and max_pixels must be at least 1")
+base = os.path.realpath(os.getcwd())
+
+def inside(path, what):
+    if not path or os.path.isabs(path):
+        fail("%s %r must be a path relative to workdir" % (what, path))
+    real = os.path.realpath(os.path.join(base, path))
+    if os.path.commonpath([base, real]) != base:
+        fail("%s %r leaves workdir %s" % (what, path, base))
+    return real
+
+src = inside(sys.argv[1], "sprite_file")
+out = inside(sys.argv[2], "output")
 try:
     with open(src, encoding="utf-8") as f:
         text = f.read()
@@ -309,6 +327,8 @@ for n, row in enumerate(grid, 1):
             fail("grid row %d: %r has no color in the palette" % (n, c))
 if width > top or height > top:
     fail("the grid is %dx%d, above max_size %d" % (width, height, top))
+if width * scale * height * scale > most:
+    fail("%dx%d at scale %d is %d PNG pixels, above max_pixels %d" % (width, height, scale, width * scale * height * scale, most))
 raw = bytearray()
 for row in grid:
     pixels = bytearray()
@@ -328,7 +348,7 @@ try:
 except OSError as e:
     fail("cannot write %s: %s" % (out, e))
 print("rendered %s: %dx%d pixels, %d colors, PNG %dx%d in %s" % (src, width, height, len(palette) - 1, width * scale, height * scale, out))
-''', "{{sprite_file}}", "{{output}}", "{{scale}}", "{{max_size}}"]
+''', "{{sprite_file}}", "{{output}}", "{{scale}}", "{{max_size}}", "{{max_pixels}}"]
 
   [[workflows.nodes]]
   id = "rendered"
@@ -367,7 +387,10 @@ print("rendered %s: %dx%d pixels, %d colors, PNG %dx%d in %s" % (src, width, hei
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  # The grid as text: the preview the reviewer reads.
+  # The grid as text: the preview the reviewer reads. Its `in` takes the gate's exit@1
+  # (the manifest's default is text@1): with `path` set, any value only triggers a new
+  # read and is not read itself (`files` reads a value as a path only with `path` empty),
+  # so no convert is needed in between.
   [[workflows.nodes]]
   id = "sprite"
   name = "Sprite"
@@ -411,7 +434,7 @@ print("rendered %s: %dx%d pixels, %d colors, PNG %dx%d in %s" % (src, width, hei
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 1550, y = 100 }
-  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Sprite ({{sprite_file}}, rendered to {{output}})\n\n{{/sprite}}\n\nREVIEWER NOTES (leave empty to approve as it is):\n" }
+  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Sprite ({{sprite_file}}, rendered to {{output}})\n\n{{/sprite}}\n\n@@ REVIEWER NOTES below this line (leave empty to approve as it is) @@\n" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
@@ -510,14 +533,14 @@ print("rendered %s: %dx%d pixels, %d colors, PNG %dx%d in %s" % (src, width, hei
     { id = "rejected", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  # Text after the last line's colon is the person's notes: the sprite goes back.
+  # Text under the marker line is the person's notes: the sprite goes back.
   [[workflows.nodes]]
   id = "notes"
   name = "Notes?"
   type = "switch"
   module_id = "regulus/flow@0.1.0"
   position = { x = 1850, y = 250 }
-  config = { mode = "rules", cases = [{ port = "fail", op = "regex", value = '(?s)REVIEWER NOTES[^\n]*:\s*\S' }], fallback = "pass" }
+  config = { mode = "rules", cases = [{ port = "fail", op = "regex", value = '(?m)^@@ REVIEWER NOTES below this line[^\n]*@@[ \t]*$\s*\S' }], fallback = "pass" }
   ports = [
     { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "pass", capability = "text@1", direction = "output", kind = "then" },
