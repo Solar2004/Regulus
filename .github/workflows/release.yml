@@ -1,0 +1,166 @@
+# Release: on a version tag, build the program and the desktop app with
+# scripts/release.sh, sign them with the release key, and publish them twice on GitHub
+# Releases (docs/06-stack.md §5.4):
+#
+#   releases/download/vX.Y.Z/…    the version, kept forever
+#   releases/download/<channel>/… the channel, updated in place on every release
+#
+# The second one is what `regulus update` and the app read: with
+# `[update] url = https://github.com/<owner>/<repo>/releases/download` the manifest is at
+# `<url>/<channel>/manifest.json`, exactly how GitHub serves the assets of the release
+# tagged `<channel>`. No extra server.
+#
+# Needs one repository secret, REGULUS_SIGNING_KEY: the text of the secret key file that
+# `regulus update keygen` wrote. Its public half is the default `[update] public_key`.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Channel to publish to (folder under [update] url)"
+        default: stable
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_BUILD_JOBS: 2
+
+jobs:
+  release:
+    name: build, sign, publish
+    # 22.04: the oldest glibc GitHub still runs, so the binary and the AppImage start on
+    # more machines. Tauri's own guide builds Linux releases here too.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: version and channel
+        id: meta
+        run: |
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)"
+          [ -n "$version" ] || { echo "no version under [workspace.package] in Cargo.toml"; exit 1; }
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [ "$tag" != "v$version" ]; then
+              echo "tag $tag does not match the workspace version $version: bump Cargo.toml first"
+              exit 1
+            fi
+            # A pre-release version (1.2.0-beta.1) goes to the beta channel.
+            case "$version" in *-*) channel="beta" ;; *) channel="stable" ;; esac
+          else
+            # By hand, still from the version's tag: the files must be the tagged commit's.
+            if [ "${{ github.ref_type }}" != "tag" ] || [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+              echo "run this workflow from the tag v$version (ref: ${GITHUB_REF_NAME}), not from a branch"
+              exit 1
+            fi
+            channel="${{ github.event.inputs.channel }}"
+            case "$channel" in
+              ""|.|..|*[!A-Za-z0-9._-]*) echo "channel '$channel': use letters, digits, '.', '-' or '_'"; exit 1 ;;
+            esac
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          # The previous version tag, for the generated notes (the channel tags move).
+          previous="$(git tag -l 'v*' --sort=-v:refname | grep -v "^v$version\$" | head -1 || true)"
+          {
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "prerelease=$prerelease"
+            echo "previous=$previous"
+          } >> "$GITHUB_OUTPUT"
+          echo "regulus $version · channel $channel · previous ${previous:-none}"
+
+      - name: system libraries for the desktop app
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
+            libgtk-3-dev librsvg2-dev libssl-dev patchelf libfuse2
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/regulus-tauri/frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: crates/regulus-tauri/frontend
+
+      - name: build and sign (scripts/release.sh)
+        env:
+          REGULUS_SIGNING_KEY: ${{ secrets.REGULUS_SIGNING_KEY }}
+        run: |
+          if [ -z "$REGULUS_SIGNING_KEY" ]; then
+            echo "the repository secret REGULUS_SIGNING_KEY is not set: nothing would be installable"
+            exit 1
+          fi
+          scripts/release.sh \
+            --channel "${{ steps.meta.outputs.channel }}" \
+            --url "https://github.com/${{ github.repository }}/releases/download" \
+            --out dist
+          ls -la "dist/${{ steps.meta.outputs.version }}"
+
+      - name: publish the version (v${{ steps.meta.outputs.version }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PREVIOUS: ${{ steps.meta.outputs.previous }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # A re-run (workflow_dispatch on a tagged commit): refresh the files only.
+            gh release upload "$tag" dist/"$VERSION"/* --clobber
+          else
+            args=(--title "regulus $VERSION" --generate-notes --target "$GITHUB_SHA")
+            [ -n "$PREVIOUS" ] && args+=(--notes-start-tag "$PREVIOUS")
+            [ "$PRERELEASE" = true ] && args+=(--prerelease)
+            gh release create "$tag" dist/"$VERSION"/* "${args[@]}"
+          fi
+
+      - name: publish the channel (${{ steps.meta.outputs.channel }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: |
+          # The channel is a release that is updated in place, so its URL never answers 404
+          # between two versions: new files go up first (replacing same-named ones), then
+          # the files of the previous version (their names carry its number) are removed.
+          # Its tag follows the published commit.
+          title="$CHANNEL · regulus $VERSION"
+          notes="What \`regulus update\` and the app follow on the \`$CHANNEL\` channel: regulus $VERSION. The version's own release is v$VERSION."
+          if gh release view "$CHANNEL" >/dev/null 2>&1; then
+            gh release upload "$CHANNEL" dist/"$VERSION"/* --clobber
+            for old in $(gh release view "$CHANNEL" --json assets -q '.assets[].name'); do
+              [ -e "dist/$VERSION/$old" ] || gh release delete-asset "$CHANNEL" "$old" --yes
+            done
+            gh release edit "$CHANNEL" --title "$title" --notes "$notes" --prerelease --latest=false
+            git tag -f "$CHANNEL" "$GITHUB_SHA"
+            git push --force origin "refs/tags/$CHANNEL"
+          else
+            gh release create "$CHANNEL" dist/"$VERSION"/* \
+              --title "$title" --notes "$notes" \
+              --latest=false --prerelease --target "$GITHUB_SHA"
+          fi
+          echo "manifest: https://github.com/${{ github.repository }}/releases/download/$CHANNEL/manifest.json"

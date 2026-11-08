@@ -46,10 +46,13 @@ caja Agente, `value_path` en las reglas de `flow`, `timeout_ms` en la barrera de
 un turno colgado por el proveedor cierra en `failed` (`turn_timeout_ms`). **Los módulos
 locales de un proyecto corren como procesos** (2026-11-08, `94e5aa3`, `03-modules.md` §6,
 `11-composition.md` §13): JSON-RPC por stdio, solo en proyectos de confianza
-(`regulus project trust`), protocolo 1.14 con el estado `blocked`. **Release y
+(`regulus project trust`), protocolo 1.14 con el estado `blocked`; **Ajustes → Módulos lo
+enseña y ofrece confiar** (2026-11-08, protocolo 1.15, `04-client.md` §10). **Release y
 actualización** (2026-11-08, `52d6bfe`, `06-stack.md` §5.4): `scripts/release.sh` saca
 binario, AppImage y deb con manifiesto firmado (minisign); `regulus update` y Ajustes →
-Updates instalan solo lo que esa firma avala. **Lo siguiente:** pulir con uso real. La
+Updates instalan solo lo que esa firma avala; **se publica en GitHub Releases** con
+`.github/workflows/release.yml` en cada tag `v*`, y `[update]` apunta ahí por defecto
+(2026-11-08). **Lo siguiente:** pulir con uso real. La
 pasarela de proveedores queda aplazada. Plan y orden en
 [`docs/plan.md`](docs/plan.md).
 
@@ -195,7 +198,7 @@ Refs: docs/plan.md §3
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Pulir con uso real**: mostrar el estado `blocked` con su acción "confiar" en Ajustes; instalar una actualización de la app con la app abierta (dos versiones publicadas) | nada |
+| 1 | **Pulir con uso real**: ~~mostrar el estado `blocked` con su acción "confiar" en Ajustes~~ (2026-11-08); publicar `v0.1.0` con `release.yml` (falta el secreto `REGULUS_SIGNING_KEY` y el tag) y, con una segunda versión, instalar la actualización con la app abierta | el secreto y el tag los pone Alexander |
 | 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~, ~~pxl~~. **Las ocho hechas** (2026-11-08) | — |
 | 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); ~~release + `regulus update` + Ajustes → Updates~~ (`06-stack.md` §5.4); lo que queda está en la fila 1 | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |

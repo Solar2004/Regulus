@@ -1,6 +1,6 @@
 # 06 — Stack, terminal y versionado
 
-> **v0.5** · 2026-11-08 (§5.4 build y actualización)
+> **v0.6** · 2026-11-08 (§5.4 build y actualización; publicación en GitHub Releases y valores por defecto de `[update]`)
 > Las dependencias concretas, con versiones verificadas. El reparto de la terminal.
 > El sistema de versionado de la app.
 > Lee [`02-architecture.md`](02-architecture.md) primero.
@@ -257,6 +257,19 @@ deb), y escribe `dist/<versión>/`:
   app se salta diciendo qué falta y el programa sale igual. Sale con código 3 si la app no se
   construyó. No instala nada del sistema.
 - **Publicar** es copiar `dist/<versión>/*` a `<url>/<canal>/` en cualquier servidor estático.
+- **Dónde se publica Regulus** (2026-11-08): en **GitHub Releases**, sin servidor propio.
+  `.github/workflows/release.yml` corre con cada tag `v<versión>` (o a mano, eligiendo canal):
+  comprueba que el tag es la versión de `Cargo.toml`, instala las librerías de la app en
+  `ubuntu-22.04` (la glibc más vieja que ofrece GitHub, para que el binario arranque en más
+  máquinas), ejecuta `release.sh` firmando con el secreto `REGULUS_SIGNING_KEY` (el texto de
+  la clave de `keygen`) y sube los ficheros **dos veces**: a la release `v<versión>`, que se
+  queda para siempre, y a la release **`<canal>`** (`stable`; `beta` si la versión lleva
+  `-`), que se actualiza en el sitio con cada publicación (primero suben los ficheros nuevos,
+  luego se quitan los de la versión anterior y el tag sigue al commit publicado: su URL nunca
+  da 404 entre dos versiones). Esa segunda es la carpeta del
+  canal: GitHub sirve sus ficheros en `releases/download/<canal>/<fichero>`, justo la forma
+  `<url>/<canal>/…` que leen `regulus update` y el updater de Tauri. Un canal nuevo es solo
+  otro nombre de release. Sin el secreto, el workflow para antes de construir.
 - **Medido** (2026-11-08, Arch, con otros dos builds en la máquina y `nice 10`): `regulus` en
   release 7 min 07 s (`lto = true`, `codegen-units = 1`); la app 4 min 41 s de compilación
   más ~1,5 min de bundles. Tamaños: `regulus-linux-x86_64` 21,2 MiB, `.deb` 5,8 MiB,
@@ -275,10 +288,10 @@ versión que anuncia `latest.json`. La clave secreta no va al repo (`*.key` en `
 
 | Clave | Por defecto | Qué hace |
 |---|---|---|
-| `url` | vacío | Base de las releases: el manifiesto es `<url>/<channel>/manifest.json`. **Vacío = actualizar está apagado**, y `regulus update` lo dice con la clave a poner. Vale `https://`, `file://` o una ruta; `http://` solo con `allow_insecure` |
+| `url` | `https://github.com/Solar2004/Regulus/releases/download` | Base de las releases: el manifiesto es `<url>/<channel>/manifest.json`. Por defecto las del proyecto en GitHub Releases (arriba). **`url = ""` apaga la actualización**, y `regulus update` lo dice con la clave a poner. Vale `https://`, `file://` o una ruta; `http://` solo con `allow_insecure` |
 | `channel` | `stable` | Qué carpeta seguir (`stable`, `beta`, …) |
 | `check_on_start` | `false` | Al arrancar `regulus serve` (en un hilo, sin retrasar el arranque) y al abrir la app, mira si hay una versión nueva y lo dice. Nunca instala |
-| `public_key` | vacío | La línea `RW…` que imprimió `keygen`. **Sin ella no se instala nada**; `--check` funciona y avisa "unverified" (la firma no se comprobó) |
+| `public_key` | la clave de las releases de Regulus (`RWSd0JkM…`, `config.rs`) | La línea `RW…` que imprimió `keygen`. Por defecto la que firma las releases del proyecto; quien publique su propio canal pone la suya. **Vacía no se instala nada**; `--check` funciona y avisa "unverified" (la firma no se comprobó) |
 | `timeout_ms` | 120000 | Cuánto puede tardar una descarga. `0` = sin límite |
 | `max_bytes` | 1073741824 (1 GiB) | Lo máximo que puede pesar un fichero de la release; un manifiesto que pida más se rechaza sin descargar |
 | `allow_insecure` | `false` | Aceptar `url` en `http://` plano. Apagado, CLI y app rechazan esa URL antes de pedir nada. La firma ya protege el contenido; esto evita seguir una URL mal escrita |

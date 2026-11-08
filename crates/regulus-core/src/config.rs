@@ -347,8 +347,8 @@ impl Default for StoreConfig {
     }
 }
 
-/// Self-update of the `regulus` program and the app (docs/06-stack.md §5.4). An empty
-/// `url` turns updating off.
+/// Self-update of the `regulus` program and the app (docs/06-stack.md §5.4). The defaults
+/// follow the project's own releases on GitHub; an empty `url` turns updating off.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
@@ -373,13 +373,20 @@ pub struct UpdateConfig {
     pub unknown: toml::Table,
 }
 
+/// Where the project publishes its releases: each channel is a GitHub release tagged with
+/// the channel's name, so `<url>/<channel>/manifest.json` is how GitHub serves its files
+/// (.github/workflows/release.yml).
+pub const DEFAULT_UPDATE_URL: &str = "https://github.com/Solar2004/Regulus/releases/download";
+/// The public half of the key that signs those releases (`regulus update keygen`).
+pub const DEFAULT_UPDATE_KEY: &str = "RWSd0JkMVrVmKxrjbqBr/zqvdsXxEamMbcNRYbDxX5TX8cGk3BxdH+HB";
+
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
-            url: String::new(),
+            url: DEFAULT_UPDATE_URL.into(),
             channel: "stable".into(),
             check_on_start: false,
-            public_key: String::new(),
+            public_key: DEFAULT_UPDATE_KEY.into(),
             timeout_ms: 120_000,
             max_bytes: 1 << 30,
             allow_insecure: false,

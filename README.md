@@ -205,6 +205,12 @@ sign`); the manifest binds every file by size and sha256. The CLI and the app's
 Settings install only what that signature vouches for, only upgrade, and leave the
 program untouched on any failure. Channels are folders under `[update] url`.
 
+Regulus itself is published on GitHub Releases by `.github/workflows/release.yml`: every
+`v*` tag builds, signs and uploads the files to the release `vX.Y.Z` and to the rolling
+release named after the channel (`stable`), which is the folder `regulus update` and the
+app read. The defaults of `[update]` already point there, so a fresh install updates
+with `regulus update` or from Settings → Updates; `url = ""` turns it off.
+
 ## Git and hooks
 
 ```bash

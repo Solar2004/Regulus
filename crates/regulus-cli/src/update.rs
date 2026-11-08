@@ -610,7 +610,20 @@ mod tests {
     fn sources_need_a_url_and_a_plain_channel() {
         let config = UpdateConfig::default();
         let path = Path::new("config.toml");
-        let off = Source::new(&config, path, None, None)
+        // The defaults follow the project's own releases; `url = ""` turns updating off.
+        let default = Source::new(&config, path, None, None).unwrap();
+        assert_eq!(
+            default.manifest_url(),
+            format!(
+                "{}/stable/manifest.json",
+                regulus_core::config::DEFAULT_UPDATE_URL
+            )
+        );
+        let silent = UpdateConfig {
+            url: String::new(),
+            ..UpdateConfig::default()
+        };
+        let off = Source::new(&silent, path, None, None)
             .unwrap_err()
             .to_string();
         assert!(off.contains("updates are off"), "{off}");
