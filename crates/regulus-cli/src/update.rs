@@ -5,9 +5,10 @@
 //! one key pair signs the manifest the CLI reads and the bundles the app's updater reads:
 //! Tauri's updater verifies minisign signatures.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::Stdio;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -27,6 +28,8 @@ pub const KIND_CLI: &str = "cli";
 pub const KEY_ENV: &str = "REGULUS_SIGNING_KEY";
 /// A manifest is a few hundred bytes; more than this is not a manifest.
 const MANIFEST_MAX_BYTES: u64 = 1 << 20;
+/// How long the downloaded program may take to answer `--version` before it is refused.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Algorithm tags of minisign: `Ed` for keys, `ED` for pre-hashed signatures.
 const KEY_ALGORITHM: &[u8; 2] = b"Ed";
 const SIGNATURE_ALGORITHM: &[u8; 2] = b"ED";
@@ -77,7 +80,12 @@ pub struct Source {
     pub url: String,
     pub channel: String,
     pub public_key: String,
-    pub timeout: Duration,
+    /// `None`: no limit (`timeout_ms = 0`).
+    pub timeout: Option<Duration>,
+    /// The most one release file may weigh.
+    pub max_bytes: u64,
+    /// Plain `http://` is taken only when `[update] allow_insecure` says so.
+    pub allow_insecure: bool,
 }
 
 impl Source {
@@ -96,6 +104,7 @@ impl Source {
                 config_path.display()
             );
         }
+        config.url_allowed(&url).map_err(anyhow::Error::msg)?;
         let channel = channel.unwrap_or_else(|| config.channel.clone());
         if !channel_valid(&channel) {
             bail!("channel `{channel}`: use letters, digits, `.`, `-` or `_`");
@@ -104,7 +113,9 @@ impl Source {
             url,
             channel,
             public_key: config.public_key.trim().to_string(),
-            timeout: Duration::from_millis(config.timeout_ms),
+            timeout: config.timeout(),
+            max_bytes: config.max_bytes,
+            allow_insecure: config.allow_insecure,
         })
     }
 
@@ -177,6 +188,11 @@ pub fn fetch_offer(source: &Source, require_signature: bool) -> Result<Offer> {
     };
     let manifest: Manifest =
         serde_json::from_slice(&bytes).with_context(|| format!("{url}: not a manifest"))?;
+    // A signed manifest must name its channel: otherwise one signed for `beta` could be
+    // copied into `stable` and still verify.
+    if signed && manifest.channel.is_empty() {
+        bail!("{url}: the signed manifest names no channel; release.sh writes `channel`");
+    }
     if !manifest.channel.is_empty() && manifest.channel != source.channel {
         bail!(
             "{url}: the manifest is for channel `{}`, not `{}`",
@@ -196,6 +212,16 @@ pub fn fetch_offer(source: &Source, require_signature: bool) -> Result<Offer> {
 /// Downloads the entry and checks its size and SHA-256 against the (signed) manifest.
 pub fn download(source: &Source, entry: &FileEntry) -> Result<Vec<u8>> {
     let url = source.file_url(entry);
+    if url.starts_with("http://") && !source.allow_insecure {
+        bail!("{url}: plain http is off; set `allow_insecure = true` under [update]");
+    }
+    if entry.size > source.max_bytes {
+        bail!(
+            "{url}: the manifest says {} bytes, more than `max_bytes` ({}) under [update]",
+            entry.size,
+            source.max_bytes
+        );
+    }
     let bytes = fetch(source, &url, entry.size)?;
     if bytes.len() as u64 != entry.size {
         bail!(
@@ -216,7 +242,7 @@ pub fn download(source: &Source, entry: &FileEntry) -> Result<Vec<u8>> {
 fn fetch(source: &Source, url: &str, max: u64) -> Result<Vec<u8>> {
     if url.starts_with("http://") || url.starts_with("https://") {
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(source.timeout))
+            .timeout_global(source.timeout)
             .user_agent(concat!("regulus/", env!("CARGO_PKG_VERSION")))
             .build()
             .into();
@@ -228,7 +254,7 @@ fn fetch(source: &Source, url: &str, max: u64) -> Result<Vec<u8>> {
         response
             .body_mut()
             .as_reader()
-            .take(max + 1)
+            .take(max.saturating_add(1))
             .read_to_end(&mut body)
             .with_context(|| format!("GET {url}"))?;
         if body.len() as u64 > max {
@@ -240,7 +266,7 @@ fn fetch(source: &Source, url: &str, max: u64) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     std::fs::File::open(path)
         .with_context(|| format!("cannot read {path}"))?
-        .take(max + 1)
+        .take(max.saturating_add(1))
         .read_to_end(&mut body)
         .with_context(|| format!("cannot read {path}"))?;
     if body.len() as u64 > max {
@@ -262,46 +288,103 @@ pub fn install(exe: &Path, bytes: &[u8], version: &semver::Version) -> Result<()
     let dir = exe
         .parent()
         .with_context(|| format!("{} has no folder", exe.display()))?;
-    let staged = dir.join(format!(".regulus-update-{}", std::process::id()));
-    let result = stage_and_replace(exe, &staged, bytes, version);
-    let _ = std::fs::remove_file(&staged);
-    result
-}
-
-fn stage_and_replace(
-    exe: &Path,
-    staged: &Path,
-    bytes: &[u8],
-    version: &semver::Version,
-) -> Result<()> {
-    std::fs::write(staged, bytes).with_context(|| {
-        format!(
-            "cannot write next to {}: updating needs a folder you can write",
-            exe.display()
-        )
-    })?;
+    let staged = Staged::create(dir, exe, bytes)?;
+    probe_version(&staged.path, version)?;
     #[cfg(unix)]
     {
+        // Staged as 0o700; it takes the old program's mode when it becomes the program.
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))?;
+        let mode = std::fs::metadata(exe)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0o755);
+        std::fs::set_permissions(&staged.path, std::fs::Permissions::from_mode(mode))?;
     }
-    let output = std::process::Command::new(staged)
+    if exe == std::env::current_exe().unwrap_or_default() {
+        self_replace::self_replace(&staged.path)
+    } else {
+        std::fs::rename(&staged.path, exe)
+    }
+    .with_context(|| format!("cannot replace {}", exe.display()))
+}
+
+/// The downloaded program next to `exe`, under a name nobody can guess, created fresh
+/// (never a file or symlink already there) and readable by its owner only. Removed when
+/// dropped, unless it was renamed into place.
+struct Staged {
+    path: PathBuf,
+}
+
+impl Staged {
+    fn create(dir: &Path, exe: &Path, bytes: &[u8]) -> Result<Self> {
+        let mut nonce = [0u8; 8];
+        getrandom::fill(&mut nonce).map_err(|e| anyhow::anyhow!("no randomness: {e}"))?;
+        let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+        let path = dir.join(format!(".regulus-update-{suffix}"));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o700);
+        let mut file = options.open(&path).with_context(|| {
+            format!(
+                "cannot write next to {}: updating needs a folder you can write",
+                exe.display()
+            )
+        })?;
+        let staged = Self { path };
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .with_context(|| format!("cannot write {}", staged.path.display()))?;
+        Ok(staged)
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Runs the downloaded program with `--version`: it has to start here and say `version`.
+/// No stdin, and a program that hangs is killed and refused.
+fn probe_version(program: &Path, version: &semver::Version) -> Result<()> {
+    let mut child = std::process::Command::new(program)
         .arg("--version")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .context("the new program does not start")?;
-    let said = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success() || !said.split_whitespace().any(|w| w == version.to_string()) {
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut said = String::new();
+        if let Some(out) = stdout.as_mut() {
+            let _ = out.take(4096).read_to_string(&mut said);
+        }
+        said
+    });
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().context("the new program does not start")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "the new program did not answer --version in {} s; nothing replaced",
+                PROBE_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let said = reader.join().unwrap_or_default();
+    if !status.success() || !said.split_whitespace().any(|w| w == version.to_string()) {
         bail!(
             "the new program says `{}` to --version, not {version}; nothing replaced",
             said.trim()
         );
     }
-    if exe == std::env::current_exe().unwrap_or_default() {
-        self_replace::self_replace(staged)
-    } else {
-        std::fs::rename(staged, exe)
-    }
-    .with_context(|| format!("cannot replace {}", exe.display()))
+    Ok(())
 }
 
 /// A new key pair: the secret key file's text and the public key (`RW…` line).
@@ -533,6 +616,18 @@ mod tests {
         assert!(off.contains("updates are off"), "{off}");
         let source = Source::new(&config, path, Some("https://x/r/".into()), None).unwrap();
         assert_eq!(source.manifest_url(), "https://x/r/stable/manifest.json");
+        assert_eq!(source.timeout, Some(Duration::from_millis(120_000)));
+        let plain = Source::new(&config, path, Some("http://x".into()), None)
+            .unwrap_err()
+            .to_string();
+        assert!(plain.contains("allow_insecure"), "{plain}");
+        let lax = UpdateConfig {
+            allow_insecure: true,
+            timeout_ms: 0,
+            ..UpdateConfig::default()
+        };
+        let source_lax = Source::new(&lax, path, Some("http://x".into()), None).unwrap();
+        assert_eq!(source_lax.timeout, None, "timeout_ms = 0 is no limit");
         assert!(Source::new(
             &config,
             path,
@@ -551,5 +646,147 @@ mod tests {
         assert_eq!(source.file_url(&entry), "https://x/r/stable/regulus");
         entry.url = Some("https://cdn/regulus".into());
         assert_eq!(source.file_url(&entry), "https://cdn/regulus");
+    }
+
+    fn write_site(dir: &Path, key: &SecretKey, manifest: &serde_json::Value) -> Source {
+        std::fs::create_dir_all(dir.join("stable")).unwrap();
+        let bytes = serde_json::to_vec(manifest).unwrap();
+        std::fs::write(dir.join("stable/manifest.json"), &bytes).unwrap();
+        std::fs::write(
+            dir.join("stable/manifest.json.sig"),
+            key.sign(&bytes, &trusted_comment("manifest.json", None)),
+        )
+        .unwrap();
+        Source {
+            url: format!("file://{}", dir.display()),
+            channel: "stable".into(),
+            public_key: key.public_key(),
+            timeout: None,
+            max_bytes: 1 << 30,
+            allow_insecure: false,
+        }
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("regulus-update-unit-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_signed_manifest_must_name_the_channel_it_is_read_from() {
+        let key = key();
+        let dir = TempDir::new("channel");
+        let entry = serde_json::json!([]);
+        let source = write_site(
+            &dir.0,
+            &key,
+            &serde_json::json!({ "version": "1.0.0", "files": entry }),
+        );
+        let unnamed = fetch_offer(&source, true).unwrap_err().to_string();
+        assert!(unnamed.contains("names no channel"), "{unnamed}");
+        let source = write_site(
+            &dir.0,
+            &key,
+            &serde_json::json!({ "version": "1.0.0", "channel": "beta", "files": entry }),
+        );
+        let other = fetch_offer(&source, true).unwrap_err().to_string();
+        assert!(other.contains("for channel `beta`"), "{other}");
+        let source = write_site(
+            &dir.0,
+            &key,
+            &serde_json::json!({ "version": "1.0.0", "channel": "stable", "files": entry }),
+        );
+        assert!(fetch_offer(&source, true).unwrap().signed);
+    }
+
+    #[test]
+    fn a_malformed_public_key_verifies_nothing() {
+        let key = key();
+        let signature = key.sign(b"x", "c");
+        for bad in ["", "RW", "not base64!", &key.public_key()[..20]] {
+            let error = verify(bad, b"x", &signature).unwrap_err().to_string();
+            assert!(error.contains("public_key"), "{bad:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn downloads_are_bounded_by_the_manifest_and_max_bytes() {
+        let dir = TempDir::new("size");
+        std::fs::write(dir.0.join("regulus-new"), b"program").unwrap();
+        let mut source = Source {
+            url: format!("file://{}", dir.0.display()),
+            channel: ".".into(),
+            public_key: String::new(),
+            timeout: None,
+            max_bytes: 1 << 30,
+            allow_insecure: false,
+        };
+        let mut entry = FileEntry {
+            name: "regulus-new".into(),
+            sha256: sha256_hex(b"program"),
+            size: 7,
+            platform: platform(),
+            kind: None,
+            url: None,
+        };
+        assert_eq!(download(&source, &entry).unwrap(), b"program");
+        entry.size = 6;
+        assert!(download(&source, &entry)
+            .unwrap_err()
+            .to_string()
+            .contains("longer than"));
+        entry.size = 8;
+        assert!(download(&source, &entry)
+            .unwrap_err()
+            .to_string()
+            .contains("the manifest says 8"));
+        entry.size = u64::MAX;
+        let huge = download(&source, &entry).unwrap_err().to_string();
+        assert!(huge.contains("max_bytes"), "{huge}");
+        source.max_bytes = u64::MAX;
+        let huge = download(&source, &entry).unwrap_err().to_string();
+        assert!(huge.contains("the manifest says"), "{huge}");
+        entry.size = 7;
+        entry.url = Some("http://cdn/regulus".into());
+        let plain = download(&source, &entry).unwrap_err().to_string();
+        assert!(plain.contains("allow_insecure"), "{plain}");
+    }
+
+    #[test]
+    fn a_staged_program_that_lies_is_refused_and_removed() {
+        let dir = TempDir::new("stage");
+        let exe = dir.0.join("regulus");
+        std::fs::write(&exe, b"#!/bin/sh\necho old\n").unwrap();
+        let liar = b"#!/bin/sh\necho \"regulus 1.0.0\"\n";
+        let lie = install(&exe, liar, &semver::Version::new(2, 0, 0))
+            .unwrap_err()
+            .to_string();
+        assert!(lie.contains("not 2.0.0"), "{lie}");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"#!/bin/sh\necho old\n");
+        let left: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".regulus-update-")
+            })
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        install(&exe, liar, &semver::Version::new(1, 0, 0)).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), &liar[..]);
     }
 }

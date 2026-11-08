@@ -275,19 +275,27 @@ versión que anuncia `latest.json`. La clave secreta no va al repo (`*.key` en `
 
 | Clave | Por defecto | Qué hace |
 |---|---|---|
-| `url` | vacío | Base de las releases: el manifiesto es `<url>/<channel>/manifest.json`. **Vacío = actualizar está apagado**, y `regulus update` lo dice con la clave a poner. Vale `https://`, `http://`, `file://` o una ruta |
+| `url` | vacío | Base de las releases: el manifiesto es `<url>/<channel>/manifest.json`. **Vacío = actualizar está apagado**, y `regulus update` lo dice con la clave a poner. Vale `https://`, `file://` o una ruta; `http://` solo con `allow_insecure` |
 | `channel` | `stable` | Qué carpeta seguir (`stable`, `beta`, …) |
 | `check_on_start` | `false` | Al arrancar `regulus serve` (en un hilo, sin retrasar el arranque) y al abrir la app, mira si hay una versión nueva y lo dice. Nunca instala |
-| `public_key` | vacío | La línea `RW…` que imprimió `keygen`. **Sin ella no se instala nada**; `--check` funciona y avisa "unsigned" |
-| `timeout_ms` | 120000 | Cuánto puede tardar una descarga |
+| `public_key` | vacío | La línea `RW…` que imprimió `keygen`. **Sin ella no se instala nada**; `--check` funciona y avisa "unverified" (la firma no se comprobó) |
+| `timeout_ms` | 120000 | Cuánto puede tardar una descarga. `0` = sin límite |
+| `max_bytes` | 1073741824 (1 GiB) | Lo máximo que puede pesar un fichero de la release; un manifiesto que pida más se rechaza sin descargar |
+| `allow_insecure` | `false` | Aceptar `url` en `http://` plano. Apagado, CLI y app rechazan esa URL antes de pedir nada. La firma ya protege el contenido; esto evita seguir una URL mal escrita |
 
 **CLI: `regulus update [--check] [--channel X] [--url X] [--yes]`.** Baja el manifiesto y su
-`.sig`, verifica la firma, rechaza un manifiesto de otro canal, compara SemVer con la versión
+`.sig`, verifica la firma, exige que el manifiesto firmado nombre su canal y sea el que se
+sigue (uno firmado para `beta` no vale copiado en `stable`), compara SemVer con la versión
 que corre (solo sube, nunca baja), elige el fichero `kind = cli` de su plataforma
 (`std::env::consts`, `linux-x86_64`), lo baja y comprueba tamaño y sha256 contra el manifiesto
-firmado. Lo escribe junto al ejecutable, lo ejecuta con `--version` (tiene que decir la
-versión nueva: así no se instala un binario que no arranca aquí) y lo renombra encima con
-`self-replace`. Cualquier fallo deja el programa como estaba. Sin `--yes` pregunta, y sin
+firmado. Lo escribe junto al ejecutable en un fichero nuevo con nombre aleatorio y modo
+`0700` (nunca encima de algo que ya esté ahí), lo ejecuta con `--version` sin stdin y con
+30 s de tope (tiene que decir la versión nueva: así no se instala un binario que no arranca
+aquí) y lo renombra encima con `self-replace`, con los permisos del programa viejo.
+Cualquier fallo deja el programa como estaba. **Límite:** no hay protección contra *replay*:
+un manifiesto firmado antiguo sigue siendo válido. No permite bajar de versión porque solo
+se instala `version >` la que corre, pero sí serviría para retener a alguien en una versión
+vieja mientras se le sirva ese manifiesto. Sin `--yes` pregunta, y sin
 terminal pide `--yes`. Si la carpeta del ejecutable no se puede escribir (instalado por el
 gestor de paquetes), lo dice: ese caso se actualiza con el paquete.
 
@@ -295,7 +303,8 @@ gestor de paquetes), lo dice: ese caso se actualiza con el paquete.
 tiempo de ejecución: endpoint `<url>/<channel>/latest.json` y, como clave, la misma
 `public_key` envuelta en el fichero de clave pública de minisign que Tauri espera. Ajustes →
 General → *Updates* muestra la versión que corre, la disponible y el botón para instalarla
-(`04-client.md` §10). Sin `url`, dice que está apagado y qué poner.
+(`04-client.md` §10); instalar vuelve a leer `latest.json` y, si ahora anuncia otra versión
+que la mostrada, no instala y pide comprobar de nuevo. Sin `url`, dice que está apagado y qué poner.
 `tauri.conf.json` solo lleva lo que no se puede dar en tiempo de ejecución:
 `requireSignedVersion = true` (la versión firmada tiene que ser la anunciada) y
 `dangerousInsecureTransportProtocol = true`, para que `url` pueda ser `http://` como en la

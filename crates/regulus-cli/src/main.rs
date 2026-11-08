@@ -1559,7 +1559,7 @@ fn update(config: &Config, ask: UpdateAsk) -> Result<()> {
     let trust = if offer.signed {
         "signed"
     } else {
-        "unsigned: [update] public_key is empty"
+        "unverified: [update] public_key is empty, so the signature was not checked"
     };
     if !offer.newer_than(&current) {
         println!(
@@ -1671,7 +1671,8 @@ fn update_tool(command: UpdateCommand) -> Result<()> {
     }
 }
 
-/// Writes a file only its owner can read.
+/// Writes a file only its owner can read. The mode given at creation does not apply to a
+/// file that exists (`keygen --force`), so it is set again before anything is written.
 fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -1680,6 +1681,11 @@ fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
     let mut file = options
         .open(path)
         .with_context(|| format!("cannot write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     std::io::Write::write_all(&mut file, text.as_bytes())?;
     Ok(())
 }

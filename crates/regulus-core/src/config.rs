@@ -361,8 +361,13 @@ pub struct UpdateConfig {
     /// The release key (`regulus update keygen`), as the `RW…` line of a minisign public
     /// key. Without it nothing is installed: a manifest cannot be trusted.
     pub public_key: String,
-    /// How long one download may take, in milliseconds.
+    /// How long one download may take, in milliseconds; `0` means no limit.
     pub timeout_ms: u64,
+    /// The most a release file may weigh, in bytes: a manifest asking for more is refused.
+    pub max_bytes: u64,
+    /// Take releases over plain `http://`. Off, only `https://`, `file://` and paths are
+    /// accepted: the signature guards the content, this guards against a URL typed wrong.
+    pub allow_insecure: bool,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
     pub unknown: toml::Table,
@@ -376,12 +381,29 @@ impl Default for UpdateConfig {
             check_on_start: false,
             public_key: String::new(),
             timeout_ms: 120_000,
+            max_bytes: 1 << 30,
+            allow_insecure: false,
             unknown: toml::Table::new(),
         }
     }
 }
 
 impl UpdateConfig {
+    /// `timeout_ms` as a duration; `None` when it is `0`, meaning no limit.
+    pub fn timeout(&self) -> Option<std::time::Duration> {
+        (self.timeout_ms > 0).then(|| std::time::Duration::from_millis(self.timeout_ms))
+    }
+
+    /// Whether `url` may be followed: plain `http://` needs `allow_insecure`.
+    pub fn url_allowed(&self, url: &str) -> Result<(), String> {
+        if url.starts_with("http://") && !self.allow_insecure {
+            return Err(format!(
+                "{url}: plain http is off; use https:// or set `allow_insecure = true` under [update]"
+            ));
+        }
+        Ok(())
+    }
+
     /// `public_key` as Tauri's updater takes it: a minisign public key file, in base64.
     pub fn tauri_public_key(&self) -> String {
         use base64::Engine;
@@ -556,7 +578,7 @@ impl Config {
 
     /// One warning per key no section knows, as `section.key`.
     fn unknown_keys(&self, path: &Path) -> Vec<String> {
-        let sections: [(&str, &toml::Table); 13] = [
+        let sections: [(&str, &toml::Table); 14] = [
             ("", &self.unknown),
             ("server.", &self.server.unknown),
             ("profiles.", &self.profiles.unknown),
