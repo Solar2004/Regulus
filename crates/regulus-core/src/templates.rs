@@ -107,6 +107,7 @@ impl Template {
             vars: self.vars.clone(),
             requires: self.requires.clone(),
             error: None,
+            project_id: None,
         }
     }
 }
@@ -307,6 +308,7 @@ pub fn list(places: &Places) -> Vec<TemplateSummary> {
                 vars: Vec::new(),
                 requires: Vec::new(),
                 error: Some(error.to_string()),
+                project_id: None,
             },
         })
         .collect()
