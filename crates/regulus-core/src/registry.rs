@@ -61,8 +61,9 @@ impl Entry {
 pub struct Local {
     pub manifest: Manifest,
     pub module: Box<dyn Module>,
-    /// Why it cannot run, if it could not start: it is listed broken.
-    pub broken: Option<String>,
+    /// Its state if it was not started (`Blocked`) or could not start (`Broken`); `None`
+    /// for a running one, which gets its `init`.
+    pub preset: Option<ModuleState>,
     pub health: Option<Health>,
 }
 
@@ -106,7 +107,7 @@ fn describe(state: &ModuleState) -> String {
         ModuleState::Disabled { missing } => {
             format!("missing required inputs: {}", missing.join(", "))
         }
-        ModuleState::Broken { reason } => reason.clone(),
+        ModuleState::Broken { reason } | ModuleState::Blocked { reason } => reason.clone(),
         ModuleState::Incompatible { requires, have } => {
             format!("requires proto {requires}, core has {have}")
         }
@@ -219,13 +220,13 @@ impl Registry {
             let Local {
                 manifest,
                 mut module,
-                broken,
+                preset,
                 health,
             } = local;
             let id = manifest.module.id.clone();
             let clash = self.is_installed(&id);
-            let state = if let Some(reason) = broken {
-                ModuleState::Broken { reason }
+            let state = if let Some(preset) = preset {
+                preset
             } else if let Some(requires) = manifest
                 .module
                 .requires_proto

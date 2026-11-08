@@ -327,7 +327,9 @@ impl App {
                     (Some(None), _) => NodeState::NotInstalled,
                     (_, Some(disabled)) => NodeState::Disabled(disabled.missing.clone()),
                     (Some(Some(module)), None) => match &module.state {
-                        ModuleState::Broken { reason } => NodeState::Broken(reason.clone()),
+                        ModuleState::Broken { reason } | ModuleState::Blocked { reason } => {
+                            NodeState::Broken(reason.clone())
+                        }
                         ModuleState::Incompatible { requires, have } => NodeState::Broken(format!(
                             "needs protocol {requires}, the core has {have}"
                         )),

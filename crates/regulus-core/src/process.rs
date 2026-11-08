@@ -11,12 +11,12 @@
 //! What the process writes to stderr is logged and its last lines say why it broke.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use regulus_proto::{Manifest, PROTOCOL};
@@ -47,6 +47,8 @@ const NO_VERSION: &str = "0.0.0";
 const POLL: Duration = Duration::from_millis(20);
 /// Where a reason starts quoting the process's stderr.
 const STDERR_LABEL: &str = "; stderr: ";
+/// The thread that starts every local module's process.
+const SPAWNER_THREAD: &str = "regulus-local-spawner";
 /// The threads that read a local module's stdout and stderr.
 const THREAD: &str = "regulus-local";
 
@@ -114,8 +116,9 @@ struct Emit {
 #[derive(Default)]
 struct Wire {
     replies: HashMap<u64, Result<Value, ModuleError>>,
-    /// Requests nobody waits for any more (timed out): their late answers are dropped.
-    abandoned: HashSet<u64>,
+    /// Requests a thread still waits for: an answer to any other id is dropped, so
+    /// nothing piles up from late or made-up answers.
+    pending: HashSet<u64>,
     /// Emitted while a call was in flight: the calling thread puts them on the bus, so they
     /// continue its chain and `bus.max_depth` still sees loops through the process.
     emits: VecDeque<Emit>,
@@ -128,6 +131,8 @@ struct Wire {
 /// The pipes to one process and what came back on them.
 struct Link {
     label: String,
+    /// The id of the process, which leads its own process group.
+    pid: u32,
     child: Mutex<Child>,
     stdin: Mutex<Option<ChildStdin>>,
     next_id: AtomicU64,
@@ -228,7 +233,9 @@ impl Link {
     ) -> Result<Value, ModuleError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = json!({ "jsonrpc": JSONRPC, "id": id, "method": method, "params": params });
+        self.wire().pending.insert(id);
         if let Err(error) = self.send(&message) {
+            self.wire().pending.remove(&id);
             // A process that is ending says why soon after; wait for it a little.
             let grace = Duration::from_millis(self.config.stop_grace_ms);
             return Err(ModuleError::Failed(
@@ -257,7 +264,6 @@ impl Link {
                 Some(at) => {
                     let now = Instant::now();
                     if now >= at {
-                        wire.abandoned.insert(id);
                         let ms = timeout.unwrap_or_default().as_millis();
                         break Err(ModuleError::Failed(format!(
                             "{} did not answer `{method}` in {ms} ms",
@@ -272,6 +278,8 @@ impl Link {
             }
         };
         wire.waiting -= 1;
+        wire.pending.remove(&id);
+        wire.replies.remove(&id);
         // Nobody else waits: what is left is put on the bus here.
         while wire.waiting == 0 {
             let Some(emit) = wire.emits.pop_front() else {
@@ -318,7 +326,7 @@ impl Link {
                     None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
                 };
                 let mut wire = self.wire();
-                if !wire.abandoned.remove(&id) {
+                if wire.pending.contains(&id) {
                     wire.replies.insert(id, result);
                     self.changed.notify_all();
                 }
@@ -359,22 +367,20 @@ impl Link {
         matches!(lock(&self.child).try_wait(), Ok(None))
     }
 
-    /// Sends SIGTERM (or SIGKILL with `kill`) to its process group, if it still runs.
+    /// Sends SIGTERM (or SIGKILL with `kill`) to its process group, even after the
+    /// process itself ended: what it started may still run. An empty group is harmless
+    /// (ESRCH).
     fn signal(&self, kill: bool) {
-        let mut child = lock(&self.child);
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
-        }
         #[cfg(unix)]
         {
             let signal = if kill { libc::SIGKILL } else { libc::SIGTERM };
-            let Ok(group) = libc::pid_t::try_from(child.id()) else {
+            let Ok(group) = libc::pid_t::try_from(self.pid) else {
                 return;
             };
             if group > 1 {
-                // SAFETY: `killpg` only sends a signal; it reads no memory of ours. The
-                // process leads a group of its own (`process_group(0)`) and is not reaped
-                // (`try_wait` above, under the same lock), so its id was not reused.
+                // SAFETY: `killpg` only sends a signal; it reads no memory of ours. The group
+                // is the one the process was put in (`process_group(0)`); a group id is not
+                // handed out again while any process of the group lives.
                 unsafe {
                     libc::killpg(group, signal);
                 }
@@ -383,7 +389,7 @@ impl Link {
         #[cfg(not(unix))]
         {
             let _ = kill;
-            let _ = child.kill();
+            let _ = lock(&self.child).kill();
         }
     }
 
@@ -400,14 +406,15 @@ impl Link {
         }
     }
 
-    /// Ends the process at once and reaps it.
+    /// Ends the process and its group at once and reaps it.
     fn kill(&self) {
         lock(&self.stdin).take();
         self.signal(true);
         let _ = lock(&self.child).wait();
     }
 
-    /// Stops it in order: `stop`, its stdin closed, SIGTERM, and SIGKILL past the grace.
+    /// Stops it in order: `stop`, its stdin closed, SIGTERM to its group, and SIGKILL to
+    /// whatever of the group is left once it ended or the grace passed.
     fn stop(&self) {
         let grace = Duration::from_millis(self.config.stop_grace_ms);
         if self.exited().is_none() {
@@ -415,47 +422,142 @@ impl Link {
         }
         lock(&self.stdin).take();
         self.signal(false);
-        if !self.ended_by(Instant::now() + grace) {
-            self.kill();
+        self.ended_by(Instant::now() + grace);
+        self.kill();
+    }
+}
+
+/// One line read with a limit.
+enum Line {
+    Text(String),
+    /// Longer than the limit: its first bytes. The rest of it is not read yet.
+    TooLong(String),
+    End,
+}
+
+/// Reads one line of at most `max` bytes (without its end), as UTF-8 where it is not.
+fn read_line(reader: &mut impl BufRead, max: usize) -> io::Result<Line> {
+    let mut line = Vec::new();
+    loop {
+        let chunk = match reader.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            return Ok(if line.is_empty() {
+                Line::End
+            } else {
+                Line::Text(String::from_utf8_lossy(&line).into_owned())
+            });
+        }
+        let end = chunk.iter().position(|b| *b == b'\n');
+        let content = end.unwrap_or(chunk.len());
+        let room = max.saturating_sub(line.len());
+        if content > room {
+            line.extend_from_slice(&chunk[..room]);
+            reader.consume(room);
+            return Ok(Line::TooLong(String::from_utf8_lossy(&line).into_owned()));
+        }
+        line.extend_from_slice(&chunk[..content]);
+        match end {
+            Some(_) => {
+                reader.consume(content + 1);
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                return Ok(Line::Text(String::from_utf8_lossy(&line).into_owned()));
+            }
+            None => reader.consume(content),
         }
     }
 }
 
-/// Reads the process's stdout until it closes, then says why it is gone.
-fn read_stdout(link: Arc<Link>, stdout: impl Read, stderr_done: mpsc::Receiver<()>) {
-    for line in BufReader::new(stdout).lines() {
-        let Ok(line) = line else {
-            break;
-        };
-        if line.trim().is_empty() {
-            continue;
+/// Throws away the rest of a line that was too long.
+fn skip_line(reader: &mut impl BufRead) -> io::Result<()> {
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(());
         }
-        match serde_json::from_str::<Value>(&line) {
-            Ok(message) => link.incoming(message),
-            Err(_) => link.note(format!("stdout: {line}")),
+        match chunk.iter().position(|b| *b == b'\n') {
+            Some(at) => {
+                reader.consume(at + 1);
+                return Ok(());
+            }
+            None => {
+                let all = chunk.len();
+                reader.consume(all);
+            }
         }
     }
+}
+
+/// Reads the process's stdout until it closes, then says why it is gone. A line longer
+/// than `max_line_bytes` ends it: the process is killed and broken with that reason.
+fn read_stdout(link: Arc<Link>, stdout: impl Read, stderr_done: mpsc::Receiver<()>) {
+    let mut reader = BufReader::new(stdout);
+    let max = link.config.max_line_bytes;
+    let cause = loop {
+        match read_line(&mut reader, max) {
+            Ok(Line::End) => break None,
+            Err(error) => break Some(format!("{}: cannot read its stdout: {error}", link.label)),
+            Ok(Line::TooLong(_)) => {
+                break Some(format!(
+                "{} wrote a line longer than {max} bytes ([local_modules] max_line_bytes); killed",
+                link.label
+            ))
+            }
+            Ok(Line::Text(line)) if line.trim().is_empty() => {}
+            Ok(Line::Text(line)) => match serde_json::from_str::<Value>(&line) {
+                Ok(message) => link.incoming(message),
+                Err(_) => link.note(format!("stdout: {line}")),
+            },
+        }
+    };
     let grace = Duration::from_millis(link.config.stop_grace_ms);
+    if cause.is_some() {
+        link.kill();
+    }
     // Its last words on stderr are part of why it ended.
     let _ = stderr_done.recv_timeout(grace);
-    let what = if link.ended_by(Instant::now() + grace) {
-        let status = lock(&link.child).try_wait().ok().flatten();
-        match status {
-            Some(status) => format!("{} exited ({status})", link.label),
-            None => format!("{} exited", link.label),
+    let what = match cause {
+        Some(cause) => cause,
+        None if link.ended_by(Instant::now() + grace) => {
+            let status = lock(&link.child).try_wait().ok().flatten();
+            match status {
+                Some(status) => format!("{} exited ({status})", link.label),
+                None => format!("{} exited", link.label),
+            }
         }
-    } else {
-        format!("{} closed its stdout", link.label)
+        None => format!("{} closed its stdout", link.label),
     };
     let why = link.reason(&what);
-    link.wire().exited = Some(why);
+    let mut wire = link.wire();
+    wire.exited = Some(why);
+    // Nobody will answer what is still asked; their threads see `exited`.
+    let Wire {
+        replies, pending, ..
+    } = &mut *wire;
+    replies.retain(|id, _| pending.contains(id));
+    drop(wire);
     link.changed.notify_all();
 }
 
+/// Logs the process's stderr and keeps its last lines. A line that is not UTF-8 is read
+/// lossily and one past `max_line_bytes` is cut; it goes on reading until the pipe closes.
 fn read_stderr(link: Arc<Link>, stderr: impl Read, done: mpsc::Sender<()>) {
-    for line in BufReader::new(stderr).lines() {
-        let Ok(line) = line else {
-            break;
+    let mut reader = BufReader::new(stderr);
+    loop {
+        let line = match read_line(&mut reader, link.config.max_line_bytes) {
+            Ok(Line::End) | Err(_) => break,
+            Ok(Line::Text(line)) => line,
+            Ok(Line::TooLong(start)) => {
+                if skip_line(&mut reader).is_err() {
+                    break;
+                }
+                format!("{start}… (cut)")
+            }
         };
         eprintln!("regulus: {}: {line}", link.label);
         link.note(line);
@@ -493,6 +595,59 @@ fn manifest_of(answer: Value, spec: &LocalSpec) -> Result<Manifest, String> {
         .entry("name")
         .or_insert_with(|| json!(spec.id.clone()));
     serde_json::from_value(value).map_err(|e| format!("invalid manifest: {e}"))
+}
+
+/// A process to start, and where to say how it went.
+type Launch = (Command, mpsc::Sender<io::Result<Child>>);
+
+/// Starts `command` from one thread that lives as long as the core. On Linux the parent
+/// death signal fires when the *thread* that started a process ends, so starting it from a
+/// short-lived thread (a request, a parallel start) would end it at once.
+fn launch(mut command: Command) -> io::Result<Child> {
+    static SPAWNER: OnceLock<Option<Mutex<mpsc::Sender<Launch>>>> = OnceLock::new();
+    let spawner = SPAWNER.get_or_init(|| {
+        let (send, receive) = mpsc::channel::<Launch>();
+        std::thread::Builder::new()
+            .name(SPAWNER_THREAD.into())
+            .spawn(move || {
+                for (mut command, answer) in receive {
+                    let _ = answer.send(command.spawn());
+                }
+            })
+            .ok()
+            .map(|_| Mutex::new(send))
+    });
+    let Some(spawner) = spawner else {
+        return command.spawn();
+    };
+    let (answer, result) = mpsc::channel();
+    lock(spawner)
+        .send((command, answer))
+        .map_err(|_| io::Error::other("the spawner thread is gone"))?;
+    result
+        .recv()
+        .map_err(|_| io::Error::other("the spawner thread is gone"))?
+}
+
+/// On Linux, the process gets SIGTERM if the core dies without stopping it.
+#[cfg(target_os = "linux")]
+fn die_with_core(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let core = std::process::id();
+    // SAFETY: between fork and exec it only calls `prctl` and `getppid`, which are
+    // async-signal-safe, and allocates nothing.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // The core may have died before the call above.
+            if u32::try_from(libc::getppid()).ok() != Some(core) {
+                return Err(io::Error::other("the core is gone"));
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Whether a local module's process has ended, for the registry to show it broken.
@@ -533,9 +688,16 @@ impl ProcessModule {
             .as_ref()
             .map_or_else(|| spec.root.clone(), |cwd| spec.root.join(cwd));
         let mut command = Command::new(spec.program());
+        // Only what is let through: the core's token and secrets never reach it.
+        let passed = config
+            .env_passthrough
+            .iter()
+            .filter_map(|name| Some((name.clone(), std::env::var_os(name)?)));
         command
             .args(&spec.command[1..])
             .current_dir(&cwd)
+            .env_clear()
+            .envs(passed)
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -546,9 +708,11 @@ impl ProcessModule {
             // Its own group, so stopping it reaches whatever it started.
             command.process_group(0);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("cannot run `{}`: {e}", spec.command.join(" ")))?;
+        #[cfg(target_os = "linux")]
+        die_with_core(&mut command);
+        let mut child =
+            launch(command).map_err(|e| format!("cannot run `{}`: {e}", spec.command.join(" ")))?;
+        let pid = child.id();
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
@@ -558,6 +722,7 @@ impl ProcessModule {
         };
         let link = Arc::new(Link {
             label,
+            pid,
             child: Mutex::new(child),
             stdin: Mutex::new(Some(stdin)),
             next_id: AtomicU64::new(1),
@@ -652,5 +817,74 @@ impl Drop for ProcessModule {
     /// Never leaves its process behind, whatever happened before.
     fn drop(&mut self) {
         self.link.kill();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn spec(script: &str) -> LocalSpec {
+        LocalSpec {
+            project_id: "p".into(),
+            root: std::env::temp_dir(),
+            id: "t".into(),
+            command: vec!["sh".into(), "-c".into(), script.into()],
+            ..LocalSpec::default()
+        }
+    }
+
+    fn config() -> LocalModulesConfig {
+        LocalModulesConfig {
+            start_timeout_ms: 5_000,
+            stop_grace_ms: 500,
+            ..LocalModulesConfig::default()
+        }
+    }
+
+    /// Answers request 1 with a manifest whose name is `$1`'s value, then waits.
+    const ANSWER: &str = r#"read line; printf '{"jsonrpc":"2.0","id":1,"result":{"module":{"name":"%s"}}}\n' "$NAME"; cat >/dev/null"#;
+
+    #[test]
+    fn the_child_gets_only_the_passthrough_and_its_own_env() {
+        std::env::set_var("REGULUS_PROCESS_TEST_SECRET", "leak");
+        let script = ANSWER.replace("$NAME", "${REGULUS_PROCESS_TEST_SECRET}${MINE}");
+        let mut spec = spec(&script);
+        spec.env = vec![("MINE".into(), "own".into())];
+        let mut module = ProcessModule::spawn(&spec, &config()).unwrap();
+        assert_eq!(module.manifest().module.name, "own");
+        assert_eq!(module.manifest().module.id, "p/t@0.0.0");
+        module.shutdown().unwrap();
+    }
+
+    #[test]
+    fn a_line_past_the_limit_on_stdout_kills_it() {
+        let config = LocalModulesConfig {
+            max_line_bytes: 64,
+            ..config()
+        };
+        let script = "read line; head -c 1000 /dev/zero | tr '\\0' a; echo; cat >/dev/null";
+        let error = ProcessModule::spawn(&spec(script), &config).err().unwrap();
+        assert!(error.contains("longer than 64 bytes"), "{error}");
+    }
+
+    #[test]
+    fn stderr_that_is_not_utf8_is_read_on_and_kept() {
+        let script = "printf 'bad \\377 byte\\n' >&2; echo second >&2; exit 1";
+        let error = ProcessModule::spawn(&spec(script), &config())
+            .err()
+            .unwrap();
+        assert!(error.contains("bad \u{fffd} byte"), "{error}");
+        assert!(error.contains("second"), "{error}");
+    }
+
+    #[test]
+    fn lines_are_cut_at_the_limit_and_read_lossily() {
+        let mut reader = io::Cursor::new(b"short\r\nlonger line\n\xffx".to_vec());
+        assert!(matches!(read_line(&mut reader, 8), Ok(Line::Text(t)) if t == "short"));
+        assert!(matches!(read_line(&mut reader, 8), Ok(Line::TooLong(t)) if t == "longer l"));
+        skip_line(&mut reader).unwrap();
+        assert!(matches!(read_line(&mut reader, 8), Ok(Line::Text(t)) if t == "\u{fffd}x"));
+        assert!(matches!(read_line(&mut reader, 8), Ok(Line::End)));
     }
 }

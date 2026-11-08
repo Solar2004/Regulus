@@ -5,15 +5,16 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
 
+use regulus_proto::ModuleState;
 use regulus_proto::{
     code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, ClientSettings, Direction,
     DisabledNode, EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState,
     HookAnswer, HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams,
     NameParams, Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted,
     ProfileSaveParams, ProfileSaved, ProjectDetails, ProjectFilter, ProjectOpenParams,
-    ProjectSummary, SecretSetParams, Severity, TemplateApplied, TemplateApplyParams,
-    TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams, WorkflowSent,
-    BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
+    ProjectSummary, ProjectTrustParams, ProjectTrusted, SecretSetParams, Severity, TemplateApplied,
+    TemplateApplyParams, TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams,
+    WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -204,6 +205,9 @@ struct CallLink {
     /// It already returned its one value.
     returned: bool,
 }
+
+/// Why a local module of a project that is not trusted does not run.
+const UNTRUSTED: &str = "untrusted project: reopen with --trust";
 
 /// The threads that ask hook nodes (`hook.dispatch`).
 const HOOK_THREAD: &str = "regulus-hook";
@@ -407,29 +411,62 @@ impl Core {
             })
             .filter(|spec| !self.registry.excludes(&spec.base_id()))
             .collect();
+        let trusted = self.is_trusted(&project.root);
+        // Decided before anything runs: what may not start never gets a process.
+        let mut seen = HashSet::new();
+        let presets: Vec<Option<ModuleState>> = specs
+            .iter()
+            .map(|spec| {
+                let id = spec.base_id();
+                if !seen.insert(id.clone()) || self.registry.is_installed(&id) {
+                    Some(ModuleState::Broken {
+                        reason: format!("duplicate id: a module `{id}` is already loaded"),
+                    })
+                } else if !trusted {
+                    Some(ModuleState::Blocked {
+                        reason: UNTRUSTED.into(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
         // In parallel: starting them all takes as long as the slowest, not their sum.
         let started: Vec<Local> = std::thread::scope(|scope| {
             let spawning: Vec<_> = specs
                 .iter()
-                .map(|spec| (spec, scope.spawn(|| ProcessModule::spawn(spec, &config))))
+                .zip(presets)
+                .map(|(spec, preset)| {
+                    let spawn = preset
+                        .is_none()
+                        .then(|| scope.spawn(|| ProcessModule::spawn(spec, &config)));
+                    (spec, preset, spawn)
+                })
                 .collect();
             spawning
                 .into_iter()
-                .map(|(spec, handle)| {
-                    let spawned = handle
-                        .join()
-                        .unwrap_or_else(|_| Err("starting it panicked".into()));
+                .map(|(spec, preset, spawn)| {
+                    let spawned = match (preset, spawn) {
+                        (_, Some(handle)) => handle
+                            .join()
+                            .unwrap_or_else(|_| Err("starting it panicked".into()))
+                            .map_err(|reason| ModuleState::Broken { reason }),
+                        (Some(preset), None) => Err(preset),
+                        (None, None) => Err(ModuleState::Broken {
+                            reason: "not started".into(),
+                        }),
+                    };
                     match spawned {
                         Ok(module) => Local {
                             manifest: module.manifest().clone(),
                             health: Some(module.health()),
                             module: Box::new(module),
-                            broken: None,
+                            preset: None,
                         },
-                        Err(reason) => Local {
+                        Err(state) => Local {
                             manifest: spec.placeholder(),
                             module: Box::new(Unstarted(spec.placeholder())),
-                            broken: Some(reason),
+                            preset: Some(state),
                             health: None,
                         },
                     }
@@ -437,6 +474,60 @@ impl Core {
                 .collect()
         });
         self.registry.add_local(&project.id, started);
+    }
+
+    /// Whether `[projects] trusted` of `config.toml` names this folder. Without a home,
+    /// nothing is trusted.
+    fn is_trusted(&self, root: &Path) -> bool {
+        self.project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|home| projects::is_trusted(&home.config, &home.home, root))
+    }
+
+    /// Trusts a folder or stops trusting it, in `config.toml`. If that changed and it is an
+    /// open project, its local modules start again under the new decision; returns whether
+    /// they did.
+    fn set_trust(&self, root: &Path, trusted: bool) -> Result<bool, RpcError> {
+        let home = self
+            .project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| {
+                RpcError::from(ProjectError::Io(
+                    "this core has no config.toml to remember trust in".into(),
+                ))
+            })?;
+        let before = projects::is_trusted(&home.config, &home.home, root);
+        projects::trust(&home.config, &home.home, root, trusted)?;
+        let open = self.projects().by_root(root);
+        match open {
+            Some(project) if before != trusted => {
+                self.registry.remove_local(&project.id);
+                self.start_locals(&project);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// `project.trust`: the folder need not be open.
+    fn trust_project(&self, params: ProjectTrustParams) -> Result<ProjectTrusted, RpcError> {
+        let _writing = self.writing();
+        let base = self
+            .project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map_or(PathBuf::new(), |h| h.home.clone());
+        let root = projects::folder(&base, Path::new(&params.path))?;
+        self.set_trust(&root, !params.remove)?;
+        Ok(ProjectTrusted {
+            path: root.display().to_string(),
+            trusted: !params.remove,
+        })
     }
 
     /// `[client]` of `config.toml` as written, and the warnings about it, for
@@ -504,6 +595,9 @@ impl Core {
         let base = home.as_ref().map_or(PathBuf::new(), |h| h.home.clone());
         let root = projects::folder(&base, Path::new(&params.path))?;
         if let Some(open) = self.projects().by_root(&root) {
+            if params.trust {
+                self.set_trust(&root, true)?;
+            }
             return Ok(self.project_summary(&open));
         }
         // config.toml must take the folder before the folder gets a file.
@@ -543,7 +637,10 @@ impl Core {
             RpcError::from(ProjectError::NotFound(format!("no open project `{id}`")))
         })?;
         drop(projects);
-        self.start_locals(&project);
+        // Trusting it for the first time already starts its local modules.
+        if !(params.trust && self.set_trust(&project.root, true)?) {
+            self.start_locals(&project);
+        }
         Ok(self.project_summary(&project))
     }
 
@@ -990,6 +1087,7 @@ impl Core {
                 json(details)
             }
             method::PROJECT_OPEN => json(self.open_project(parse(params)?)?),
+            method::PROJECT_TRUST => json(self.trust_project(parse(params)?)?),
             method::PROJECT_CLOSE => json(self.close_project(parse(params)?)?),
             method::CONFIG_CLIENT => {
                 let filter: ProjectFilter = parse(params)?;

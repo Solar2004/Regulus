@@ -27,6 +27,8 @@ const DEFAULT_TEMPLATES: &str = ".regulus/templates";
 /// The table and key of `config.toml` that list the open project folders.
 const CONFIG_TABLE: &str = "projects";
 const CONFIG_PATHS: &str = "paths";
+/// The key of `[projects]` that lists the folders whose local modules may run.
+const CONFIG_TRUSTED: &str = "trusted";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProjectError {
@@ -108,6 +110,17 @@ impl LocalModule {
         }
         if self.command.first().is_none_or(String::is_empty) {
             return Some(format!("`{id}` has no `command`"));
+        }
+        let inside = |path: &PathBuf| {
+            path.components()
+                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        };
+        if let Some(cwd) = self.cwd.as_ref().filter(|cwd| !inside(cwd)) {
+            return Some(format!(
+                "`{id}` has `cwd = {}`, which is not inside the project (use a relative path \
+                 without `..`)",
+                cwd.display()
+            ));
         }
         None
     }
@@ -801,9 +814,18 @@ fn paths_of<'a>(
     table: &'a mut toml::Table,
     path: &Path,
 ) -> Result<&'a mut Vec<toml::Value>, ProjectError> {
+    list_of(table, path, CONFIG_PATHS)
+}
+
+/// `[projects] <key>` of a `config.toml` read as a table, created empty if missing.
+fn list_of<'a>(
+    table: &'a mut toml::Table,
+    path: &Path,
+    key: &str,
+) -> Result<&'a mut Vec<toml::Value>, ProjectError> {
     let wrong = || {
         ProjectError::Io(format!(
-            "{}: `{CONFIG_TABLE}.{CONFIG_PATHS}` is not a list of paths; fix it by hand",
+            "{}: `{CONFIG_TABLE}.{key}` is not a list of paths; fix it by hand",
             path.display()
         ))
     };
@@ -813,7 +835,7 @@ fn paths_of<'a>(
         .as_table_mut()
         .ok_or_else(wrong)?;
     projects
-        .entry(CONFIG_PATHS)
+        .entry(key)
         .or_insert_with(|| toml::Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(wrong)
@@ -850,6 +872,32 @@ pub fn forget(path: &Path, home: &Path, root: &Path) -> Result<(), ProjectError>
     paths.retain(|entry| !same_folder(home, entry, root));
     if paths.len() == before {
         return Ok(());
+    }
+    write_config(path, &table)
+}
+
+/// Whether `[projects] trusted` of the `config.toml` at `path` names `root`: only then
+/// may its local modules run. A file that cannot be read trusts nothing.
+pub fn is_trusted(path: &Path, home: &Path, root: &Path) -> bool {
+    read_config(path).is_ok_and(|table| {
+        table
+            .get(CONFIG_TABLE)
+            .and_then(|t| t.get(CONFIG_TRUSTED))
+            .and_then(toml::Value::as_array)
+            .is_some_and(|list| list.iter().any(|entry| same_folder(home, entry, root)))
+    })
+}
+
+/// Adds `root` to `[projects] trusted` (or, with `trusted = false`, takes it out). Only that
+/// key changes, as with `remember`.
+pub fn trust(path: &Path, home: &Path, root: &Path, trusted: bool) -> Result<(), ProjectError> {
+    let mut table = read_config(path)?;
+    let list = list_of(&mut table, path, CONFIG_TRUSTED)?;
+    let there = list.iter().any(|entry| same_folder(home, entry, root));
+    match (trusted, there) {
+        (true, false) => list.push(toml::Value::String(root.display().to_string())),
+        (false, true) => list.retain(|entry| !same_folder(home, entry, root)),
+        _ => return Ok(()),
     }
     write_config(path, &table)
 }

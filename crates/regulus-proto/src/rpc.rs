@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// edit: `module.manifest`, `profile.save` and `profile.delete`; 1.12 adds projects:
 /// `project.list`, `project.get`, `project.open`, `project.close`, `project_id` on
 /// templates and `template.apply`; 1.13 adds `config.client`.
-pub const PROTOCOL: &str = "1.13";
+pub const PROTOCOL: &str = "1.14";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -59,6 +59,9 @@ pub mod method {
     pub const PROJECT_OPEN: &str = "project.open";
     /// Forgets an open project; nothing on disk is deleted (`IdParams` → `ProjectSummary`).
     pub const PROJECT_CLOSE: &str = "project.close";
+    /// Trusts a project folder, or stops trusting it (`ProjectTrustParams` →
+    /// `ProjectTrusted`): only a trusted project's local modules run (1.14).
+    pub const PROJECT_TRUST: &str = "project.trust";
     /// `[client]` of `config.toml` with a project's own `[client]` on top, for the clients
     /// (`ProjectFilter` → `ClientSettings`). Read-only.
     pub const CONFIG_CLIENT: &str = "config.client";
@@ -89,6 +92,7 @@ pub mod method {
         PROJECT_GET,
         PROJECT_OPEN,
         PROJECT_CLOSE,
+        PROJECT_TRUST,
         CONFIG_CLIENT,
     ];
 
@@ -373,6 +377,26 @@ pub struct ProfileDeleted {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectOpenParams {
     pub path: String,
+    /// Also trust it, so its local modules run (`project.trust`, 1.14).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trust: bool,
+}
+
+/// `project.trust`: a project folder (or its `regulus.toml`), relative to the core's home
+/// like `project.open`. `remove` stops trusting it. It need not be open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTrustParams {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove: bool,
+}
+
+/// The answer of `project.trust`: the folder as the core resolved it and whether it is
+/// trusted now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTrusted {
+    pub path: String,
+    pub trusted: bool,
 }
 
 /// One entry of `project.list`, and the answer of `project.open` and `project.close`.

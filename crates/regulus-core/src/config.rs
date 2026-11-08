@@ -98,6 +98,10 @@ pub struct ProjectsConfig {
     /// The open project folders. Relative paths are resolved against the home directory.
     /// `project.open` and `project.close` edit this list.
     pub paths: Vec<PathBuf>,
+    /// The project folders whose local modules (`[[modules.local]]`) may run: opening a
+    /// folder never runs code unless it is here. `project.trust` edits this list; the core
+    /// reads it from the file each time it starts a project's local modules.
+    pub trusted: Vec<PathBuf>,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
     pub unknown: toml::Table,
@@ -253,14 +257,20 @@ pub struct LocalModulesConfig {
     /// Milliseconds a local module has to start and answer `manifest`; past it, it is
     /// broken and its process is killed.
     pub start_timeout_ms: u64,
-    /// Milliseconds a local module has to answer one `call`. 0 means no limit: a node may
-    /// work for as long as it needs, as an in-process one does.
+    /// Milliseconds a local module has to answer one `call`; 0 means no limit. A call that
+    /// hangs holds the bus of its execution (not the core) until then.
     pub call_timeout_ms: u64,
     /// When it stops: milliseconds it has to answer `stop`, and then to end after SIGTERM
     /// before it is killed.
     pub stop_grace_ms: u64,
     /// Lines of its stderr kept to say why it broke.
     pub stderr_lines: usize,
+    /// The longest line it may write. Past it on stdout it is killed and broken; on stderr
+    /// the line is cut.
+    pub max_line_bytes: usize,
+    /// The variables of the core's environment it gets; the rest (the core's token,
+    /// secrets) never reach it. Its `env` in `regulus.toml` is added on top.
+    pub env_passthrough: Vec<String>,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
     pub unknown: toml::Table,
@@ -270,9 +280,11 @@ impl Default for LocalModulesConfig {
     fn default() -> Self {
         Self {
             start_timeout_ms: 10_000,
-            call_timeout_ms: 0,
+            call_timeout_ms: 600_000,
             stop_grace_ms: 2_000,
             stderr_lines: 20,
+            max_line_bytes: 16 * 1024 * 1024,
+            env_passthrough: ["PATH", "HOME", "LANG", "TERM"].map(String::from).to_vec(),
             unknown: toml::Table::new(),
         }
     }

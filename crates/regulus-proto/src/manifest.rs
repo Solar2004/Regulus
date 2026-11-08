@@ -110,6 +110,8 @@ pub enum ModuleState {
     Broken { reason: String },
     /// `requires_proto` does not match the core protocol.
     Incompatible { requires: String, have: String },
+    /// Not started on purpose, e.g. a local module of a project that is not trusted (1.14).
+    Blocked { reason: String },
 }
 
 impl ModuleState {

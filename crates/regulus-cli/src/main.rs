@@ -15,8 +15,8 @@ use regulus_core::config::{default_home, Config};
 use regulus_proto::{
     method, BusEvent, BusEventKind, Diagnostic, Direction, EventPage, Execution, ExecutionState,
     Manifest, ModuleSummary, Profile, ProfileDeleted, ProfileSaved, ProfileSummary, ProjectDetails,
-    ProjectSummary, Severity, TemplateApplied, TemplateSummary, TemplateText, WireKind,
-    WorkflowSent, PROTOCOL, WORKFLOW_SELF,
+    ProjectSummary, ProjectTrusted, Severity, TemplateApplied, TemplateSummary, TemplateText,
+    WireKind, WorkflowSent, PROTOCOL, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -333,7 +333,19 @@ enum ProjectCommand {
     Show { id: String },
     /// Open a folder as a project (writes a minimal `regulus.toml` if it has none) and
     /// remember it in `config.toml`.
-    Open { path: PathBuf },
+    Open {
+        path: PathBuf,
+        /// Also trust it: its local modules (`[[modules.local]]`) run code on this machine.
+        #[arg(long)]
+        trust: bool,
+    },
+    /// Trust a project folder so its local modules run, or stop trusting it (`--remove`).
+    /// It need not be open; if it is, its local modules start or stop now.
+    Trust {
+        path: PathBuf,
+        #[arg(long)]
+        remove: bool,
+    },
     /// Forget an open project. Nothing in its folder is deleted.
     Close { id: String },
 }
@@ -808,7 +820,7 @@ async fn project(client: &Client<'_>, command: ProjectCommand) -> Result<()> {
                 println!("enable    {}", enable.join(", "));
             }
             if !p.local.is_empty() {
-                println!("local     {} (not loaded yet)", p.local.len());
+                println!("local     {}", p.local.len());
             }
             if !p.client.is_empty() {
                 println!("client    {}", Value::Object(p.client));
@@ -817,11 +829,23 @@ async fn project(client: &Client<'_>, command: ProjectCommand) -> Result<()> {
                 eprintln!("warning: {warning}");
             }
         }
-        ProjectCommand::Open { path } => {
+        ProjectCommand::Open { path, trust } => {
             let path = std::path::absolute(&path)
                 .with_context(|| format!("cannot resolve {}", path.display()))?;
-            let params = serde_json::json!({ "path": path });
+            let params = serde_json::json!({ "path": path, "trust": trust });
             summary(client.request(method::PROJECT_OPEN, params).await?);
+        }
+        ProjectCommand::Trust { path, remove } => {
+            let path = std::path::absolute(&path)
+                .with_context(|| format!("cannot resolve {}", path.display()))?;
+            let params = serde_json::json!({ "path": path, "remove": remove });
+            let done: ProjectTrusted = client.request(method::PROJECT_TRUST, params).await?;
+            let what = if done.trusted {
+                "trusted"
+            } else {
+                "not trusted"
+            };
+            println!("{what} {}", done.path);
         }
         ProjectCommand::Close { id } => {
             let params = serde_json::json!({ "id": id });
@@ -1258,10 +1282,28 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.token_path().display(),
         started.elapsed().as_millis()
     );
-    tokio::signal::ctrl_c().await?;
+    shutdown_signal().await?;
     running.stop().await;
     core.shutdown();
     Ok(())
+}
+
+/// Waits for Ctrl-C or, on Unix, SIGTERM: both stop the core cleanly, which stops the
+/// processes of local modules.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = term.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }
 
 /// The tools box, reached through the core with the binding the agent was mounted with.

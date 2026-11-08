@@ -55,7 +55,7 @@ pub fn module_state_of(modules: &[ModuleSummary], module_id: Option<&str>) -> Pi
         None => PieceState::NotInstalled,
         Some(ModuleState::Active { .. } | ModuleState::Idle { .. }) => PieceState::Installed,
         Some(ModuleState::Disabled { .. }) => PieceState::Disabled,
-        Some(ModuleState::Broken { .. }) => PieceState::Broken,
+        Some(ModuleState::Broken { .. } | ModuleState::Blocked { .. }) => PieceState::Broken,
         Some(ModuleState::Incompatible { .. }) => PieceState::Incompatible,
     }
 }
