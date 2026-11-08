@@ -394,9 +394,9 @@ La base deja sitio para todo y decide lo mínimo (guardarraíl de `00-principles
 
 ## 13. Proyectos y `regulus.toml` (2026-11-08)
 
-🔶 **PROPUESTO** — Alexander pidió (2026-11-08) que un proyecto tenga su `regulus.toml`,
-que pueda traer módulos solo suyos y que nada sea rígido. Lo que hay hoy, lo que se propone y
-lo que cuesta.
+✅ **DECIDIDO** (2026-11-08, Alexander: "lo más flexible posible, nada rígido") — un proyecto
+tiene su `regulus.toml`, puede traer módulos solo suyos y el fichero tolera lo que no entiende.
+Lo que había, la forma y lo que cuesta.
 
 **Lo que ya existe en el código.** Un proyecto es solo un `project_id: Option<String>` en
 perfiles, ejecuciones y eventos (`regulus-proto/src/graph.rs`); `profile.list`,
@@ -443,8 +443,6 @@ start_view = "operate"
 **Lo que no se decide aquí:** el aislamiento de ejecución (§9 nivel 2, fuera de v1); los
 `.toml` de perfil siguen siendo los de §7, no cambian.
 
-**Preguntas cerradas para Alexander** (por defecto en negrita):
-1. Id del proyecto: **el nombre de la carpeta** · o siempre explícito en `[project] id`.
-2. `config.toml` con clave desconocida: **avisar y seguir** · seguir fallando.
-3. Orden: **registro + perfiles/plantillas + veto primero, `ProcessModule` después** · todo
-   junto.
+**Respuestas de Alexander (2026-11-08):** id = el nombre de la carpeta salvo `[project] id`;
+`config.toml` con clave desconocida **avisa y sigue**; orden: registro + perfiles/plantillas
++ veto primero, `ProcessModule` después.
