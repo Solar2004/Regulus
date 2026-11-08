@@ -40,18 +40,42 @@ export function clientValue(client: Record<string, unknown>, path: string): unkn
   return path.split(".").reduce<unknown>((at, part) => at && typeof at === "object" ? (at as Record<string, unknown>)[part] : undefined, client);
 }
 
-/** Asks `config.client` once connected and again when `projectId` changes. A project the
- * core does not have open falls back to the global table; a core without the method (older
- * than protocol 1.13) leaves it empty: the app's defaults apply. */
+/** JSON-RPC codes `fetchClientSettings` tells apart. */
+const NO_PROJECT = -32010;
+const NO_METHOD = -32601;
+
+const codeOf = (error: unknown) => error && typeof error === "object" && "code" in error ? (error as { code: unknown }).code : undefined;
+
+type Request = (method: string, params: Record<string, unknown>) => Promise<unknown>;
+
+/** One `config.client` round. A project the core does not have open (`-32010`) falls back
+ * to the global table; a core without the method (`-32601`, older than protocol 1.13)
+ * gives nothing, so the app's defaults apply; any other failure gives `null`: keep what
+ * there was, the next connection asks again. */
+export async function fetchClientSettings(request: Request, projectId: string | null): Promise<ClientSettings | null> {
+  const ask = async (params: Record<string, unknown>) => readClientSettings(await request("config.client", params));
+  try {
+    if (projectId === null) return await ask({});
+    try {
+      return await ask({ project_id: projectId });
+    } catch (error) {
+      if (codeOf(error) !== NO_PROJECT) throw error;
+      return await ask({});
+    }
+  } catch (error) {
+    return codeOf(error) === NO_METHOD ? { ...empty } : null;
+  }
+}
+
+/** Asks `config.client` once connected, again on every new connection (the core may have
+ * restarted with another config.toml) and when `projectId` changes. */
 export function useClientConfigSync(projectId: string | null) {
   const { client, status } = useCore();
   useEffect(() => {
     if (!client || status !== "ready") return;
     let disposed = false;
-    const global = () => client.request("config.client", {});
-    (projectId ? client.request("config.client", { project_id: projectId }).catch(global) : global())
-      .then((answer) => readClientSettings(answer), () => empty)
-      .then((settings) => { if (!disposed) useClientConfig.getState().set(settings); });
+    fetchClientSettings((method, params) => client.request(method, params), projectId)
+      .then((settings) => { if (settings && !disposed) useClientConfig.getState().set(settings); });
     return () => { disposed = true; };
   }, [client, status, projectId]);
 }

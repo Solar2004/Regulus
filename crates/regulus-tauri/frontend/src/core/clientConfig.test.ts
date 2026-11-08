@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { clientValue, readClientSettings } from "./clientConfig";
+import { clientValue, fetchClientSettings, readClientSettings } from "./clientConfig";
+import { RpcError } from "./connection";
 import { startViewOf, useRegulusUi } from "@/store/useRegulusUi";
 
 test("an answer of config.client is read defensively", () => {
@@ -37,4 +38,26 @@ test("start_view opens the app once, unless the person chose a start page or mov
   ui.setState({ view: "settings", startPage: "home", startPageChosen: false });
   ui.getState().applyStartView("operate");
   expect(ui.getState().view).toBe("settings");
+});
+
+const answer = (client: Record<string, unknown>) => ({ client, sources: {}, warnings: [] });
+
+test("a project the core has not open falls back to the global table", async () => {
+  const asked: unknown[] = [];
+  const request = async (_: string, params: Record<string, unknown>) => {
+    asked.push(params);
+    if (params.project_id) throw new RpcError("no open project `gone`", -32010);
+    return answer({ refresh_ms: 250 });
+  };
+  expect(await fetchClientSettings(request, "gone")).toEqual(answer({ refresh_ms: 250 }));
+  expect(asked).toEqual([{ project_id: "gone" }, {}]);
+});
+
+test("any other failure keeps what there was; a core without the method gives the defaults", async () => {
+  const failing = async () => { throw new Error("Connection closed"); };
+  expect(await fetchClientSettings(failing, "demo")).toBeNull();
+  expect(await fetchClientSettings(failing, null)).toBeNull();
+  const old = async () => { throw new RpcError("Method not found", -32601); };
+  expect(await fetchClientSettings(old, "demo")).toEqual({ client: {}, sources: {}, warnings: [] });
+  expect(await fetchClientSettings(old, null)).toEqual({ client: {}, sources: {}, warnings: [] });
 });

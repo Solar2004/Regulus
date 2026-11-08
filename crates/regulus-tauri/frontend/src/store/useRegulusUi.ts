@@ -57,7 +57,10 @@ export const useRegulusUi = create<RegulusUiState>()(persist((set, get) => ({
     const preferences = saved as Partial<RegulusUiState> | undefined;
     const startPage = preferences?.startPage === "composition" ? "composition" : "home";
     const density = preferences?.density === "compact" ? "compact" : "comfortable";
-    const startPageChosen = preferences?.startPageChosen === true;
+    // Saved before `startPageChosen` existed: the page was there, so the person may have
+    // chosen it, and the person wins over config.toml.
+    const startPageChosen = preferences?.startPageChosen === true
+      || (preferences?.startPage !== undefined && preferences?.startPageChosen === undefined);
     return { ...current, startPage, startPageChosen, density, view: startPage };
   },
 }));

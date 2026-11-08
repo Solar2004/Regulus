@@ -110,10 +110,14 @@ export const useOperateSettings = create<OperateSettingsState>()(persist((set, g
 }), {
   name: "regulus-operate-settings",
   version: 1,
+  // Without `migrate`, zustand drops a stored state of another version; `merge` reads both.
+  migrate: (stored) => stored as OperateSettingsState,
   partialize: (state) => ({ overrides: state.overrides, projectId: state.projectId }),
   merge: (saved, current): OperateSettingsState => {
     const stored = (saved ?? {}) as { overrides?: unknown; projectId?: unknown };
-    // Before version 1 every setting was saved; only the ones away from the default were changes.
+    // Before version 1 every setting was saved, changed or not: only a value away from the
+    // default counts as a change. One the person set back to the default is lost as a change
+    // and config.toml may now set it; nothing tells the two apart in the old data.
     const legacy = Object.fromEntries(Object.entries(sanitizeOverrides(saved)).filter(([key, value]) => operateDefaults[key as OperateSettingKey] !== value));
     const overrides = stored.overrides !== undefined ? sanitizeOverrides(stored.overrides) : legacy;
     const projectId = typeof stored.projectId === "string" ? stored.projectId : null;
