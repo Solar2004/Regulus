@@ -1,11 +1,11 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Background, Controls, ReactFlow, type Connection, type EdgeChange, type FinalConnectionState, type NodeChange } from "@xyflow/react";
 import { PackageOpen } from "lucide-react";
 import { t, type LocaleKey } from "@/lib/i18n";
 import type { Diagnostic, ModuleDefinition, Profile } from "../model";
 import * as doc from "./document";
 import { canConnect, type Refusal } from "./connect";
-import { buildUnifiedFlow, buildWorkflowFlow, endOf, nodeIdOf, selfAnchors, wireIdOf, type FlowNode, type PieceNode } from "./flow";
+import { buildUnifiedFlow, buildWorkflowFlow, endOf, nodeIdOf, positionChanges, selfAnchors, wireIdOf, type FlowNode, type PieceData, type PieceNode } from "./flow";
 import { nodeTypes } from "./nodes";
 import { PIECE_MIME, type PieceRef } from "./Palette";
 import { useCanvasSettings } from "./settings";
@@ -34,38 +34,43 @@ export function EditorCanvas({ profile, workflowId, modules, diagnostics, select
   // The workflow's own ports stay where they were placed when the tab opened.
   const anchors = useMemo(() => workflow ? selfAnchors(workflow, settings.selfGap) : null, [workflow?.id, settings.selfGap]);
   const labels = useMemo(() => ({ uses: t("graph.uses"), then: t("graph.then") }), []);
+  // Mid-drag positions belong to React Flow; the document gets them on the drop.
+  const [dragging, setDragging] = useState(() => new Map<string, doc.Point>());
+  const cache = useRef(new Map<string, PieceData>());
   const graph = useMemo(() => {
-    const options = { modules, diagnostics, selection, measured, anchors, nodeWidth: settings.nodeWidth, labels };
+    const options = { modules, diagnostics, selection, measured, anchors, nodeWidth: settings.nodeWidth, labels, dragging, cache: cache.current };
     return unified ? buildUnifiedFlow(profile, options) : buildWorkflowFlow(profile, workflowId, options);
-  }, [profile, workflowId, unified, modules, diagnostics, selection, measured, anchors, settings.nodeWidth, labels]);
+  }, [profile, workflowId, unified, modules, diagnostics, selection, measured, anchors, settings.nodeWidth, labels, dragging]);
 
+  // Stable identity: it reads the store and updates local state functionally.
   const onNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
-    const moves: { id: string; position: doc.Point }[] = [];
+    const sizes = changes.flatMap((change) => change.type === "dimensions" && change.dimensions ? [[change.id, change.dimensions] as const] : []);
+    if (sizes.length) setMeasured((previous) => {
+      const changed = sizes.filter(([id, size]) => { const known = previous.get(id); return !known || known.width !== size.width || known.height !== size.height; });
+      return changed.length ? new Map([...previous, ...changed]) : previous;
+    });
+    if (unified) return;
+    const { live, done } = positionChanges(changes);
+    if (live.length || done.length) setDragging((previous) => {
+      const next = new Map(previous);
+      for (const { id, position } of live) next.set(id, position);
+      for (const { id } of done) next.delete(id);
+      return next;
+    });
+    if (done.length) edit((p) => doc.moveNodes(p, workflowId, done));
     const removed: string[] = [];
-    let sizes: Map<string, { width: number; height: number }> | null = null;
     let nodes = useEditor.getState().selection.nodes;
     for (const change of changes) {
-      if (change.type === "dimensions" && change.dimensions) {
-        const known = (sizes ?? measured).get(change.id);
-        if (!known || known.width !== change.dimensions.width || known.height !== change.dimensions.height) {
-          sizes ??= new Map(measured);
-          sizes.set(change.id, change.dimensions);
-        }
-        continue;
-      }
       const id = "id" in change ? nodeIdOf(change.id) : null;
-      if (id === null || unified) continue;
-      if (change.type === "position" && change.position) moves.push({ id, position: change.position });
-      else if (change.type === "remove") removed.push(id);
+      if (id === null) continue;
+      if (change.type === "remove") removed.push(id);
       else if (change.type === "select") nodes = change.selected ? nodes.includes(id) ? nodes : [...nodes, id] : nodes.filter((item) => item !== id);
     }
-    if (sizes) setMeasured(sizes);
-    if (moves.length) edit((p) => doc.moveNodes(p, workflowId, moves));
     if (removed.length) edit((p) => doc.removeNodes(p, workflowId, removed));
     const current = useEditor.getState().selection;
     const kept = nodes.filter((id) => !removed.includes(id));
     if (kept.length !== current.nodes.length || kept.some((id, at) => id !== current.nodes[at])) select({ ...current, nodes: kept });
-  }, [measured, unified, workflowId, edit, select]);
+  }, [unified, workflowId, edit, select]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     if (unified) return;

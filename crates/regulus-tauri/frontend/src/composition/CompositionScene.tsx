@@ -65,15 +65,19 @@ function Editor({ composition }: { composition: Composition }) {
     const sent = state.doc;
     setBusy(true);
     try {
-      const result = await saveProfile(client, sent, state.isNew);
-      const fresh = await getProfile(client, result.profile_id);
+      let result;
+      try { result = await saveProfile(client, sent, state.isNew); } catch (error) { fail("editor.notice.saveFailed", error); return; }
+      // Written: from now on a save replaces it, whatever happens next.
+      const clean = useEditor.getState().doc === sent;
+      useEditor.setState({ isNew: false, diagnostics: result.diagnostics, ...(clean ? { dirty: false } : {}) });
+      reload();
+      let fresh;
+      try { fresh = await getProfile(client, result.profile_id); } catch (error) { fail("editor.notice.reloadFailed", error); return; }
       // Edits made while saving stay; only what was sent is now clean.
       if (useEditor.getState().doc === sent) saved(fresh, result.diagnostics);
-      else useEditor.setState({ isNew: false, diagnostics: result.diagnostics });
       const warnings = result.diagnostics.filter((d) => d.severity !== "info").length;
       notify({ tone: "success", text: t(warnings ? "editor.notice.savedWithWarnings" : "editor.notice.saved"), detail: result.path });
-      reload();
-    } catch (error) { fail("editor.notice.saveFailed", error); } finally { setBusy(false); }
+    } finally { setBusy(false); }
   }, [client, fail, notify, reload, saved, setBusy]);
 
   const check = async () => {
@@ -153,7 +157,11 @@ function Editor({ composition }: { composition: Composition }) {
   };
 
   const removeWorkflow = (id: string) => setConfirm({
-    title: t("editor.workflow.deleteTitle"), description: `${t("editor.workflow.deleteDescription")} ${id}`, action: t("editor.workflow.delete"), destructive: true,
+    title: t("editor.workflow.deleteTitle"),
+    description: [`${t("editor.workflow.deleteDescription")} ${id}`, ...(() => {
+      const boxes = profile ? doc.boxesOf(profile, id) : [];
+      return boxes.length ? [`${t("editor.workflow.deleteBoxes")} ${boxes.map((box) => `${box.workflowId}.${box.nodeId}`).join(", ")}`] : [];
+    })()].join(" "), action: t("editor.workflow.delete"), destructive: true,
     run: () => { showWorkflow(useEditor.getState().doc?.main_workflow_id ?? ALL); edit((p) => doc.removeWorkflow(p, id)); },
   });
 
@@ -175,9 +183,10 @@ function Editor({ composition }: { composition: Composition }) {
     return () => clearTimeout(timer);
   }, [settings.autosave, settings.autosaveMs, dirty, isNew, profile, save]);
 
+  const newProfileDialog = <NewProfileDialog open={creating} taken={[...profiles.map((item) => item.id), ...(profile && isNew ? [profile.id] : [])]} onClose={() => setCreating(false)} onCreate={(id, name) => open(doc.newProfile(id, name, t("editor.workflow.mainName")), true)} />;
   if (!profile) return <div className="graph-connection-state" role="status"><GitBranch size={36} strokeWidth={1.25} /><h2>{t("graph.noProfiles")}</h2><p>{t("editor.noProfilesDescription")}</p>
     <Button onClick={() => setCreating(true)}><FilePlus2 size={14} />{t("editor.newProfile.title")}</Button>
-    <NewProfileDialog open={creating} taken={profiles.map((item) => item.id)} onClose={() => setCreating(false)} onCreate={(id, name) => open(doc.newProfile(id, name, t("editor.workflow.mainName")), true)} />
+    {newProfileDialog}
   </div>;
 
   const workflow = workflowId === ALL ? undefined : doc.workflowOf(profile, workflowId);
@@ -227,7 +236,7 @@ function Editor({ composition }: { composition: Composition }) {
     {notice && <NoticeLine notice={notice} onClose={() => notify(null)} />}
     <footer className="graph-footer"><div><span className="wire-sample uses" />{t("graph.uses")}<span className="wire-sample then" />{t("graph.then")}</div><span>{nodeCount} {t("graph.nodes")} · {wireCount} {t("graph.connections")}</span><span>{t(workflow ? "editor.footer.edit" : "editor.footer.all")}</span></footer>
     <ConfirmDialog confirm={confirm} onClose={() => setConfirm(null)} />
-    <NewProfileDialog open={creating} taken={[...profiles.map((item) => item.id), ...(isNew ? [profile.id] : [])]} onClose={() => setCreating(false)} onCreate={(id, name) => open(doc.newProfile(id, name, t("editor.workflow.mainName")), true)} />
+    {newProfileDialog}
     <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
   </>;
 }

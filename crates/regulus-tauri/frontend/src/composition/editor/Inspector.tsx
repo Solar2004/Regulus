@@ -8,6 +8,7 @@ import * as doc from "./document";
 import { coerce, displayValue, fieldRows, mapEntries, mapFrom, resetValue, type FieldRow } from "./fields";
 import { manifestTypeOf, moduleStateOf } from "./palette";
 import { SeverityMark, stateView } from "./nodes";
+import { useEditor } from "./store";
 
 type Edit = (change: (profile: Profile) => Profile) => void;
 
@@ -152,7 +153,7 @@ function PortRow({ port, onChange, onRemove }: { port: Port; onChange: (patch: P
     <label><span>{t("editor.port.capability")}</span><input value={port.capability} onChange={(event) => onChange({ capability: event.target.value })} /></label>
     <div className="port-selects">
       <select aria-label={t("editor.port.direction")} value={port.direction} onChange={(event) => onChange({ direction: event.target.value as Port["direction"] })}><option value="input">{t("graph.input")}</option><option value="output">{t("graph.output")}</option></select>
-      <select aria-label={t("editor.port.kind")} value={port.kind} onChange={(event) => onChange({ kind: event.target.value as Port["kind"] })}><option value="then">{t("graph.then")}</option><option value="uses">{t("graph.uses")}</option></select>
+      <select aria-label={t("editor.port.kind")} value={port.kind} onChange={(event) => onChange({ kind: event.target.value as Port["kind"] })}><option value={doc.WORKFLOW_PORT_KIND}>{t("graph.then")}</option>{port.kind !== doc.WORKFLOW_PORT_KIND && <option value={port.kind} disabled>{t("graph.uses")}</option>}</select>
       <select aria-label={t("editor.port.cardinality")} value={port.cardinality ?? "one"} onChange={(event) => onChange({ cardinality: event.target.value as "one" | "many" })}><option value="one">{t("editor.port.one")}</option><option value="many">{t("editor.port.many")}</option></select>
     </div>
     {port.kind === "uses" && <small className="field-error">{t("editor.port.usesHint")}</small>}
@@ -161,6 +162,13 @@ function PortRow({ port, onChange, onRemove }: { port: Port; onChange: (patch: P
 
 export function WorkflowInspector({ profile, workflow, edit, onDelete }: { profile: Profile; workflow: Workflow; edit: Edit; onDelete: () => void }) {
   const main = workflow.id === profile.main_workflow_id;
+  // A new direction or kind turns the port around: its wires go, and the user is told.
+  const changePort = (port: Port, patch: Partial<Port>) => {
+    const turned = (patch.direction !== undefined && patch.direction !== port.direction) || (patch.kind !== undefined && patch.kind !== port.kind);
+    const dropped = turned ? doc.wiresOfPort(profile, workflow.id, port.id) : 0;
+    edit((p) => doc.updateWorkflowPort(p, workflow.id, port.id, patch));
+    if (dropped) useEditor.getState().notify({ tone: "info", text: t("editor.port.wiresDropped"), detail: `${port.id}: ${dropped}` });
+  };
   return <aside className="node-inspector" aria-label={t("editor.workflow.inspector")}>
     <header><span>{t("editor.workflow.inspector")}</span></header>
     <label className="inspector-field"><span>{t("editor.workflow.name")}</span><input value={workflow.name} placeholder={workflow.id} onChange={(event) => edit((p) => doc.renameWorkflow(p, workflow.id, event.target.value))} /></label>
@@ -168,7 +176,7 @@ export function WorkflowInspector({ profile, workflow, edit, onDelete }: { profi
     <h3>{t("editor.workflow.ports")}</h3>
     <p>{t("editor.workflow.portsHelp")}</p>
     <ul className="workflow-ports">{(workflow.ports ?? []).map((port) => <PortRow key={port.id} port={port}
-      onChange={(patch) => edit((p) => doc.updateWorkflowPort(p, workflow.id, port.id, patch))}
+      onChange={(patch) => changePort(port, patch)}
       onRemove={() => edit((p) => doc.removeWorkflowPort(p, workflow.id, port.id))} />)}</ul>
     <div className="port-actions">
       <Button variant="outline" size="sm" onClick={() => edit((p) => doc.addWorkflowPort(p, workflow.id, { direction: "input" }).profile)}><Plus size={12} />{t("editor.port.addInput")}</Button>

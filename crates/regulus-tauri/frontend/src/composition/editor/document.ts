@@ -132,15 +132,30 @@ export function renameWorkflow(profile: Profile, id: string, name: string): Prof
   return updateWorkflow(profile, id, (workflow) => ({ ...workflow, name }));
 }
 
-/** Removes a workflow other than the main one; nodes that boxed it stop pointing at it. */
+/** The box nodes that place workflow `id` elsewhere in the profile. */
+export function boxesOf(profile: Profile, id: string): { workflowId: string; nodeId: string }[] {
+  return profile.workflows.filter((workflow) => workflow.id !== id).flatMap((workflow) => workflow.nodes
+    .filter((node) => isBox(node) && node.internal_workflow_id === id)
+    .map((node) => ({ workflowId: workflow.id, nodeId: node.id })));
+}
+
+/**
+ * Removes a workflow other than the main one. The boxes that placed it go too, with their
+ * wires: without the workflow they would have neither module nor ports. A module node that
+ * named it as its inner workflow only stops pointing at it (its ports are its own).
+ */
 export function removeWorkflow(profile: Profile, id: string): Profile {
   if (id === profile.main_workflow_id || !workflowOf(profile, id)) return profile;
+  let result: Profile = { ...profile, workflows: profile.workflows.filter((workflow) => workflow.id !== id) };
+  for (const workflow of result.workflows) {
+    const boxes = workflow.nodes.filter((node) => isBox(node) && node.internal_workflow_id === id).map((node) => node.id);
+    if (boxes.length) result = removeNodes(result, workflow.id, boxes);
+  }
   return {
-    ...profile,
-    workflows: profile.workflows.filter((workflow) => workflow.id !== id).map((workflow) => ({
-      ...workflow,
-      nodes: workflow.nodes.map((node) => node.internal_workflow_id === id ? { ...node, internal_workflow_id: null } : node),
-    })),
+    ...result,
+    workflows: result.workflows.map((workflow) => workflow.nodes.some((node) => node.internal_workflow_id === id)
+      ? { ...workflow, nodes: workflow.nodes.map((node) => node.internal_workflow_id === id ? { ...node, internal_workflow_id: null } : node) }
+      : workflow),
   };
 }
 
@@ -165,24 +180,42 @@ function rewireBoundary(profile: Profile, id: string, portId: string, next: stri
   };
 }
 
-/** Adds a workflow port (a "then" input by default) and returns its id. */
+/** Only "then" values cross a workflow's boundary: the core refuses a "uses" workflow port (`workflow.port_uses`). */
+export const WORKFLOW_PORT_KIND: Port["kind"] = "then";
+
+/** Adds a workflow port (an input by default, always "then") and returns its id. */
 export function addWorkflowPort(profile: Profile, workflowId: string, port: Partial<Port> = {}): { profile: Profile; id: string } {
   const workflow = workflowOf(profile, workflowId);
   if (!workflow) return { profile, id: "" };
   const id = uniqueId(port.id ?? (port.direction === "output" ? "out" : "in"), (workflow.ports ?? []).map((item) => item.id), "port");
-  const added: Port = { name: id, capability: "text@1", direction: "input", kind: "then", required: false, ...port, id };
+  const added: Port = { name: id, capability: "text@1", direction: "input", required: false, ...port, kind: WORKFLOW_PORT_KIND, id };
   return { profile: updateWorkflow(profile, workflowId, (item) => ({ ...item, ports: [...(item.ports ?? []), added] })), id };
 }
 
-/** Changes a workflow port. A new id follows into every wire that names it. */
+/** How many wires reach port `portId` of workflow `workflowId`, inside (`self`) and through its boxes. */
+export function wiresOfPort(profile: Profile, workflowId: string, portId: string): number {
+  const reaches = (end: End, owner: Workflow) => end.port_id === portId && (owner.id === workflowId
+    ? end.node_id === SELF
+    : owner.nodes.some((node) => node.id === end.node_id && isBox(node) && !node.ports.length && node.internal_workflow_id === workflowId));
+  return profile.workflows.reduce((count, workflow) => count + workflow.wires.filter((wire) => reaches(wire.from, workflow) || reaches(wire.to, workflow)).length, 0);
+}
+
+/**
+ * Changes a workflow port. A new id follows into every wire that names it. A new direction
+ * or kind turns every wire that reaches the port around, so those wires are dropped (ask
+ * `wiresOfPort` first to say how many). A "uses" kind is ignored: the core refuses it.
+ */
 export function updateWorkflowPort(profile: Profile, workflowId: string, portId: string, patch: Partial<Port>): Profile {
   const workflow = workflowOf(profile, workflowId);
   const port = workflow?.ports?.find((item) => item.id === portId);
   if (!workflow || !port) return profile;
-  let next = patch.id === undefined ? portId : slugify(patch.id);
+  const { kind, ...rest } = patch;
+  const safe: Partial<Port> = kind === undefined || kind === WORKFLOW_PORT_KIND ? patch : rest;
+  let next = safe.id === undefined ? portId : slugify(safe.id);
   if (!next || (next !== portId && workflow.ports!.some((item) => item.id === next))) next = portId;
-  const changed: Port = { ...port, ...patch, id: next };
+  const changed: Port = { ...port, ...safe, id: next };
   const updated = updateWorkflow(profile, workflowId, (item) => ({ ...item, ports: item.ports!.map((existing) => existing.id === portId ? changed : existing) }));
+  if (changed.direction !== port.direction || changed.kind !== port.kind) return rewireBoundary(updated, workflowId, portId, null);
   return next === portId ? updated : rewireBoundary(updated, workflowId, portId, next);
 }
 

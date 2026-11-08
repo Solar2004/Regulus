@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { buildUnifiedFlow, buildWorkflowFlow, endOf, flowEdgeId, flowNodeId, nodeIdOf, SELF_IN, SELF_OUT, selfAnchors, severityOf, wireIdOf, type FlowOptions, type PieceNode } from "./flow";
+import { positionChanges, buildUnifiedFlow, buildWorkflowFlow, endOf, flowEdgeId, flowNodeId, nodeIdOf, SELF_IN, SELF_OUT, selfAnchors, severityOf, wireIdOf, type FlowOptions, type PieceNode } from "./flow";
 import type { Diagnostic } from "../model";
 import { sample } from "./fixtures.test-util";
+import { moveNodes } from "./document";
 
 const diagnostic = (patch: Partial<Diagnostic>): Diagnostic => ({ severity: "warning", code: "x", message: "m", workflow_id: null, node_id: null, wire_id: null, ...patch });
 const options = (patch: Partial<FlowOptions> = {}): FlowOptions => ({
@@ -68,5 +69,36 @@ describe("unified view", () => {
     const pieces = nodes.filter((node): node is PieceNode => node.type === "piece");
     expect(pieces.every((node) => !node.data.editable && node.draggable === false)).toBe(true);
     expect(edges.map((edge) => edge.id)).toEqual(["a:main:w1"]);
+  });
+});
+
+describe("render cost", () => {
+  test("data of nodes that did not change is the same object, so memoized nodes skip rendering", () => {
+    const cache = new Map();
+    const base = sample();
+    const before = buildWorkflowFlow(base, "main", options({ cache })).nodes;
+    const after = buildWorkflowFlow(moveNodes(base, "main", [{ id: "a", position: { x: 9, y: 9 } }]), "main", options({ cache })).nodes;
+    expect(after[0].data).not.toBe(before[0].data);
+    expect(after[0].position).toEqual({ x: 9, y: 9 });
+    expect(after.slice(1, 4).map((node) => node.data)).toEqual(before.slice(1, 4).map((node) => node.data));
+    after.slice(1, 4).forEach((node, at) => expect(node.data).toBe(before[at + 1].data));
+  });
+
+  test("a node mid-drag is drawn where React Flow has it, without touching the document", () => {
+    const profile = sample();
+    const nodes = buildWorkflowFlow(profile, "main", options({ dragging: new Map([["a", { x: 500, y: 600 }]]) })).nodes;
+    expect(nodes[0].position).toEqual({ x: 500, y: 600 });
+    expect(profile.workflows[0].nodes[0].position).toEqual({ x: 100, y: 50 });
+  });
+
+  test("position changes split into mid-drag and to-write", () => {
+    expect(positionChanges([
+      { type: "position", id: "n:a", position: { x: 1, y: 2 }, dragging: true },
+      { type: "position", id: "n:b", position: { x: 3, y: 4 }, dragging: false },
+      { type: "position", id: "n:c", position: { x: 5, y: 6 } },
+      { type: "position", id: "self:in", position: { x: 0, y: 0 } },
+      { type: "position", id: "n:d" },
+      { type: "select", id: "n:e" },
+    ])).toEqual({ live: [{ id: "a", position: { x: 1, y: 2 } }], done: [{ id: "b", position: { x: 3, y: 4 } }, { id: "c", position: { x: 5, y: 6 } }] });
   });
 });

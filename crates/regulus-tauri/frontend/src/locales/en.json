@@ -409,7 +409,7 @@
   "editor.workflow.mainName": "Main",
   "editor.workflow.delete": "Delete workflow",
   "editor.workflow.deleteTitle": "Delete this workflow?",
-  "editor.workflow.deleteDescription": "Its nodes and wires go with it, and boxes that pointed to it stop pointing anywhere. Workflow:",
+  "editor.workflow.deleteDescription": "Its nodes and wires go with it. Workflow:",
   "editor.workflow.mainKept": "The main workflow cannot be deleted.",
   "editor.selection.title": "Selection",
   "editor.selection.delete": "Delete selection",
@@ -426,5 +426,8 @@
   "editor.settings.byModule": "By module",
   "editor.settings.byState": "By state",
   "editor.settings.noGroups": "No groups",
-  "editor.settings.reset": "Restore defaults"
+  "editor.settings.reset": "Restore defaults",
+  "editor.notice.reloadFailed": "Saved, but the saved profile could not be read back",
+  "editor.workflow.deleteBoxes": "The boxes that place it are deleted too, with their wires:",
+  "editor.port.wiresDropped": "Wires removed: they no longer fit the port's new direction or kind"
 }

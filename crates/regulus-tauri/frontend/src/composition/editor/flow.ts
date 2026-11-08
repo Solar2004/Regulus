@@ -58,6 +58,34 @@ export interface FlowOptions {
   anchors: { in: Point; out: Point } | null;
   nodeWidth: number;
   labels: { uses: string; then: string };
+  /** Positions of nodes being dragged right now (React Flow owns them until the drop). */
+  dragging?: Map<string, Point>;
+  /** Last `data` per canvas node id: reused while its inputs are the same, so `memo` holds. */
+  cache?: Map<string, PieceData>;
+}
+
+const sameData = (a: PieceData, b: PieceData) => a.item === b.item && a.ports === b.ports && a.workflowId === b.workflowId &&
+  a.state === b.state && a.severity === b.severity && a.editable === b.editable;
+
+/** `data` for a node, the cached object if nothing it shows changed. */
+function pieceData(id: string, next: PieceData, cache: Map<string, PieceData> | undefined): PieceData {
+  const known = cache?.get(id);
+  if (known && sameData(known, next)) return known;
+  cache?.set(id, next);
+  return next;
+}
+
+/** Position changes split: those mid-drag (kept on the canvas) and those to write to the document (a drop, a key press). */
+export function positionChanges(changes: { type: string; id?: string; position?: Point; dragging?: boolean }[]): { live: { id: string; position: Point }[]; done: { id: string; position: Point }[] } {
+  const live: { id: string; position: Point }[] = [];
+  const done: { id: string; position: Point }[] = [];
+  for (const change of changes) {
+    if (change.type !== "position" || !change.position || !change.id) continue;
+    const id = nodeIdOf(change.id);
+    if (id === null) continue;
+    (change.dragging ? live : done).push({ id, position: { x: change.position.x, y: change.position.y } });
+  }
+  return { live, done };
 }
 
 function edgeOf(id: string, source: string, target: string, wire: Workflow["wires"][number], options: FlowOptions, extra: Partial<Edge> = {}): Edge {
@@ -85,9 +113,9 @@ export function buildWorkflowFlow(profile: Profile, workflowId: string, options:
   for (const item of workflow.nodes) {
     const id = flowNodeId(item.id);
     nodes.push({
-      id, type: "piece", position: item.position, selected: selected.has(item.id), ariaLabel: item.name || item.id,
+      id, type: "piece", position: options.dragging?.get(item.id) ?? item.position, selected: selected.has(item.id), ariaLabel: item.name || item.id,
       style: { width: options.nodeWidth },
-      data: { item, ports: portsOf(profile, item), workflowId, state: moduleStateOf(options.modules, item.module_id), severity: severityOf(options.diagnostics, workflowId, item.id), editable: true },
+      data: pieceData(id, { item, ports: portsOf(profile, item), workflowId, state: moduleStateOf(options.modules, item.module_id), severity: severityOf(options.diagnostics, workflowId, item.id), editable: true }, options.cache),
       ...withSize(id, options),
     });
   }

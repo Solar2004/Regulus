@@ -99,12 +99,29 @@ describe("workflows", () => {
     expect(profile.workflows[profile.workflows.length - 1]).toMatchObject({ id: "inner-2", name: "Inner", kind: "extra" });
   });
 
-  test("removeWorkflow refuses main and unhooks the boxes", () => {
-    const before = sample();
+  test("removeWorkflow refuses main and removes the boxes that placed it, with their wires", () => {
+    const before = doc.addWire(sample(), "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "box", port_id: "q" });
     expect(doc.removeWorkflow(before, "main")).toBe(before);
+    expect(doc.boxesOf(before, "inner")).toEqual([{ workflowId: "main", nodeId: "box" }]);
     const after = doc.removeWorkflow(before, "inner");
     expect(after.workflows.map((w) => w.id)).toEqual(["main"]);
-    expect(after.workflows[0].nodes[3].internal_workflow_id).toBeNull();
+    expect(after.workflows[0].nodes.map((n) => n.id)).toEqual(["a", "b", "c"]);
+    expect(after.workflows[0].wires.map((w) => w.id)).toEqual(["w1"]);
+  });
+
+  test("after removing a workflow no wire names a node that is gone", () => {
+    let profile = doc.addNode(sample(), "main", node("own", [port("q", "input")], { module_id: null, internal_workflow_id: "inner" }));
+    profile = doc.addWire(profile, "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "own", port_id: "q" });
+    profile = doc.addWire(profile, "main", "then", { node_id: "box", port_id: "r" }, { node_id: "a", port_id: "echo" });
+    // A module node that names the workflow as its inner one stays, unhooked.
+    profile = doc.setInternalWorkflow(profile, "main", "a", "inner");
+    const after = doc.removeWorkflow(profile, "inner");
+    for (const workflow of after.workflows) {
+      const ids = new Set(workflow.nodes.map((n) => n.id));
+      for (const wire of workflow.wires) for (const end of [wire.from, wire.to]) expect(end.node_id === "self" || ids.has(end.node_id)).toBe(true);
+    }
+    expect(after.workflows[0].nodes.map((n) => n.id)).toEqual(["a", "b", "c"]);
+    expect(after.workflows[0].nodes[0].internal_workflow_id).toBeNull();
   });
 
   test("renameWorkflow changes the name only", () => {
@@ -127,6 +144,29 @@ describe("workflows", () => {
     // A taken or empty id keeps the old one; other fields still change.
     const kept = doc.updateWorkflowPort(after, "inner", "question", { id: "r", capability: "path@1" });
     expect(kept.workflows[1].ports?.[0]).toMatchObject({ id: "question", capability: "path@1" });
+  });
+
+  test("workflow ports are always then: a uses kind is ignored", () => {
+    const added = doc.addWorkflowPort(sample(), "inner", { kind: "uses" });
+    expect(added.profile.workflows[1].ports?.find((p) => p.id === added.id)?.kind).toBe("then");
+    const kept = doc.updateWorkflowPort(sample(), "inner", "q", { kind: "uses", capability: "path@1" });
+    expect(kept.workflows[1].ports?.[0]).toMatchObject({ kind: "then", capability: "path@1" });
+    expect(kept.workflows[1].wires).toHaveLength(2);
+  });
+
+  test("a new direction drops the wires that reached the port, inside and through boxes", () => {
+    const profile = doc.addWire(sample(), "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "box", port_id: "q" });
+    expect(doc.wiresOfPort(profile, "inner", "q")).toBe(2);
+    expect(doc.wiresOfPort(profile, "inner", "r")).toBe(1);
+    const after = doc.updateWorkflowPort(profile, "inner", "q", { direction: "output", id: "q2" });
+    expect(after.workflows[1].ports?.[0]).toMatchObject({ id: "q2", direction: "output" });
+    expect(after.workflows[1].wires.map((w) => w.id)).toEqual(["h-out"]);
+    expect(after.workflows[0].wires.map((w) => w.id)).toEqual(["w1"]);
+    expect(doc.wiresOfPort(after, "inner", "q2")).toBe(0);
+    // A loaded "uses" port turned into "then" loses its wires the same way.
+    const uses = { ...sample() };
+    uses.workflows[1].ports![0].kind = "uses";
+    expect(doc.updateWorkflowPort(uses, "inner", "q", { kind: "then" }).workflows[1].wires.map((w) => w.id)).toEqual(["h-out"]);
   });
 
   test("removing a port drops the wires that reached it", () => {
