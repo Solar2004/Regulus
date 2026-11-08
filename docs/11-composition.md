@@ -474,7 +474,10 @@ tolerancia; `ProcessModule` no.
 (`regulus/web`) y un nombre que no casa con ningún módulo cargado avisa. (2) Una plantilla de
 un proyecto aplicada sin `project_id` cae en su proyecto, no en el global. (3) El
 `regulus.toml` se relee si cambió (se mira su fecha en cada llamada): el veto y los avisos
-siguen al fichero sin reabrir; cambiar el id o las carpetas de perfiles pide cerrar y abrir.
+siguen al fichero sin reabrir; una versión que falta, no se lee, no es TOML o trae una clave
+de tipo equivocado no sustituye a la última buena (el veto no cae por una errata) y se avisa;
+cambiar el id o las carpetas de perfiles pide cerrar y abrir. `profiles` y `templates` solo
+aceptan rutas dentro de la carpeta: absolutas, con `..` o enlaces que salen se ignoran con aviso.
 (4) Una ejecución que se reanuda tras reiniciar el core no pasa el veto: corre la copia que
 tenía. **Queda:** `ProcessModule` para `[[modules.local]]` y un consumidor de `[client]`
 (`04-client.md`).
