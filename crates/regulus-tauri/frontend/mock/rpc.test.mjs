@@ -4,6 +4,7 @@ import { createSession, createState } from "./rpc.mjs";
 import fixture from "./profile.json" with { type: "json" };
 import manifests from "./manifests.json" with { type: "json" };
 import operate from "./operate.json" with { type: "json" };
+import settings from "./settings.json" with { type: "json" };
 
 const request = (method, params = {}, id = 1) => JSON.stringify({ jsonrpc: "2.0", id, method, params });
 const negotiatedSession = (state) => {
@@ -36,7 +37,7 @@ test("profile state is separate from executions and module metadata", () => {
   const [{ id }] = session(request("profile.list")).result;
   assert.deepEqual(session(request("profile.get", { id })).result, fixture.profiles[0]);
   assert.deepEqual(session(request("execution.list")).result, []);
-  assert.equal(session(request("module.list")).result.length, fixture.modules.length + manifests.length + operate.manifests.length);
+  assert.equal(session(request("module.list")).result.length, fixture.modules.length + manifests.length + operate.manifests.length + settings.modules.length);
 });
 
 test("every wire joins existing compatible ports of the same kind", () => {
@@ -254,4 +255,72 @@ test("execution.start records an execution of the main workflow with its disable
   assert.deepEqual(started, { id: "exec-1", profile_id: "edited", workflow_id: "main", project_id: null, state: { status: "running" }, disabled: [{ node_id: "agent", missing: ["engine"] }] });
   assert.deepEqual(session(request("execution.list")).result, [started]);
   assert.equal(session(request("profile.delete", { id: "edited" })).error.code, -32009);
+});
+
+test("secret.* lists names only, sets, replaces and deletes, refusing bad names", () => {
+  const state = createState();
+  const session = negotiatedSession(state);
+  const names = () => session(request("secret.list")).result;
+  assert.deepEqual(names(), Object.keys(settings.secrets));
+  assert.equal(session(request("secret.set", { name: "demo", value: "x" })).result, null);
+  assert.equal(session(request("secret.set", { name: "demo", value: "y" })).result, null);
+  assert.deepEqual(names(), [...Object.keys(settings.secrets), "demo"]);
+  assert.ok(!JSON.stringify(session(request("secret.list"))).includes("mock-not-a-real"));
+  assert.equal(session(request("secret.set", { name: "has space", value: "x" })).error.code, -32602);
+  assert.equal(session(request("secret.delete", { name: "demo" })).result, null);
+  assert.equal(session(request("secret.delete", { name: "demo" })).error.code, -32602);
+  assert.ok(!names().includes("demo"));
+});
+
+test("service keys: new shows the key once, list never does, revoke stamps the time", () => {
+  const state = createState();
+  const session = negotiatedSession(state);
+  const policy = { cooldown_ms: 0, requests: 5, window_ms: 1000, concurrency: 0, budget_requests: 0, budget_ms: 0 };
+  const created = session(request("service.key.new", { name: "demo", scope: ["*"], policy })).result;
+  assert.match(created.key, /^rgk_[0-9a-f]{64}$/);
+  assert.equal(created.hint, created.key.slice(0, 10));
+  assert.deepEqual(created.policy, policy);
+  const listed = session(request("service.key.list")).result;
+  assert.equal(listed.length, settings.keys.length + 1);
+  assert.ok(listed.every((key) => key.key === undefined && key.hash === undefined));
+  const plain = session(request("service.key.new", { name: "", scope: ["global"], policy: { ...policy, requests: 0, window_ms: 0 } })).result;
+  assert.equal(plain.policy, undefined);
+  assert.equal(session(request("service.key.new", { scope: [] })).error.code, -32602);
+  assert.equal(session(request("service.key.new", { scope: ["a/b/c"] })).error.code, -32602);
+  assert.equal(session(request("service.key.new", { scope: ["*"], policy: { nope: 1 } })).error.code, -32602);
+  const revoked = session(request("service.key.revoke", { id: created.id })).result;
+  assert.equal(typeof revoked.revoked_ms, "number");
+  assert.equal(session(request("service.key.revoke", { id: created.id })).result.revoked_ms, revoked.revoked_ms);
+  assert.equal(session(request("service.key.revoke", { id: "k-none" })).error.code, -32602);
+});
+
+test("service.log filters by key and workflow and keeps the last; endpoints list where engines listen", () => {
+  const session = negotiatedSession();
+  assert.equal(session(request("service.log")).result.length, settings.log.length);
+  assert.ok(session(request("service.log", { workflow: "translate" })).result.every((entry) => entry.workflow === "translate"));
+  assert.equal(session(request("service.log", { key: "k-none" })).result.length, 0);
+  assert.deepEqual(session(request("service.log", { last: 1 })).result, settings.log.slice(-1));
+  assert.deepEqual(session(request("service.endpoints")).result, settings.endpoints);
+});
+
+test("without the service module its methods are not found; unusable, they are unavailable with the reason", () => {
+  const state = createState();
+  const session = negotiatedSession(state);
+  const service = state.modules.find((module) => module.id.startsWith("regulus/service@"));
+  service.state = { status: "broken", reason: "init failed" };
+  const unavailable = session(request("service.key.list")).error;
+  assert.equal(unavailable.code, -32002);
+  assert.match(unavailable.message, /init failed/);
+  state.modules = state.modules.filter((module) => module !== service);
+  assert.equal(session(request("service.key.list")).error.code, -32601);
+  assert.equal(session(request("secret.list")).result.length, Object.keys(settings.secrets).length);
+});
+
+test("module.list carries the states Settings shows, each with its reason", () => {
+  const listed = negotiatedSession()(request("module.list")).result;
+  const status = (id) => listed.find((module) => module.id === id).state;
+  assert.deepEqual(status("regulus/web@0.1.0"), { status: "broken", reason: settings.modules[1].state.reason });
+  assert.deepEqual(status("regulus/memory@0.1.0"), { status: "disabled", missing: ["embedder"] });
+  assert.equal(status("regulus/judge@0.1.0").status, "incompatible");
+  assert.equal(status("regulus/service@0.1.0").status, "active");
 });

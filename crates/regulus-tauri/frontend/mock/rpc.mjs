@@ -2,6 +2,7 @@ import fixture from "./profile.json" with { type: "json" };
 import config from "./config.json" with { type: "json" };
 import manifests from "./manifests.json" with { type: "json" };
 import { operateMethod, operateState } from "./operate.mjs";
+import { settingsMethod, settingsState } from "./settings.mjs";
 
 const LIVE = new Set(["starting", "running"]);
 const baseId = (id) => id.split("@")[0];
@@ -99,13 +100,17 @@ function diagnose(profile, modules) {
 /** In-memory state of the mock core: what `profile.save` and `profile.delete` change. */
 export function createState() {
   const operate = operateState();
-  const modules = [...fixture.modules, ...manifests.map(summaryOf), ...operate.manifests.map(summaryOf)];
+  const { settingsModules, ...settings } = settingsState();
+  // The Settings modules come with the state they show: active, broken, disabled, incompatible.
+  const modules = [...fixture.modules, ...manifests.map(summaryOf), ...operate.manifests.map(summaryOf),
+    ...settingsModules.map(({ manifest, state }) => ({ ...summaryOf(manifest), state }))];
   return {
     ...operate,
+    ...settings,
     profiles: structuredClone(fixture.profiles),
     executions: structuredClone(fixture.executions),
     modules,
-    manifests: [...fixture.modules.map(manifestOf), ...structuredClone(manifests), ...operate.manifests],
+    manifests: [...fixture.modules.map(manifestOf), ...structuredClone(manifests), ...operate.manifests, ...settingsModules.map(({ manifest }) => manifest)],
   };
 }
 
@@ -186,9 +191,10 @@ export function createSession(state = createState()) {
         result = diagnose(profile, state.modules);
         break;
       }
-      // execution.start and the other Operate methods live in operate.mjs.
+      // execution.start and the other Operate methods live in operate.mjs, secret.* and
+      // service.* in settings.mjs.
       default: {
-        const answer = operateMethod(state, method, params);
+        const answer = operateMethod(state, method, params) ?? settingsMethod(state, method, params);
         if (!answer) return error(id, -32601, "Method not found");
         if (answer.error) return error(id, ...answer.error);
         result = answer.result;
