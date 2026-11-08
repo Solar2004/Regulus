@@ -381,6 +381,18 @@ impl Default for UpdateConfig {
     }
 }
 
+impl UpdateConfig {
+    /// `public_key` as Tauri's updater takes it: a minisign public key file, in base64.
+    pub fn tauri_public_key(&self) -> String {
+        use base64::Engine;
+        let file = format!(
+            "untrusted comment: minisign public key\n{}\n",
+            self.public_key.trim()
+        );
+        base64::engine::general_purpose::STANDARD.encode(file)
+    }
+}
+
 /// How clients (the app, the terminal UI) find a core, or start one when none answers.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

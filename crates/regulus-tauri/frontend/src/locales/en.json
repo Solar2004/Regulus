@@ -551,5 +551,19 @@
   "editor.settings.reset": "Restore defaults",
   "editor.notice.reloadFailed": "Saved, but the saved profile could not be read back",
   "editor.workflow.deleteBoxes": "The boxes that place it are deleted too, with their wires:",
-  "editor.port.wiresDropped": "Wires removed: they no longer fit the port's new direction or kind"
+  "editor.port.wiresDropped": "Wires removed: they no longer fit the port's new direction or kind",
+  "settings.update.title": "Updates",
+  "settings.update.description": "New releases of the app, from the channel in config.toml.",
+  "settings.update.current": "Running {version}.",
+  "settings.update.browser": "Updates belong to the desktop app. From a terminal: regulus update.",
+  "settings.update.off": "Updates are off: set url under [update] in {path}.",
+  "settings.update.noKey": "No release key: set public_key under [update] in {path}. Nothing unsigned is installed.",
+  "settings.update.unchecked": "Channel {channel}. Not checked yet.",
+  "settings.update.checking": "Checking {channel}…",
+  "settings.update.upToDate": "Up to date on {channel}.",
+  "settings.update.available": "{version} is available on {channel}.",
+  "settings.update.installing": "Installing {version}. The app restarts when it is done.",
+  "settings.update.failed": "The check failed.",
+  "settings.update.check": "Check for updates",
+  "settings.update.install": "Install {version}"
 }

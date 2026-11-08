@@ -417,12 +417,6 @@ pub fn verify(public_key: &str, data: &[u8], signature: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-/// The public key as Tauri's updater takes it: the minisign public key file, in base64.
-pub fn tauri_public_key(public_key: &str) -> String {
-    let key = public_key.trim();
-    BASE64.encode(format!("{UNTRUSTED_PREFIX}minisign public key\n{key}\n"))
-}
-
 /// Signs each file into `<file>.sig`; returns the paths written.
 pub fn sign_files(
     key: &SecretKey,
@@ -484,8 +478,18 @@ mod tests {
         assert_eq!(key.public_key(), pair.public_key);
         assert!(pair.public_key.starts_with("RW"), "{}", pair.public_key);
         assert!(SecretKey::parse("untrusted comment: x\nnot base64!").is_err());
-        let tauri =
-            String::from_utf8(BASE64.decode(tauri_public_key(&pair.public_key)).unwrap()).unwrap();
+        let tauri = String::from_utf8(
+            BASE64
+                .decode(
+                    UpdateConfig {
+                        public_key: pair.public_key.clone(),
+                        ..UpdateConfig::default()
+                    }
+                    .tauri_public_key(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
         minisign_verify::PublicKey::decode(&tauri).unwrap();
     }
 
