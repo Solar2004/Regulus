@@ -31,8 +31,9 @@ editable con paleta desde los manifiestos, Operar con ejecuciones y eventos real
 agentes, e instalar plantillas desde un formulario; Ajustes gestiona secretos, servicio y
 módulos (`04-client.md` §10). **Los proyectos son carpetas con `regulus.toml`** (2026-11-08,
 `11-composition.md` §13): perfiles y plantillas propios, veto de módulos por id, claves
-desconocidas conservadas con aviso, `regulus project ls|show|open|close`. **Lo siguiente:**
-la TUI que edita como la app (`feat/tui-edit`, en revisión), la app y la TUI leyendo
+desconocidas conservadas con aviso, `regulus project ls|show|open|close`. **La TUI edita
+como la app** (2026-11-08, `04-client.md` §7): vistas Editar y Plantillas, Operar con eventos
+y decisiones, teclas y números en un solo sitio. **Lo siguiente:** la app y la TUI leyendo
 `config.toml [client]`, y las plantillas 3-8 de `13-blocks.md` §5 (son datos). La pasarela
 de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
@@ -179,7 +180,7 @@ Co-Authored-By: Tu nombre <email>
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
 | 1 | **Plantillas 3-8** de `13-blocks.md` §5 (~~mecanismo~~, ~~Ralph~~, ~~app~~) | pxl: `claude-pxl` no instalado |
-| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13); quedan la TUI que edita como la app (rama `feat/tui-edit`), y la app y la TUI leyendo `config.toml [client]` (`00-principles.md` §4); después, `ProcessModule` para `[[modules.local]]` | nada |
+| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7); queda la app y la TUI leyendo `config.toml [client]` (`00-principles.md` §4, teclas y números de `tui/keys.rs`); después, `ProcessModule` para `[[modules.local]]` | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
