@@ -5,6 +5,8 @@ import en from "@/locales/en.json";
 // this helper only reads them, it owns no text.
 export type LocaleKey = keyof typeof en;
 
-export function t(key: LocaleKey): string {
-  return en[key];
+/** The string for `key`, with every `{name}` replaced by `vars.name` when given. */
+export function t(key: LocaleKey, vars?: Record<string, string | number>): string {
+  const text: string = en[key];
+  return vars ? text.replace(/\{(\w+)\}/g, (match, name: string) => (name in vars ? String(vars[name]) : match)) : text;
 }

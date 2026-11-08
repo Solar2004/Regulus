@@ -203,4 +203,12 @@ describe("free position", () => {
     // a sits at 100,50 and b at 400,80: one step clears a, a second clears b.
     expect(doc.freePosition(main, { x: 110, y: 60 }, { x: 290, y: 40 })).toEqual({ x: 690, y: 60 });
   });
+  test("measured sizes count: a tall node below the click still blocks it", () => {
+    const main = sample().workflows[0];
+    const measured = new Map([["a", { width: 250, height: 180 }]]);
+    // a spans 50..230 vertically: a click 100px under its top lands inside it...
+    expect(doc.freePosition(main, { x: 110, y: 150 }, { x: 290, y: 40 }, measured)).toEqual({ x: 400, y: 150 });
+    // ...and without a measured height it is believed to be 40px tall and the click looks free.
+    expect(doc.freePosition(main, { x: 110, y: 150 }, { x: 290, y: 40 })).toEqual({ x: 110, y: 150 });
+  });
 });

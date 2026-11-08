@@ -4,6 +4,7 @@ import Titlebar from "@/components/Titlebar";
 import { Button } from "@/components/ui/button";
 import { t, type LocaleKey } from "@/lib/i18n";
 import { useCore, type CoreSource, type CoreStatus } from "@/core/connection";
+import { moduleCountKey, useModuleList } from "@/core/modules";
 import { useRegulusUi } from "@/store/useRegulusUi";
 import "@/shell.css";
 
@@ -38,9 +39,12 @@ function HomeScene() {
 }
 
 function ModuleSettings() {
+  const modules = useModuleList();
   return <>
     <div className="settings-row"><div><h2>{t("settings.moduleSpace")}</h2><p>{t("settings.moduleSpaceDescription")}</p></div></div>
-    <div className="module-empty"><PackageOpen size={36} strokeWidth={1.25} /><h3>{t("settings.modulesEmpty")}</h3><p>{t("settings.modulesDescription")}</p></div>
+    {modules?.length
+      ? <ul className="module-list" aria-label={t("settings.modules")}>{modules.map((module) => <li key={module.id}><span>{module.name}</span><code>{module.id}</code>{module.state && <em data-state={module.state.status}>{module.state.status}</em>}</li>)}</ul>
+      : <div className="module-empty"><PackageOpen size={36} strokeWidth={1.25} /><h3>{t(moduleCountKey(modules))}</h3><p>{t("settings.modulesDescription")}</p></div>}
     <div className="layers"><h3>{t("settings.layers")}</h3><p>{t("settings.layersDescription")}</p></div>
   </>;
 }
@@ -76,11 +80,12 @@ function connectionLabel(status: CoreStatus, source: CoreSource): LocaleKey {
 export default function App() {
   const { view, setView, density } = useRegulusUi();
   const { status, source, connect } = useCore();
+  const modules = useModuleList();
   useEffect(() => { connect(); }, [connect]);
   return <div className="regulus-shell" data-density={density}>
     <Titlebar />
     <div className="shell-body">
-      <aside className="shell-navigation"><div className="workspace-label">{t("shell.global")}</div><nav aria-label={t("app.name")}>{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-label={t(label)} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}><Icon size={18} strokeWidth={1.5} /><span>{t(label as LocaleKey)}</span></button>)}</nav><div className="sidebar-bottom"><PackageOpen size={16} /><span>{t("settings.modulesEmpty")}</span></div></aside>
+      <aside className="shell-navigation"><div className="workspace-label">{t("shell.global")}</div><nav aria-label={t("app.name")}>{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-label={t(label)} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}><Icon size={18} strokeWidth={1.5} /><span>{t(label as LocaleKey)}</span></button>)}</nav><div className="sidebar-bottom"><PackageOpen size={16} /><span>{t(moduleCountKey(modules), { count: modules?.length ?? 0 })}</span></div></aside>
       <main className="shell-main">{view === "settings" ? <SettingsScene /> : view === "composition" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}><CompositionScene /></Suspense> : view === "operate" || view === "templates" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}>{view === "operate" ? <OperateScene /> : <TemplatesScene />}</Suspense> : <HomeScene />}</main>
     </div>
     <footer className="shell-status" role="status"><span>{t("shell.preview")}</span><span data-connection={status}>{t(connectionLabel(status, source))}</span></footer>

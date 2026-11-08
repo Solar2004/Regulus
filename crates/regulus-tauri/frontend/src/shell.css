@@ -36,6 +36,12 @@ h2, h3 { font-weight: 500; }
 .module-empty svg { color: var(--rg-color-text-muted); margin-bottom: var(--rg-space-4); }
 .module-empty h3 { font-size: .875rem; }
 .module-empty p { max-width: 26rem; }
+.module-list { list-style: none; margin: var(--rg-space-4) 0; padding: 0; border: 1px solid var(--rg-color-border); border-radius: var(--rg-radius-panel); font-size: .75rem; }
+.module-list li { display: flex; align-items: center; gap: var(--rg-space-3); padding: var(--rg-space-2) var(--rg-space-4); border-top: 1px solid var(--rg-color-border); }
+.module-list li:first-child { border-top: 0; }
+.module-list code { color: var(--rg-color-text-muted); font-size: .6875rem; }
+.module-list em { margin-left: auto; font-style: normal; font-size: .625rem; letter-spacing: .08em; text-transform: uppercase; color: var(--rg-color-text-muted); }
+.module-list em[data-state="active"] { color: var(--rg-color-focus); }
 .layers { padding: var(--rg-space-4) 0; }
 .layers h3 { font-size: .75rem; }
 .local-note { border-top: 1px solid var(--rg-color-border); padding-top: var(--rg-space-4); margin-top: var(--rg-space-8) !important; }

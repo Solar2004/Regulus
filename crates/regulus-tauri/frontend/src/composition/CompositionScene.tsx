@@ -9,6 +9,7 @@ import { useComposition } from "./client";
 import * as doc from "./editor/document";
 import { bySeverity, checkProfile, deleteProfile, getProfile, messageOf, saveProfile, startExecution } from "./editor/api";
 import { EditorCanvas } from "./editor/Canvas";
+import { nodeIdOf } from "./editor/flow";
 import { ConfirmDialog, NewProfileDialog, SettingsDialog, type Confirm } from "./editor/dialogs";
 import { NodeInspector, SelectionInspector, WorkflowInspector } from "./editor/Inspector";
 import { SeverityMark } from "./editor/nodes";
@@ -135,7 +136,17 @@ function Editor({ composition }: { composition: Composition }) {
       point = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 3 } : { x: 0, y: 0 };
     }
     let position = flow.screenToFlowPosition(point);
-    if (!screen) position = doc.freePosition(current, position, { x: settings.nodeWidth + settings.cascadeStep, y: settings.cascadeStep });
+    if (!screen) {
+      // Footprints React Flow has measured plus the gap, by document node id; the new node assumes the tallest.
+      const gap = settings.cascadeStep;
+      const measured = new Map<string, doc.Size>();
+      for (const node of flow.getNodes()) {
+        const id = nodeIdOf(node.id);
+        if (id && node.measured?.width && node.measured.height) measured.set(id, { width: node.measured.width + gap, height: node.measured.height + gap });
+      }
+      const tallest = Math.max(gap, ...[...measured.values()].map((size) => size.height));
+      position = doc.freePosition(current, position, { x: settings.nodeWidth + gap, y: tallest }, measured);
+    }
     if (settings.snapToGrid) position = { x: Math.round(position.x / settings.gridSize) * settings.gridSize, y: Math.round(position.y / settings.gridSize) * settings.gridSize };
     const taken = current.nodes.map((node) => node.id);
     let created;

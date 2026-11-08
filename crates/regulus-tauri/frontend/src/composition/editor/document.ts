@@ -226,10 +226,21 @@ export function removeWorkflowPort(profile: Profile, workflowId: string, portId:
   return rewireBoundary(updated, workflowId, portId, null);
 }
 
-/** `point`, moved right by `size.x` until no node of the workflow sits within `size` of it. */
-export function freePosition(workflow: Workflow, point: Point, size: Point): Point {
+export type Size = { width: number; height: number };
+
+/**
+ * `point`, moved right by `size.x` until the footprint `size` placed there touches no node of the
+ * workflow. A node's footprint is its measured size when `measured` has it, `size` otherwise.
+ */
+export function freePosition(workflow: Workflow, point: Point, size: Point, measured?: Map<string, Size>): Point {
   let { x } = point;
-  const near = () => workflow.nodes.some((node) => Math.abs(node.position.x - x) < size.x && Math.abs(node.position.y - point.y) < size.y);
-  for (let tries = 0; tries < 100 && near(); tries++) x += size.x;
-  return { x, y: point.y };
+  const { y } = point;
+  const touches = (node: CompositionNode) => {
+    const own = measured?.get(node.id);
+    const width = own?.width ?? size.x;
+    const height = own?.height ?? size.y;
+    return x < node.position.x + width && node.position.x < x + size.x && y < node.position.y + height && node.position.y < y + size.y;
+  };
+  for (let tries = 0; tries < 100 && workflow.nodes.some(touches); tries++) x += size.x;
+  return { x, y };
 }
