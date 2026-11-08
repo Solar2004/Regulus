@@ -374,10 +374,6 @@ pub struct Config {
     pub unknown: toml::Table,
 }
 
-fn unknown_key(path: &Path, key: &str) -> String {
-    format!("{}: unknown key `{key}`; ignored", path.display())
-}
-
 /// `[client]` as a client reads it: `global` (`config.toml`) with `project` (its
 /// `regulus.toml`) on top, key by key, and where each value came from. A table on both
 /// sides merges key by key; anything else the project has replaces the global value.
@@ -467,7 +463,7 @@ impl Config {
 
     /// One warning per key no section knows, as `section.key`.
     fn unknown_keys(&self, path: &Path) -> Vec<String> {
-        let sections: [(&str, &toml::Table); 13] = [
+        let sections: [(&str, &toml::Table); 12] = [
             ("", &self.unknown),
             ("server.", &self.server.unknown),
             ("profiles.", &self.profiles.unknown),
@@ -480,25 +476,34 @@ impl Config {
             ("call.", &self.call.unknown),
             ("hooks.", &self.hooks.unknown),
             ("store.", &self.store.unknown),
-            ("client.", &self.client.unknown),
         ];
-        sections
+        let mut warnings: Vec<String> = sections
             .iter()
             .flat_map(|(at, table)| table.keys().map(move |key| format!("{at}{key}")))
-            .map(|key| unknown_key(path, &key))
+            .map(|key| format!("{}: unknown key `{key}`; ignored", path.display()))
+            .collect();
+        warnings.extend(self.client_unknown(path));
+        warnings
+    }
+
+    /// One warning per `[client]` key the core does not know. Unlike the other sections,
+    /// the key is not dropped: `config.client` serves it, a client may know it.
+    fn client_unknown(&self, path: &Path) -> Vec<String> {
+        self.client
+            .unknown
+            .keys()
+            .map(|key| {
+                format!(
+                    "{}: unknown key `{CLIENT_SECTION}.{key}`; kept for clients",
+                    path.display()
+                )
+            })
             .collect()
     }
 
-    /// The warnings about `[client]`: the core does not know those keys, a client may.
+    /// The warnings about `[client]`, for `config.client`.
     pub fn client_warnings(&self) -> Vec<String> {
-        let path = self.config_path();
-        let path = path.display();
-        let at = format!("{path}: unknown key `{CLIENT_SECTION}.");
-        self.warnings
-            .iter()
-            .filter(|w| w.starts_with(&at))
-            .cloned()
-            .collect()
+        self.client_unknown(&self.config_path())
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -621,6 +626,19 @@ mod tests {
     }
 
     #[test]
+    fn a_project_replaces_arrays_and_a_plain_value_replaces_a_table() {
+        let global: toml::Table =
+            toml::from_str("views = [\"a\", \"b\"]\n[keys]\nsave = \"ctrl+w\"\n").unwrap();
+        let project: toml::Table = toml::from_str("views = [\"c\"]\nkeys = \"none\"\n").unwrap();
+        let (client, sources) = layer_client(&global, Some(&project));
+        assert_eq!(client["views"], toml::Value::Array(vec!["c".into()]));
+        assert_eq!(client["keys"].as_str(), Some("none"));
+        assert_eq!(sources["views"], PROJECT_SOURCE);
+        assert_eq!(sources["keys"], PROJECT_SOURCE);
+        assert!(!sources.contains_key("keys.save"), "{sources:?}");
+    }
+
+    #[test]
     fn client_is_kept_as_written_and_its_unknown_keys_warned() {
         let home = std::env::temp_dir().join(format!("regulus-client-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
@@ -636,7 +654,15 @@ mod tests {
         assert_eq!(config.client.written["theme"].as_str(), Some("dark"));
         let warnings = config.client_warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("`client.theme`"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("`client.theme`; kept for clients"),
+            "{warnings:?}"
+        );
+        assert!(
+            config.warnings.contains(&warnings[0]),
+            "{:?}",
+            config.warnings
+        );
         let _ = fs::remove_dir_all(&home);
     }
 }
