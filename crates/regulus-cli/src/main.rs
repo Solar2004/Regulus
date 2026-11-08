@@ -1028,7 +1028,7 @@ async fn human(client: &Client<'_>, command: HumanCommand) -> Result<()> {
     match command {
         HumanCommand::List { execution } => {
             let params = serde_json::json!({ "execution_id": execution });
-            let pending: Vec<Value> = client.request("human.list", params).await?;
+            let pending: Vec<Value> = client.request(regulus_module_human::LIST, params).await?;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as u64);
@@ -1091,7 +1091,7 @@ async fn human(client: &Client<'_>, command: HumanCommand) -> Result<()> {
             let params = serde_json::json!({
                 "id": id, "decision": decision, "fields": map, "text": text,
             });
-            let done: Value = client.request("human.answer", params).await?;
+            let done: Value = client.request(regulus_module_human::ANSWER, params).await?;
             println!(
                 "{} {} → {} {}.{}",
                 done["id"].as_str().unwrap_or_default(),

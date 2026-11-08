@@ -4,18 +4,30 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use regulus_proto::ExecutionState;
 
-use super::app::{App, Focus, NodeKind, NodeState, Tone, Turn};
-use super::core::{Connection, Message, SENDER};
+use super::app::{event_line, App, Focus, Mode, NodeKind, NodeState, Prompt, Tone, Turn};
+use super::core::{describe, Connection, Message, SENDER};
 use super::palette::{palette, Palette};
+use super::view_edit;
 
 const SIDEBAR_WIDTH: u16 = 30;
 const NODES_WIDTH: u16 = 34;
+const DECISIONS_WIDTH: u16 = 44;
+/// Share of the body the events and decisions take, in percent.
+const LOWER_SHARE: u16 = 40;
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    match &app.mode {
+        Mode::Edit(editor) => view_edit::draw_edit(frame, app, editor),
+        Mode::Templates(view) => view_edit::draw_templates(frame, app, view),
+        Mode::Operate => draw_operate(frame, app),
+    }
+}
+
+fn draw_operate(frame: &mut Frame, app: &App) {
     let p = palette();
     let area = frame.area();
     frame.render_widget(
@@ -29,6 +41,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(area);
     draw_header(frame, app, header);
+    let [body, lower] = Layout::vertical([
+        Constraint::Percentage(100 - LOWER_SHARE),
+        Constraint::Percentage(LOWER_SHARE),
+    ])
+    .areas(body);
+    let [events, decisions] =
+        Layout::horizontal([Constraint::Min(20), Constraint::Length(DECISIONS_WIDTH)]).areas(lower);
     let [side, nodes, detail] = Layout::horizontal([
         Constraint::Length(SIDEBAR_WIDTH),
         Constraint::Length(NODES_WIDTH),
@@ -41,10 +60,152 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_executions(frame, app, executions);
     draw_nodes(frame, app, nodes);
     draw_detail(frame, app, detail);
+    draw_events(frame, app, events);
+    draw_decisions(frame, app, decisions);
     draw_footer(frame, app, footer);
+    if let Some(prompt) = &app.prompt {
+        draw_prompt(frame, prompt);
+    }
 }
 
-fn pane<'a>(title: &'a str, focused: bool, p: &Palette) -> Block<'a> {
+/// A box in the middle of `area`, `width` columns and `height` rows at most.
+pub(super) fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+fn draw_events(frame: &mut Frame, app: &App, area: Rect) {
+    let p = palette();
+    let focused = app.focus == Focus::Events;
+    let title = if app.filter.is_empty() {
+        "Events".to_string()
+    } else {
+        format!("Events · node {}", app.filter)
+    };
+    let muted = Style::default().fg(p.text_muted);
+    let height = area.height.saturating_sub(2) as usize;
+    let width = area.width.saturating_sub(2) as usize;
+    let (events, error) = app.shown_events();
+    let mut lines: Vec<Line> = Vec::new();
+    if app.selected_execution().is_none() {
+        lines.push(Line::styled("select an execution", muted));
+    } else if let Some(error) = error {
+        lines.push(Line::styled(describe(error), Style::default().fg(p.danger)));
+    } else if events.is_empty() {
+        lines.push(Line::styled("no events yet", muted));
+    } else {
+        let max = app.options.tuning.value_max.min(width.max(1) * 4);
+        let end = events.len().saturating_sub(app.event_offset);
+        let start = end.saturating_sub(height);
+        for event in &events[start..end] {
+            let color = match event.kind {
+                regulus_proto::BusEventKind::Failed { .. }
+                | regulus_proto::BusEventKind::Cut { .. } => p.danger,
+                regulus_proto::BusEventKind::Delivered { .. } => p.text_muted,
+                regulus_proto::BusEventKind::Emitted { .. } => p.text,
+            };
+            lines.push(Line::styled(
+                event_line(event, max),
+                Style::default().fg(color),
+            ));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).block(pane(&title, focused, p)), area);
+}
+
+fn draw_decisions(frame: &mut Frame, app: &App, area: Rect) {
+    let p = palette();
+    let focused = app.focus == Focus::Decisions;
+    let muted = Style::default().fg(p.text_muted);
+    let block = pane("Decisions", focused, p);
+    let message = match app.decisions_of_selected() {
+        _ if app.selected_execution().is_none() => Some(Line::styled("select an execution", muted)),
+        None => Some(Line::styled("loading…", muted)),
+        Some(Err(failure)) => Some(Line::styled(
+            describe(failure),
+            Style::default().fg(p.text_muted),
+        )),
+        Some(Ok(list)) if list.is_empty() => Some(Line::styled("nothing waits for you", muted)),
+        Some(Ok(_)) => None,
+    };
+    if let Some(line) = message {
+        frame.render_widget(Paragraph::new(line).block(block), area);
+        return;
+    }
+    let width = area.width.saturating_sub(4) as usize;
+    let max = app.options.tuning.value_max.min(width.max(1));
+    let items: Vec<ListItem> = app
+        .pending()
+        .iter()
+        .map(|pending| {
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled("? waiting ", Style::default().fg(p.warning)),
+                    Span::raw(format!("{} · {}", pending.node_id, pending.kind)),
+                ]),
+                Line::styled(
+                    format!("  {}", super::app::compact(&pending.value, max)),
+                    Style::default().fg(p.text_secondary),
+                ),
+                Line::styled(format!("  {}", pending.prompt), muted),
+            ])
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(app.decision_index());
+    frame.render_stateful_widget(list(items, block, p), area, &mut state);
+}
+
+fn draw_prompt(frame: &mut Frame, prompt: &Prompt) {
+    let p = palette();
+    let area = centered(frame.area(), 70, 12);
+    frame.render_widget(Clear, area);
+    let muted = Style::default().fg(p.text_muted);
+    let (title, mut lines, typed) = match prompt {
+        Prompt::NewProfile(name) => (
+            "New profile",
+            vec![Line::styled("its name; the id comes from it", muted)],
+            name.clone(),
+        ),
+        Prompt::Filter(text) => (
+            "Filter events by node",
+            vec![Line::styled("a node id; empty shows every event", muted)],
+            text.clone(),
+        ),
+        Prompt::Send {
+            ports,
+            index,
+            value,
+            ..
+        } => {
+            let mut lines = vec![Line::styled(
+                "↑↓ input · text@ takes text, the rest JSON",
+                muted,
+            )];
+            for (at, port) in ports.iter().enumerate() {
+                let mark = if at == *index { "▸ " } else { "  " };
+                lines.push(Line::raw(format!(
+                    "{mark}self.{} ({})",
+                    port.id, port.capability
+                )));
+            }
+            ("Send to the workflow", lines, value.clone())
+        }
+    };
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("› ", Style::default().fg(p.focus)),
+        Span::raw(typed),
+    ]));
+    frame.render_widget(Paragraph::new(lines).block(pane(title, true, p)), area);
+}
+
+pub(super) fn pane<'a>(title: &'a str, focused: bool, p: &Palette) -> Block<'a> {
     let border = if focused { p.focus } else { p.border };
     Block::new()
         .borders(Borders::ALL)
@@ -60,11 +221,15 @@ fn pane<'a>(title: &'a str, focused: bool, p: &Palette) -> Block<'a> {
 }
 
 /// A state is always a symbol and a word, never color alone (docs/08-design-system.md).
-fn state_span(symbol: &str, label: String, color: ratatui::style::Color) -> Span<'static> {
+pub(super) fn state_span(
+    symbol: &str,
+    label: String,
+    color: ratatui::style::Color,
+) -> Span<'static> {
     Span::styled(format!("{symbol} {label}"), Style::default().fg(color))
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let p = palette();
     let status = match &app.connection {
         Connection::Connecting => state_span("…", "connecting".into(), p.warning),
@@ -95,7 +260,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn list<'a>(items: Vec<ListItem<'a>>, block: Block<'a>, p: &Palette) -> List<'a> {
+pub(super) fn list<'a>(items: Vec<ListItem<'a>>, block: Block<'a>, p: &Palette) -> List<'a> {
     List::new(items)
         .block(block)
         .highlight_style(Style::default().bg(p.selected).add_modifier(Modifier::BOLD))
@@ -229,7 +394,7 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Splits `text` into lines no wider than `width` characters, between words when it can.
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.lines() {
@@ -516,25 +681,52 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let p = palette();
-    let line = match &app.notice {
-        Some((Tone::Error, text)) => {
-            Line::styled(format!(" ✗ {text}"), Style::default().fg(p.danger))
-        }
-        Some((Tone::Info, text)) => Line::styled(format!(" {text}"), Style::default().fg(p.info)),
-        None => {
-            let keys = match app.focus {
-                Focus::Input => "Enter send · Esc back · Ctrl-C quit",
-                Focus::Profiles => "Enter run · ↑↓ move · Tab next pane · r refresh · q quit",
-                Focus::Executions => "s stop · Enter nodes · ↑↓ move · Tab next pane · q quit",
-                Focus::Nodes => "Enter write · ↑↓ move · Tab next pane · q quit",
-            };
-            Line::styled(format!(" {keys}"), Style::default().fg(p.text_muted))
-        }
+    let k = &app.options.keys;
+    let keys = match app.focus {
+        Focus::Input => "Enter send · Esc back · Ctrl-C quit".to_string(),
+        Focus::Profiles => format!(
+            "Enter run · {} edit · {} new · {} templates · Tab next pane · r refresh · q quit",
+            k.edit.label(),
+            k.new_profile.label(),
+            k.templates.label()
+        ),
+        Focus::Executions => format!(
+            "s stop · Enter nodes · {} send · {} templates · Tab next pane · q quit",
+            k.send.label(),
+            k.templates.label()
+        ),
+        Focus::Nodes => "Enter write · ↑↓ move · Tab next pane · q quit".to_string(),
+        Focus::Events => format!(
+            "↑↓ scroll · {} filter by node · {} send · Tab next pane · q quit",
+            k.filter.label(),
+            k.send.label()
+        ),
+        Focus::Decisions => format!(
+            "{} approve · {} reject · ↑↓ move · Tab next pane · q quit",
+            k.approve.label(),
+            k.reject.label()
+        ),
     };
+    let line = notice_line(app, keys);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(p.sidebar)),
         area,
     );
+}
+
+/// The notice if there is one, else the keys of where the person is.
+pub(super) fn notice_line(app: &App, keys: String) -> Line<'static> {
+    let p = palette();
+    match &app.notice {
+        Some((Tone::Error, text)) if text.starts_with(['✗', '□']) => {
+            Line::styled(format!(" {text}"), Style::default().fg(p.danger))
+        }
+        Some((Tone::Error, text)) => {
+            Line::styled(format!(" ✗ {text}"), Style::default().fg(p.danger))
+        }
+        Some((Tone::Info, text)) => Line::styled(format!(" {text}"), Style::default().fg(p.info)),
+        None => Line::styled(format!(" {keys}"), Style::default().fg(p.text_muted)),
+    }
 }
 
 #[cfg(test)]

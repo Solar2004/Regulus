@@ -1,12 +1,19 @@
 //! The terminal UI: `regulus` with no command, on a terminal (docs/04-client.md §7). A
-//! client like the app: it finds or starts the core and shows the Operate view. Every
-//! action in it has a command (`run`, `stop`, `ps`, `agent prompt`, `msg send`/`log`/`who`).
+//! client like the app: it finds or starts the core and shows Operate, Edit and Templates.
+//! Every action in it has a command (`run`, `stop`, `ps`, `events`, `send`, `human answer`,
+//! `agent prompt`, `msg send`/`log`/`who`, `profile save`, `template apply`).
 
 pub mod app;
+pub mod catalog;
 pub mod core;
+pub mod document;
+pub mod edit;
 pub mod intro;
+pub mod keys;
 pub mod palette;
+pub mod templates;
 pub mod view;
+mod view_edit;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -19,14 +26,27 @@ use regulus_core::Config;
 use self::app::App;
 use self::core::{Connection, Core, Event, Request};
 use self::intro::Intro;
+use self::keys::Options;
 
 /// How often the screen is redrawn while the intro plays.
 const FRAME: Duration = Duration::from_millis(16);
 /// How long to wait for a key when nothing moves on screen.
 const IDLE: Duration = Duration::from_millis(100);
 
-/// Runs until the person quits. Needs a multi-threaded tokio runtime.
+/// Runs until the person quits, with the default keys. Needs a multi-threaded tokio
+/// runtime.
 pub async fn run(config: Config, timeout: Duration) -> Result<()> {
+    run_with(config, timeout, None).await
+}
+
+/// Like [`run`], with keys and numbers from `client`: a table shaped like `[client]` of
+/// `config.toml` whose `keys` and `tui` tables replace the defaults (`keys.rs`).
+pub async fn run_with(
+    config: Config,
+    timeout: Duration,
+    client: Option<&toml::Table>,
+) -> Result<()> {
+    let options = Options::from_client(client).map_err(anyhow::Error::msg)?;
     let (events, incoming) = mpsc::channel();
     let core = core::spawn(config.clone(), timeout, events);
     core.send(Request::Status);
@@ -34,7 +54,7 @@ pub async fn run(config: Config, timeout: Duration) -> Result<()> {
     let intro = config.client.intro;
     tokio::task::block_in_place(|| {
         let mut terminal = ratatui::try_init()?;
-        let result = screen(&mut terminal, &core, &incoming, refresh, intro);
+        let result = screen(&mut terminal, &core, &incoming, refresh, intro, options);
         ratatui::restore();
         result
     })
@@ -55,12 +75,14 @@ fn screen(
     incoming: &mpsc::Receiver<Event>,
     refresh: Duration,
     show_intro: bool,
+    options: Options,
 ) -> Result<()> {
     let started = Instant::now();
     let mut intro = show_intro.then(Intro::default);
-    let mut app = App::default();
+    let mut app = App::new(options);
     let mut refreshed = Instant::now();
     let mut watched = None;
+    let mut polled = None;
     loop {
         while let Ok(event) = incoming.try_recv() {
             for request in app.apply(event) {
@@ -107,7 +129,16 @@ fn screen(
             }
             watched = channel;
         }
-        if refreshed.elapsed() >= refresh {
+        // So are the events and decisions of a newly selected execution.
+        let poll = app.poll_key();
+        let tick = refreshed.elapsed() >= refresh;
+        if poll != polled || tick {
+            for request in app.poll() {
+                core.send(request);
+            }
+            polled = poll;
+        }
+        if tick {
             core.send(Request::Status);
             if let Some(request) = watched.clone() {
                 core.send(request);

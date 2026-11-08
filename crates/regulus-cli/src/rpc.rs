@@ -57,6 +57,44 @@ pub async fn call<T: DeserializeOwned>(ws: &WsClient, name: &str, params: Value)
     }
 }
 
+/// A failed call as a client decides on it: the core's error code, when it gave one, and
+/// its message. Panels tell "not installed" (`-32601`) from "unavailable" (`-32002`) by the
+/// code, never by the module's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallError {
+    pub code: Option<i32>,
+    pub message: String,
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Like [`call`], keeping the error code.
+pub async fn call_coded<T: DeserializeOwned>(
+    ws: &WsClient,
+    name: &str,
+    params: Value,
+) -> std::result::Result<T, CallError> {
+    let params = object(params).map_err(|e| CallError {
+        code: None,
+        message: format!("{e:#}"),
+    })?;
+    match ws.request(name, params).await {
+        Ok(value) => Ok(value),
+        Err(jsonrpsee::core::client::Error::Call(error)) => Err(CallError {
+            code: Some(error.code()),
+            message: error.message().to_string(),
+        }),
+        Err(error) => Err(CallError {
+            code: None,
+            message: error.to_string(),
+        }),
+    }
+}
+
 /// The protocol takes named parameters only; `null` means none.
 pub fn object(params: Value) -> Result<ObjectParams> {
     let mut out = ObjectParams::new();
