@@ -499,8 +499,9 @@ arranca o muere, queda `broken` con su stderr. No se añadió un estado `error`:
 estándar) y tests en `crates/regulus-cli/tests/local_modules.rs`.
 **Confianza** (revisión del mismo día): solo arrancan los módulos locales de una carpeta que
 esté en `[projects] trusted`. Se confía con `regulus project open <ruta> --trust` o
-`regulus project trust <ruta>`, y se retira con `--remove`. Sin confianza, el proyecto se
-abre y sus módulos locales quedan `blocked`, sin proceso. El proceso solo recibe
+`regulus project trust <ruta>`, o con el botón de Ajustes → Módulos (`04-client.md` §10), y
+se retira con `--remove`. Sin confianza, el proyecto se abre y sus módulos locales quedan
+`blocked`, sin proceso. El proceso solo recibe
 `env_passthrough` más su `env`. Detalle en [`03-modules.md` §6](03-modules.md).
 **Desvíos:** el ejemplo de arriba traía `manifest` sin `id`; ahora `id` es obligatorio y
 `manifest` opcional. Un módulo local no puede declarar `methods`.

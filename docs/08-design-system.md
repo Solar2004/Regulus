@@ -72,6 +72,7 @@ es la referencia de material, no una textura que haya que repetir por toda la pa
    | `not-installed` | `PackageOpen` | `text-muted` |
    | `disabled` (falta capacidad requerida) | `OctagonX` | `danger` |
    | `broken` | `TriangleAlert` | `danger` |
+   | `blocked` (módulo local sin confianza, 2026-11-08) | `ShieldOff` | `warning`; la acción de confiar lleva `ShieldCheck` |
 
 5. `Badge` (píldora `rounded-full`) es para etiquetas y conteos, no para estados
    de módulo. No meter un estado dentro de un `Badge`.

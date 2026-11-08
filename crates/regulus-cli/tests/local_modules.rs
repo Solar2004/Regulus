@@ -304,6 +304,10 @@ fn an_untrusted_project_runs_no_code_until_trusted() {
             echo.contains("untrusted project: reopen with --trust"),
             "{echo}"
         );
+        assert!(
+            echo.contains("project=demo"),
+            "a client can offer to trust it: {echo}"
+        );
 
         let trusted = regulus(home, &["project", "trust", path]);
         assert!(trusted.status.success(), "{}", text(&trusted));

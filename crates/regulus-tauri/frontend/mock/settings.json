@@ -59,7 +59,18 @@
         "node": [{ "type": "judge", "name": "Judge", "port": [], "field": [] }]
       },
       "state": { "status": "incompatible", "requires": "^2.0", "have": "1.10" }
+    },
+    {
+      "manifest": {
+        "module": { "id": "demo/echo@0.1.0", "name": "Echo", "requires_proto": "^1.14", "methods": [], "workflow_id": null },
+        "node": [{ "type": "echo", "name": "Echo", "port": [], "field": [] }]
+      },
+      "state": { "status": "blocked", "reason": "untrusted project: reopen with --trust" },
+      "project": "demo"
     }
+  ],
+  "projects": [
+    { "id": "demo", "name": "Demo", "path": "/home/alex/demo", "warnings": [] }
   ],
   "keys": [
     {

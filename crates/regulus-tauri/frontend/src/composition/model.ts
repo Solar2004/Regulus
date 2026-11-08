@@ -63,6 +63,15 @@ export type ModuleState =
   /** Not started on purpose, e.g. a local module of an untrusted project (proto 1.14). */
   | { status: "blocked"; reason: string };
 
+/** One entry of `project.list` (proto 1.12): the folder is what `project.trust` takes. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  path: string;
+  warnings?: string[];
+  error?: string;
+}
+
 export interface ModuleDefinition {
   id: string;
   name: string;
@@ -70,6 +79,8 @@ export interface ModuleDefinition {
   workflow_id: string | null;
   /** Absent in the mock's example modules: they read as installed and idle. */
   state?: ModuleState;
+  /** A local module's project (`[[modules.local]]`, proto 1.15): what to trust when it is blocked. */
+  project?: string;
 }
 
 /** A field of a node type, as `module.manifest` gives it (TOML names). */

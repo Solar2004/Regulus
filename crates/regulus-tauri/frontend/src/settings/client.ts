@@ -1,6 +1,7 @@
 // The Settings calls, over any JSON-RPC line with `request`. Each is the call a CLI
 // command makes: `regulus secret …` and `regulus service …`.
 import type { Rpc } from "@/operate/client";
+import type { ProjectSummary } from "@/composition/model";
 import type { KeyRecord, LogEntry, LogQuery, NewKey, Policy, ServiceEndpoint } from "./model";
 
 /** Method names: the core's (`secret.*`) and the `service` module's. */
@@ -13,6 +14,8 @@ export const methods = {
   keyRevoke: "service.key.revoke",
   log: "service.log",
   endpoints: "service.endpoints",
+  projectList: "project.list",
+  projectTrust: "project.trust",
 } as const;
 
 export function settingsApi(rpc: Rpc) {
@@ -33,6 +36,10 @@ export function settingsApi(rpc: Rpc) {
     log: (query: LogQuery) => rpc.request<LogEntry[]>(methods.log, { ...query }),
     /** `regulus service endpoints`. */
     endpoints: () => rpc.request<ServiceEndpoint[]>(methods.endpoints),
+    /** `regulus project ls`: the open projects, with the folder `project.trust` takes. */
+    projects: () => rpc.request<ProjectSummary[]>(methods.projectList),
+    /** `regulus project trust <path>`: its local modules start right away (proto 1.14). */
+    trustProject: (path: string) => rpc.request<{ path: string; trusted: boolean }>(methods.projectTrust, { path }),
   };
 }
 

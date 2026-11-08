@@ -101,9 +101,10 @@ function diagnose(profile, modules) {
 export function createState() {
   const operate = operateState();
   const { settingsModules, ...settings } = settingsState();
-  // The Settings modules come with the state they show: active, broken, disabled, incompatible.
+  // The Settings modules come with the state they show: active, broken, disabled,
+  // incompatible, and a local one blocked until its project is trusted (with `project`).
   const modules = [...fixture.modules, ...manifests.map(summaryOf), ...operate.manifests.map(summaryOf),
-    ...settingsModules.map(({ manifest, state }) => ({ ...summaryOf(manifest), state }))];
+    ...settingsModules.map(({ manifest, state, project }) => ({ ...summaryOf(manifest), state, ...(project ? { project } : {}) }))];
   return {
     ...operate,
     ...settings,

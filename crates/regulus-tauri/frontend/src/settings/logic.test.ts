@@ -3,7 +3,7 @@ import type { ModuleDefinition, ModuleState } from "@/composition/model";
 import type { KeyRecord, LogEntry } from "./model";
 import {
   emptyPolicy, isRevoked, lastValid, logQuery, logRows, moduleRows, moduleStatus, parsePolicy, parseScope, policyLimits,
-  scopeEntryValid, secretNameProblem, sortKeys, sortNames, statusClass, statusCounts,
+  scopeEntryValid, secretNameProblem, sortKeys, sortNames, statusClass, statusCounts, trustTarget,
 } from "./logic";
 
 describe("secret names", () => {
@@ -94,7 +94,8 @@ describe("module states", () => {
   test("each state carries its reason; idle never used is its own state", () => {
     expect(moduleStatus(module("a", { status: "active", since: 7 }))).toEqual({ kind: "active", since: 7 });
     expect(moduleStatus(module("a", { status: "idle", last_used: null }))).toEqual({ kind: "unused" });
-    expect(moduleStatus(module("a", { status: "blocked", reason: "untrusted" }))).toEqual({ kind: "broken", reason: "untrusted" });
+    expect(moduleStatus(module("a", { status: "blocked", reason: "untrusted" }))).toEqual({ kind: "blocked", reason: "untrusted", project: null });
+    expect(moduleStatus({ ...module("demo/echo", { status: "blocked", reason: "untrusted" }), project: "demo" })).toEqual({ kind: "blocked", reason: "untrusted", project: "demo" });
     expect(moduleStatus(module("a", { status: "idle", last_used: 9 }))).toEqual({ kind: "idle", lastUsed: 9 });
     expect(moduleStatus(module("a", { status: "disabled", missing: ["engine"] }))).toEqual({ kind: "disabled", missing: ["engine"] });
     expect(moduleStatus(module("a", { status: "broken", reason: "init failed" }))).toEqual({ kind: "broken", reason: "init failed" });
@@ -102,6 +103,19 @@ describe("module states", () => {
   });
   test("a module without state reads as installed and never used", () => {
     expect(moduleStatus(module("a"))).toEqual({ kind: "unused" });
+  });
+  test("a blocked module names the project folder to trust, only when the core lists it", () => {
+    const projects = [{ id: "demo", name: "Demo", path: "/home/a/demo" }];
+    const blocked = (project: string | null) => ({ kind: "blocked" as const, reason: "untrusted", project });
+    expect(trustTarget(blocked("demo"), projects)).toEqual(projects[0]);
+    expect(trustTarget(blocked("other"), projects)).toBeNull();
+    expect(trustTarget(blocked(null), projects)).toBeNull();
+    expect(trustTarget(blocked("demo"), null)).toBeNull();
+    expect(trustTarget({ kind: "broken", reason: "init failed" }, projects)).toBeNull();
+  });
+  test("blocked modules sort right after the broken ones", () => {
+    const rows = moduleRows([module("z", { status: "active", since: 1 }), module("b", { status: "blocked", reason: "untrusted" }), module("a", { status: "broken", reason: "x" })]);
+    expect(rows.map((row) => row.id)).toEqual(["a", "b", "z"]);
   });
   test("rows put what does not work first, then by name, and counts add up", () => {
     const rows = moduleRows([

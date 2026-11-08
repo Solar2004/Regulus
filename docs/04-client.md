@@ -41,6 +41,8 @@ El canvas puede marcar qué nodos están vivos, pero no mezcla estado con diseñ
 2. **Desactivado** — le falta una entrada `required`; se dice cuál.
 3. **Roto** — pánico o fallo en `init`; se muestra la razón y se puede recargar.
 4. **Sin usar** — `Idle` con `last_used` vacío: instalado y nunca usado, visible.
+5. **Bloqueado** (2026-11-08) — módulo local de un proyecto sin confianza (`blocked`,
+   `03-modules.md` §6). No es un error: se dice el proyecto y se ofrece confiar en él.
 
 Iconos y colores de cada estado: [`08-design-system.md`](08-design-system.md).
 
@@ -235,7 +237,13 @@ pura en `logic.ts` con tests, componentes aparte). Ningún método nuevo en el c
   de `08-design-system.md`, y la razón: *desactivado* dice qué entrada falta, *roto* la
   razón del core, *incompatible* el protocolo que pide, *sin usar* es `idle` con
   `last_used` vacío. Primero lo que no funciona. Recargar no: el core no tiene
-  `module.reload`; un módulo roto pide reiniciar el core.
+  `module.reload`; un módulo roto pide reiniciar el core. **Bloqueado** (2026-11-08): un
+  módulo local de un proyecto sin confianza sale con su propio estado (`ShieldOff`, aviso),
+  la razón del core y el botón **Trust <proyecto>**, que llama a `project.trust` con la
+  carpeta que `project.list` da para el `project` de la entrada (protocolo 1.15); al
+  volver, la lista se pide otra vez y el módulo aparece arrancado. Si el core no lista ese
+  proyecto, se enseña el comando `regulus project trust <carpeta>`. Es lo que hace la CLI,
+  sin método nuevo en el core: solo el campo `project` en `module.list`.
 - **Secretos.** `secret.list` (solo nombres), `secret.set` (`{name, value}`; el valor
   entra y no se vuelve a ver, avisa si reemplaza) y `secret.delete` con confirmación.
 - **Servicio** (módulo `service`, `13-blocks.md` §3). Llaves: `service.key.list`,

@@ -354,7 +354,10 @@ trusted` de `config.toml`. Se añade con `regulus project open <ruta> --trust` o
 confianza, el proyecto se abre igual y cada módulo local queda **`blocked`** con "untrusted
 project: reopen with --trust", sin proceso. Si la confianza cambia con el proyecto abierto,
 sus módulos locales arrancan o se paran en ese momento. El core relee la lista del
-fichero cada vez: un solo sitio por dato.
+fichero cada vez: un solo sitio por dato. Desde el protocolo **1.15** (2026-11-08) cada
+entrada local de `module.list` lleva `project` (el id de su proyecto) y `regulus module ls`
+lo imprime como `project=<id>`: con eso Ajustes → Módulos ofrece confiar en el proyecto
+(`04-client.md` §10) sin que el core conozca al cliente.
 
 **El proceso no hereda el entorno del core:** se vacía (`env_clear`) y solo pasan las
 variables de `env_passthrough` (por defecto `PATH`, `HOME`, `LANG` y `TERM`) más el `env`

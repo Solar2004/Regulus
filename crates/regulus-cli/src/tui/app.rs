@@ -1062,6 +1062,7 @@ mod tests {
             node_types: vec![],
             workflow_id: None,
             state: ModuleState::Active { since: 0 },
+            project: None,
         }
     }
 

@@ -28,7 +28,7 @@ negociar un major compatible.
 | `hello` | `client`, `proto` | `core`, `proto`, `compatible` |
 | `profile.list` | — | Resúmenes con `id`, `name`, `project_id` |
 | `profile.get` | `id` | Perfil con workflow principal y todos sus workflows |
-| `module.list` | — | Módulos de ejemplo y tipos de nodo que aportan |
+| `module.list` | — | Módulos de ejemplo y tipos de nodo que aportan; los de Ajustes con su `state`, y uno local `blocked` con `project` *(1.15)* |
 | `execution.list` | — | Lista vacía; nada está ejecutándose |
 | `profile.check` *(1.1)* | `id` | Diagnósticos del perfil: `severity`, `code`, `message` |
 | `execution.start` *(1.2)* | `profile_id`, `workflow_id?` | La ejecución: `id`, `profile_id` *(1.4)*, `workflow_id`, `state`, y `disabled` (nodos sin sus entradas obligatorias) |
@@ -52,7 +52,9 @@ negociar un major compatible.
 | `project.close` *(1.12)* | `id` | Como una entrada de `project.list`; no borra nada en disco |
 | `config.client` *(1.13)* | `project_id?` | `client`: el `[client]` de `config.toml` tal como está escrito, con el del proyecto encima clave a clave (las tablas como `keys` y `tui`, también clave a clave; lo desconocido pasa tal cual); `sources`: de qué fichero sale cada valor (`config.toml` o `regulus.toml`, por `clave` o `tabla.clave`); `warnings`: las claves de `[client]` que el core no conoce. Proyecto que no está abierto: `-32010`. Detalle en [`04-client.md`](04-client.md) §11 |
 
-El core real (`regulus serve`) habla el protocolo `1.14`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.15`, compatible con el `1.0` del mock.
+El mock contesta también `project.list` y `project.trust` (`mock/settings.mjs`): confiar
+arranca el módulo `blocked`, `remove` lo vuelve a bloquear.
 Desde `1.12` hay proyectos ([`11-composition.md`](11-composition.md) §13): `project.open`
 añade la carpeta a `[projects] paths` de `config.toml` y suma sus perfiles y plantillas;
 `profile.save` de un perfil con `project_id` de un proyecto abierto y `template.apply` con

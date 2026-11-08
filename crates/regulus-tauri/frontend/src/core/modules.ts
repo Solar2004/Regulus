@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import type { ModuleDefinition } from "@/composition/model";
 import { useCore, type RpcClient } from "./connection";
 
-/** The modules the connected core lists; `null` until it answers or while it is away. */
-export function useModuleList(): ModuleDefinition[] | null {
+/**
+ * The modules the connected core lists; `null` until it answers or while it is away.
+ * Bump `epoch` to ask again after something changed them (trusting a project).
+ */
+export function useModuleList(epoch = 0): ModuleDefinition[] | null {
   const { client, status } = useCore();
   const [listed, setListed] = useState<{ client: RpcClient; modules: ModuleDefinition[] } | null>(null);
   useEffect(() => {
@@ -13,7 +16,7 @@ export function useModuleList(): ModuleDefinition[] | null {
       .then((modules) => { if (!disposed) setListed({ client, modules }); })
       .catch(() => { if (!disposed) setListed({ client, modules: [] }); });
     return () => { disposed = true; };
-  }, [client, status]);
+  }, [client, status, epoch]);
   return client && status === "ready" && listed?.client === client ? listed.modules : null;
 }
 

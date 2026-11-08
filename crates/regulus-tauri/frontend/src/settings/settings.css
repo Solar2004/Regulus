@@ -49,3 +49,5 @@
 .settings-revealed-key input { flex:1; min-width:0; font-family:var(--rg-font-mono); font-size:.75rem; padding:var(--rg-space-2) var(--rg-space-3); border:1px solid var(--rg-color-control-border); border-radius:var(--rg-radius-control); background:var(--rg-color-surface); color:var(--rg-color-text); }
 .settings-table td > small { white-space:nowrap; }
 .settings-actions { display:flex; gap:var(--rg-space-2); flex-shrink:0; align-items:flex-start; }
+.settings-module-action { display:flex; flex-wrap:wrap; align-items:center; gap:var(--rg-space-2) var(--rg-space-3); margin-top:var(--rg-space-1); }
+.settings-module-action code { overflow-wrap:anywhere; }

@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 /// `template.list`, `template.get` and `template.apply`; 1.11 adds what the app needs to
 /// edit: `module.manifest`, `profile.save` and `profile.delete`; 1.12 adds projects:
 /// `project.list`, `project.get`, `project.open`, `project.close`, `project_id` on
-/// templates and `template.apply`; 1.13 adds `config.client`.
-pub const PROTOCOL: &str = "1.14";
+/// templates and `template.apply`; 1.13 adds `config.client`; 1.14 adds `project.trust`
+/// and the `blocked` module state; 1.15 adds `project` to the entries of `module.list`.
+pub const PROTOCOL: &str = "1.15";
 
 pub mod method {
     pub const HELLO: &str = "hello";

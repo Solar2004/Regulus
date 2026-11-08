@@ -518,7 +518,10 @@ async fn main() -> Result<()> {
                     .into_iter()
                     .flatten()
                     .filter(|(k, _)| *k != "status");
-                let detail: Vec<String> = detail.map(|(k, v)| format!("{k}={v}")).collect();
+                let mut detail: Vec<String> = detail.map(|(k, v)| format!("{k}={v}")).collect();
+                if let Some(project) = &module.project {
+                    detail.push(format!("project={project}"));
+                }
                 println!("{:<32} {:<12} {}", module.id, status, detail.join(" "));
             }
             Ok(())

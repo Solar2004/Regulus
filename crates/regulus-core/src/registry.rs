@@ -411,6 +411,7 @@ impl Registry {
                     .collect(),
                 workflow_id: entry.manifest.module.workflow_id.clone(),
                 state: entry.state().clone(),
+                project: entry.local.as_ref().map(|(owner, _)| owner.clone()),
             })
             .collect()
     }

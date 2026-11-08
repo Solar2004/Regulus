@@ -1,5 +1,5 @@
-// What Settings calls: the core's `secret.*` and `config.client` and the `service` module's
-// methods, mirrored with canned data from settings.json. Shapes and errors follow `regulus-core::secrets`
+// What Settings calls: the core's `secret.*`, `config.client`, `project.list` and
+// `project.trust`, and the `service` module's methods, mirrored with canned data from settings.json. Shapes and errors follow `regulus-core::secrets`
 // and `crates/modules/service`; the mock adds no method of its own.
 import extra from "./settings.json" with { type: "json" };
 
@@ -17,6 +17,7 @@ export function settingsState() {
   const data = structuredClone(extra);
   return {
     settingsModules: data.modules,
+    projects: data.projects,
     secrets: new Map(Object.entries(data.secrets)),
     keys: data.keys,
     serviceLog: data.log,
@@ -65,6 +66,21 @@ export function settingsMethod(state, method, params) {
       const projectId = params.project_id ?? null;
       if (projectId !== null && !Object.hasOwn(projects, projectId)) return failure(-32010, `no open project \`${projectId}\``);
       return ok({ ...layerClient(global, projectId === null ? {} : projects[projectId]), warnings });
+    }
+    case "project.list": return ok(state.projects);
+    case "project.trust": {
+      // `regulus project trust <path>`: the folder's blocked modules start (1.14); the mock
+      // marks them idle, never used. `remove` blocks them again.
+      const project = state.projects.find((item) => item.path === params.path || `${item.path}/regulus.toml` === params.path);
+      if (!project) return failure(-32602, `no project at ${params.path}`);
+      const trusted = !params.remove;
+      for (const module of state.modules) {
+        if (module.project !== project.id) continue;
+        module.state = trusted
+          ? { status: "idle", last_used: null }
+          : { status: "blocked", reason: "untrusted project: reopen with --trust" };
+      }
+      return ok({ path: project.path, trusted });
     }
     case "secret.delete":
       if (!state.secrets.delete(params.name)) return failure(-32602, `secret \`${params.name}\` is not set`);

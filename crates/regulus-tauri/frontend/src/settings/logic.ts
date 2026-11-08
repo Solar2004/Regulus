@@ -1,6 +1,6 @@
 // Pure logic of Settings: secret names, key scopes and policies, the service log and the
 // first-level state of each module. No React, no socket: tested in logic.test.ts.
-import type { ModuleDefinition } from "@/composition/model";
+import type { ModuleDefinition, ProjectSummary } from "@/composition/model";
 import type { KeyRecord, LogEntry, Policy } from "./model";
 
 // --- secrets --------------------------------------------------------------------------
@@ -115,6 +115,8 @@ export type ModuleStatus =
   | { kind: "idle"; lastUsed: number }
   | { kind: "disabled"; missing: string[] }
   | { kind: "broken"; reason: string }
+  /** Not started on purpose: a local module of a project that is not trusted. `project` is what to trust. */
+  | { kind: "blocked"; reason: string; project: string | null }
   | { kind: "incompatible"; requires: string; have: string };
 
 /** A module with no state (an older mock) reads as installed and never used. */
@@ -124,15 +126,15 @@ export function moduleStatus(module: ModuleDefinition): ModuleStatus {
     case "active": return { kind: "active", since: state.since };
     case "idle": return state.last_used === null || state.last_used === undefined ? { kind: "unused" } : { kind: "idle", lastUsed: state.last_used };
     case "disabled": return { kind: "disabled", missing: state.missing };
-    case "broken":
-    case "blocked": return { kind: "broken", reason: state.reason };
+    case "broken": return { kind: "broken", reason: state.reason };
+    case "blocked": return { kind: "blocked", reason: state.reason, project: module.project ?? null };
     case "incompatible": return { kind: "incompatible", requires: state.requires, have: state.have };
     default: return { kind: "broken", reason: `unknown state \`${(state as { status: string }).status}\`` };
   }
 }
 
 /** Order of attention: what does not work first, then what was never used, then the rest. */
-const attention: ModuleStatus["kind"][] = ["broken", "incompatible", "disabled", "unused", "idle", "active"];
+const attention: ModuleStatus["kind"][] = ["broken", "blocked", "incompatible", "disabled", "unused", "idle", "active"];
 
 export interface ModuleRow {
   id: string;
@@ -152,6 +154,12 @@ export function statusCounts(rows: ModuleRow[]): Partial<Record<ModuleStatus["ki
   const counts: Partial<Record<ModuleStatus["kind"], number>> = {};
   for (const row of rows) counts[row.status.kind] = (counts[row.status.kind] ?? 0) + 1;
   return counts;
+}
+
+/** The folder `project.trust` takes for a blocked module: its project's, if the core lists it. */
+export function trustTarget(status: ModuleStatus, projects: ProjectSummary[] | null): ProjectSummary | null {
+  if (status.kind !== "blocked" || !status.project || !projects) return null;
+  return projects.find((project) => project.id === status.project) ?? null;
 }
 
 /** Milliseconds since the epoch as this device writes a date and time. */

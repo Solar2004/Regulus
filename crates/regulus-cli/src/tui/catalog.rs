@@ -403,6 +403,7 @@ mod tests {
             node_types: vec![],
             workflow_id: None,
             state,
+            project: None,
         }
     }
 

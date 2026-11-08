@@ -323,6 +323,21 @@ test("module.list carries the states Settings shows, each with its reason", () =
   assert.deepEqual(status("regulus/memory@0.1.0"), { status: "disabled", missing: ["embedder"] });
   assert.equal(status("regulus/judge@0.1.0").status, "incompatible");
   assert.equal(status("regulus/service@0.1.0").status, "active");
+  assert.deepEqual(status("demo/echo@0.1.0"), { status: "blocked", reason: "untrusted project: reopen with --trust" });
+  assert.equal(listed.find((module) => module.id === "demo/echo@0.1.0").project, "demo");
+});
+
+test("project.trust starts a blocked local module; --remove blocks it again", () => {
+  const session = negotiatedSession();
+  const [project] = session(request("project.list")).result;
+  assert.equal(project.id, "demo");
+  const echo = () => session(request("module.list")).result.find((module) => module.id === "demo/echo@0.1.0").state;
+  assert.equal(echo().status, "blocked");
+  assert.deepEqual(session(request("project.trust", { path: project.path })).result, { path: project.path, trusted: true });
+  assert.deepEqual(echo(), { status: "idle", last_used: null });
+  assert.deepEqual(session(request("project.trust", { path: project.path, remove: true })).result, { path: project.path, trusted: false });
+  assert.equal(echo().status, "blocked");
+  assert.equal(session(request("project.trust", { path: "/nowhere" })).error.code, -32602);
 });
 
 test("config.client gives [client] as written, the project's on top key by key, with sources", () => {

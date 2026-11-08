@@ -128,4 +128,8 @@ pub struct ModuleSummary {
     pub node_types: Vec<String>,
     pub workflow_id: Option<String>,
     pub state: ModuleState,
+    /// For a local module (`[[modules.local]]`): the id of the project it belongs to, so
+    /// a client can offer to trust that project when the module is `blocked` (1.15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }

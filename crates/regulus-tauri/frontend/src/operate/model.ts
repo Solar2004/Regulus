@@ -41,6 +41,8 @@ export interface ModuleSummary {
   node_types: string[];
   workflow_id: string | null;
   state: ModuleState;
+  /** A local module's project (proto 1.15). */
+  project?: string;
 }
 
 export interface PortRef {
