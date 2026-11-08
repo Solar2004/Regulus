@@ -64,6 +64,7 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 4f | **Bloques** (`13-blocks.md` §7): core (cable "luego" con dato, store, workflow como caja, `Call`), ranura `hooks`, módulos de lógica y entorno, plantillas | ~5 sem | ✅ decidido (2026-11-07), en curso |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar (`04-client.md` §9) | ~1 sem | ✅ hecho (2026-11-08, medio día; antes el core ganó `module.manifest`, `profile.save` y `profile.delete`) |
 | 6 | Vista Operar con ejecuciones reales, instalar plantillas (`04-client.md` §8) | ~1 sem | ✅ hecho (2026-11-08, medio día) |
+| 7 | **App completa**: Ajustes, TUI que edita como la app y `[client]` de `config.toml` para app y TUI (`04-client.md` §10, §7, §11); proyectos con `regulus.toml` (`11-composition.md` §13) | — | ✅ hecho (2026-11-08, un día); queda `ProcessModule` para `[[modules.local]]` |
 
 **Prueba de la base (paso 3):** la UI apunta al core real con `VITE_RPC_URL` y funciona
 sin cambiar una línea.
@@ -71,8 +72,9 @@ sin cambiar una línea.
 **Hcom no se absorbe antes de que exista la matriz de ablación** (paso 4). Absorber un
 módulo grande sin ella es cómo se pierde la modularidad sin enterarse.
 
-**Falta especificar antes de que haga falta:** el formato de `regulus.toml`, los atajos de
-teclado (reconfigurables) y qué pasa al reconectar tras caerse el WebSocket.
+**Falta especificar antes de que haga falta:** qué pasa al reconectar tras caerse el
+WebSocket. El formato de `regulus.toml` está en `11-composition.md` §13 y los atajos de
+teclado en `04-client.md` §11 (`[client.keys]`).
 
 ---
 

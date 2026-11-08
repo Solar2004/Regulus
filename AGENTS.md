@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-11-08 · documentación vigente: ~38k tokens. Lo antiguo está en `docs/old/`.
+> Actualizado: 2026-11-08 · documentación vigente: ~48k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -33,9 +33,12 @@ módulos (`04-client.md` §10). **Los proyectos son carpetas con `regulus.toml`*
 `11-composition.md` §13): perfiles y plantillas propios, veto de módulos por id, claves
 desconocidas conservadas con aviso, `regulus project ls|show|open|close`. **La TUI edita
 como la app** (2026-11-08, `04-client.md` §7): vistas Editar y Plantillas, Operar con eventos
-y decisiones, teclas y números en un solo sitio. **Lo siguiente:** la app y la TUI leyendo
-`config.toml [client]`, y las plantillas 3-8 de `13-blocks.md` §5 (son datos). La pasarela
-de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+y decisiones, teclas y números en un solo sitio. **Los clientes leen `[client]` de
+`config.toml`** (2026-11-08, `04-client.md` §11): el core lo sirve como `config.client` con el
+del proyecto encima y el origen de cada valor; la TUI toma teclas y números, la app los
+valores de Operar y la primera vista. **Lo siguiente:** las plantillas 3-8 de `13-blocks.md`
+§5 (son datos) y `ProcessModule` para `[[modules.local]]`. La pasarela de proveedores queda
+aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -80,7 +83,7 @@ construir todas las habitaciones hoy.**
 | **`docs/13-blocks.md`** | ~8.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom), límites honestos y fuentes. |
 | **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
-| **`docs/04-client.md`** | ~2.5k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10). |
+| **`docs/04-client.md`** | ~4k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11). |
 | **`docs/composition-preview.md`** | ~0.8k | Contrato actual del mock (métodos JSON-RPC) y límites del canvas A'/B'. |
 | **`docs/06-stack.md`** | ~2.2k | Dependencias con versiones verificadas (único sitio), terminal, transporte, versionado. |
 | **`docs/08-design-system.md`** | ~1.8k | Diseño de la app: Regulus Midnight, paleta y tokens (`assets/design/`), iconos de estado. Recetas en `centaury-recipes.md`. |
@@ -180,7 +183,7 @@ Co-Authored-By: Tu nombre <email>
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
 | 1 | **Plantillas 3-8** de `13-blocks.md` §5 (~~mecanismo~~, ~~Ralph~~, ~~app~~) | pxl: `claude-pxl` no instalado |
-| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7); queda la app y la TUI leyendo `config.toml [client]` (`00-principles.md` §4, teclas y números de `tui/keys.rs`); después, `ProcessModule` para `[[modules.local]]` | nada |
+| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11); queda `ProcessModule` para `[[modules.local]]` (`11-composition.md` §13, ~2-3 días) y pulir con uso real | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
