@@ -1,4 +1,4 @@
-import { ArrowRight, Blocks, FolderOpen, GitBranch, Home, LayoutTemplate, PackageOpen, Settings, SlidersHorizontal } from "lucide-react";
+import { Activity, ArrowRight, Blocks, FolderOpen, GitBranch, Home, LayoutTemplate, PackageOpen, Settings, SlidersHorizontal } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import Titlebar from "@/components/Titlebar";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,14 @@ import { useRegulusUi } from "@/store/useRegulusUi";
 import "@/shell.css";
 
 const CompositionScene = lazy(() => import("@/composition/CompositionScene"));
+const OperateScene = lazy(() => import("@/operate/OperateScene"));
+const TemplatesScene = lazy(() => import("@/templates/TemplatesScene"));
 
 const navigation = [
   { id: "home", label: "shell.home", icon: Home },
   { id: "composition", label: "shell.composition", icon: GitBranch },
+  { id: "operate", label: "operate.nav", icon: Activity },
+  { id: "templates", label: "templates.nav", icon: LayoutTemplate },
   { id: "settings", label: "shell.settings", icon: Settings },
 ] as const;
 
@@ -27,7 +31,7 @@ function HomeScene() {
     </div>
     <div className="workspace-sections">
       <section><div className="section-heading"><FolderOpen size={18} /><h2>{t("home.projects")}</h2></div><div className="empty-row"><h3>{t("home.projectsEmpty")}</h3><p>{t("home.projectsDescription")}</p></div></section>
-      <section><div className="section-heading"><LayoutTemplate size={18} /><h2>{t("home.templates")}</h2></div><div className="empty-row"><h3>{t("home.templatesEmpty")}</h3><p>{t("home.templatesDescription")}</p></div></section>
+      <section><div className="section-heading"><LayoutTemplate size={18} /><h2>{t("home.templates")}</h2></div><div className="empty-row"><h3>{t("templates.homeTitle")}</h3><p>{t("templates.homeDescription")}</p><Button variant="outline" size="sm" onClick={() => setView("templates")}>{t("templates.browse")}<ArrowRight size={14} /></Button></div></section>
     </div>
     <aside className="base-note"><Blocks size={22} /><div><h3>{t("home.base")}</h3><p>{t("home.baseDescription")}</p></div></aside>
   </div>;
@@ -77,7 +81,7 @@ export default function App() {
     <Titlebar />
     <div className="shell-body">
       <aside className="shell-navigation"><div className="workspace-label">{t("shell.global")}</div><nav aria-label={t("app.name")}>{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-label={t(label)} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}><Icon size={18} strokeWidth={1.5} /><span>{t(label as LocaleKey)}</span></button>)}</nav><div className="sidebar-bottom"><PackageOpen size={16} /><span>{t("settings.modulesEmpty")}</span></div></aside>
-      <main className="shell-main">{view === "settings" ? <SettingsScene /> : view === "composition" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}><CompositionScene /></Suspense> : <HomeScene />}</main>
+      <main className="shell-main">{view === "settings" ? <SettingsScene /> : view === "composition" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}><CompositionScene /></Suspense> : view === "operate" || view === "templates" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}>{view === "operate" ? <OperateScene /> : <TemplatesScene />}</Suspense> : <HomeScene />}</main>
     </div>
     <footer className="shell-status" role="status"><span>{t("shell.preview")}</span><span data-connection={status}>{t(connectionLabel(status, source))}</span></footer>
   </div>;
