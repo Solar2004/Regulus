@@ -1,0 +1,996 @@
+# Team (docs/13-blocks.md §5 row 6): a mayor splits a goal into tasks, two polecats take
+# them from a shared queue and work each in a git worktree of their own, a witness watches
+# for a polecat that stalls, and a refinery merges each worktree only after a gate passes.
+# Rebuilds Gas Town (github.com/steveyegge/gastown: mayor, polecats, witness, refinery)
+# and Claude Code's agent teams (code.claude.com/docs/en/agent-teams: shared task list,
+# teammates that message each other).
+#
+#   self.goal → mayor_prompt → mayor ─reply→ queue ←── self.tasks
+#                                ⇅ participant / tools        (one task per line)
+#   channel ⇢ tools ⇢ mcp        ⇅
+#                           claim_N ─task→ join_N ← ready ── ws_N (worktree, quota)
+#                              │   └──────→ create ───────────┘ └ info → info_N (variable)
+#                              │            join_N → prompt_N → witness_N → polecat_N
+#                              │                                 ▲ done ──── reply│failed
+#                              │   info_N ← get ─────────────────────────── reply ┘
+#                              │     └ value → refinery (merge queue) ─check→ path → gate
+#                              │                 ▲ pass │ fail ←───────────────────┘
+#                              ├ complete ← route_merged ← merged ┘  (by branch)
+#                              └ fail ← route_failed ← rejected │ conflict;  ← failed │ ws error
+#   queue.error, refinery.error → self.error
+#   (N = 1, 2; each polecat has its own claim, join, prompt, witness, worktree, engine)
+#
+# How a task goes: the mayor's reply is added to the queue (`tasks`, store of the project:
+# shared by every execution of it, and it survives a restart), one task per line; or a
+# person adds tasks on `tasks` and skips the mayor. Each polecat's claim (auto, holds one
+# task) takes the oldest free task; the task creates (or re-announces) the polecat's
+# worktree, a branch `<branch_prefix>polecat-N/<execution>` of `repo` under
+# `<workdir>/polecat-N/`, and task and folder become its prompt. The witness (`guards`
+# watchdog) forwards the prompt and arms a clock: no reply in `stall_ms` and it reports
+# the polecat on `stuck`. The reply sends the worktree's `info` to the refinery (a
+# `workspace` merge queue): one entry at a time, the gate runs `test_command` inside that
+# worktree; pass commits what changed there and merges the branch into `base` in `repo`,
+# fail rejects it. A merge completes the polecat's task (routed by branch name), a
+# rejection, a conflict or a failed prompt fails it: it goes back to `todo` for another
+# claim, `failed` for good after `max_attempts`. Then the polecat claims the next one.
+# When nothing is `todo` or claimed, `drained`. The three agents share a channel: each one
+# is a participant with a name (`participant.describe`: `@mayor`, `@polecat-1`,
+# `@polecat-2`) and gets the channel's `send`, `participants` and `inbox` as MCP tools.
+#
+# Risks: `permissions` is "allow" by default: it says yes to everything the agents ask,
+# unattended, with the user's own opencode setup; and `test_command` runs, with the
+# user's rights and no isolation, code the agent just wrote in the worktree (that is why
+# it has no default). The Agent box's `workdir` is a field, not an input: the polecats
+# start in `<workdir>` and are TOLD their worktree in the prompt; nothing forces them to
+# stay there. `repo` must have `base` checked out and clean (no tracked changes) for a
+# merge; keep `workdir` outside `repo`. The queue outlives the run: use a fresh `queue`
+# name for a fresh start. The mayor's reply is taken line by line: a model that chats
+# adds its chatter as tasks (send tasks on `tasks` to skip it).
+#
+# Limits: a polecat's worktree is one per execution (`<branch_prefix>polecat-N/
+# <execution>`) and is reused for its second task without a rebase, so that task starts
+# from the base as it was and a conflict repeats until `max_attempts`; only one task per
+# polecat has been run (below). A worktree that cannot be made (`ws_N.error`) fails the
+# task like a failed prompt; `queue.error` and `refinery.error` only reach `self.error`.
+# The witness only reports: nothing cancels an agent's turn, the claim's `lease_ms` is
+# the real recovery.
+#
+# Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field).
+# Another model: `--set model=provider/model` (all three; give each engine node its own
+# value to mix them). More polecats: copy the twelve `*_2` nodes and their wires to `*_3`,
+# with `polecat-3` in the name, branch and folder, a case in each route switch, and its
+# participant into the channel. A template has no repetition, so N is drawn, not a hole.
+# Witness as a restarter: `restart = "yes"` on `witness_N` and a wire from its `restart`
+# to `polecat_N.prompt` (the Agent box cannot cancel a turn, so the retry queues).
+#
+# Run (2026-11-08, debug build, `serve --port 0`, temporary --home with `[templates]
+# paths` on this folder; <repo> a git repo on `master` with one commit, <work> empty):
+#
+#   regulus template apply team --set repo=<repo> --set workdir=<work> \
+#     --set test_command=true --set queue=team-run2 --set max_tasks=2
+#   regulus call profile.check '{"id":"team"}'      # []
+#   regulus run team --detach                       # exec-2  team  running
+#   regulus msg who exec-2 channel                  # @mayor, @polecat-1, @polecat-2 idle
+#   regulus send exec-2 goal "Add red.txt saying red and blue.txt saying blue"
+#   regulus events --execution exec-2 | grep emitted   # (prompts, joins left out)
+#     mayor.reply "@polecat-1 create red.txt containing the text \"red\"\n@polecat-2 create…"
+#     claim_1.task {"id":"t1",…,"owner":"polecat-1"}   claim_2.task {"id":"t2",…}
+#     ws_1.ready "<work>/polecat-1/exec-2"  (branch team/polecat-1/exec-2, base master)
+#     polecat_1.reply "t1 done: created red.txt containing \"red\" in my worktree."
+#     refinery.check {"entry":1,…}  gate.exit {"code":0}  gate.pass "<work>/polecat-1/exec-2"
+#     refinery.merged {"entry":1,"merged":{"branch":"team/polecat-1/exec-2",…}}
+#     route_merged.polecat_1 …   self.merged …
+#     polecat_2.reply "Created blue.txt containing \"blue\" and replied to @mayor."
+#     … gate.pass, refinery.merged {"entry":2,…}, route_merged.polecat_2
+#     claim_2.drained {"todo":0,"claimed":0,"done":2,"failed":0,"blocked":0}
+#     self.drained …                                  ← 19 s after send
+#   <repo> master: red.txt and blue.txt, two merge commits. The mayor's chatter ("@polecat-1
+#   create…") became the task titles, as warned above.
+#   With test_command=false, max_attempts=1, stall_ms=2000 and a task on `tasks`
+#   ("Create x.txt saying x"): witness_1.stuck and self.stuck at 2 s, then gate.exit
+#   code 1 → refinery.rejected → route_failed.polecat_1 → claim_1.failed → self.failed
+#   and self.drained {"failed":1}; nothing merged. Without repo: "template `team` needs a
+#   value for var `repo`".
+id = "team"
+name = "Team on {{repo}}"
+main_workflow_id = "team"
+
+[template]
+name = "team"
+description = "Team: a mayor, two polecats in their own worktrees, a witness and a refinery"
+requires = [
+  { module = "regulus/tasks", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+  { module = "regulus/communication", version = ">=0.1" },
+  { module = "regulus/tools", version = ">=0.1" },
+  { module = "regulus/tools-mcp", version = ">=0.1" },
+  { module = "regulus/workspace", version = ">=0.1" },
+  { module = "regulus/guards", version = ">=0.1" },
+  { module = "regulus/process", version = ">=0.1" },
+  { module = "regulus/flow", version = ">=0.1" },
+]
+
+[template.vars]
+repo = { description = "absolute path of the git repo the team works on; merges go into its `base`, which must be checked out and clean" }
+workdir = { description = "absolute path of an existing folder outside `repo`: the agents start there and the worktrees go under <workdir>/polecat-N/" }
+model = { description = "model of the three engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+base = { description = "branch the worktrees start from and merge into; empty: the repo's current branch", default = "" }
+branch_prefix = { description = "start of every worktree branch; each one is <branch_prefix>polecat-N/<execution>", default = "team/" }
+queue = { description = "name of the task queue in the project's store; it outlives the run, a new name starts empty", default = "team" }
+max_tasks = { description = "most tasks the mayor is asked to split the goal into", default = 4 }
+test_command = { description = "shell line run inside a worktree before it is merged; exit 0 merges it (no default: with `allow`, nothing unverified should be merged)" }
+stall_ms = { description = "milliseconds a polecat may work on one task before the witness reports it stuck", default = 600000 }
+lease_ms = { description = "milliseconds a claim lasts; past it the task goes back to todo", default = 1800000 }
+max_attempts = { description = "claims a task may have before it fails for good", default = 2 }
+quota_bytes = { description = "bytes each worktree may hold before it says so on quota_exceeded", default = 1073741824 }
+permissions = { description = "what the agents answer when their tools ask for permission: allow or reject", default = "allow" }
+fresh_context = { description = "yes: each agent starts a new session for every prompt; no: they keep what they knew", default = "no" }
+mayor_brief = { description = "one line added to the mayor's prompt (house rules, scope)", default = "Prefer tasks that touch different files." }
+polecat_brief = { description = "one line added to every polecat's prompt", default = "Keep the change small and do not commit." }
+input = { description = "kept as is: the gate's own {{input}}, the path of the worktree it checks", default = "{{input}}" }
+
+[[workflows]]
+id = "team"
+name = "Team"
+kind = "main"
+ports = [
+  { id = "goal", capability = "text@1", direction = "input", kind = "then" },
+  { id = "tasks", capability = "text@1", direction = "input", kind = "then" },
+  { id = "drained", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "merged", capability = "json@1", direction = "output", kind = "then" },
+  { id = "rejected", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "failed", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "stuck", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  # ── The mayor: the goal in, tasks out, one per line ────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "mayor_prompt"
+  name = "Mayor's prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { conversion = "template", template = "You are @mayor, who plans for a small team: @polecat-1 and @polecat-2 each work alone in their own copy of the repository and take tasks from a shared queue. {{mayor_brief}}\n\nSplit the goal below into at most {{max_tasks}} small tasks that can be done independently, in any order. Reply with the tasks only: one per line, no numbering, no bullets, no blank lines, no other text.\n\n# Goal\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mayor"
+  name = "Mayor"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { name = "mayor", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "participant", capability = "participant@1", direction = "output", kind = "uses" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_mayor"
+  name = "opencode (mayor)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 250, y = -80 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # The shared task list (Gas Town's beads).
+  [[workflows.nodes]]
+  id = "queue"
+  name = "Task queue"
+  type = "queue"
+  module_id = "regulus/tasks@0.1.0"
+  position = { x = 450, y = 50 }
+  config = { queue = "{{queue}}" }
+  ports = [
+    { id = "add", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # ── The channel: every agent a named participant, its operations as MCP tools ───────
+
+  [[workflows.nodes]]
+  id = "channel"
+  name = "Team channel"
+  type = "channel"
+  module_id = "regulus/communication@0.1.0"
+  position = { x = 50, y = 250 }
+  ports = [
+    { id = "participants", capability = "participant@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "tools"
+  name = "Tools"
+  type = "tools"
+  module_id = "regulus/tools@0.1.0"
+  position = { x = 50, y = 400 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "engine", capability = "tools.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "toolset", capability = "toolset@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mcp"
+  name = "MCP"
+  type = "tools-mcp"
+  module_id = "regulus/tools-mcp@0.1.0"
+  position = { x = 50, y = 550 }
+  ports = [{ id = "engine", capability = "tools.engine@1", direction = "output", kind = "uses" }]
+
+  # ── The refinery: one worktree at a time, merged only after its gate ────────────────
+
+  [[workflows.nodes]]
+  id = "refinery"
+  name = "Refinery"
+  type = "merge_queue"
+  module_id = "regulus/workspace@0.1.0"
+  position = { x = 1250, y = 300 }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "fail", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "check", capability = "json@1", direction = "output", kind = "then" },
+    { id = "merged", capability = "json@1", direction = "output", kind = "then" },
+    { id = "conflict", capability = "json@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "check_path"
+  name = "Worktree to check"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1450, y = 300 }
+  config = { conversion = "template", template = "{{/info/path}}" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The deterministic check, inside the worktree first in line ($0 is its path).
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Gate"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 1650, y = 300 }
+  config = { command = "sh", args = ["-c", "cd \"$0\" && {{test_command}}", "{{input}}"] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exit", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  # Who merged, by branch (`{ entry, merged: { branch, … } }`): it completes that
+  # polecat's task.
+  [[workflows.nodes]]
+  id = "route_merged"
+  name = "Merged: whose?"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1450, y = 450 }
+  config = { cases = [
+    { port = "polecat_1", op = "contains", value = "{{branch_prefix}}polecat-1/", path = "/merged/branch" },
+    { port = "polecat_2", op = "contains", value = "{{branch_prefix}}polecat-2/", path = "/merged/branch" },
+  ] }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "polecat_1", capability = "json@1", direction = "output", kind = "then" },
+    { id = "polecat_2", capability = "json@1", direction = "output", kind = "then" },
+    { id = "other", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # A rejection (`{ entry, info, gate, value }`) or a conflict (`{ entry, conflict: {
+  # branch, files, … } }`) fails that polecat's task.
+  [[workflows.nodes]]
+  id = "route_failed"
+  name = "Not merged: whose?"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1450, y = 600 }
+  config = { cases = [
+    { port = "polecat_1", op = "contains", value = "{{branch_prefix}}polecat-1/", path = "/info/branch" },
+    { port = "polecat_1", op = "contains", value = "{{branch_prefix}}polecat-1/", path = "/conflict/branch" },
+    { port = "polecat_2", op = "contains", value = "{{branch_prefix}}polecat-2/", path = "/info/branch" },
+    { port = "polecat_2", op = "contains", value = "{{branch_prefix}}polecat-2/", path = "/conflict/branch" },
+  ] }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "polecat_1", capability = "json@1", direction = "output", kind = "then" },
+    { id = "polecat_2", capability = "json@1", direction = "output", kind = "then" },
+    { id = "other", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # ── Polecat 1 ───────────────────────────────────────────────────────────────────────
+
+  # Holds one task at a time and asks for the next by itself.
+  [[workflows.nodes]]
+  id = "claim_1"
+  name = "Claim (polecat-1)"
+  type = "claim"
+  module_id = "regulus/tasks@0.1.0"
+  position = { x = 450, y = 250 }
+  config = { queue = "{{queue}}", owner = "polecat-1", auto = "yes", hold = 1, wait = "yes", lease_ms = {{lease_ms}}, max_attempts = {{max_attempts}} }
+  ports = [
+    { id = "complete", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "fail", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "task", capability = "json@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "drained", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  # A git worktree of `repo`, made by the first task and re-announced by each next one.
+  [[workflows.nodes]]
+  id = "ws_1"
+  name = "Worktree (polecat-1)"
+  type = "workspace"
+  module_id = "regulus/workspace@0.1.0"
+  position = { x = 650, y = 200 }
+  config = { engine = "git", repo = "{{repo}}", base = "{{base}}", branch_prefix = "{{branch_prefix}}polecat-1/", root = "{{workdir}}/polecat-1", autostart = "no", quota_bytes = {{quota_bytes}} }
+  ports = [
+    { id = "create", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ready", capability = "path@1", direction = "output", kind = "then" },
+    { id = "info", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The worktree's info, kept for the refinery when the polecat replies.
+  [[workflows.nodes]]
+  id = "info_1"
+  name = "Worktree info (polecat-1)"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 850, y = 150 }
+  ports = [
+    { id = "set", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join_1"
+  name = "Task + worktree (polecat-1)"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 300 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "task", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "path", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "prompt_1"
+  name = "Prompt (polecat-1)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 850, y = 300 }
+  config = { conversion = "template", template = "You are @polecat-1, a worker of a small team (@mayor plans, @polecat-2 works beside you; you can message them with the send tool). Work only inside the folder {{/path}}: it is your own git worktree. {{polecat_brief}}\n\n# Task {{/task/id}}\n\n{{/task/title}}\n\nWhen you are done, reply with one line saying what you changed.\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The witness for this polecat: no reply in `stall_ms` and it says so on `stuck`.
+  [[workflows.nodes]]
+  id = "witness_1"
+  name = "Witness (polecat-1)"
+  type = "watchdog"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 1000, y = 300 }
+  config = { stall_ms = {{stall_ms}}, restart = "no" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "stuck", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "polecat_1"
+  name = "polecat-1"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 1150, y = 200 }
+  config = { name = "polecat-1", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "participant", capability = "participant@1", direction = "output", kind = "uses" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_1"
+  name = "opencode (polecat-1)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 1150, y = 80 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "agent_failed_1"
+  name = "Failed prompt (polecat-1)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1300, y = 150 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # A worktree that cannot be made fails the task the same way.
+  [[workflows.nodes]]
+  id = "ws_failed_1"
+  name = "Failed worktree (polecat-1)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 250 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # ── Polecat 2 (the same twelve nodes) ───────────────────────────────────────────────
+
+  [[workflows.nodes]]
+  id = "claim_2"
+  name = "Claim (polecat-2)"
+  type = "claim"
+  module_id = "regulus/tasks@0.1.0"
+  position = { x = 450, y = 650 }
+  config = { queue = "{{queue}}", owner = "polecat-2", auto = "yes", hold = 1, wait = "yes", lease_ms = {{lease_ms}}, max_attempts = {{max_attempts}} }
+  ports = [
+    { id = "complete", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "fail", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "task", capability = "json@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "drained", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "ws_2"
+  name = "Worktree (polecat-2)"
+  type = "workspace"
+  module_id = "regulus/workspace@0.1.0"
+  position = { x = 650, y = 600 }
+  config = { engine = "git", repo = "{{repo}}", base = "{{base}}", branch_prefix = "{{branch_prefix}}polecat-2/", root = "{{workdir}}/polecat-2", autostart = "no", quota_bytes = {{quota_bytes}} }
+  ports = [
+    { id = "create", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ready", capability = "path@1", direction = "output", kind = "then" },
+    { id = "info", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "info_2"
+  name = "Worktree info (polecat-2)"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 850, y = 550 }
+  ports = [
+    { id = "set", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join_2"
+  name = "Task + worktree (polecat-2)"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 700 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "task", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "path", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "prompt_2"
+  name = "Prompt (polecat-2)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 850, y = 700 }
+  config = { conversion = "template", template = "You are @polecat-2, a worker of a small team (@mayor plans, @polecat-1 works beside you; you can message them with the send tool). Work only inside the folder {{/path}}: it is your own git worktree. {{polecat_brief}}\n\n# Task {{/task/id}}\n\n{{/task/title}}\n\nWhen you are done, reply with one line saying what you changed.\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "witness_2"
+  name = "Witness (polecat-2)"
+  type = "watchdog"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 1000, y = 700 }
+  config = { stall_ms = {{stall_ms}}, restart = "no" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "stuck", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "polecat_2"
+  name = "polecat-2"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 1150, y = 600 }
+  config = { name = "polecat-2", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "{{fresh_context}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "participant", capability = "participant@1", direction = "output", kind = "uses" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_2"
+  name = "opencode (polecat-2)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 1150, y = 480 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "agent_failed_2"
+  name = "Failed prompt (polecat-2)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1300, y = 550 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # A worktree that cannot be made fails the task the same way.
+  [[workflows.nodes]]
+  id = "ws_failed_2"
+  name = "Failed worktree (polecat-2)"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 650 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # ── Wires: the mayor and the queue ──────────────────────────────────────────────────
+
+  [[workflows.wires]]
+  id = "goal-mayor_prompt"
+  kind = "then"
+  from = { node_id = "self", port_id = "goal" }
+  to = { node_id = "mayor_prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "mayor_prompt-mayor"
+  kind = "then"
+  from = { node_id = "mayor_prompt", port_id = "out" }
+  to = { node_id = "mayor", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "mayor-queue"
+  kind = "then"
+  from = { node_id = "mayor", port_id = "reply" }
+  to = { node_id = "queue", port_id = "add" }
+
+  [[workflows.wires]]
+  id = "tasks-queue"
+  kind = "then"
+  from = { node_id = "self", port_id = "tasks" }
+  to = { node_id = "queue", port_id = "add" }
+
+  [[workflows.wires]]
+  id = "mayor-engine"
+  kind = "uses"
+  from = { node_id = "engine_mayor", port_id = "engine" }
+  to = { node_id = "mayor", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "queue-error"
+  kind = "then"
+  from = { node_id = "queue", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  # ── Wires: the channel and its tools ────────────────────────────────────────────────
+
+  [[workflows.wires]]
+  id = "mayor-channel"
+  kind = "uses"
+  from = { node_id = "mayor", port_id = "participant" }
+  to = { node_id = "channel", port_id = "participants" }
+
+  [[workflows.wires]]
+  id = "polecat_1-channel"
+  kind = "uses"
+  from = { node_id = "polecat_1", port_id = "participant" }
+  to = { node_id = "channel", port_id = "participants" }
+
+  [[workflows.wires]]
+  id = "polecat_2-channel"
+  kind = "uses"
+  from = { node_id = "polecat_2", port_id = "participant" }
+  to = { node_id = "channel", port_id = "participants" }
+
+  [[workflows.wires]]
+  id = "channel-tools"
+  kind = "uses"
+  from = { node_id = "channel", port_id = "tools" }
+  to = { node_id = "tools", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "mcp-tools"
+  kind = "uses"
+  from = { node_id = "mcp", port_id = "engine" }
+  to = { node_id = "tools", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "tools-mayor"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "mayor", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "tools-polecat_1"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "polecat_1", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "tools-polecat_2"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "polecat_2", port_id = "tools" }
+
+  # ── Wires: the refinery ─────────────────────────────────────────────────────────────
+
+  [[workflows.wires]]
+  id = "refinery-check"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "check" }
+  to = { node_id = "check_path", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "check_path-gate"
+  kind = "then"
+  from = { node_id = "check_path", port_id = "out" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-pass"
+  kind = "then"
+  from = { node_id = "gate", port_id = "pass" }
+  to = { node_id = "refinery", port_id = "pass" }
+
+  [[workflows.wires]]
+  id = "gate-fail"
+  kind = "then"
+  from = { node_id = "gate", port_id = "fail" }
+  to = { node_id = "refinery", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "refinery-route_merged"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "merged" }
+  to = { node_id = "route_merged", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "refinery-merged"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "merged" }
+  to = { node_id = "self", port_id = "merged" }
+
+  [[workflows.wires]]
+  id = "refinery-rejected"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "rejected" }
+  to = { node_id = "route_failed", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "refinery-conflict"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "conflict" }
+  to = { node_id = "route_failed", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "refinery-rejected-self"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "refinery-conflict-self"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "conflict" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "refinery-error"
+  kind = "then"
+  from = { node_id = "refinery", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  # ── Wires: polecat 1 ────────────────────────────────────────────────────────────────
+
+  [[workflows.wires]]
+  id = "claim_1-ws"
+  kind = "then"
+  from = { node_id = "claim_1", port_id = "task" }
+  to = { node_id = "ws_1", port_id = "create" }
+
+  [[workflows.wires]]
+  id = "claim_1-join"
+  kind = "then"
+  from = { node_id = "claim_1", port_id = "task" }
+  to = { node_id = "join_1", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "ws_1-join"
+  kind = "then"
+  from = { node_id = "ws_1", port_id = "ready" }
+  to = { node_id = "join_1", port_id = "path" }
+
+  [[workflows.wires]]
+  id = "ws_1-info"
+  kind = "then"
+  from = { node_id = "ws_1", port_id = "info" }
+  to = { node_id = "info_1", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "join_1-prompt"
+  kind = "then"
+  from = { node_id = "join_1", port_id = "out" }
+  to = { node_id = "prompt_1", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "prompt_1-witness"
+  kind = "then"
+  from = { node_id = "prompt_1", port_id = "out" }
+  to = { node_id = "witness_1", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "witness_1-polecat"
+  kind = "then"
+  from = { node_id = "witness_1", port_id = "out" }
+  to = { node_id = "polecat_1", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "polecat_1-engine"
+  kind = "uses"
+  from = { node_id = "engine_1", port_id = "engine" }
+  to = { node_id = "polecat_1", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "polecat_1-done"
+  kind = "then"
+  from = { node_id = "polecat_1", port_id = "reply" }
+  to = { node_id = "witness_1", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "polecat_1-failed-done"
+  kind = "then"
+  from = { node_id = "polecat_1", port_id = "failed" }
+  to = { node_id = "witness_1", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "polecat_1-info"
+  kind = "then"
+  from = { node_id = "polecat_1", port_id = "reply" }
+  to = { node_id = "info_1", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "info_1-refinery"
+  kind = "then"
+  from = { node_id = "info_1", port_id = "value" }
+  to = { node_id = "refinery", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "polecat_1-failed"
+  kind = "then"
+  from = { node_id = "polecat_1", port_id = "failed" }
+  to = { node_id = "agent_failed_1", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent_failed_1-claim"
+  kind = "then"
+  from = { node_id = "agent_failed_1", port_id = "out" }
+  to = { node_id = "claim_1", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "route_merged-1"
+  kind = "then"
+  from = { node_id = "route_merged", port_id = "polecat_1" }
+  to = { node_id = "claim_1", port_id = "complete" }
+
+  [[workflows.wires]]
+  id = "route_failed-1"
+  kind = "then"
+  from = { node_id = "route_failed", port_id = "polecat_1" }
+  to = { node_id = "claim_1", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "witness_1-stuck"
+  kind = "then"
+  from = { node_id = "witness_1", port_id = "stuck" }
+  to = { node_id = "self", port_id = "stuck" }
+
+  [[workflows.wires]]
+  id = "claim_1-failed"
+  kind = "then"
+  from = { node_id = "claim_1", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "claim_1-drained"
+  kind = "then"
+  from = { node_id = "claim_1", port_id = "drained" }
+  to = { node_id = "self", port_id = "drained" }
+
+  [[workflows.wires]]
+  id = "ws_1-error"
+  kind = "then"
+  from = { node_id = "ws_1", port_id = "error" }
+  to = { node_id = "ws_failed_1", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ws_failed_1-claim"
+  kind = "then"
+  from = { node_id = "ws_failed_1", port_id = "out" }
+  to = { node_id = "claim_1", port_id = "fail" }
+
+  # ── Wires: polecat 2 ────────────────────────────────────────────────────────────────
+
+  [[workflows.wires]]
+  id = "claim_2-ws"
+  kind = "then"
+  from = { node_id = "claim_2", port_id = "task" }
+  to = { node_id = "ws_2", port_id = "create" }
+
+  [[workflows.wires]]
+  id = "claim_2-join"
+  kind = "then"
+  from = { node_id = "claim_2", port_id = "task" }
+  to = { node_id = "join_2", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "ws_2-join"
+  kind = "then"
+  from = { node_id = "ws_2", port_id = "ready" }
+  to = { node_id = "join_2", port_id = "path" }
+
+  [[workflows.wires]]
+  id = "ws_2-info"
+  kind = "then"
+  from = { node_id = "ws_2", port_id = "info" }
+  to = { node_id = "info_2", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "join_2-prompt"
+  kind = "then"
+  from = { node_id = "join_2", port_id = "out" }
+  to = { node_id = "prompt_2", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "prompt_2-witness"
+  kind = "then"
+  from = { node_id = "prompt_2", port_id = "out" }
+  to = { node_id = "witness_2", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "witness_2-polecat"
+  kind = "then"
+  from = { node_id = "witness_2", port_id = "out" }
+  to = { node_id = "polecat_2", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "polecat_2-engine"
+  kind = "uses"
+  from = { node_id = "engine_2", port_id = "engine" }
+  to = { node_id = "polecat_2", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "polecat_2-done"
+  kind = "then"
+  from = { node_id = "polecat_2", port_id = "reply" }
+  to = { node_id = "witness_2", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "polecat_2-failed-done"
+  kind = "then"
+  from = { node_id = "polecat_2", port_id = "failed" }
+  to = { node_id = "witness_2", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "polecat_2-info"
+  kind = "then"
+  from = { node_id = "polecat_2", port_id = "reply" }
+  to = { node_id = "info_2", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "info_2-refinery"
+  kind = "then"
+  from = { node_id = "info_2", port_id = "value" }
+  to = { node_id = "refinery", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "polecat_2-failed"
+  kind = "then"
+  from = { node_id = "polecat_2", port_id = "failed" }
+  to = { node_id = "agent_failed_2", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent_failed_2-claim"
+  kind = "then"
+  from = { node_id = "agent_failed_2", port_id = "out" }
+  to = { node_id = "claim_2", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "route_merged-2"
+  kind = "then"
+  from = { node_id = "route_merged", port_id = "polecat_2" }
+  to = { node_id = "claim_2", port_id = "complete" }
+
+  [[workflows.wires]]
+  id = "route_failed-2"
+  kind = "then"
+  from = { node_id = "route_failed", port_id = "polecat_2" }
+  to = { node_id = "claim_2", port_id = "fail" }
+
+  [[workflows.wires]]
+  id = "witness_2-stuck"
+  kind = "then"
+  from = { node_id = "witness_2", port_id = "stuck" }
+  to = { node_id = "self", port_id = "stuck" }
+
+  [[workflows.wires]]
+  id = "claim_2-failed"
+  kind = "then"
+  from = { node_id = "claim_2", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "claim_2-drained"
+  kind = "then"
+  from = { node_id = "claim_2", port_id = "drained" }
+  to = { node_id = "self", port_id = "drained" }
+
+  [[workflows.wires]]
+  id = "ws_2-error"
+  kind = "then"
+  from = { node_id = "ws_2", port_id = "error" }
+  to = { node_id = "ws_failed_2", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ws_failed_2-claim"
+  kind = "then"
+  from = { node_id = "ws_failed_2", port_id = "out" }
+  to = { node_id = "claim_2", port_id = "fail" }
