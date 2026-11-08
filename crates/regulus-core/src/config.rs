@@ -16,6 +16,7 @@ const CONFIG_FILE: &str = "config.toml";
 const TOKEN_FILE: &str = "token";
 const PORT_FILE: &str = "port";
 const PROFILES_DIR: &str = "profiles";
+const TEMPLATES_DIR: &str = "templates";
 const DATA_DIR: &str = "data";
 const STORE_DIR: &str = "store";
 const SECRETS_FILE: &str = "secrets.toml";
@@ -64,6 +65,15 @@ impl Default for ServerConfig {
 pub struct ProfilesConfig {
     /// Files or directories with profiles (`.json` or `.toml`). Relative paths are
     /// resolved against the home directory. Empty means `<home>/profiles`.
+    pub paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TemplatesConfig {
+    /// Files or directories with templates (`.toml`), read only when a client asks.
+    /// Relative paths are resolved against the home directory. Empty means
+    /// `<home>/templates`.
     pub paths: Vec<PathBuf>,
 }
 
@@ -274,6 +284,7 @@ pub struct Config {
     pub home: PathBuf,
     pub server: ServerConfig,
     pub profiles: ProfilesConfig,
+    pub templates: TemplatesConfig,
     pub modules: ModulesConfig,
     pub secrets: SecretsConfig,
     pub data: DataConfig,
@@ -309,6 +320,15 @@ impl Config {
             config.profiles.paths.push(PathBuf::from(PROFILES_DIR));
         }
         config.profiles.paths = config.profiles.paths.iter().map(|p| home.join(p)).collect();
+        if config.templates.paths.is_empty() {
+            config.templates.paths.push(PathBuf::from(TEMPLATES_DIR));
+        }
+        config.templates.paths = config
+            .templates
+            .paths
+            .iter()
+            .map(|p| home.join(p))
+            .collect();
         config.validate()?;
         Ok(config)
     }
@@ -353,6 +373,16 @@ impl Config {
     /// Where a core started by a client writes what it prints.
     pub fn core_log_path(&self) -> PathBuf {
         self.home.join(CORE_LOG_FILE)
+    }
+
+    /// Where templates are read from and where applied ones are written: the first
+    /// `[profiles] paths` entry.
+    pub fn template_places(&self) -> crate::templates::Places {
+        crate::templates::Places {
+            templates: self.templates.paths.clone(),
+            profiles_dir: self.profiles.paths.first().cloned(),
+            home: Some(self.home.clone()),
+        }
     }
 
     pub fn default_profiles_dir(&self) -> PathBuf {

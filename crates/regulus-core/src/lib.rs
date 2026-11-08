@@ -13,6 +13,7 @@ pub mod secrets;
 pub mod server;
 pub mod service;
 pub mod store;
+pub mod templates;
 
 use std::fs;
 use std::io;
@@ -46,22 +47,21 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
             None
         }
     };
-    (
-        Core::build_with_hooks(
-            modules,
-            &config.modules.without,
-            profiles,
-            Storage {
-                secrets: config.secrets(),
-                data_dir: Some(config.data_dir()),
-                store,
-            },
-            config.bus.clone(),
-            config.call.clone(),
-            config.hooks.clone(),
-        ),
-        warnings,
-    )
+    let core = Core::build_with_hooks(
+        modules,
+        &config.modules.without,
+        profiles,
+        Storage {
+            secrets: config.secrets(),
+            data_dir: Some(config.data_dir()),
+            store,
+        },
+        config.bus.clone(),
+        config.call.clone(),
+        config.hooks.clone(),
+    );
+    core.set_template_places(config.template_places());
+    (core, warnings)
 }
 
 /// The thread that recovers what the previous core left running.

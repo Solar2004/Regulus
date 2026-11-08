@@ -37,8 +37,13 @@ negociar un major compatible.
 | `event.list` *(1.5)* | `since?`, `execution_id?`, `project_id?`, `limit?` | `events` del bus (`emitted`, `delivered`, `failed`, `cut`), `next` (cursor) y `pending` |
 | `workflow.send` *(1.7)* | `execution_id`, `port`, `value` | `event`: el `seq` del `emitted`; la respuesta sale en `event.list` desde `self.<salida>` |
 | `hook.dispatch` *(1.9)* | `execution_id`, `node_id`, `hook_id?`, `timeout_ms?`, `returns?`, `request` (`HookRequest`) | `replies`: por cada nodo `hook@1` conectado a `node_id`, `node_id`, `answer` (`decision`: `none` \| `veto` + `reason` \| `context` + `text`) y `error?` |
+| `template.list` *(1.10)* | — | Plantillas de `[templates] paths`: `name`, `description`, `path`, `vars` (`name`, `description`, `default?`), `requires` (`module`, `version`) y `error?` si el fichero no se puede leer como plantilla |
+| `template.get` *(1.10)* | `template` (nombre o ruta) | `name`, `path` y `text`: el fichero tal cual |
+| `template.apply` *(1.10)* | `template`, `vars` (`{nombre: valor}`), `id?`, `force?` | `profile_id`, `path` (el fichero escrito) y `diagnostics` (avisos e información; un error de `profile.check` impide escribir) |
 
-El core real (`regulus serve`) habla el protocolo `1.9`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.10`, compatible con el `1.0` del mock.
+Desde `1.10` el core aplica plantillas (`11-composition.md` §7): escribe la copia en la
+primera ruta de `[profiles] paths` y la carga sin reiniciar; nunca pisa un perfil sin `force`.
 Desde `1.9` el core reenvía las preguntas de los hooks de un agente (`13-blocks.md` §4);
 lo usa el puente `regulus hook`, no la UI.
 Desde `1.8` una ejecución puede traer `parent`: la arrancó un nodo de otra
@@ -47,7 +52,9 @@ Desde `1.7` un workflow puede traer `ports` (sus entradas y salidas; los cables 
 las nombran `self`).
 Los métodos de los módulos se suman a estos (p. ej. `agent.prompt`, `claude.detect`).
 Errores propios: `-32001` falta `hello`, `-32002` módulo no disponible, `-32003` el módulo
-falló o entró en pánico. Además pide el token de `<home>/token` en el upgrade
+falló o entró en pánico; de plantillas *(1.10)*: `-32004` no existe, `-32005` mal formada
+(hueco sin declarar, no da un perfil, el perfil tiene errores), `-32006` falta un módulo de
+`requires` o su versión no encaja, `-32007` el perfil ya existe; una var sin valor es `-32602`. Además pide el token de `<home>/token` en el upgrade
 (`?token=` desde la webview).
 
 El perfil contiene `project_id` nullable y `extends` reservado. Cada workflow contiene
