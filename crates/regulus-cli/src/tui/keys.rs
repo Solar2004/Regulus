@@ -150,8 +150,9 @@ macro_rules! keys {
         }
 
         impl Keys {
-            /// The defaults with what `table` names. An unknown action or a key that does
-            /// not parse is an error that says which.
+            /// The defaults with what `table` names. An unknown action, a key that does
+            /// not parse or two actions of one context on the same key is an error that
+            /// says which.
             pub fn from_table(table: &Table) -> Result<Self, String> {
                 let mut keys = Self::default();
                 for (action, value) in table {
@@ -161,10 +162,80 @@ macro_rules! keys {
                         other => return Err(format!("keys.{other}: no such action")),
                     }
                 }
+                keys.check_clashes()?;
                 Ok(keys)
+            }
+
+            fn binding(&self, action: &str) -> &Binding {
+                match action {
+                    $(stringify!($name) => &self.$name,)+
+                    other => unreachable!("no action {other}"),
+                }
             }
         }
     };
+}
+
+/// The actions that answer at the same time, so no two of them may share a key. An
+/// action that is read in one place only when another has nothing to do (`reject` falls
+/// through to `new_profile`) sits in its own context.
+const CONTEXTS: &[(&str, &[&str])] = &[
+    (
+        "operate",
+        &["edit", "new_profile", "templates", "filter", "send"],
+    ),
+    ("decisions", &["approve", "reject"]),
+    (
+        "edit",
+        &[
+            "add_node",
+            "delete",
+            "new_workflow",
+            "rename",
+            "connect",
+            "remove",
+            "add_port",
+            "reset",
+            "save",
+            "check",
+            "run",
+            "open",
+            "back",
+            "up",
+            "down",
+            "next_pane",
+            "previous_pane",
+        ],
+    ),
+    (
+        "templates",
+        &["open", "run", "open_in_editor", "back", "up", "down"],
+    ),
+    ("dialog", &["yes", "no", "back"]),
+];
+
+impl Keys {
+    /// Two actions of one context on the same key: the first pair found, by name.
+    fn check_clashes(&self) -> Result<(), String> {
+        for (context, actions) in CONTEXTS {
+            for (i, first) in actions.iter().enumerate() {
+                for second in &actions[i + 1..] {
+                    let shared = self
+                        .binding(first)
+                        .0
+                        .iter()
+                        .find(|chord| self.binding(second).0.contains(chord));
+                    if let Some(chord) = shared {
+                        return Err(format!(
+                            "keys.{first} and keys.{second} both answer to `{}` in {context}",
+                            chord.label()
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 keys! {
@@ -178,7 +249,8 @@ keys! {
     filter = ["/"];
     /// Operate: approve the selected pending decision.
     approve = ["y"];
-    /// Operate: reject it.
+    /// Operate: reject it. With nothing to reject, the key falls through to the rest
+    /// of Operate (`new_profile` by default).
     reject = ["n"];
     /// Operate: send a value to an input of the running workflow.
     send = ["w"];
@@ -202,8 +274,8 @@ keys! {
     save = ["ctrl+s"];
     /// Edit: check the saved profile.
     check = ["k"];
-    /// Edit and Templates: run.
-    run = ["enter"];
+    /// Edit and Templates: run the saved profile.
+    run = ["ctrl+r"];
     /// Edit an inspector row, or apply a template form.
     open = ["enter"];
     /// Leave a view, a form or a dialog.
@@ -249,14 +321,23 @@ impl Default for Tuning {
     }
 }
 
+/// Settings that make no sense at 0: a page of no events never advances, a step or a
+/// footprint of 0 piles every node on the same spot.
+const AT_LEAST_ONE: &[&str] = &["event_page", "cascade_step", "node_width", "node_height"];
+
 impl Tuning {
     pub fn from_table(table: &Table) -> Result<Self, String> {
         let mut tuning = Self::default();
         for (name, value) in table {
+            let least = if AT_LEAST_ONE.contains(&name.as_str()) {
+                1.0
+            } else {
+                0.0
+            };
             let number = match value {
-                Value::Integer(n) if *n >= 0 => *n as f64,
-                Value::Float(n) if *n >= 0.0 => *n,
-                other => return Err(format!("tui.{name}: `{other}` is not a number ≥ 0")),
+                Value::Integer(n) if *n as f64 >= least => *n as f64,
+                Value::Float(n) if *n >= least => *n,
+                other => return Err(format!("tui.{name}: `{other}` is not a number ≥ {least}")),
             };
             match name.as_str() {
                 "event_page" => tuning.event_page = number as usize,
@@ -317,7 +398,12 @@ mod tests {
         assert!(!keys
             .save
             .matches(&key(KeyCode::Char('s'), KeyModifiers::NONE)));
-        assert!(keys.run.matches(&key(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(keys
+            .run
+            .matches(&key(KeyCode::Char('r'), KeyModifiers::CONTROL)));
+        assert!(!keys.run.matches(&key(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(keys.open.matches(&key(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(keys.check_clashes(), Ok(()));
         assert!(keys
             .next_pane
             .matches(&key(KeyCode::Right, KeyModifiers::NONE)));
@@ -365,5 +451,38 @@ mod tests {
             .unwrap_err()
             .starts_with("tui.event_page"));
         assert_eq!(Options::from_client(None).unwrap(), Options::default());
+    }
+
+    #[test]
+    fn zero_is_refused_where_it_would_stall() {
+        for name in ["event_page", "cascade_step", "node_width", "node_height"] {
+            let bad: Table = toml::from_str(&format!("tui = {{ {name} = 0 }}")).unwrap();
+            assert_eq!(
+                Options::from_client(Some(&bad)).unwrap_err(),
+                format!("tui.{name}: `0` is not a number ≥ 1")
+            );
+        }
+        let fine: Table = toml::from_str("tui = { event_keep = 0, value_max = 0 }").unwrap();
+        assert_eq!(
+            Options::from_client(Some(&fine)).unwrap().tuning.event_keep,
+            0
+        );
+    }
+
+    #[test]
+    fn two_actions_of_one_context_may_not_share_a_key() {
+        let bad: Table = toml::from_str(r#"keys = { add_node = "d" }"#).unwrap();
+        assert_eq!(
+            Options::from_client(Some(&bad)).unwrap_err(),
+            "keys.add_node and keys.delete both answer to `d` in edit"
+        );
+        let bad: Table = toml::from_str(r#"keys = { run = ["ctrl+r", "enter"] }"#).unwrap();
+        assert_eq!(
+            Options::from_client(Some(&bad)).unwrap_err(),
+            "keys.run and keys.open both answer to `Enter` in edit"
+        );
+        // Different contexts may: `w` is a new workflow in Edit and a send in Operate.
+        let fine: Table = toml::from_str(r#"keys = { send = "w", yes = "y" }"#).unwrap();
+        assert!(Options::from_client(Some(&fine)).is_ok());
     }
 }

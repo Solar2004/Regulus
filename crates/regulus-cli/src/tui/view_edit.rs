@@ -355,6 +355,7 @@ fn draw_modal(frame: &mut Frame, editor: &Editor, ctx: &Ctx, modal: &Modal) {
                     format!("Delete workflow {id} and the boxes that place it?")
                 }
                 ConfirmFor::Leave => "Leave without saving? The changes are lost.".to_string(),
+                ConfirmFor::Quit => "Quit without saving? The changes are lost.".to_string(),
             };
             let lines = vec![
                 Line::raw(question),

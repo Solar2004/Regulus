@@ -211,7 +211,9 @@ pub struct App {
     pub event_offset: usize,
     pub filter: String,
     pub decisions: HashMap<String, Result<Vec<Pending>, Failure>>,
-    pub decision: usize,
+    /// The id of the pending decision under the cursor: what a key answers, whatever the
+    /// list did since it was drawn.
+    pub decision: Option<String>,
     pub prompt: Option<Prompt>,
     /// A profile to open in Edit once the profiles come back with it.
     pub pending_edit: Option<String>,
@@ -248,7 +250,7 @@ impl App {
             event_offset: 0,
             filter: String::new(),
             decisions: HashMap::new(),
-            decision: 0,
+            decision: None,
             prompt: None,
             pending_edit: None,
         }
@@ -378,13 +380,16 @@ impl App {
             Event::Profiles(profiles) => {
                 self.profiles = profiles;
                 self.profile = step(self.profile, self.profiles.len(), 0);
+                // One chance: a profile that did not come back is not waited for.
                 if let Some(id) = self.pending_edit.take() {
                     match self.profiles.iter().position(|p| p.id == id) {
                         Some(at) => {
                             self.profile = at;
                             requests.extend(self.open_editor());
                         }
-                        None => self.pending_edit = Some(id),
+                        None => {
+                            self.notice = Some((Tone::Error, format!("profile {id} is not loaded")))
+                        }
                     }
                 }
             }
@@ -403,8 +408,12 @@ impl App {
                 self.executions = executions;
                 self.modules = modules;
                 self.execution = selected
+                    .as_deref()
                     .and_then(|id| self.executions.iter().position(|e| e.id == id))
                     .unwrap_or_else(|| step(self.execution, self.executions.len(), 0));
+                if self.selected_execution().map(|e| e.id.as_str()) != selected.as_deref() {
+                    self.execution_changed();
+                }
                 self.node = step(self.node, self.nodes().len(), 0);
             }
             Event::Channel {
@@ -468,10 +477,12 @@ impl App {
                 Err(error) => self.notice = Some((Tone::Error, error)),
             },
             Event::Manifests(result) => self.manifests = Some(result),
-            Event::Saved(result) => {
+            Event::Saved { profile, result } => {
                 if let Mode::Edit(editor) = &mut self.mode {
-                    let step = editor.saved(result);
-                    requests.extend(self.take(step));
+                    if editor.doc.id == profile.id {
+                        let step = editor.saved(*profile, result);
+                        requests.extend(self.take(step));
+                    }
                 }
             }
             Event::Checked { profile, result } => {
@@ -510,8 +521,11 @@ impl App {
                 }
             }
             Event::Decisions { execution, result } => {
+                let selected = self.selected_execution().map(|e| e.id == execution);
                 self.decisions.insert(execution, result);
-                self.decision = step(self.decision, self.pending().len(), 0);
+                if selected == Some(true) {
+                    self.settle_decision();
+                }
             }
             Event::Decided(result) => {
                 match result {
@@ -541,7 +555,37 @@ impl App {
             self.mode = Mode::Operate;
             requests.push(Request::Profiles);
         }
+        if step.quit {
+            self.quit = true;
+        }
         requests
+    }
+
+    /// Another execution is under the cursor: what was scrolled or picked in the last
+    /// one means nothing here.
+    fn execution_changed(&mut self) {
+        self.node = 0;
+        self.event_offset = 0;
+        self.decision = None;
+        self.settle_decision();
+    }
+
+    /// Keeps the decision cursor on an id the list has, or on its first item.
+    fn settle_decision(&mut self) {
+        let pending = self.pending();
+        let kept = self
+            .decision
+            .as_deref()
+            .is_some_and(|id| pending.iter().any(|p| p.id == id));
+        if !kept {
+            self.decision = pending.first().map(|p| p.id.clone());
+        }
+    }
+
+    /// Where the decision cursor is in the list, for the screen.
+    pub fn decision_index(&self) -> Option<usize> {
+        let id = self.decision.as_deref()?;
+        self.pending().iter().position(|p| p.id == id)
     }
 
     /// What to keep fresh for the selected execution: its next events and its pending
@@ -735,8 +779,11 @@ impl App {
         if self.focus == Focus::Decisions {
             let approve = keys.approve.matches(&key);
             if approve || keys.reject.matches(&key) {
-                let id = self.pending().get(self.decision)?.id.clone();
-                return Some(vec![Request::Decide { id, approve }]);
+                // The id drawn under the cursor, not its place in a list that may have
+                // moved since; with nothing to decide, the key means what it does elsewhere.
+                if let Some(id) = self.decision_index().and_then(|_| self.decision.clone()) {
+                    return Some(vec![Request::Decide { id, approve }]);
+                }
             }
         }
         if self.focus == Focus::Events && (keys.up.matches(&key) || keys.down.matches(&key)) {
@@ -802,6 +849,10 @@ impl App {
         }
         self.notice = None;
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            if let Mode::Edit(editor) = &mut self.mode {
+                let step = editor.quit();
+                return self.take(step);
+            }
             self.quit = true;
             return Vec::new();
         }
@@ -936,11 +987,14 @@ impl App {
                 let before = self.execution;
                 self.execution = step(self.execution, self.executions.len(), by);
                 if before != self.execution {
-                    self.node = 0;
+                    self.execution_changed();
                 }
             }
             Focus::Nodes => self.node = step(self.node, self.nodes().len(), by),
-            Focus::Decisions => self.decision = step(self.decision, self.pending().len(), by),
+            Focus::Decisions => {
+                let at = step(self.decision_index().unwrap_or(0), self.pending().len(), by);
+                self.decision = self.pending().get(at).map(|p| p.id.clone());
+            }
             Focus::Input | Focus::Events => {}
         }
     }
@@ -948,6 +1002,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::super::edit::{ConfirmFor, Modal, TreeRow};
     use super::*;
     use regulus_proto::{DisabledNode, Port, WireKind};
 
@@ -1259,11 +1314,14 @@ mod tests {
             .iter()
             .all(|d| d.severity != regulus_proto::Severity::Error));
         // Saved: Esc leaves at once, nothing to lose.
-        app.apply(Event::Saved(Ok(regulus_proto::ProfileSaved {
-            profile_id: "my-flow".into(),
-            path: "/p/my-flow.toml".into(),
-            diagnostics: vec![],
-        })));
+        app.apply(Event::Saved {
+            profile: profile.clone(),
+            result: Ok(regulus_proto::ProfileSaved {
+                profile_id: "my-flow".into(),
+                path: "/p/my-flow.toml".into(),
+                diagnostics: vec![],
+            }),
+        });
         assert_eq!(press(&mut app, KeyCode::Esc), vec![Request::Profiles]);
         assert_eq!(app.mode, Mode::Operate);
     }
@@ -1381,7 +1439,7 @@ mod tests {
             diagnostics: vec![],
         })));
         assert_eq!(
-            press(&mut app, KeyCode::Enter),
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
             vec![Request::Start {
                 profile: "greeting".into(),
                 workflow: None
@@ -1519,5 +1577,255 @@ mod tests {
         assert!(press(&mut app, KeyCode::Enter).is_empty());
         assert!(app.prompt.is_some(), "a bad value keeps the form open");
         assert_eq!(send_value("number@1", "3"), Some(serde_json::json!(3)));
+    }
+
+    fn ctrl(app: &mut App, c: char) -> Vec<Request> {
+        app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn editor(app: &App) -> &Editor {
+        let Mode::Edit(editor) = &app.mode else {
+            panic!("not editing: {:?}", app.mode)
+        };
+        editor
+    }
+
+    /// Opens the selected profile in Edit and adds a workflow, so it has unsaved changes.
+    fn dirty_editor() -> App {
+        let mut app = running_app();
+        app.apply(Event::Manifests(Ok(manifests())));
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('w'));
+        typing(&mut app, "extra");
+        press(&mut app, KeyCode::Enter);
+        assert!(editor(&app).dirty());
+        app
+    }
+
+    fn pending(id: &str) -> Pending {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "kind": "approval", "execution_id": "exec-1", "node_id": "gate",
+            "value": "deploy", "prompt": "ok?"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn edits_made_while_a_save_is_in_flight_stay_unsaved() {
+        let mut app = dirty_editor();
+        let saved = ctrl(&mut app, 's');
+        let [Request::Save { profile: sent, .. }] = saved.as_slice() else {
+            panic!("{saved:?}")
+        };
+        let sent = sent.clone();
+        // Typed while the core writes: a second workflow.
+        press(&mut app, KeyCode::Char('w'));
+        typing(&mut app, "later");
+        press(&mut app, KeyCode::Enter);
+        let done = regulus_proto::ProfileSaved {
+            profile_id: "team".into(),
+            path: "/p/team.toml".into(),
+            diagnostics: vec![],
+        };
+        // A late answer for another profile changes nothing here.
+        let mut other = (*sent).clone();
+        other.id = "someone-else".into();
+        app.apply(Event::Saved {
+            profile: Box::new(other),
+            result: Ok(done.clone()),
+        });
+        assert_eq!(
+            editor(&app).saved.as_ref().map(|p| p.workflows.len()),
+            Some(1)
+        );
+        app.apply(Event::Saved {
+            profile: sent.clone(),
+            result: Ok(done),
+        });
+        let editor = editor(&app);
+        assert_eq!(
+            editor.saved.as_ref(),
+            Some(&*sent),
+            "clean is what was sent"
+        );
+        assert!(editor.dirty(), "the workflow added meanwhile is not saved");
+        assert_eq!(editor.doc.workflows.len(), 3);
+    }
+
+    #[test]
+    fn ctrl_c_with_unsaved_changes_asks_first() {
+        let mut app = dirty_editor();
+        ctrl(&mut app, 'c');
+        assert!(!app.quit);
+        assert_eq!(editor(&app).modal, Some(Modal::Confirm(ConfirmFor::Quit)));
+        press(&mut app, KeyCode::Char('n'));
+        assert!(!app.quit);
+        assert!(matches!(app.mode, Mode::Edit(_)));
+        ctrl(&mut app, 'c');
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.quit);
+        // Nothing to lose: it quits at once.
+        let mut clean = running_app();
+        press(&mut clean, KeyCode::Char('e'));
+        ctrl(&mut clean, 'c');
+        assert!(clean.quit);
+    }
+
+    #[test]
+    fn a_decision_is_answered_by_the_id_under_the_cursor() {
+        let mut app = running_app();
+        app.apply(Event::Decisions {
+            execution: "exec-1".into(),
+            result: Ok(vec![pending("h-1"), pending("h-2")]),
+        });
+        app.focus = Focus::Decisions;
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.decision.as_deref(), Some("h-2"));
+        assert_eq!(app.decision_index(), Some(1));
+        // Another execution's list arrives: the cursor here does not move.
+        app.apply(Event::Decisions {
+            execution: "exec-9".into(),
+            result: Ok(vec![pending("x-1")]),
+        });
+        assert_eq!(app.decision.as_deref(), Some("h-2"));
+        // h-1 was decided elsewhere before the key landed: h-2 is still what is answered.
+        app.apply(Event::Decisions {
+            execution: "exec-1".into(),
+            result: Ok(vec![pending("h-2")]),
+        });
+        assert_eq!(app.decision_index(), Some(0));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('y')),
+            vec![Request::Decide {
+                id: "h-2".into(),
+                approve: true
+            }]
+        );
+        // The one under the cursor is gone: the first remaining one takes its place.
+        app.apply(Event::Decisions {
+            execution: "exec-1".into(),
+            result: Ok(vec![pending("h-3")]),
+        });
+        assert_eq!(app.decision.as_deref(), Some("h-3"));
+    }
+
+    #[test]
+    fn with_nothing_to_reject_n_means_a_new_profile() {
+        let mut app = running_app();
+        app.apply(Event::Decisions {
+            execution: "exec-1".into(),
+            result: Ok(vec![]),
+        });
+        app.focus = Focus::Decisions;
+        assert!(press(&mut app, KeyCode::Char('n')).is_empty());
+        assert_eq!(app.prompt, Some(Prompt::NewProfile(String::new())));
+    }
+
+    #[test]
+    fn changing_the_execution_resets_its_cursors() {
+        let mut app = running_app();
+        let mut second = execution(ExecutionState::Running);
+        second.id = "exec-2".into();
+        app.apply(Event::Status {
+            executions: vec![execution(ExecutionState::Running), second],
+            modules: vec![],
+        });
+        app.apply(Event::Decisions {
+            execution: "exec-1".into(),
+            result: Ok(vec![pending("h-1")]),
+        });
+        app.event_offset = 3;
+        assert_eq!(app.decision.as_deref(), Some("h-1"));
+        app.focus = Focus::Executions;
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.selected_execution().map(|e| e.id.as_str()),
+            Some("exec-2")
+        );
+        assert_eq!(app.event_offset, 0);
+        assert_eq!(app.decision, None);
+        // The selected execution vanishes from a status: the cursors reset as well.
+        app.event_offset = 2;
+        app.apply(Event::Status {
+            executions: vec![execution(ExecutionState::Running)],
+            modules: vec![],
+        });
+        assert_eq!(
+            app.selected_execution().map(|e| e.id.as_str()),
+            Some("exec-1")
+        );
+        assert_eq!(app.event_offset, 0);
+        assert_eq!(
+            app.decision.as_deref(),
+            Some("h-1"),
+            "settled on what exec-1 has"
+        );
+    }
+
+    #[test]
+    fn a_profile_that_does_not_come_back_is_not_waited_for() {
+        let mut app = running_app();
+        app.pending_edit = Some("ghost".into());
+        app.apply(Event::Profiles(vec![profile()]));
+        assert_eq!(app.pending_edit, None);
+        assert_eq!(app.mode, Mode::Operate);
+        assert!(matches!(&app.notice, Some((Tone::Error, text)) if text.contains("ghost")));
+        // A later refresh does not open anything on its own.
+        app.apply(Event::Profiles(vec![profile()]));
+        assert_eq!(app.mode, Mode::Operate);
+    }
+
+    #[test]
+    fn deleting_resets_the_inspector_and_wire_cursors() {
+        let mut app = running_app();
+        app.apply(Event::Manifests(Ok(manifests())));
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Down);
+        let Mode::Edit(opened) = &mut app.mode else {
+            panic!()
+        };
+        assert_eq!(opened.tree()[1], TreeRow::Node("main".into(), "dev".into()));
+        opened.field = 2;
+        opened.wire = 1;
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('y'));
+        let editor = editor(&app);
+        assert!(editor.doc.workflow("main").unwrap().node("dev").is_none());
+        assert_eq!((editor.field, editor.wire), (0, 0));
+    }
+
+    #[test]
+    fn a_rename_to_nothing_is_refused() {
+        let mut app = running_app();
+        app.apply(Event::Manifests(Ok(manifests())));
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('r'));
+        assert!(matches!(editor(&app).modal, Some(Modal::Text { .. })));
+        for _ in 0..8 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        press(&mut app, KeyCode::Enter);
+        let editor = editor(&app);
+        assert!(
+            matches!(editor.modal, Some(Modal::Text { .. })),
+            "the dialog stays"
+        );
+        assert_eq!(editor.doc.workflow("main").unwrap().name, "main");
+        assert!(matches!(&app.notice, Some((Tone::Info, text)) if text.contains("empty")));
+    }
+
+    #[test]
+    fn enter_in_the_tree_does_not_run_anything() {
+        let mut app = running_app();
+        app.apply(Event::Manifests(Ok(manifests())));
+        press(&mut app, KeyCode::Char('e'));
+        assert!(press(&mut app, KeyCode::Enter).is_empty());
+        assert_eq!(
+            ctrl(&mut app, 'r'),
+            vec![Request::Start {
+                profile: "team".into(),
+                workflow: Some("main".into()),
+            }]
+        );
     }
 }

@@ -166,6 +166,7 @@ impl Templates {
                         format!("applied: profile {} in {}", done.profile_id, done.path),
                     )),
                     leave: false,
+                    quit: false,
                 }
             }
             Err(failure) => Step {
@@ -200,6 +201,7 @@ impl Templates {
                         requests: vec![request],
                         notice: Some((Tone::Info, format!("applying {}…", form.template))),
                         leave: false,
+                        quit: false,
                     },
                     Then::Nothing,
                 );

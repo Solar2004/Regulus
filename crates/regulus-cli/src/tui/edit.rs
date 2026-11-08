@@ -81,9 +81,14 @@ pub enum ChooseFor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmFor {
-    DeleteNode { workflow: String, node: String },
+    DeleteNode {
+        workflow: String,
+        node: String,
+    },
     DeleteWorkflow(String),
     Leave,
+    /// Ctrl+C with unsaved changes.
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +121,8 @@ pub struct Step {
     pub notice: Option<(Tone, String)>,
     /// Back to Operate.
     pub leave: bool,
+    /// Close the TUI.
+    pub quit: bool,
 }
 
 impl Step {
@@ -297,6 +304,18 @@ impl Editor {
             .collect()
     }
 
+    /// Ctrl+C: quits at once, or asks first when there are unsaved changes.
+    pub fn quit(&mut self) -> Step {
+        if self.dirty() {
+            self.modal = Some(Modal::Confirm(ConfirmFor::Quit));
+            return Step::default();
+        }
+        Step {
+            quit: true,
+            ..Step::default()
+        }
+    }
+
     pub fn key(&mut self, key: KeyEvent, ctx: &Ctx) -> Step {
         if let Some(modal) = self.modal.take() {
             return self.modal_key(modal, key, ctx);
@@ -320,6 +339,7 @@ impl Editor {
                 }],
                 notice: Some((Tone::Info, format!("saving {}…", self.doc.id))),
                 leave: false,
+                quit: false,
             };
         }
         if keys.check.matches(&key) {
@@ -753,15 +773,23 @@ impl Editor {
             ConfirmFor::DeleteNode { workflow, node } => {
                 doc::remove_node(&mut self.doc, &workflow, &node);
                 self.row = step_in(self.row, self.tree().len(), 0);
+                self.field = 0;
+                self.wire = 0;
                 Step::notice(Tone::Info, format!("deleted {node}"))
             }
             ConfirmFor::DeleteWorkflow(workflow) => {
                 doc::remove_workflow(&mut self.doc, &workflow);
                 self.row = 0;
+                self.field = 0;
+                self.wire = 0;
                 Step::notice(Tone::Info, format!("deleted workflow {workflow}"))
             }
             ConfirmFor::Leave => Step {
                 leave: true,
+                ..Step::default()
+            },
+            ConfirmFor::Quit => Step {
+                quit: true,
                 ..Step::default()
             },
         }
@@ -769,6 +797,12 @@ impl Editor {
 
     fn commit_text(&mut self, purpose: TextFor, input: String, ctx: &Ctx) -> Step {
         let text = input.trim().to_string();
+        if text.is_empty() {
+            if let TextFor::RenameNode { .. } | TextFor::RenameWorkflow(_) = &purpose {
+                self.modal = Some(Modal::Text { purpose, input });
+                return Step::notice(Tone::Info, "a name cannot be empty");
+            }
+        }
         match purpose {
             TextFor::RenameNode { workflow, node } => {
                 doc::rename_node(&mut self.doc, &workflow, &node, &text);
@@ -866,10 +900,12 @@ impl Editor {
         Step::default()
     }
 
-    pub fn saved(&mut self, result: Result<ProfileSaved, Failure>) -> Step {
+    /// `sent` is the document the save carried: that is what the core has now, whatever
+    /// was typed since.
+    pub fn saved(&mut self, sent: Profile, result: Result<ProfileSaved, Failure>) -> Step {
         match result {
             Ok(saved) => {
-                self.saved = Some(self.doc.clone());
+                self.saved = Some(sent);
                 self.diagnostics = saved.diagnostics;
                 let found = if self.diagnostics.is_empty() {
                     String::new()
@@ -880,6 +916,7 @@ impl Editor {
                     requests: vec![Request::Profiles],
                     notice: Some((Tone::Info, format!("saved {}{found}", saved.path))),
                     leave: false,
+                    quit: false,
                 }
             }
             Err(failure) => Step::notice(Tone::Error, describe(&failure)),

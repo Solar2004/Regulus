@@ -157,7 +157,7 @@ fn draw_decisions(frame: &mut Frame, app: &App, area: Rect) {
             ])
         })
         .collect();
-    let mut state = ListState::default().with_selected(Some(app.decision));
+    let mut state = ListState::default().with_selected(app.decision_index());
     frame.render_stateful_widget(list(items, block, p), area, &mut state);
 }
 

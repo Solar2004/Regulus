@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use jsonrpsee::ws_client::WsClient;
 use regulus_core::{local, Config};
+use regulus_module_human::{Decision, ANSWER as HUMAN_ANSWER, LIST as HUMAN_LIST};
 use regulus_proto::{
     method, Diagnostic, EventPage, Execution, Manifest, ModuleSummary, Profile, ProfileSaved,
     ProfileSummary, TemplateApplied, TemplateSummary, WorkflowSent,
@@ -26,11 +27,6 @@ const AGENT_PROMPT: &str = "agent.prompt";
 const COMM_SEND: &str = "comm.send";
 const COMM_HISTORY: &str = "comm.history";
 const COMM_PARTICIPANTS: &str = "comm.participants";
-/// Methods of the module that holds decisions for a person; absent, they answer -32601.
-const HUMAN_LIST: &str = "human.list";
-const HUMAN_ANSWER: &str = "human.answer";
-const APPROVE: &str = "approve";
-const REJECT: &str = "reject";
 /// Who messages typed here are from.
 pub const SENDER: &str = "user";
 
@@ -188,7 +184,11 @@ pub enum Event {
         result: Result<(), String>,
     },
     Manifests(Result<Vec<Manifest>, Failure>),
-    Saved(Result<ProfileSaved, Failure>),
+    /// `profile` is the document the save sent, so the editor marks clean exactly that.
+    Saved {
+        profile: Box<Profile>,
+        result: Result<ProfileSaved, Failure>,
+    },
     Checked {
         profile: String,
         result: Result<Vec<Diagnostic>, Failure>,
@@ -355,7 +355,8 @@ async fn answer(ws: &WsClient, request: Request) -> Event {
         }
         Request::Save { profile, force } => {
             let params = json!({ "profile": profile, "force": force });
-            Event::Saved(rpc::call_coded(ws, method::PROFILE_SAVE, params).await)
+            let result = rpc::call_coded(ws, method::PROFILE_SAVE, params).await;
+            Event::Saved { profile, result }
         }
         Request::Check { profile } => {
             let params = json!({ "id": profile });
@@ -387,13 +388,19 @@ async fn answer(ws: &WsClient, request: Request) -> Event {
                 result,
             }
         }
+        // The decision module's methods; without it they answer -32601, which the screen
+        // shows as "not installed" by the code, never by the module's id.
         Request::Decisions { execution } => {
             let params = json!({ "execution_id": execution });
             let result = rpc::call_coded(ws, HUMAN_LIST, params).await;
             Event::Decisions { execution, result }
         }
         Request::Decide { id, approve } => {
-            let decision = if approve { APPROVE } else { REJECT };
+            let decision = if approve {
+                Decision::Approve
+            } else {
+                Decision::Reject
+            };
             let params = json!({ "id": id, "decision": decision });
             let done: Result<Value, Failure> = rpc::call_coded(ws, HUMAN_ANSWER, params).await;
             Event::Decided(done.map(|_| ()))
