@@ -205,7 +205,7 @@ de app, unas 5 semanas en total. Se corrigen con el tiempo real al lado.
 | 2 | ✅ Caja Agente: ranura `hooks` con puente `regulus hook` (hecho 2026-11-07, 1 día) | ~2 días |
 | 3 | ✅ Módulos de lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers` (hecho 2026-11-07, medio día, tres ramas en paralelo) | ~6 días |
 | 4 | ✅ Módulos de entorno: `workspace` · `tasks` · `memory` · `web` · `human` · `service` (hecho 2026-11-07, medio día, tres ramas en paralelo, cada una revisada antes de mezclar) | ~6 días |
-| 5 | Plantillas de §5, en orden, cada una corriendo por CLI/TUI | ~4 días |
+| 5 | Plantillas de §5, en orden, cada una corriendo por CLI/TUI. ✅ El mecanismo (`regulus template apply`, RPC `template.*`, `11-composition.md` §7; hecho 2026-11-08, medio día, opción 1A de Alexander). Las plantillas, pendientes; se prueban con `engine-opencode` y un modelo gratis (opción 2B) | ~4 días |
 | 6 | Pasarela, solo cuando una plantilla la pida | — |
 | 7 | App: canvas editable, Operar, instalar plantillas; la app misma editable y por configuración (`00-principles.md` §4) | ~2 sem |
 

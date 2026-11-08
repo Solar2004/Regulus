@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-11-07 · documentación vigente: ~38k tokens. Lo antiguo está en `docs/old/`.
+> Actualizado: 2026-11-08 · documentación vigente: ~38k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -22,8 +22,10 @@ de la lógica de IA está (bus con dato, store SQLite, workflow como caja, `Call
 caja Agente tiene la ranura `hooks` (puente `regulus hook`, módulo `hooks`); los doce
 módulos de serie de [`docs/13-blocks.md`](docs/13-blocks.md) §3 están construidos
 (lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers`; entorno:
-`workspace` · `tasks` · `memory` · `web` · `human` · `service`). **Lo siguiente:** las
-plantillas de `13-blocks.md` §5, en orden. La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+`workspace` · `tasks` · `memory` · `web` · `human` · `service`); las plantillas se
+aplican desde el core (`regulus template ls|show|apply`, `11-composition.md` §7).
+**Lo siguiente:** las plantillas de `13-blocks.md` §5, en orden (Ralph primero: `claude-pxl`
+no está instalado). La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -167,7 +169,7 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Bloques** (`13-blocks.md` §7): ~~core~~ → ~~ranura `hooks`~~ → ~~módulos de lógica y entorno~~ → plantillas | nada |
+| 1 | **Bloques** (`13-blocks.md` §7): ~~core~~ → ~~ranura `hooks`~~ → ~~módulos de lógica y entorno~~ → ~~aplicar plantillas~~ → plantillas de §5 | nada |
 | 2 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
