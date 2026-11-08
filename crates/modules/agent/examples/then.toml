@@ -1,0 +1,71 @@
+# One Agent box in a "then" chain (docs/12-agents.md §5): what reaches `go` is prompted
+# into the agent and its reply leaves by `done`. opencode with its free model, and
+# `fresh_context = "yes"`: every prompt after the first opens a new session. Copy it to
+# <home>/profiles/, then:
+#
+#   regulus serve --port 0 &
+#   regulus run then --detach                      # exec-1  then  running
+#   regulus send exec-1 go "Reply with exactly: pong"
+#   regulus events --execution exec-1 | grep self.done   # self.done emitted text@1 "pong"
+#
+# `failed` gets the error instead when a prompt fails; `usage` is not wired out here.
+id = "then"
+name = "Agent in a chain"
+main_workflow_id = "main"
+
+[[workflows]]
+id = "main"
+name = "Agent in a chain"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "done", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 380, y = 65 }
+  config = { workdir = "", permissions = "reject", fresh_context = "yes" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "opencode"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 50, y = 65 }
+  config = { model = "opencode/glm-5.3-flash-free" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "agent-engine"
+  kind = "uses"
+  from = { node_id = "opencode", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "go-agent"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-done"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "agent-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }

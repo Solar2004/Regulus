@@ -173,6 +173,22 @@ las dos cajas arrancan, responden, conservan el contexto entre prompts y, al par
 no queda ningún proceso vivo. Con `--without regulus/engine-claude`, la caja de Claude
 queda desactivada y la de opencode sigue funcionando.
 
+**La caja en cadenas "luego" (2026-11-08).** Entrada `prompt` (`text@1`, varias): cada
+valor se manda a la sesión como `agent.prompt`; se encolan por nodo (campo `max_queue`,
+16) y van de uno en uno en un hilo de la caja, sin bloquear el bus. Un valor que no cabe
+en la cola va a `failed` con su texto (cortado a `failed_echo_chars`) y no se reintenta;
+uno en curso cuando el nodo se para no da nada, ni `reply` ni `failed`. Salidas `reply`
+(`text@1`, la respuesta final), `failed` (`text@1`, el error en su lugar, nunca las dos) y
+`usage` (`json@1`, `{ input_tokens, output_tokens }` antes de `reply`, solo si el motor da
+uso: `agent.engine@1` aún no lo lleva, así que hoy no sale). Campo `fresh_context`
+(`no`/`yes`): con `yes` la caja cierra la sesión y abre otra antes de cada prompt tras el
+primero, venga de `prompt`, de `agent.prompt` o de un canal. El motor opencode gana el
+campo `model` (id de opencode, p. ej. `opencode/glm-5.3-flash-free`): orden **proveedor
+conectado > campo `model` > el setup del propio opencode**. Claude Code no lo gana: su
+modelo sale de su setup. Ejemplo `crates/modules/agent/examples/then.toml`, probado por
+CLI con el modelo gratis: dos prompts dan dos `reply` y, con `yes`, dos sesiones de
+opencode; con `no`, una.
+
 ## 6. Proveedores
 
 ✅ **DECIDIDO** (Alexander, 2026-10-17: *"lo más flexible"*). Ese mismo día se amplió: el

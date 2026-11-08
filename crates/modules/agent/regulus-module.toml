@@ -88,6 +88,65 @@ name = "Agent"
   kind        = "uses"
   cardinality = "many"
 
+  # Prompts over the bus: each value is prompted into the session like `agent.prompt`
+  # does (text as is, anything else as its JSON). They queue per node and go one at a
+  # time, on a thread of the box: the bus never waits for the agent.
+  [[node.port]]
+  id          = "prompt"
+  name        = "prompt"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The agent's final reply to each value of `prompt`.
+  [[node.port]]
+  id         = "reply"
+  name       = "reply"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Instead of `reply`, never with it: why the prompt failed (the engine failed, is gone
+  # or the queue was full), so a loop can feed it back.
+  [[node.port]]
+  id         = "failed"
+  name       = "failed"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Before `reply`, the tokens the turn took, `{ input_tokens, output_tokens }`, each one
+  # only when known. Nothing when the engine gives no usage (none does yet).
+  [[node.port]]
+  id         = "usage"
+  name       = "usage"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # yes: the box ends its engine session and opens a new one before each prompt (from
+  # `prompt`, `agent.prompt` or a channel), so nothing carries over between turns.
+  [[node.field]]
+  id      = "fresh_context"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # How many values may wait on `prompt` while one runs. Past it a value goes to `failed`,
+  # with the value in the text, and is not retried. A value in flight when the node stops
+  # gives nothing, neither `reply` nor `failed`.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16
+
+  # How many characters of a dropped value `failed` repeats.
+  [[node.field]]
+  id      = "failed_echo_chars"
+  type    = "number"
+  default = 2000
+
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]
   id      = "workdir"

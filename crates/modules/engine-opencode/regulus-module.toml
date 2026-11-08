@@ -35,6 +35,14 @@ name = "opencode"
   type    = "text"
   default = ""
 
+  # The opencode model id (`opencode/glm-5.3-flash-free`, `anthropic/claude-sonnet-4-5`…)
+  # when no provider is wired into the box. A wired provider wins over it. Empty: the
+  # engine's own setup decides (docs/12-agents.md §6.8).
+  [[node.field]]
+  id      = "model"
+  type    = "text"
+  default = ""
+
   [[node.field]]
   id      = "startup_seconds"
   type    = "number"

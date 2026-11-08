@@ -455,3 +455,40 @@ fn the_job_example_checks_clean() {
         .unwrap();
     assert_eq!(check, json!([]));
 }
+
+#[test]
+fn a_command_gets_pwd_from_its_cwd_unless_env_sets_it() {
+    let data = data_dir("pwd");
+    let outs = [("stdout", "text@1"), ("fail", "exit@1")];
+    let dir = data.join("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    // `printenv`, not a shell: a shell resets a `PWD` that is not its directory, so it
+    // would hide what the child was given.
+    let echo = |env: Value| {
+        json!({ "command": "printenv", "args": ["PWD"],
+                "cwd": dir.to_str().unwrap(), "env": env })
+    };
+    let (core, id) = start(profile("command", echo(json!({})), "text@1", &outs), &data);
+    send(&core, &id, json!(""));
+    assert_eq!(
+        outputs(&core, &id, 1)[0],
+        ("stdout".into(), json!(dir.to_str().unwrap()))
+    );
+    stop(&core, &id);
+    let (core, id) = start(
+        profile(
+            "command",
+            echo(json!({ "PWD": "/elsewhere" })),
+            "text@1",
+            &outs,
+        ),
+        &data,
+    );
+    send(&core, &id, json!(""));
+    assert_eq!(
+        outputs(&core, &id, 1)[0],
+        ("stdout".into(), json!("/elsewhere"))
+    );
+    stop(&core, &id);
+    let _ = std::fs::remove_dir_all(&data);
+}
