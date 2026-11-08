@@ -82,6 +82,7 @@ la alternativa es `nix` directo, que es lo que hcom hace hoy.
 | Terminal | **`@xterm/xterm` + `addon-webgl`** | `6.0.0` **estable** | Orca va con `6.1.0-beta.304`; aquí se puede ir con la estable. |
 | Canvas de composición | **`@xyflow/react`** | `12.12.0` (verificado 2026-10-04) | Ver §2.3. |
 | Mock de desarrollo | **`ws`**, tipos `@types/ws` | `8.22.0` / `8.18.2` (verificado 2026-10-04) | JSON-RPC por WebSocket integrado en Vite; no entra en el cliente de producción. |
+| Tests unitarios del cliente | **`vitest`** | `5.1.0` (verificado 2026-11-08) | Usa la config de Vite (alias `@`), sin otro bundler; `pnpm test` corre la lógica pura de `src/`. |
 
 ### 2.3 Canvas de composición con React Flow
 

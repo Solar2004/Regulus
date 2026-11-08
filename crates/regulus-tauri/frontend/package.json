@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri:dev": "cd .. && tauri dev",
     "tauri:build": "cd .. && tauri build",
-    "test:mock": "node --test mock/rpc.test.mjs"
+    "test:mock": "node --test mock/rpc.test.mjs",
+    "test": "vitest run src"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -34,6 +35,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "vitest": "^5.1.0"
   }
 }

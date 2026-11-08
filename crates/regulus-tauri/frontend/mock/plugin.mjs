@@ -6,6 +6,8 @@ export function compositionMock() {
   return {
     name: "regulus-composition-mock",
     configureServer(server) {
+      // vitest starts Vite without an HTTP server: nothing to attach to.
+      if (!server.httpServer) return;
       // One state for every connection: a save survives a reconnect until the server stops.
       const state = createState();
       const wss = new WebSocketServer({ noServer: true, maxPayload: config.maxPayload });
