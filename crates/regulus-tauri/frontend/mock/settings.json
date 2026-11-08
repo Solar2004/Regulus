@@ -1,0 +1,91 @@
+{
+  "secrets": {
+    "anthropic-api-key": "mock-not-a-real-key",
+    "github.token": "mock-not-a-real-token"
+  },
+  "modules": [
+    {
+      "manifest": {
+        "module": {
+          "id": "regulus/service@0.1.0",
+          "name": "Service",
+          "requires_proto": "^1.8",
+          "methods": ["service.key.new", "service.key.list", "service.key.revoke", "service.log", "service.endpoints"],
+          "workflow_id": null
+        },
+        "node": [
+          {
+            "type": "endpoint",
+            "name": "Endpoint",
+            "port": [
+              { "id": "engine", "name": "engine", "capability": "service.engine@1", "direction": "input", "kind": "uses", "required": true }
+            ],
+            "field": [
+              { "id": "workflows", "type": "list", "default": [] },
+              { "id": "timeout_ms", "type": "number", "default": 30000 }
+            ]
+          },
+          {
+            "type": "http",
+            "name": "HTTP",
+            "port": [
+              { "id": "engine", "name": "engine", "capability": "service.engine@1", "direction": "output", "kind": "uses", "required": false }
+            ],
+            "field": [
+              { "id": "bind", "type": "text", "default": "127.0.0.1:7792" }
+            ]
+          }
+        ]
+      },
+      "state": { "status": "active", "since": 1762588800000 }
+    },
+    {
+      "manifest": {
+        "module": { "id": "regulus/web@0.1.0", "name": "Web", "requires_proto": "^1.0", "methods": [], "workflow_id": null },
+        "node": [{ "type": "fetch", "name": "Fetch", "port": [], "field": [] }]
+      },
+      "state": { "status": "broken", "reason": "init failed: no browser at /usr/bin/chromium (mock)" }
+    },
+    {
+      "manifest": {
+        "module": { "id": "regulus/memory@0.1.0", "name": "Memory", "requires_proto": "^1.0", "methods": [], "workflow_id": null },
+        "node": [{ "type": "recall", "name": "Recall", "port": [], "field": [] }]
+      },
+      "state": { "status": "disabled", "missing": ["embedder"] }
+    },
+    {
+      "manifest": {
+        "module": { "id": "regulus/judge@0.1.0", "name": "Judge", "requires_proto": "^2.0", "methods": [], "workflow_id": null },
+        "node": [{ "type": "judge", "name": "Judge", "port": [], "field": [] }]
+      },
+      "state": { "status": "incompatible", "requires": "^2.0", "have": "1.10" }
+    }
+  ],
+  "keys": [
+    {
+      "id": "k-1a2b3c4d",
+      "name": "billing-bot",
+      "scope": ["acme/summarize"],
+      "hint": "rgk_9f31c0",
+      "created_ms": 1762590000000,
+      "policy": { "cooldown_ms": 0, "requests": 30, "window_ms": 60000, "concurrency": 2, "budget_requests": 0, "budget_ms": 0 }
+    },
+    {
+      "id": "k-5e6f7a8b",
+      "name": "old-ci",
+      "scope": ["*"],
+      "hint": "rgk_02be77",
+      "created_ms": 1762500000000,
+      "revoked_ms": 1762580000000
+    }
+  ],
+  "log": [
+    { "at_ms": 1762591000000, "key_id": "k-1a2b3c4d", "key_name": "billing-bot", "project": "acme", "workflow": "summarize", "mode": "sync", "status": 200, "ms": 842, "result": "returned summary", "execution_id": "exec-svc-1" },
+    { "at_ms": 1762591060000, "key_id": "k-1a2b3c4d", "key_name": "billing-bot", "project": "acme", "workflow": "summarize", "mode": "sync", "status": 429, "ms": 0, "result": "key:k-1a2b3c4d: 30 requests per 60000 ms" },
+    { "at_ms": 1762591120000, "key_id": "k-1a2b3c4d", "key_name": "billing-bot", "project": "acme", "workflow": "translate", "mode": "sync", "status": 403, "ms": 0, "result": "outside the key's scope" },
+    { "at_ms": 1762591180000, "key_id": "k-1a2b3c4d", "key_name": "billing-bot", "project": "acme", "workflow": "summarize", "mode": "async", "status": 504, "ms": 30000, "result": "timed out; job j-7c1", "execution_id": "exec-svc-2" }
+  ],
+  "endpoints": [
+    { "url": "http://127.0.0.1:7792", "execution_id": "exec-svc", "node_id": "http" }
+  ]
+}

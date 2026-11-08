@@ -1,0 +1,84 @@
+// What Settings calls: the core's `secret.*` and the `service` module's methods, mirrored
+// with canned data from settings.json. Shapes and errors follow `regulus-core::secrets`
+// and `crates/modules/service`; the mock adds no method of its own.
+import extra from "./settings.json" with { type: "json" };
+
+const baseId = (id) => id.split("@")[0];
+const failure = (code, message) => ({ error: [code, message] });
+const ok = (result) => ({ result });
+const SERVICE = "regulus/service";
+const POLICY = ["cooldown_ms", "requests", "window_ms", "concurrency", "budget_requests", "budget_ms"];
+const describe = (state) => state.status === "disabled" ? `missing required inputs: ${state.missing.join(", ")}`
+  : state.status === "broken" ? state.reason
+  : state.status === "incompatible" ? `requires proto ${state.requires}, core has ${state.have}` : "available";
+
+/** What `createState` adds: the extra modules (with their states), secrets and the service store. */
+export function settingsState() {
+  const data = structuredClone(extra);
+  return {
+    settingsModules: data.modules,
+    secrets: new Map(Object.entries(data.secrets)),
+    keys: data.keys,
+    serviceLog: data.log,
+    serviceEndpoints: data.endpoints,
+  };
+}
+
+const validName = (name) => typeof name === "string" && /^[A-Za-z0-9._-]+$/.test(name);
+const validScope = (entry) => {
+  if (typeof entry !== "string") return false;
+  const [project, workflow, ...rest] = entry.split("/");
+  return !rest.length && project !== "" && (workflow === undefined || workflow !== "");
+};
+const hex = (bytes) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+const isEmpty = (policy) => POLICY.every((field) => !policy[field]);
+
+/** Answers `secret.*` and `service.*`; `null` for any other method or an absent module. */
+export function settingsMethod(state, method, params) {
+  switch (method) {
+    case "secret.list": return ok([...state.secrets.keys()]);
+    case "secret.set":
+      if (typeof params.name !== "string" || typeof params.value !== "string") return failure(-32602, "Invalid params");
+      if (!validName(params.name)) return failure(-32602, `invalid secret name \`${params.name}\``);
+      state.secrets.set(params.name, params.value);
+      return ok(null);
+    case "secret.delete":
+      if (!state.secrets.delete(params.name)) return failure(-32602, `secret \`${params.name}\` is not set`);
+      return ok(null);
+  }
+  if (!method.startsWith("service.")) return null;
+  const module = state.modules.find((item) => baseId(item.id) === SERVICE);
+  if (!module) return null;
+  const status = module.state?.status ?? "idle";
+  if (status !== "active" && status !== "idle") return failure(-32002, `module \`${module.id}\` is unavailable: ${describe(module.state)}`);
+  switch (method) {
+    case "service.key.list": return ok(state.keys);
+    case "service.key.new": {
+      const scope = params.scope;
+      if (!Array.isArray(scope) || !scope.length) return failure(-32602, "a key needs a scope: <project>[/<workflow>], `*` for any");
+      const bad = scope.find((entry) => !validScope(entry));
+      if (bad !== undefined) return failure(-32602, `\`${bad}\` is not <project>[/<workflow>]`);
+      const policy = params.policy ?? {};
+      const unknown = Object.keys(policy).find((field) => !POLICY.includes(field));
+      if (unknown) return failure(-32602, `unknown field \`${unknown}\``);
+      const key = `rgk_${hex(32)}`;
+      const record = { id: `k-${hex(4)}`, name: typeof params.name === "string" ? params.name : "", scope, hint: key.slice(0, 10), created_ms: Date.now() };
+      if (!isEmpty(policy)) record.policy = { ...Object.fromEntries(POLICY.map((field) => [field, 0])), ...policy };
+      state.keys.push(record);
+      return ok({ ...record, key });
+    }
+    case "service.key.revoke": {
+      const record = state.keys.find((item) => item.id === params.id);
+      if (!record) return failure(-32602, `no key \`${params.id}\``);
+      if (record.revoked_ms === undefined) record.revoked_ms = Date.now();
+      return ok(record);
+    }
+    case "service.log": {
+      const entries = state.serviceLog.filter((entry) =>
+        (params.key == null || entry.key_id === params.key) && (params.workflow == null || entry.workflow === params.workflow));
+      return ok(params.last == null ? entries : entries.slice(Math.max(0, entries.length - params.last)));
+    }
+    case "service.endpoints": return ok(state.serviceEndpoints);
+    default: return failure(-32601, "Method not found");
+  }
+}
