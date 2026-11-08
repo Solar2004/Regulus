@@ -61,3 +61,13 @@ describe("new nodes", () => {
     expect(boxNode(profile.workflows[1], { x: 1, y: 2 }, ["inner"])).toMatchObject({ id: "inner-2", module_id: null, internal_workflow_id: "inner", ports: [], type: "workflow", name: "Inner" });
   });
 });
+
+describe("manifest of a placed node", () => {
+  test("found by module with or without version, absent otherwise", async () => {
+    const { manifestTypeOf } = await import("./palette");
+    expect(manifestTypeOf(all, "regulus/files", "write")?.name).toBe("Prompt to file");
+    expect(manifestTypeOf(all, "regulus/files@9.9.9", "read")?.name).toBe("File to prompt");
+    expect(manifestTypeOf(all, "regulus/agent@0.1.0", "agent")).toBeNull();
+    expect(manifestTypeOf(all, null, "workflow")).toBeNull();
+  });
+});

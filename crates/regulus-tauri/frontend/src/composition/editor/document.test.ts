@@ -145,3 +145,13 @@ describe("workflows", () => {
     expect(after.workflows[0].wires.some((w) => w.to.node_id === "own")).toBe(true);
   });
 });
+
+describe("new profile ids", () => {
+  test("empty, not file-safe or taken ids are refused", () => {
+    expect(doc.profileIdProblem("", [])).toBe("empty");
+    expect(doc.profileIdProblem("My Id", [])).toBe("invalid");
+    expect(doc.profileIdProblem("../x", [])).toBe("invalid");
+    expect(doc.profileIdProblem("demo", ["demo"])).toBe("taken");
+    expect(doc.profileIdProblem("demo-2", ["demo"])).toBeNull();
+  });
+});

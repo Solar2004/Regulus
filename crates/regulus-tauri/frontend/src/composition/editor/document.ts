@@ -28,6 +28,13 @@ export function uniqueId(base: string, taken: Iterable<string>, fallback = "node
   for (let n = 2; ; n++) if (free(`${root}-${n}`)) return `${root}-${n}`;
 }
 
+/** Why an id cannot be used for a new profile, or `null`. */
+export function profileIdProblem(id: string, taken: string[]): "empty" | "invalid" | "taken" | null {
+  if (!id) return "empty";
+  if (slugify(id) !== id) return "invalid";
+  return taken.includes(id) ? "taken" : null;
+}
+
 export const workflowOf = (profile: Profile, id: string) => profile.workflows.find((workflow) => workflow.id === id);
 export const nodeOf = (workflow: Workflow, id: string) => workflow.nodes.find((node) => node.id === id);
 

@@ -106,3 +106,10 @@ export function boxNode(workflow: Workflow, position: Point, taken: Iterable<str
     exposed_parameters: [],
   };
 }
+
+/** The manifest type of a node already in a profile, matching the module with or without version. */
+export function manifestTypeOf(manifests: Manifest[], moduleId: string | null, type: string): ManifestNodeType | null {
+  if (!moduleId) return null;
+  const manifest = manifests.find((item) => item.module.id === moduleId) ?? manifests.find((item) => baseModuleId(item.module.id) === baseModuleId(moduleId));
+  return manifest?.node?.find((node) => node.type === type) ?? null;
+}
