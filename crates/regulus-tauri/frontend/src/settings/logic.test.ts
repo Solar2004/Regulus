@@ -94,6 +94,7 @@ describe("module states", () => {
   test("each state carries its reason; idle never used is its own state", () => {
     expect(moduleStatus(module("a", { status: "active", since: 7 }))).toEqual({ kind: "active", since: 7 });
     expect(moduleStatus(module("a", { status: "idle", last_used: null }))).toEqual({ kind: "unused" });
+    expect(moduleStatus(module("a", { status: "blocked", reason: "untrusted" }))).toEqual({ kind: "broken", reason: "untrusted" });
     expect(moduleStatus(module("a", { status: "idle", last_used: 9 }))).toEqual({ kind: "idle", lastUsed: 9 });
     expect(moduleStatus(module("a", { status: "disabled", missing: ["engine"] }))).toEqual({ kind: "disabled", missing: ["engine"] });
     expect(moduleStatus(module("a", { status: "broken", reason: "init failed" }))).toEqual({ kind: "broken", reason: "init failed" });

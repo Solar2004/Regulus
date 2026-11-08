@@ -53,7 +53,8 @@ export function nodeState(node: Pick<CompositionNode, "id" | "module_id">, execu
   if (disabled) return { kind: "disabled", missing: disabled.missing };
   // An older mock lists modules without a state: read it as installed and never used.
   const state: ModuleSummary["state"] = module.state ?? { status: "idle", last_used: null };
-  if (state.status === "broken") return { kind: "broken", reason: state.reason };
+  // Blocked reads as broken: it does not run, and the reason says why.
+  if (state.status === "broken" || state.status === "blocked") return { kind: "broken", reason: state.reason };
   if (state.status === "incompatible") return { kind: "incompatible", requires: state.requires, have: state.have };
   if (state.status === "disabled") return { kind: "disabled", missing: state.missing };
   if (!isLive(execution.state)) return { kind: "stopped" };
