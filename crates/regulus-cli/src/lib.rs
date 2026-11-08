@@ -3,3 +3,4 @@
 pub mod modules;
 pub mod rpc;
 pub mod tui;
+pub mod update;

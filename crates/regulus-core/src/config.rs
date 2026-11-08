@@ -347,6 +347,40 @@ impl Default for StoreConfig {
     }
 }
 
+/// Self-update of the `regulus` program and the app (docs/06-stack.md §5.4). An empty
+/// `url` turns updating off.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Base URL of the releases: the manifest is `<url>/<channel>/manifest.json`.
+    pub url: String,
+    /// Which line of releases to follow (`stable`, `beta`, or any folder under `url`).
+    pub channel: String,
+    /// Check for a newer release when the core starts, and say so; never installs it.
+    pub check_on_start: bool,
+    /// The release key (`regulus update keygen`), as the `RW…` line of a minisign public
+    /// key. Without it nothing is installed: a manifest cannot be trusted.
+    pub public_key: String,
+    /// How long one download may take, in milliseconds.
+    pub timeout_ms: u64,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            channel: "stable".into(),
+            check_on_start: false,
+            public_key: String::new(),
+            timeout_ms: 120_000,
+            unknown: toml::Table::new(),
+        }
+    }
+}
+
 /// How clients (the app, the terminal UI) find a core, or start one when none answers.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -414,6 +448,7 @@ pub struct Config {
     pub hooks: HooksConfig,
     pub local_modules: LocalModulesConfig,
     pub store: StoreConfig,
+    pub update: UpdateConfig,
     pub client: ClientConfig,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
@@ -523,6 +558,7 @@ impl Config {
             ("hooks.", &self.hooks.unknown),
             ("local_modules.", &self.local_modules.unknown),
             ("store.", &self.store.unknown),
+            ("update.", &self.update.unknown),
         ];
         let mut warnings: Vec<String> = sections
             .iter()
