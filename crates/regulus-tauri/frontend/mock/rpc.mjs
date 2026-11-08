@@ -1,6 +1,7 @@
 import fixture from "./profile.json" with { type: "json" };
 import config from "./config.json" with { type: "json" };
 import manifests from "./manifests.json" with { type: "json" };
+import { operateMethod, operateState } from "./operate.mjs";
 
 const LIVE = new Set(["starting", "running"]);
 const baseId = (id) => id.split("@")[0];
@@ -42,12 +43,14 @@ function normalize(profile) {
 
 /** In-memory state of the mock core: what `profile.save` and `profile.delete` change. */
 export function createState() {
-  const modules = [...fixture.modules, ...manifests.map(summaryOf)];
+  const operate = operateState();
+  const modules = [...fixture.modules, ...manifests.map(summaryOf), ...operate.manifests.map(summaryOf)];
   return {
+    ...operate,
     profiles: structuredClone(fixture.profiles),
     executions: structuredClone(fixture.executions),
     modules,
-    manifests: [...fixture.modules.map(manifestOf), ...structuredClone(manifests)],
+    manifests: [...fixture.modules.map(manifestOf), ...structuredClone(manifests), ...operate.manifests],
   };
 }
 
@@ -120,7 +123,12 @@ export function createSession(state = createState()) {
         break;
       }
       case "execution.list": result = state.executions; break;
-      default: return error(id, -32601, "Method not found");
+      default: {
+        const answer = operateMethod(state, method, params);
+        if (!answer) return error(id, -32601, "Method not found");
+        if (answer.error) return error(id, ...answer.error);
+        result = answer.result;
+      }
     }
     return { jsonrpc: "2.0", id, result };
   };

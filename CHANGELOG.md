@@ -138,3 +138,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   está en uso. Errores nuevos `-32008` (perfil con errores) y `-32009` (perfil en uso). Al
   guardar se pierden los comentarios del fichero. CLI: `regulus module show`,
   `regulus profile save` y `regulus profile rm`. El mock de la UI los imita en memoria.
+- **La app opera y aplica plantillas** (`docs/04-client.md` §8): vistas Operar (perfiles
+  con Run, ejecuciones con Stop, nodos con su estado, eventos del bus, envío a las entradas
+  del workflow, conversación con un agente, canal y decisiones de `human`) y Plantillas
+  (lista, fichero, aplicar con formulario de variables, abrir en el canvas o ejecutar).
+  Ajustes de la vista guardados en el dispositivo. `pnpm test` (vitest) en el frontend.

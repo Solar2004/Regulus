@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type RegulusView = "home" | "composition" | "settings";
+export type RegulusView = "home" | "composition" | "settings" | "operate" | "templates";
 
 interface RegulusUiState {
   view: RegulusView;
@@ -11,6 +11,9 @@ interface RegulusUiState {
   setDensity: (density: "comfortable" | "compact") => void;
   applyPreset: (preset: "default" | "focus" | "compact") => void;
   setView: (view: RegulusView) => void;
+  /** The profile the canvas should show next, set from another view; null: its own choice. */
+  canvasProfileId: string | null;
+  openInCanvas: (profileId: string) => void;
 }
 
 // Persist client preferences only; runtime state belongs to the core.
@@ -22,6 +25,8 @@ export const useRegulusUi = create<RegulusUiState>()(persist((set) => ({
   setDensity: (density) => set({ density }),
   applyPreset: (preset) => set({ density: preset === "compact" ? "compact" : "comfortable", startPage: preset === "focus" ? "composition" : "home" }),
   setView: (view) => set({ view }),
+  canvasProfileId: null,
+  openInCanvas: (profileId) => set({ view: "composition", canvasProfileId: profileId }),
 }), {
   name: "regulus-shell-preferences",
   partialize: (state) => ({ startPage: state.startPage, density: state.density }),

@@ -116,3 +116,47 @@ código 2, como antes; los comandos (`run`, `msg send`…) no cambian.
   terminal, se sacan a un fichero.
 - La conversación con un agente es de la sesión de la TUI: el core aún no guarda los
   turnos. Las ejecuciones necesitan `profile_id` (protocolo 1.4) para saber sus nodos.
+
+---
+
+## 8. Operar e instalar plantillas en la app (2026-11-08)
+
+✅ **HECHO** — Dos vistas nuevas en la barra lateral, **Operar** y **Plantillas**, sobre la
+misma conexión (`src/operate/`, `src/templates/`). Hacen lo que la TUI (§7) y la CLI, con
+los mismos métodos; ninguno es nuevo.
+
+- **Operar.** Perfiles (`profile.list` + `profile.get`) con *Run* (`execution.start`, con
+  selector si el perfil tiene varios workflows) y filtro de proyecto como estado del
+  cliente (§5). Ejecuciones (`execution.list`) con estado, perfil, workflow, `parent` y
+  *Stop* (`execution.stop`). De la elegida: sus nodos con el estado de primer nivel (§3),
+  cruzando el workflow con `module.list` y la lista `disabled` (dice qué entrada falta);
+  los eventos del bus (`event.list` con `execution_id`, cursor `since`/`next`), con
+  filtro por nodo y el valor compacto (texto como texto, JSON en una línea; "mostrar más"
+  o JSON con sangría al abrirlo); un formulario para las entradas propias del workflow
+  (`workflow.send`; la respuesta sale en los eventos como `self.<salida>`). Un nodo con
+  entrada `agent.engine` abre una conversación (`agent.prompt`, turnos de esta sesión);
+  uno con entrada `participant`, el canal (`comm.history`, `comm.participants`,
+  `comm.send` como `user`). Las decisiones pendientes del módulo `human` (`human.list`,
+  `human.answer`) se aprueban o rechazan ahí. Sin el módulo, el panel dice *no instalado*
+  (`-32601`) o *no disponible* con la razón del core (`-32002`), nunca un error genérico.
+- **Plantillas.** `template.list` con descripción, módulos de `requires` marcados como
+  instalado / no instalado / roto (de `module.list`; el rango de versión lo juzga el
+  core) y variables con su valor por defecto; una plantilla con `error` lo enseña tal
+  cual. *Show file* es `template.get`. *Apply* arma el formulario de `vars` (obligatorias
+  marcadas, defaults rellenos), `id` opcional y *reemplazar* (`force`), y llama a
+  `template.apply`: enseña los `diagnostics` o el error del core según su código
+  (`-32004`…`-32007`, `-32602`). Tras aplicar: *Open in canvas* (la vista de composición
+  con ese perfil, `openInCanvas` del store) y *Run now* (`execution.start`). Inicio
+  enlaza aquí.
+- **Ajustes de la vista** (botón *View settings*, guardados en el dispositivo como la
+  densidad): `refreshMs` 1000 (como `client.refresh_ms` de la TUI; solo se pregunta con
+  la vista abierta y la pestaña visible), `eventPageSize` 200 (`limit` de `event.list`),
+  `eventKeep` 1000 (eventos que quedan en pantalla), `maxValueLength` 240,
+  `startTimeoutMs` 120000 (un motor arranca su CLI antes de que `execution.start`
+  responda) y `agentTimeoutMs` 600000 (un turno de agente). `RpcClient.request` acepta
+  ese tiempo por llamada y sus errores llevan `code`.
+- **Pruebas:** `pnpm test` (vitest) cubre la lógica pura; `src/operate/live.test.ts`
+  corre las mismas llamadas contra un core real si hay `REGULUS_RPC_URL` (greeting,
+  Ralph hasta `self.done`, `agent.prompt` → `pong`). El mock imita los métodos con datos
+  de `mock/operate.json`.
+

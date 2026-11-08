@@ -10,6 +10,11 @@ const settings = {
   timeout: 5000,
 };
 
+/** A JSON-RPC error answer: `code` tells a missing module (-32601, -32002) from a refusal. */
+export class RpcError extends Error {
+  constructor(message: string, readonly code: number) { super(message); }
+}
+
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 export class RpcClient {
@@ -35,7 +40,7 @@ export class RpcClient {
         if (!pending) return;
         clearTimeout(pending.timer);
         this.pending.delete(response.id);
-        if (response.error) pending.reject(new Error(response.error.message));
+        if (response.error) pending.reject(new RpcError(response.error.message, response.error.code));
         else pending.resolve(response.result);
       } catch { this.close(); }
     });
@@ -51,12 +56,13 @@ export class RpcClient {
 
   get closed() { return this.socket.readyState === WebSocket.CLOSING || this.socket.readyState === WebSocket.CLOSED; }
 
-  async request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  /** `timeout` in ms; agent turns take minutes, so their callers pass a longer one. */
+  async request<T>(method: string, params: Record<string, unknown> = {}, timeout = settings.timeout): Promise<T> {
     await this.opened;
     if (this.socket.readyState !== WebSocket.OPEN) throw new Error("Connection closed");
     const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timeout")); }, settings.timeout);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timeout")); }, timeout);
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer });
       this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     });
