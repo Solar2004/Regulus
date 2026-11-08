@@ -1,0 +1,64 @@
+# The smallest template (docs/11-composition.md §7): a greeter says hello to `who` when
+# the workflow starts, and the greeting is written to `file` in the writer's own folder.
+# It exercises the whole path without an agent: holes, a required var, a default and
+# `requires`.
+#
+#   regulus template ls
+#   regulus template apply greeting --set who=Ana            # writes <profiles>/greeting.toml
+#   regulus run greeting
+#     exec-1  main  running
+#     #1 exec-1 ana.tick emitted text@1 "Hello, Ana!" (depth 0)
+#     #2 exec-1 note.written emitted path@1 "<home>/data/global/regulus/files/main/note/greeting.txt" (depth 1)
+#     #3 exec-1 ana.tick → note.in delivered
+#
+# (Observed 2026-11-08 with `regulus serve --port 0`, debug build.)
+# Applying again needs `--force`, or `--id other` for a second copy.
+id = "greeting"
+name = "Greeting for {{who}}"
+main_workflow_id = "main"
+
+[template]
+name = "greeting"
+description = "Greets someone on start and writes the greeting to a file"
+requires = [
+  { module = "regulus/hello", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+]
+
+[template.vars]
+who = { description = "who is greeted" }
+file = { description = "file the greeting goes to, under the writer's folder", default = "greeting.txt" }
+
+[[workflows]]
+id = "main"
+name = "Greeting"
+kind = "main"
+
+  [[workflows.nodes]]
+  id = "ana"
+  name = "Greeter"
+  type = "greeter"
+  module_id = "regulus/hello@0.1.0"
+  position = { x = 50, y = 100 }
+  config = { name = "{{who}}" }
+  ports = [
+    { id = "tick", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "note"
+  name = "Write the greeting"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 350, y = 100 }
+  config = { path = "{{file}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "greet-note"
+  kind = "then"
+  from = { node_id = "ana", port_id = "tick" }
+  to = { node_id = "note", port_id = "in" }

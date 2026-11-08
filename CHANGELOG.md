@@ -114,4 +114,6 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   `template.apply` las leen de `[templates] paths` (por defecto `<home>/templates`) solo al
   pedirlas; aplicar sustituye literalmente, comprueba módulos y perfil, escribe
   `<id>.toml` en la primera ruta de `[profiles] paths` y lo carga sin reiniciar. Nueva
-  dependencia: `semver`.
+  dependencia: `semver`. CLI: `regulus template ls|show|apply <nombre|ruta> [--set k=v]
+  [--id] [--force]`. Las plantillas del repo viven en `templates/`; la primera,
+  `templates/greeting.toml`.

@@ -14,7 +14,8 @@ use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
     method, BusEvent, BusEventKind, Direction, EventPage, Execution, ExecutionState, ModuleSummary,
-    Profile, ProfileSummary, WireKind, WorkflowSent, PROTOCOL, WORKFLOW_SELF,
+    Profile, ProfileSummary, Severity, TemplateApplied, TemplateSummary, TemplateText, WireKind,
+    WorkflowSent, PROTOCOL, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -66,6 +67,11 @@ enum Command {
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
+    },
+    /// Templates: profiles with holes that are applied as a copy (docs/11-composition.md §7).
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommand,
     },
     /// Print the nodes and wires of a profile.
     Graph { profile: String },
@@ -308,6 +314,32 @@ enum ModuleCommand {
 }
 
 #[derive(Subcommand)]
+enum TemplateCommand {
+    /// List templates: name, description and the vars that need a value.
+    Ls,
+    /// Print a template's file as it is.
+    Show {
+        /// A template name, or a path to a `.toml` file.
+        template: String,
+    },
+    /// Render a template into a profile, write it to the profiles directory and load it.
+    Apply {
+        /// A template name, or a path to a `.toml` file (anything with `/` or ending in
+        /// `.toml`).
+        template: String,
+        /// A var's value, `name=value`. Repeatable.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
+        /// The profile id, and file name, to write. Defaults to the template's.
+        #[arg(long)]
+        id: Option<String>,
+        /// Replace a profile with that id written before.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ProfileCommand {
     /// List profiles.
     Ls {
@@ -393,6 +425,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Template { command } => template(&client, command).await,
         Command::Graph { profile } => {
             let params = serde_json::json!({ "id": profile });
             let profile: Profile = client.request(method::PROFILE_GET, params).await?;
@@ -585,6 +618,88 @@ async fn main() -> Result<()> {
         },
         Command::Human { command } => human(&client, command).await,
         Command::Service { command } => service(&client, command).await,
+    }
+}
+
+/// A template argument as the core reads it: a relative path is made absolute here, since
+/// the core resolves relative paths against its home, not this directory.
+fn template_arg(template: String) -> Result<String> {
+    let is_path = template.contains('/') || template.ends_with(".toml");
+    if !is_path || std::path::Path::new(&template).is_absolute() {
+        return Ok(template);
+    }
+    Ok(std::path::absolute(&template)
+        .with_context(|| format!("cannot resolve {template}"))?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// `regulus template`: the `template.*` methods of the running core.
+async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
+    match command {
+        TemplateCommand::Ls => {
+            let list: Vec<TemplateSummary> =
+                client.request(method::TEMPLATE_LIST, Value::Null).await?;
+            for t in list {
+                if let Some(error) = &t.error {
+                    println!("{:<20} (unusable: {error})", t.name);
+                    continue;
+                }
+                let required: Vec<&str> = t
+                    .vars
+                    .iter()
+                    .filter(|v| v.default.is_none())
+                    .map(|v| v.name.as_str())
+                    .collect();
+                let required = if required.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [needs: {}]", required.join(", "))
+                };
+                println!("{:<20} {}{required}", t.name, t.description);
+            }
+            Ok(())
+        }
+        TemplateCommand::Show { template } => {
+            let params = serde_json::json!({ "template": template_arg(template)? });
+            let t: TemplateText = client.request(method::TEMPLATE_GET, params).await?;
+            print!("{}", t.text);
+            Ok(())
+        }
+        TemplateCommand::Apply {
+            template,
+            set,
+            id,
+            force,
+        } => {
+            let mut vars = serde_json::Map::new();
+            for pair in set {
+                let (name, value) = pair
+                    .split_once('=')
+                    .with_context(|| format!("`{pair}` is not NAME=VALUE"))?;
+                vars.insert(name.trim().into(), Value::String(value.into()));
+            }
+            let params = serde_json::json!({
+                "template": template_arg(template)?, "vars": vars, "id": id, "force": force,
+            });
+            let applied: TemplateApplied = client.request(method::TEMPLATE_APPLY, params).await?;
+            println!("profile {}", applied.profile_id);
+            println!("wrote {}", applied.path);
+            for d in applied.diagnostics {
+                let severity = match d.severity {
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                    Severity::Info => "info",
+                };
+                let at = [d.workflow_id, d.node_id, d.wire_id]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("/");
+                eprintln!("{severity}: {} ({}) {at}", d.message, d.code);
+            }
+            Ok(())
+        }
     }
 }
 
