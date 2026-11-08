@@ -136,7 +136,7 @@ métodos; ninguno nuevo en el core.
 - **Plantillas** (`t`). `template.list` con `requires` marcado (instalado / no instalado /
   roto) y variables con su default; Enter abre el formulario (`*` obligatoria, `id`
   opcional, *replace* = `force`) y aplica con `template.apply`. El error se dice por su
-  código (`-32004`…`-32007`, `-32602`). Tras aplicar: `e` lo abre en Editar, Enter lo
+  código (`-32004`…`-32007`, `-32602`). Tras aplicar: `e` lo abre en Editar, `Ctrl+R` lo
   ejecuta y vuelve a Operar.
 - **Operar gana** abajo los **eventos** de la ejecución elegida (`event.list` con cursor
   `since`/`next`, valor compacto, `/` filtra por nodo, ↑↓ desplaza) y las **decisiones**
@@ -148,7 +148,9 @@ métodos; ninguno nuevo en el core.
   tabla opcional con `keys` y `tui` (`tui::run_with`). Por defecto: `e` editar, `n` nuevo,
   `t` plantillas, `/` filtro, `y`/`n` decidir, `w` enviar; en Editar `a` añadir, `d` borrar,
   `w` workflow, `r` renombrar, `c` cable, `x` quitar, `p` puerto, `u` reset, `Ctrl+S`
-  guardar, `k` comprobar, Enter ejecutar (en el inspector, editar la fila), `Esc` volver.
+  guardar, `k` comprobar, `Ctrl+R` ejecutar, Enter editar la fila del inspector, `Esc`
+  volver (y `Ctrl+C` con cambios pregunta). Dos acciones del mismo contexto en la misma
+  tecla es un error al arrancar; `n` rechaza solo si hay algo que rechazar.
   Números: `event_page` 200, `event_keep` 1000, `value_max` 240, `cascade_step` 40,
   `node_width` 250, `node_height` 160. 🔶 Falta leerlos de `config.toml` (`[client.keys]`,
   `[client.tui]`): `config.rs` aún no los lleva.
