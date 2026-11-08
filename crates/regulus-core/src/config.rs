@@ -312,6 +312,10 @@ pub struct ClientConfig {
     pub intro: bool,
     /// How often a client asks the core what is running, in milliseconds.
     pub refresh_ms: u64,
+    /// Keys of the terminal UI, action = key or list of keys. The client checks them.
+    pub keys: toml::Table,
+    /// Numbers of the terminal UI (`event_page`, `value_max`…). The client checks them.
+    pub tui: toml::Table,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
     pub unknown: toml::Table,
@@ -325,6 +329,8 @@ impl Default for ClientConfig {
             start_timeout_ms: 5000,
             intro: true,
             refresh_ms: 1000,
+            keys: toml::Table::new(),
+            tui: toml::Table::new(),
             unknown: toml::Table::new(),
         }
     }
@@ -494,12 +500,15 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::write(
             home.join(CONFIG_FILE),
-            "typo = 1\n[server]\nport = 0\nprot = 9\n[client]\nrefresh_ms = 50\n[later]\nx = 1\n",
+            "typo = 1\n[server]\nport = 0\nprot = 9\n[client]\nrefresh_ms = 50\n\
+             [client.keys]\nsave = \"ctrl+w\"\n[client.tui]\nevent_page = 50\n[later]\nx = 1\n",
         )
         .unwrap();
         let config = Config::load(&home).unwrap();
         assert_eq!(config.server.port, 0);
         assert_eq!(config.client.refresh_ms, 50);
+        assert_eq!(config.client.keys["save"].as_str(), Some("ctrl+w"));
+        assert_eq!(config.client.tui["event_page"].as_integer(), Some(50));
         let all = config.warnings.join("\n");
         for key in ["`typo`", "`server.prot`", "`later`"] {
             assert!(all.contains(key), "{key} in {all}");

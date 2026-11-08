@@ -399,7 +399,8 @@ async fn main() -> Result<()> {
     };
     let Some(command) = cli.command else {
         if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            return regulus_cli::tui::run(config.clone(), client.timeout).await;
+            let table = regulus_cli::tui::client_table(&config.client);
+            return regulus_cli::tui::run_with(config.clone(), client.timeout, Some(&table)).await;
         }
         // Scripts and pipes get the usage, as a missing command always gave them.
         Cli::command().print_help()?;
