@@ -596,7 +596,7 @@ pub fn write(dir: &Path, id: &str, text: &str, force: bool) -> Result<PathBuf, T
     let _ = fs::remove_file(&temp);
     placed.map_err(|e| match e.kind() {
         io::ErrorKind::AlreadyExists => TemplateError::Exists(format!(
-            "profile `{id}` already exists at {}; apply with force to replace it",
+            "profile `{id}` already exists at {}; use force to replace it",
             dest.display()
         )),
         _ => io("write", &dest, e),

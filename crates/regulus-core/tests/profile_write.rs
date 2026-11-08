@@ -98,16 +98,27 @@ impl Home {
     /// A core whose `[profiles] paths` are `<root>/profiles` and `<root>/more`, with
     /// `files` already written there before it starts.
     fn new(name: &str, files: &[(&str, &str)]) -> Self {
+        Self::with(name, files, &[])
+    }
+
+    /// Like [`Home::new`], with directories that are loaded but are not `[profiles] paths`.
+    fn with(name: &str, files: &[(&str, &str)], loaded_only: &[&str]) -> Self {
         let root = std::env::temp_dir().join(format!("regulus-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let paths = vec![root.join("profiles"), root.join("more")];
         for path in &paths {
             fs::create_dir_all(path).unwrap();
         }
+        let mut loaded = paths.clone();
+        for dir in loaded_only {
+            let dir = root.join(dir);
+            fs::create_dir_all(&dir).unwrap();
+            loaded.push(dir);
+        }
         for (file, text) in files {
             fs::write(root.join(file), text).unwrap();
         }
-        let (profiles, warnings) = ProfileStore::load(&paths);
+        let (profiles, warnings) = ProfileStore::load(&loaded);
         assert!(warnings.is_empty(), "{warnings:?}");
         let manifest = regulus_core::parse_manifest(MANIFEST).unwrap();
         let modules: Vec<Box<dyn Module>> = vec![Box::new(Echo(manifest))];
@@ -333,4 +344,51 @@ fn a_profile_listed_by_itself_in_the_paths_is_not_deleted() {
     assert_eq!(error.code, code::PROFILE_EXISTS);
     assert!(Path::new(&file).exists());
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_profile_with_a_module_not_installed_is_saved_with_a_note() {
+    let home = Home::new("save-missing-module", &[]);
+    let mut p = profile("p", "loud");
+    p["workflows"][0]["nodes"][0]["module_id"] = json!("nope/x@0.1.0");
+    let saved = home.save(p, false).unwrap();
+    let diagnostics = saved["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d["code"] == "node.module_not_installed" && d["severity"] == "info"),
+        "{diagnostics:?}"
+    );
+    assert!(home.file("profiles/p.toml").exists());
+}
+
+#[test]
+fn a_profile_is_deleted_from_any_configured_path_and_no_other() {
+    let solo = |id: &str| {
+        format!(
+            "id = \"{id}\"\nmain_workflow_id = \"m\"\n[[workflows]]\nid = \"m\"\nkind = \"main\"\n"
+        )
+    };
+    let (far, outside) = (solo("far"), solo("outside"));
+    let home = Home::with(
+        "delete-paths",
+        &[
+            ("more/far.toml", &far),
+            ("elsewhere/outside.toml", &outside),
+        ],
+        &["elsewhere"],
+    );
+    let deleted = home
+        .call(method::PROFILE_DELETE, json!({ "id": "far" }))
+        .unwrap();
+    assert_eq!(
+        deleted["path"],
+        home.file("more/far.toml").display().to_string()
+    );
+    assert!(!home.file("more/far.toml").exists());
+    let (code, message) = error_code(home.call(method::PROFILE_DELETE, json!({ "id": "outside" })));
+    assert_eq!(code, code::PROFILE_EXISTS);
+    assert!(message.contains("elsewhere/outside.toml"), "{message}");
+    assert!(home.file("elsewhere/outside.toml").exists());
+    assert!(home.get("outside").is_ok());
 }

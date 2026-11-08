@@ -503,8 +503,9 @@ impl Core {
             .into());
         }
         templates::check_replace(&origin, &id)?;
-        // Unloaded under the locks `start` and `recover` go through, so nothing of it can
-        // start between the check and the swap.
+        // Checked and unloaded under the locks `start`, `recover` and `call_workflow` hold
+        // while they read the profile and register what runs it: an execution either shows
+        // up here or finds the profile gone.
         let removed = {
             let recovering = self.recovering();
             let executions = self.executions();
@@ -753,43 +754,51 @@ impl Core {
     /// port on a boundary. Anything else `profile.check` reports still runs, as it always
     /// did: a wire that does not fit fails visibly on the bus and the rest keeps working.
     fn start(&self, params: ExecutionStartParams) -> Result<Execution, RpcError> {
-        let profile = self
-            .profile_store()
-            .get(&params.profile_id)
-            .ok_or_else(|| RpcError::invalid_params("Unknown profile"))?;
-        let profile = profile.as_ref();
-        let workflow_id = params
-            .workflow_id
-            .unwrap_or_else(|| profile.main_workflow_id.clone());
-        // What runs is a copy with every box inlined: the bus only ever sees one graph.
-        let workflow = Arc::new(
-            flatten(
-                profile,
-                profile
-                    .workflow(&workflow_id)
-                    .ok_or_else(|| RpcError::invalid_params("Unknown workflow"))?,
-            )
-            .map_err(RpcError::invalid_params)?,
-        );
-        // A node that runs a workflow the profile does not have could never work.
-        if let Some(error) = missing_workflow(profile, &workflow, |id| self.registry.manifest(id)) {
-            return Err(RpcError::invalid_params(error));
-        }
-        let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
-        let execution = Execution {
-            id: format!("exec-{number}"),
-            profile_id: profile.id.clone(),
-            workflow_id,
-            project_id: profile.project_id.clone(),
-            state: ExecutionState::Starting,
-            disabled: Vec::new(),
-            parent: None,
+        // The profile is read and the execution registered under the `executions` lock
+        // (taken before `profiles`, as `profile.delete` does), so a delete either sees the
+        // execution or has already unloaded the profile. Nothing here touches the disk or
+        // the bus.
+        let (number, execution, workflow) = {
+            let mut executions = self.executions();
+            let profile = self
+                .profile_store()
+                .get(&params.profile_id)
+                .ok_or_else(|| RpcError::invalid_params("Unknown profile"))?;
+            let profile = profile.as_ref();
+            let workflow_id = params
+                .workflow_id
+                .unwrap_or_else(|| profile.main_workflow_id.clone());
+            // What runs is a copy with every box inlined: the bus only ever sees one graph.
+            let workflow = Arc::new(
+                flatten(
+                    profile,
+                    profile
+                        .workflow(&workflow_id)
+                        .ok_or_else(|| RpcError::invalid_params("Unknown workflow"))?,
+                )
+                .map_err(RpcError::invalid_params)?,
+            );
+            // A node that runs a workflow the profile does not have could never work.
+            if let Some(error) =
+                missing_workflow(profile, &workflow, |id| self.registry.manifest(id))
+            {
+                return Err(RpcError::invalid_params(error));
+            }
+            let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
+            let execution = Execution {
+                id: format!("exec-{number}"),
+                profile_id: profile.id.clone(),
+                workflow_id,
+                project_id: profile.project_id.clone(),
+                state: ExecutionState::Starting,
+                disabled: Vec::new(),
+                parent: None,
+            };
+            executions.push(Live::new(number, execution.clone(), workflow.clone()));
+            (number, execution, workflow)
         };
         self.persist(|store| store.insert_execution(number, &execution, &workflow));
-        let id = execution.id.clone();
-        self.executions()
-            .push(Live::new(number, execution, workflow.clone()));
-        self.launch(&id, &workflow, &HashMap::new())
+        self.launch(&execution.id, &workflow, &HashMap::new())
     }
 
     /// Takes the executions the previous core left running and, as `[store] resume`
