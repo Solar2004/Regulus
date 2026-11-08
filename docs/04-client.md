@@ -186,3 +186,27 @@ ancho de nodo (250), separación al añadir (40), agrupación de la paleta (por 
 autoguardado (apagado, 30 000 ms tras el último cambio), teclas de borrar (`Delete`,
 `Backspace`) y de guardar (`s`). La vista "Todos los workflows" es de solo lectura: pulsar
 un nodo abre su workflow.
+
+---
+
+## 10. Ajustes: secretos, servicio y módulos (2026-11-08)
+
+✅ **Hecho.** Ajustes gana lo que la CLI ya hacía y la ventana no (`src/settings/`: lógica
+pura en `logic.ts` con tests, componentes aparte). Ningún método nuevo en el core.
+
+- **Módulos.** `module.list` con el estado de primer nivel (§3) de cada uno, icono y tono
+  de `08-design-system.md`, y la razón: *desactivado* dice qué entrada falta, *roto* la
+  razón del core, *incompatible* el protocolo que pide, *sin usar* es `idle` con
+  `last_used` vacío. Primero lo que no funciona. Recargar no: el core no tiene
+  `module.reload`; un módulo roto pide reiniciar el core.
+- **Secretos.** `secret.list` (solo nombres), `secret.set` (`{name, value}`; el valor
+  entra y no se vuelve a ver, avisa si reemplaza) y `secret.delete` con confirmación.
+- **Servicio** (módulo `service`, `13-blocks.md` §3). Llaves: `service.key.list`,
+  `service.key.new` (`{scope, name, policy}`; la llave en claro se ve una vez, con
+  copiar) y `service.key.revoke` con confirmación. `service.endpoints` (dónde escucha
+  cada motor vivo) y `service.log` con filtros de llave, workflow y `last` (al core) y
+  de estado 2xx/4xx/5xx (en el cliente). Sin el módulo: *no instalado* (`-32601`) o *no
+  disponible* con la razón del core (`-32002`), decidido por el código de error, nunca
+  por el id del módulo.
+- **Mock:** `mock/settings.mjs` + `mock/settings.json` contestan `secret.*` y
+  `service.*` y añaden módulos en cada estado (activo, roto, desactivado, incompatible).
