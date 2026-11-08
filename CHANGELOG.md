@@ -117,3 +117,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   dependencia: `semver`. CLI: `regulus template ls|show|apply <nombre|ruta> [--set k=v]
   [--id] [--force]`. Las plantillas del repo viven en `templates/`; la primera,
   `templates/greeting.toml`.
+- **La caja Agente en cadenas "luego"** (`docs/12-agents.md` §5): entrada `prompt` (cola
+  por nodo, `max_queue`, un prompt a la vez sin bloquear el bus), salidas `reply`,
+  `failed` y `usage` (solo si el motor da uso), y el campo `fresh_context` (sesión nueva
+  antes de cada prompt). El motor opencode gana el campo `model` (un proveedor conectado
+  manda sobre él). Ejemplo en `crates/modules/agent/examples/then.toml`. Arreglo: el nodo
+  `command` (y los demás de `process`) da al hijo `PWD` igual a su `cwd` salvo que `env`
+  lo fije; antes heredaba el de `serve` y opencode trabajaba en otro directorio.
