@@ -22,7 +22,8 @@ use serde_json::Value;
 use crate::bus::{self, ChildNews, Journal, Listing, Pending};
 use crate::config::{BusConfig, CallConfig, HooksConfig, Resume};
 use crate::graph::{
-    boundary, check_fields, check_profile, flatten, missing_workflow, start_order, wire_end, End,
+    boundary, check_fields, check_profile, check_vetoed, flatten, missing_workflow, start_order,
+    wire_end, End,
 };
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
@@ -343,6 +344,17 @@ impl Core {
         *self.project_home.write().unwrap_or_else(|p| p.into_inner()) = Some(home);
     }
 
+    /// Reads again the `regulus.toml` files edited since they were read: a look at each
+    /// file's time, and the write lock only if one changed.
+    fn refresh_projects(&self) {
+        if self.projects().iter().any(Project::is_stale) {
+            self.projects
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .refresh();
+        }
+    }
+
     fn projects(&self) -> RwLockReadGuard<'_, Projects> {
         self.projects.read().unwrap_or_else(|p| p.into_inner())
     }
@@ -395,7 +407,7 @@ impl Core {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .load_project(&project.id, &project.profiles);
-        project.warnings.extend(found);
+        project.notes.extend(found);
         let summary = self.project_summary(&project);
         self.projects
             .write()
@@ -569,10 +581,46 @@ impl Core {
         })
     }
 
-    /// What `profile.check` finds: the errors, as `message (code)`, and the rest.
-    fn diagnose(&self, profile: &Profile) -> (Vec<String>, Vec<regulus_proto::Diagnostic>) {
+    /// Everything `profile.check` reports: the wiring rules, the fields the core
+    /// understands and the nodes the profile's project keeps from running.
+    fn check(&self, profile: &Profile) -> Vec<regulus_proto::Diagnostic> {
         let mut found = check_profile(profile, |id| self.registry.is_installed(id));
         found.extend(check_fields(profile, |id| self.registry.manifest(id)));
+        if let Some(project) = self.project_of(profile.project_id.as_deref()) {
+            found.extend(check_vetoed(profile, &project.id, |m| project.vetoes(m)));
+        }
+        found
+    }
+
+    /// The open project with this id, if any.
+    fn project_of(&self, project_id: Option<&str>) -> Option<Project> {
+        project_id.and_then(|id| self.projects().get(id).cloned())
+    }
+
+    /// Why a workflow about to run cannot: the nodes of it whose module its project keeps
+    /// from running. `None` if it may run.
+    fn vetoed(&self, project_id: Option<&str>, workflow: &Workflow) -> Option<String> {
+        let project = self.project_of(project_id)?;
+        let nodes: Vec<String> = workflow
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                let module = n.module_id.as_deref().filter(|m| project.vetoes(m))?;
+                Some(format!("`{}` ({module})", n.id))
+            })
+            .collect();
+        (!nodes.is_empty()).then(|| {
+            format!(
+                "disabled in project {}: node {} (its [modules] disable/enable)",
+                project.id,
+                nodes.join(", ")
+            )
+        })
+    }
+
+    /// What `profile.check` finds: the errors, as `message (code)`, and the rest.
+    fn diagnose(&self, profile: &Profile) -> (Vec<String>, Vec<regulus_proto::Diagnostic>) {
+        let found = self.check(profile);
         let (errors, rest): (Vec<_>, Vec<_>) = found
             .into_iter()
             .partition(|d| d.severity == Severity::Error);
@@ -760,6 +808,7 @@ impl Core {
 
     /// Answers every method except `hello`, which belongs to the connection.
     pub fn dispatch(&self, name: &str, params: Value) -> Result<Value, RpcError> {
+        self.refresh_projects();
         match name {
             method::PROFILE_LIST => {
                 let filter: ProjectFilter = parse(params)?;
@@ -773,9 +822,7 @@ impl Core {
             method::PROFILE_GET => json(&*self.profile(parse(params)?)?),
             method::PROFILE_CHECK => {
                 let profile = self.profile(parse(params)?)?;
-                let mut found = check_profile(&profile, |id| self.registry.is_installed(id));
-                found.extend(check_fields(&profile, |id| self.registry.manifest(id)));
-                json(found)
+                json(self.check(&profile))
             }
             method::PROJECT_LIST => json(
                 self.projects()
@@ -999,6 +1046,9 @@ impl Core {
                 missing_workflow(profile, &workflow, |id| self.registry.manifest(id))
             {
                 return Err(RpcError::invalid_params(error));
+            }
+            if let Some(error) = self.vetoed(profile.project_id.as_deref(), &workflow) {
+                return Err(RpcError::new(code::MODULE_DISABLED, error));
             }
             let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
             let execution = Execution {
@@ -1802,6 +1852,9 @@ impl Core {
         let workflow = Arc::new(flatten(profile, target).map_err(ModuleError::InvalidParams)?);
         if let Some(error) = missing_workflow(profile, &workflow, |id| self.registry.manifest(id)) {
             return Err(ModuleError::InvalidParams(error));
+        }
+        if let Some(error) = self.vetoed(profile.project_id.as_deref(), &workflow) {
+            return Err(ModuleError::Failed(error));
         }
         let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
         let execution = Execution {

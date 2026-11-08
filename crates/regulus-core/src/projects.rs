@@ -6,6 +6,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use regulus_proto::{ProjectDetails, ProjectSummary};
 use serde::{Deserialize, Serialize};
@@ -95,8 +96,19 @@ pub struct Project {
     /// `[project] profiles` and `templates`, resolved against the folder.
     pub profiles: Vec<PathBuf>,
     pub templates: Vec<PathBuf>,
-    /// What the core did not understand or could not use. Never fatal.
+    /// What the core did not understand or could not use in the file. Never fatal.
     pub warnings: Vec<String>,
+    /// What loading its profiles found, and anything else the core noticed since.
+    pub notes: Vec<String>,
+    /// When the file was last changed as the core read it; `None` if it had none.
+    pub modified: Option<SystemTime>,
+}
+
+/// When `root`'s `regulus.toml` was last changed, if it can be told.
+fn modified(root: &Path) -> Option<SystemTime> {
+    fs::metadata(root.join(PROJECT_FILE))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 fn unknown(warnings: &mut Vec<String>, at: &str, extra: &toml::Table) {
@@ -129,6 +141,7 @@ impl Project {
     /// default in place and says why; only an id that cannot be used is an error.
     pub fn load(root: &Path) -> Result<Self, ProjectError> {
         let path = root.join(PROJECT_FILE);
+        let changed = modified(root);
         let mut warnings = Vec::new();
         let file = match fs::read_to_string(&path) {
             Ok(text) => match toml::from_str::<ProjectFile>(&text) {
@@ -179,7 +192,14 @@ impl Project {
             templates: resolve(root, &file.project.templates, DEFAULT_TEMPLATES),
             file,
             warnings,
+            notes: Vec::new(),
+            modified: changed,
         })
+    }
+
+    /// Whether its file changed since the core read it.
+    pub fn is_stale(&self) -> bool {
+        modified(&self.root) != self.modified
     }
 
     /// Whether this project keeps a module's nodes from running: `disable` names it, or
@@ -199,6 +219,7 @@ impl Project {
     /// The warnings, plus a `disable` or `enable` entry that names no loaded module.
     pub fn warnings(&self, is_installed: impl Fn(&str) -> bool) -> Vec<String> {
         let mut warnings = self.warnings.clone();
+        warnings.extend(self.notes.iter().cloned());
         let modules = &self.file.modules;
         let lists = [
             ("disable", Some(&modules.disable)),
@@ -356,6 +377,34 @@ impl Projects {
 
     pub fn iter(&self) -> impl Iterator<Item = &Project> {
         self.open.iter()
+    }
+
+    /// Reads again every file that changed since it was read, so an edit to
+    /// `regulus.toml` counts without reopening. An id cannot change while open: the old one
+    /// stays, with a note to close and open the project. Profiles folders are read on open
+    /// only; templates folders, on every use.
+    pub fn refresh(&mut self) {
+        for project in self.open.iter_mut().filter(|p| p.is_stale()) {
+            match Project::load(&project.root) {
+                Ok(mut fresh) if fresh.id == project.id => {
+                    fresh.notes = std::mem::take(&mut project.notes);
+                    *project = fresh;
+                }
+                Ok(fresh) => {
+                    project.modified = fresh.modified;
+                    project.notes.push(format!(
+                        "{PROJECT_FILE} now says id `{}`; close and open the project to use it",
+                        fresh.id
+                    ));
+                }
+                Err(error) => {
+                    project.modified = modified(&project.root);
+                    project
+                        .notes
+                        .push(format!("{PROJECT_FILE} changed: {error}"));
+                }
+            }
+        }
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Project> {

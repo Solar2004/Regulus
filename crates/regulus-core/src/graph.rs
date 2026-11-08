@@ -64,6 +64,39 @@ pub fn check_profile(profile: &Profile, is_installed: impl Fn(&str) -> bool) -> 
     report.list
 }
 
+/// The nodes of a profile whose module its project keeps from running (`[modules]
+/// disable` or `enable` in its `regulus.toml`, docs/11-composition.md §13): each one is
+/// reported as disabled, with the project as the reason. A warning, not an error: the
+/// profile is still valid and can be saved; `execution.start` refuses to run them.
+pub fn check_vetoed(
+    profile: &Profile,
+    project: &str,
+    vetoes: impl Fn(&str) -> bool,
+) -> Vec<Diagnostic> {
+    let mut report = Report {
+        list: Vec::new(),
+        workflow: None,
+    };
+    for workflow in &profile.workflows {
+        report.workflow = Some(&workflow.id);
+        for node in &workflow.nodes {
+            if let Some(module) = node.module_id.as_deref().filter(|m| vetoes(m)) {
+                report.push(
+                    Severity::Warning,
+                    "node.module_disabled",
+                    format!(
+                        "disabled in project {project}: module `{module}` is off in its \
+                         [modules] disable/enable"
+                    ),
+                    Some(&node.id),
+                    None,
+                );
+            }
+        }
+    }
+    report.list
+}
+
 /// Checks the fields of module nodes the core understands, from what their module's
 /// manifest declares (`manifest_of`; a module that is not loaded is skipped): a
 /// [`FIELD_WORKFLOW`] field must name a workflow of the profile with a "then" output. Unset

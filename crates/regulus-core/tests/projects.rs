@@ -407,3 +407,72 @@ fn project_templates_are_listed_and_applied_into_the_project() {
     );
     assert_eq!(unknown.unwrap_err().0, code::PROJECT_NOT_FOUND);
 }
+
+#[test]
+fn a_vetoed_module_is_disabled_in_check_and_refused_on_start() {
+    let s = Setup::new("veto");
+    let demo = s.folder("demo");
+    let dir = demo.join(".regulus/profiles");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("mine.toml"), profile_text("mine")).unwrap();
+    open(&s, &demo);
+
+    // Not vetoed yet: it starts.
+    let started = s
+        .call(method::EXECUTION_START, json!({ "profile_id": "mine" }))
+        .unwrap();
+    assert_eq!(started["project_id"], "demo");
+    s.call(method::EXECUTION_STOP, json!({ "id": started["id"] }))
+        .unwrap();
+
+    // An edit to regulus.toml counts without reopening.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(
+        demo.join("regulus.toml"),
+        "[modules]\ndisable = [\"test/echo\"]\n",
+    )
+    .unwrap();
+    let check = s
+        .call(method::PROFILE_CHECK, json!({ "id": "mine" }))
+        .unwrap();
+    let disabled: Vec<&Value> = check
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "node.module_disabled")
+        .collect();
+    assert_eq!(disabled.len(), 1, "{check}");
+    assert_eq!(disabled[0]["severity"], "warning");
+    assert_eq!(disabled[0]["node_id"], "echo");
+    assert!(disabled[0]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("disabled in project demo"));
+    let refused = s
+        .call(method::EXECUTION_START, json!({ "profile_id": "mine" }))
+        .unwrap_err();
+    assert_eq!(refused.0, code::MODULE_DISABLED);
+    assert!(
+        refused.1.contains("disabled in project demo"),
+        "{}",
+        refused.1
+    );
+
+    // `enable` without it vetoes it too; with it, it runs again.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(
+        demo.join("regulus.toml"),
+        "[modules]\nenable = [\"x/other\"]\n",
+    )
+    .unwrap();
+    let refused = s.call(method::EXECUTION_START, json!({ "profile_id": "mine" }));
+    assert_eq!(refused.unwrap_err().0, code::MODULE_DISABLED);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(
+        demo.join("regulus.toml"),
+        "[modules]\nenable = [\"test/echo@0.1.0\"]\n",
+    )
+    .unwrap();
+    s.call(method::EXECUTION_START, json!({ "profile_id": "mine" }))
+        .unwrap();
+}

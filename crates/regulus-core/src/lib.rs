@@ -43,7 +43,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
     warnings.extend(found);
     for project in projects.iter_mut() {
         let found = profiles.load_project(&project.id, &project.profiles);
-        project.warnings.extend(found);
+        project.notes.extend(found);
     }
     let store = match Store::open(&config.store_dir(), &config.store) {
         Ok(store) => {
