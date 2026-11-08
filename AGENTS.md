@@ -26,9 +26,10 @@ módulos de serie de [`docs/13-blocks.md`](docs/13-blocks.md) §3 están constru
 aplican desde el core (`regulus template ls|show|apply`, `11-composition.md` §7).
 La caja Agente se encadena con cables "luego" (`prompt` · `reply` · `failed`, contexto nuevo
 por vuelta) y la primera plantilla, Ralph (`templates/ralph.toml`), corre con opencode.
-**Lo siguiente (Alexander, 2026-11-08): la app** (`plan.md` §3 filas 5-6: canvas editable,
-Operar, instalar plantillas); las plantillas 3-8 de `13-blocks.md` §5 van en paralelo, son
-datos. La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+**La app ya edita y opera** (2026-11-08, `plan.md` §3 filas 5-6, `04-client.md` §8-9): canvas
+editable con paleta desde los manifiestos, Operar con ejecuciones y eventos reales, chat con
+agentes, e instalar plantillas desde un formulario. **Lo siguiente:** las plantillas 3-8 de
+`13-blocks.md` §5 (son datos) y pulir la app con uso real. La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -172,8 +173,8 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **La app** (`plan.md` §3 filas 5-6): core para editar (`module.manifest`, `profile.save`) → canvas editable → Operar e instalar plantillas | nada |
-| 2 | **Plantillas 3-8** de `13-blocks.md` §5, en paralelo con la app (~~mecanismo~~, ~~Ralph~~) | pxl: `claude-pxl` no instalado |
+| 1 | **Plantillas 3-8** de `13-blocks.md` §5 (~~mecanismo~~, ~~Ralph~~, ~~app~~) | pxl: `claude-pxl` no instalado |
+| 2 | **Pulir la app** con uso real: nodos añadidos por clic se solapan; el pie de la barra lateral dice "No modules installed" con módulos cargados; la app misma por configuración (`00-principles.md` §4) | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 

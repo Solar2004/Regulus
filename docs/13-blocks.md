@@ -210,7 +210,7 @@ de app, unas 5 semanas en total. Se corrigen con el tiempo real al lado.
 | 4 | ✅ Módulos de entorno: `workspace` · `tasks` · `memory` · `web` · `human` · `service` (hecho 2026-11-07, medio día, tres ramas en paralelo, cada una revisada antes de mezclar) | ~6 días |
 | 5 | Plantillas de §5, en orden, cada una corriendo por CLI/TUI. ✅ El mecanismo (`regulus template apply`, RPC `template.*`, `11-composition.md` §7; hecho 2026-11-08, medio día, opción 1A de Alexander). Se prueban con `engine-opencode` y un modelo gratis (opción 2B). ✅ Ralph (2026-11-08; para ella la caja Agente ganó puertos "luego"). Las demás, en paralelo con la app (paso 7), por decisión de Alexander del 2026-11-08 | ~4 días |
 | 6 | Pasarela, solo cuando una plantilla la pida | — |
-| 7 | App: canvas editable, Operar, instalar plantillas; la app misma editable y por configuración (`00-principles.md` §4) | ~2 sem |
+| 7 | ✅ App: canvas editable, Operar, instalar plantillas (hecho 2026-11-08, un día, tres ramas revisadas y probadas en navegador contra el core real; `plan.md` §3 filas 5-6, `04-client.md` §8-9). Pendiente: la app misma editable y por configuración más allá de los ajustes de cada vista (`00-principles.md` §4) | ~2 sem |
 
 Cada paso: `cargo test`, matriz de ablación, el ejemplo por CLI antes de tocar UI. Antes de
 escribir una caja, buscar el crate que ya lo hace (cron, `rmcp`, `notify`…).
