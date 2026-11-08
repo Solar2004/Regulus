@@ -446,3 +446,35 @@ start_view = "operate"
 **Respuestas de Alexander (2026-11-08):** id = el nombre de la carpeta salvo `[project] id`;
 `config.toml` con clave desconocida **avisa y sigue**; orden: registro + perfiles/plantillas
 + veto primero, `ProcessModule` después.
+
+**Construido (2026-11-08)** ✅ — registro, perfiles y plantillas del proyecto, veto y
+tolerancia; `ProcessModule` no.
+
+- **Registro:** `project.list` · `get` · `open` · `close` (protocolo 1.12, códigos `-32010` a
+  `-32013`, [`composition-preview.md`](composition-preview.md)) y `regulus project
+  ls|show|open|close`. `open` crea un `regulus.toml` mínimo (`[project] name`) si no hay, y
+  edita solo `[projects] paths` de `config.toml` leyéndolo como tabla: lo demás se conserva,
+  **los comentarios no**. `close` no borra nada. Sin `[project] profiles`/`templates`, valen
+  `.regulus/profiles` y `.regulus/templates`. El id se valida como el de un perfil; dos
+  proyectos con el mismo id no se abren a la vez.
+- **Tolerancia:** clave desconocida en cualquier nivel → se conserva (`project.get` la da en
+  `content`) y avisa; un `regulus.toml` roto deja los valores por defecto y avisa;
+  `[[modules.local]]` se lee, se devuelve y avisa "local modules are not supported yet";
+  `[client]` se devuelve tal cual (nadie lo consume aún). `config.toml` igual: avisa al
+  arrancar (`regulus: … unknown key`) y sigue; `hello` no devuelve avisos, no tenía dónde.
+- **Perfiles y plantillas:** los del proyecto se cargan al abrir con su `project_id` (si el
+  fichero dice otro, aviso y gana el proyecto) y se descargan al cerrar; las ejecuciones en
+  marcha siguen con su copia. `profile.save` y `template.apply --project` escriben en la
+  primera carpeta de perfiles del proyecto. `template.list` los etiqueta con `project_id`.
+- **Veto:** por id de manifiesto (`autor/módulo`, cualquier versión); `profile.check` da
+  `node.module_disabled` como **aviso** (el perfil sigue siendo válido y se puede guardar) y
+  `execution.start` y las llamadas hijas rechazan (`-32013`).
+
+**Desvíos:** (1) el ejemplo `disable = ["web"]` no vale: se nombra por id de manifiesto
+(`regulus/web`) y un nombre que no casa con ningún módulo cargado avisa. (2) Una plantilla de
+un proyecto aplicada sin `project_id` cae en su proyecto, no en el global. (3) El
+`regulus.toml` se relee si cambió (se mira su fecha en cada llamada): el veto y los avisos
+siguen al fichero sin reabrir; cambiar el id o las carpetas de perfiles pide cerrar y abrir.
+(4) Una ejecución que se reanuda tras reiniciar el core no pasa el veto: corre la copia que
+tenía. **Queda:** `ProcessModule` para `[[modules.local]]` y un consumidor de `[client]`
+(`04-client.md`).
