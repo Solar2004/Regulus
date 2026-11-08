@@ -23,6 +23,8 @@ struct Seen {
     stopped: Vec<String>,
     /// Sessions whose turn was asked to end.
     cancelled: Vec<String>,
+    /// The engine has no cancel: it answers `UnknownMethod`.
+    no_cancel: bool,
     slow_began: usize,
     slow_returned: usize,
     /// Lets every `slow` turn finish.
@@ -135,6 +137,9 @@ impl Module for FakeEngine {
                     turn["usage"] = json!({ "inputTokens": 12, "outputTokens": 3 });
                 }
                 Ok(turn)
+            }
+            engine::SESSION_CANCEL if self.shared.seen().no_cancel => {
+                Err(ModuleError::UnknownMethod(name.into()))
             }
             engine::SESSION_CANCEL => {
                 let args: engine::CancelArgs = serde_json::from_value(call.args).unwrap();
@@ -486,7 +491,8 @@ fn a_workdir_value_moves_the_following_turns_to_a_session_opened_there() {
 #[test]
 fn a_turn_past_turn_timeout_ms_is_cancelled_or_loses_its_session_and_fails() {
     let data = data_dir("timeout");
-    let config = json!({ "workdir": "/", "turn_timeout_ms": 100, "cancel_grace_ms": 100 });
+    // Long enough that the turns that must end well do on a loaded machine.
+    let config = json!({ "workdir": "/", "turn_timeout_ms": 500, "cancel_grace_ms": 500 });
     let (core, id, engine) = start_with(config, &data);
     // An engine that hears the cancel ends the turn: the session stays.
     send(&core, &id, "hang");
@@ -495,7 +501,7 @@ fn a_turn_past_turn_timeout_ms_is_cancelled_or_loses_its_session_and_fails() {
     assert_eq!(out[0].0, "failed");
     let error = out[0].1.as_str().unwrap();
     assert!(
-        error.contains("turn timed out after 100 ms") && error.contains("cancelled"),
+        error.contains("turn timed out after 500 ms") && error.contains("cancelled"),
         "{error}"
     );
     assert_eq!(out[1], reply("s1:1:one"));
@@ -506,7 +512,7 @@ fn a_turn_past_turn_timeout_ms_is_cancelled_or_loses_its_session_and_fails() {
     assert_eq!(out[2].0, "failed");
     let error = out[2].1.as_str().unwrap();
     assert!(
-        error.contains("turn timed out after 100 ms") && error.contains("dropped"),
+        error.contains("turn timed out after 500 ms") && error.contains("dropped"),
         "{error}"
     );
     assert_eq!(out[3], reply("s2:1:two"));
@@ -520,6 +526,75 @@ fn a_turn_past_turn_timeout_ms_is_cancelled_or_loses_its_session_and_fails() {
             seen.stopped
         );
     }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn an_engine_without_cancel_loses_the_session_of_a_turn_that_ran_out() {
+    let data = data_dir("no-cancel");
+    let config = json!({ "workdir": "/", "turn_timeout_ms": 500, "cancel_grace_ms": 500 });
+    let (core, id, engine) = start_with(config, &data);
+    engine.seen().no_cancel = true;
+    send(&core, &id, "hang");
+    send(&core, &id, "one");
+    let out = outputs(&core, &id, 2);
+    assert_eq!(out[0].0, "failed");
+    let error = out[0].1.as_str().unwrap();
+    assert!(
+        error.contains("could not cancel") && error.contains("its session was dropped"),
+        "{error}"
+    );
+    assert_eq!(out[1], reply("s2:1:one"));
+    assert!(engine.seen().cancelled.is_empty());
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn fresh_context_and_a_move_open_one_session_not_two() {
+    let data = data_dir("fresh-move");
+    let elsewhere = data_dir("fresh-move-target");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (core, id, engine) = start("yes", &data);
+    send(&core, &id, "one");
+    assert_eq!(outputs(&core, &id, 1), [reply("s1:1:one")]);
+    send_to(&core, &id, "dir", elsewhere.to_str().unwrap());
+    send(&core, &id, "two");
+    send(&core, &id, "three");
+    assert_eq!(
+        outputs(&core, &id, 3)[1..],
+        [reply("s2:1:two"), reply("s3:1:three")]
+    );
+    // The same directory spelled another way is no move.
+    let spelled = elsewhere.join("..").join(elsewhere.file_name().unwrap());
+    send_to(&core, &id, "dir", spelled.to_str().unwrap());
+    {
+        let seen = engine.seen();
+        assert_eq!(seen.started, ["s1", "s2", "s3"]);
+        assert_eq!(
+            seen.cwds,
+            [PathBuf::from("/"), elsewhere.clone(), elsewhere.clone()]
+        );
+    }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+#[test]
+fn the_same_directory_spelled_another_way_keeps_the_session() {
+    let data = data_dir("same-dir");
+    let (core, id, engine) = start("no", &data);
+    send(&core, &id, "one");
+    assert_eq!(outputs(&core, &id, 1), [reply("s1:1:one")]);
+    send_to(&core, &id, "dir", "/tmp/..");
+    send(&core, &id, "two");
+    assert_eq!(outputs(&core, &id, 2)[1], reply("s1:2:two"));
+    assert_eq!(engine.seen().started, ["s1"]);
     core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
         .unwrap();
     let _ = std::fs::remove_dir_all(&data);

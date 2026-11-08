@@ -205,9 +205,12 @@ agente, no una valla: con `allow` puede escribir fuera por ruta absoluta. Lo usa
 ✅ **Turno con tope (2026-11-08).** Campo `turn_timeout_ms` (0 = sin límite): un turno que
 no da ni `reply` ni `failed` en ese tiempo (proveedor sin cuota que reintenta por dentro,
 adaptador colgado) se cancela con `engine.session.cancel` y sale por `failed` como
-"turn timed out after N ms (it was cancelled)". Si el motor no tiene cancelar, o el turno
-sigue vivo pasado `cancel_grace_ms` (5000), la caja cierra la sesión ("… (its session was
-dropped)") y el turno siguiente abre otra, sin contexto. Vale para los tres caminos de
+"turn timed out after N ms (it was cancelled)". Si el motor no puede cancelar, el turno
+acaba con error tras la cancelación o sigue vivo pasado `cancel_grace_ms` (5000), la caja
+cierra la sesión ("turn timed out after N ms; <qué pasó>: its session was dropped") y el
+turno siguiente abre otra, sin contexto. Una respuesta que llega justo al vencer es la del
+turno: sale por `reply`. Al comparar directorios para decidir si se mueve, la caja resuelve
+`..` y enlaces: `/a/../b` y `/b` son el mismo y no abren sesión. Vale para los tres caminos de
 prompt (`prompt`, `agent.prompt`, canal). `regulus-acp` lo sirve: el turno escucha la
 cancelación mientras lee y manda `session/cancel` al agente. Probado contra un motor
 falso y contra el agente ACP de prueba (`hang` responde a la cancelación, `deaf` no).

@@ -229,6 +229,13 @@ fn workdir_value(value: &Value) -> Result<String, ModuleError> {
     }
 }
 
+/// Whether two paths name one directory: `/a/../b` and `/b`, or a link and its target,
+/// do. A path that cannot be resolved is compared as it is.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    a == b || real(a) == real(b)
+}
+
 fn workdir(setting: Option<&str>) -> Result<PathBuf, ModuleError> {
     let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     let dir = match setting.map(str::trim).filter(|s| !s.is_empty()) {
@@ -575,7 +582,7 @@ impl Inner {
                 .and_then(Value::as_str)
                 == Some(YES);
             // A session keeps the directory it opened in: moving is opening another.
-            let renew = (fresh && used || cwd != found.cwd || found.dropped)
+            let renew = (fresh && used || !same_dir(&cwd, &found.cwd) || found.dropped)
                 .then(|| (found.node.clone(), cwd));
             (
                 found.engine.clone(),
@@ -627,23 +634,35 @@ impl Inner {
                 "the turn ended without an answer".into(),
             )),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let grace = Duration::from_millis(self.count(node, CANCEL_GRACE_FIELD));
+                // The answer may have come just as the time ran out: it is the turn's.
+                if let Ok(outcome) = answered.try_recv() {
+                    return outcome;
+                }
+                let grace = self.count(node, CANCEL_GRACE_FIELD);
                 let cancel = json(engine::CancelArgs {
                     session_id: session_id.clone(),
                 })?;
-                let ended = self
-                    .ctx
-                    .call(&engine, engine::SESSION_CANCEL, cancel)
-                    .is_ok()
-                    && answered.recv_timeout(grace).is_ok();
-                let how = if ended {
-                    "it was cancelled"
-                } else {
-                    self.drop_session(me, &engine, session_id);
-                    "its session was dropped"
+                // Only a turn that ends well after the cancel keeps its session; an engine
+                // that cannot cancel, or a session that died meanwhile, loses it.
+                let how = match self.ctx.call(&engine, engine::SESSION_CANCEL, cancel) {
+                    Err(error) => format!("the engine could not cancel it ({error})"),
+                    Ok(_) => match answered.recv_timeout(Duration::from_millis(grace)) {
+                        Ok(Ok(_)) => {
+                            return Err(ModuleError::Failed(format!(
+                                "turn timed out after {limit} ms (it was cancelled)"
+                            )))
+                        }
+                        Ok(Err(error)) => {
+                            format!("it ended with an error once cancelled ({error})")
+                        }
+                        Err(_) => {
+                            format!("it did not end within `{CANCEL_GRACE_FIELD}` ({grace} ms)")
+                        }
+                    },
                 };
+                self.drop_session(me, &engine, session_id);
                 Err(ModuleError::Failed(format!(
-                    "turn timed out after {limit} ms ({how})"
+                    "turn timed out after {limit} ms; {how}: its session was dropped"
                 )))
             }
         }

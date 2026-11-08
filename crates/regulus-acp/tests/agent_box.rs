@@ -152,7 +152,7 @@ fn engines_report_what_they_find_without_an_execution() {
 
 #[test]
 fn a_turn_past_its_time_is_cancelled_over_acp_or_its_agent_dropped() {
-    let config = json!({ "workdir": "/tmp", "turn_timeout_ms": 300, "cancel_grace_ms": 2000 });
+    let config = json!({ "workdir": "/tmp", "turn_timeout_ms": 1000, "cancel_grace_ms": 2000 });
     let core = core_with(true, config);
     let execution = core
         .dispatch(method::EXECUTION_START, json!({ "profile_id": "agents" }))
@@ -161,7 +161,7 @@ fn a_turn_past_its_time_is_cancelled_over_acp_or_its_agent_dropped() {
     // `hang` ends its turn on `session/cancel`: the session goes on.
     let error = prompt(&core, id, "hang").unwrap_err().message;
     assert!(
-        error.contains("turn timed out after 300 ms (it was cancelled)"),
+        error.contains("turn timed out after 1000 ms (it was cancelled)"),
         "{error}"
     );
     assert_eq!(prompt(&core, id, "hello").unwrap()["text"], "echo: hello");
