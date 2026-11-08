@@ -60,9 +60,8 @@ Iconos y colores de cada estado: [`08-design-system.md`](08-design-system.md).
 - **Hecho (2026-10-18):** la conexión es una sola para toda la app (`src/core/connection.ts`).
   En el escritorio, el shell lee `port` y `token` del home, la UI dice `hello` y, si nadie
   responde, el shell lanza `regulus --home <home> serve` en su propio grupo de procesos y
-  espera el puerto nuevo. Lo configura `[client]` de `config.toml`: `autostart` (`true`),
-  `core_command` (vacío = `regulus` junto a la app, si no el del `PATH`) y
-  `start_timeout_ms` (5000), más `intro` y `refresh_ms` para la TUI (§7). Lo que imprime el core lanzado va a `<home>/core.log`. En un
+  espera el puerto nuevo. Lo configura `[client]` de `config.toml` (claves y quién las lee:
+  §11). Lo que imprime el core lanzado va a `<home>/core.log`. En un
   navegador sigue igual: `VITE_RPC_URL` o el mock. La lógica vive en `regulus_core::local`
   para que la TUI la use también.
 
@@ -152,8 +151,8 @@ métodos; ninguno nuevo en el core.
   volver (y `Ctrl+C` con cambios pregunta). Dos acciones del mismo contexto en la misma
   tecla es un error al arrancar; `n` rechaza solo si hay algo que rechazar.
   Números: `event_page` 200, `event_keep` 1000, `value_max` 240, `cascade_step` 40,
-  `node_width` 250, `node_height` 160. 🔶 Falta leerlos de `config.toml` (`[client.keys]`,
-  `[client.tui]`): `config.rs` aún no los lleva.
+  `node_width` 250, `node_height` 160. Se cambian en `[client.keys]` y `[client.tui]` de
+  `config.toml` (§11).
 
 ---
 
@@ -248,3 +247,57 @@ pura en `logic.ts` con tests, componentes aparte). Ningún método nuevo en el c
   por el id del módulo.
 - **Mock:** `mock/settings.mjs` + `mock/settings.json` contestan `secret.*` y
   `service.*` y añaden módulos en cada estado (activo, roto, desactivado, incompatible).
+
+---
+
+## 11. `[client]` de `config.toml` (2026-11-08)
+
+✅ **HECHO** (2026-11-08) — `[client]` de `<home>/config.toml` es el único sitio del que los
+clientes (el shell de escritorio, la app y la TUI) leen su configuración. El core la lee al
+arrancar y la sirve con `config.client` (protocolo 1.13,
+[`composition-preview.md`](composition-preview.md)); la TUI y el shell, que viven junto al
+core, la leen del fichero.
+
+| Clave | Por defecto | Quién la lee | Qué hace |
+|---|---|---|---|
+| `autostart` | `true` | shell, TUI | Lanzar un core si nadie responde; si no, se muestra el comando (§4) |
+| `core_command` | vacío | shell, TUI | Con qué se lanza; vacío = `regulus` junto al cliente, si no el del `PATH` |
+| `start_timeout_ms` | 5000 | shell, TUI | Cuánto tiene el core lanzado para escribir su puerto |
+| `intro` | `true` | TUI | La intro (§7). La app no tiene intro: no la usa |
+| `refresh_ms` | 1000 | TUI, app | Cada cuánto se pregunta al core qué corre |
+| `start_view` | la página de inicio de la app | app | La vista con la que abre: `home`, `canvas`, `operate`, `templates` o `settings`; otro valor no cambia nada |
+| `keys.*` | §7 | TUI | Teclas por acción: `save = "ctrl+w"` o una lista |
+| `tui.*` | §7 | TUI; `event_page`, `event_keep` y `value_max` también la app | Números: `event_page`, `event_keep`, `value_max`, `cascade_step`, `node_width`, `node_height` |
+
+- **Por proyecto.** El `[client]` del `regulus.toml` de un proyecto
+  ([`11-composition.md`](11-composition.md) §13) va encima del global, clave a clave; las
+  tablas (`keys`, `tui`) también se mezclan clave a clave. La app lo pide de nuevo al
+  cambiar de proyecto; la TUI aún no elige proyecto y usa el global.
+- **Precedencia:** lo que la persona cambia en la app (guardado en el dispositivo) > el
+  proyecto > `config.toml` > los defaults de cada cliente. *Reset* en la app borra solo lo
+  cambiado en ella: vuelve a lo del fichero.
+- **`config.client` da solo lo escrito**, no los defaults, y `sources` dice de qué fichero
+  sale cada valor (`config.toml` o `regulus.toml`), por `clave` o `tabla.clave`. Así la app
+  distingue un valor del fichero de su propio default y lo dice junto al campo ("From
+  config.toml"). Un proyecto que ya no está abierto cae al global.
+- **Cuándo se lee.** El core lee el `[client]` global una vez, al arrancar: cambiarlo pide
+  reiniciar el core. El del proyecto se relee en vivo (§13 de `11-composition.md`). La app
+  pide `config.client` al conectar (también al reconectar) y al cambiar de proyecto; un fallo
+  que no sea `-32010` (proyecto cerrado: cae al global) deja los valores que tenía.
+- **Límites de la app.** La app recorta cada número a sus propios límites, que no son los de
+  la TUI: `tui.event_page = 5` se ve como 10 en la app (con "From config.toml") y como 5 en
+  la TUI.
+- **`start_view` se aplica una vez,** con la primera respuesta tras abrir la app: la del
+  proyecto que estaba elegido si lo había, si no la global, y solo si la persona no eligió
+  página de inicio en Ajustes (una guardada antes de existir `start_view` cuenta como
+  elegida solo si no es la de por defecto) ni se movió aún. Cambiar de proyecto después no
+  cambia de vista.
+- **Nada rígido:** el core no decide qué entiende un cliente. Una clave que no conoce se
+  conserva, se sirve tal cual y se avisa ("kept for clients", en `warnings` de
+  `config.client` y al arrancar). Lo que la TUI no entiende en `keys` o `tui` (una acción
+  que no existe, un número < 1 donde no vale, dos acciones con la misma tecla) la para al
+  arrancar, antes de tomar la terminal, con el fichero y la clave: `…/config.toml: [client] tui.event_pag: no such setting`.
+- **Código:** `ClientConfig` y `layer_client` en `regulus-core/src/config.rs`;
+  `tui::client_table` y `tui::options` en la CLI; `src/core/clientConfig.ts`,
+  `src/operate/settings.ts` y `applyStartView` (`src/store/useRegulusUi.ts`) en la app; el
+  mock lo sirve desde `mock/settings.json`.

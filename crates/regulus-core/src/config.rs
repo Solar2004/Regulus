@@ -22,6 +22,10 @@ const STORE_DIR: &str = "store";
 const SECRETS_FILE: &str = "secrets.toml";
 const CORE_LOG_FILE: &str = "core.log";
 const FILE_SOURCE: &str = "file";
+const CLIENT_SECTION: &str = "client";
+/// Where `config.client` says a value came from.
+const GLOBAL_SOURCE: &str = "config.toml";
+const PROJECT_SOURCE: &str = "regulus.toml";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -312,6 +316,16 @@ pub struct ClientConfig {
     pub intro: bool,
     /// How often a client asks the core what is running, in milliseconds.
     pub refresh_ms: u64,
+    /// Keys of the terminal UI, action = key or list of keys. The client checks them.
+    pub keys: toml::Table,
+    /// Numbers of the terminal UI (`event_page`, `value_max`…). The client checks them.
+    pub tui: toml::Table,
+    /// The view the app opens on. The app checks it.
+    pub start_view: Option<String>,
+    /// `[client]` as `config.toml` writes it, unknown keys included: what `config.client`
+    /// serves, so a client can tell a written value from its own default.
+    #[serde(skip)]
+    pub written: toml::Table,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
     pub unknown: toml::Table,
@@ -325,6 +339,10 @@ impl Default for ClientConfig {
             start_timeout_ms: 5000,
             intro: true,
             refresh_ms: 1000,
+            keys: toml::Table::new(),
+            tui: toml::Table::new(),
+            start_view: None,
+            written: toml::Table::new(),
             unknown: toml::Table::new(),
         }
     }
@@ -356,6 +374,45 @@ pub struct Config {
     pub unknown: toml::Table,
 }
 
+/// `[client]` as a client reads it: `global` (`config.toml`) with `project` (its
+/// `regulus.toml`) on top, key by key, and where each value came from. A table on both
+/// sides merges key by key; anything else the project has replaces the global value.
+pub fn layer_client(
+    global: &toml::Table,
+    project: Option<&toml::Table>,
+) -> (toml::Table, std::collections::BTreeMap<String, String>) {
+    let empty = toml::Table::new();
+    let project = project.unwrap_or(&empty);
+    let mut merged = global.clone();
+    for (key, value) in project {
+        match (merged.get_mut(key), value) {
+            (Some(toml::Value::Table(below)), toml::Value::Table(above)) => {
+                below.extend(above.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            _ => {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let source = |set: bool| if set { PROJECT_SOURCE } else { GLOBAL_SOURCE }.to_string();
+    let mut sources = std::collections::BTreeMap::new();
+    for (key, value) in &merged {
+        match value {
+            toml::Value::Table(inner) => {
+                let above = project.get(key).and_then(toml::Value::as_table);
+                for name in inner.keys() {
+                    let set = above.is_some_and(|t| t.contains_key(name));
+                    sources.insert(format!("{key}.{name}"), source(set));
+                }
+            }
+            _ => {
+                sources.insert(key.clone(), source(project.contains_key(key)));
+            }
+        }
+    }
+    (merged, sources)
+}
+
 /// `REGULUS_HOME`, or `~/.regulus`.
 pub fn default_home() -> PathBuf {
     if let Some(home) = std::env::var_os(HOME_ENV) {
@@ -369,10 +426,18 @@ impl Config {
     pub fn load(home: &Path) -> Result<Self, ConfigError> {
         let path = home.join(CONFIG_FILE);
         let mut config: Config = match fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).map_err(|source| ConfigError::Parse {
-                path: path.clone(),
-                source,
-            })?,
+            Ok(text) => {
+                let parse = |source| ConfigError::Parse {
+                    path: path.clone(),
+                    source,
+                };
+                let mut config: Config = toml::from_str(&text).map_err(parse)?;
+                let mut raw: toml::Table = toml::from_str(&text).map_err(parse)?;
+                if let Some(toml::Value::Table(client)) = raw.remove(CLIENT_SECTION) {
+                    config.client.written = client;
+                }
+                config
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Config::default(),
             Err(source) => return Err(ConfigError::Read { path, source }),
         };
@@ -398,7 +463,7 @@ impl Config {
 
     /// One warning per key no section knows, as `section.key`.
     fn unknown_keys(&self, path: &Path) -> Vec<String> {
-        let sections: [(&str, &toml::Table); 13] = [
+        let sections: [(&str, &toml::Table); 12] = [
             ("", &self.unknown),
             ("server.", &self.server.unknown),
             ("profiles.", &self.profiles.unknown),
@@ -411,13 +476,34 @@ impl Config {
             ("call.", &self.call.unknown),
             ("hooks.", &self.hooks.unknown),
             ("store.", &self.store.unknown),
-            ("client.", &self.client.unknown),
         ];
-        sections
+        let mut warnings: Vec<String> = sections
             .iter()
             .flat_map(|(at, table)| table.keys().map(move |key| format!("{at}{key}")))
             .map(|key| format!("{}: unknown key `{key}`; ignored", path.display()))
+            .collect();
+        warnings.extend(self.client_unknown(path));
+        warnings
+    }
+
+    /// One warning per `[client]` key the core does not know. Unlike the other sections,
+    /// the key is not dropped: `config.client` serves it, a client may know it.
+    fn client_unknown(&self, path: &Path) -> Vec<String> {
+        self.client
+            .unknown
+            .keys()
+            .map(|key| {
+                format!(
+                    "{}: unknown key `{CLIENT_SECTION}.{key}`; kept for clients",
+                    path.display()
+                )
+            })
             .collect()
+    }
+
+    /// The warnings about `[client]`, for `config.client`.
+    pub fn client_warnings(&self) -> Vec<String> {
+        self.client_unknown(&self.config_path())
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -494,12 +580,15 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::write(
             home.join(CONFIG_FILE),
-            "typo = 1\n[server]\nport = 0\nprot = 9\n[client]\nrefresh_ms = 50\n[later]\nx = 1\n",
+            "typo = 1\n[server]\nport = 0\nprot = 9\n[client]\nrefresh_ms = 50\n\
+             [client.keys]\nsave = \"ctrl+w\"\n[client.tui]\nevent_page = 50\n[later]\nx = 1\n",
         )
         .unwrap();
         let config = Config::load(&home).unwrap();
         assert_eq!(config.server.port, 0);
         assert_eq!(config.client.refresh_ms, 50);
+        assert_eq!(config.client.keys["save"].as_str(), Some("ctrl+w"));
+        assert_eq!(config.client.tui["event_page"].as_integer(), Some(50));
         let all = config.warnings.join("\n");
         for key in ["`typo`", "`server.prot`", "`later`"] {
             assert!(all.contains(key), "{key} in {all}");
@@ -509,6 +598,70 @@ mod tests {
         assert!(
             warnings.iter().any(|w| w.contains("`server.prot`")),
             "{warnings:?}"
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_project_client_goes_on_top_key_by_key() {
+        let global: toml::Table = toml::from_str(
+            "refresh_ms = 500\nintro = false\n[keys]\nsave = \"ctrl+w\"\n[tui]\nevent_page = 50\n",
+        )
+        .unwrap();
+        let project: toml::Table =
+            toml::from_str("refresh_ms = 250\nlater = 1\n[tui]\nvalue_max = 80\n").unwrap();
+        let (client, sources) = layer_client(&global, Some(&project));
+        assert_eq!(client["refresh_ms"].as_integer(), Some(250));
+        assert_eq!(client["intro"].as_bool(), Some(false));
+        assert_eq!(client["later"].as_integer(), Some(1));
+        assert_eq!(client["keys"]["save"].as_str(), Some("ctrl+w"));
+        assert_eq!(client["tui"]["event_page"].as_integer(), Some(50));
+        assert_eq!(client["tui"]["value_max"].as_integer(), Some(80));
+        assert_eq!(sources["refresh_ms"], PROJECT_SOURCE);
+        assert_eq!(sources["intro"], GLOBAL_SOURCE);
+        assert_eq!(sources["tui.event_page"], GLOBAL_SOURCE);
+        assert_eq!(sources["tui.value_max"], PROJECT_SOURCE);
+        assert!(!sources.contains_key("tui"));
+        assert_eq!(layer_client(&global, None).0, global);
+    }
+
+    #[test]
+    fn a_project_replaces_arrays_and_a_plain_value_replaces_a_table() {
+        let global: toml::Table =
+            toml::from_str("views = [\"a\", \"b\"]\n[keys]\nsave = \"ctrl+w\"\n").unwrap();
+        let project: toml::Table = toml::from_str("views = [\"c\"]\nkeys = \"none\"\n").unwrap();
+        let (client, sources) = layer_client(&global, Some(&project));
+        assert_eq!(client["views"], toml::Value::Array(vec!["c".into()]));
+        assert_eq!(client["keys"].as_str(), Some("none"));
+        assert_eq!(sources["views"], PROJECT_SOURCE);
+        assert_eq!(sources["keys"], PROJECT_SOURCE);
+        assert!(!sources.contains_key("keys.save"), "{sources:?}");
+    }
+
+    #[test]
+    fn client_is_kept_as_written_and_its_unknown_keys_warned() {
+        let home = std::env::temp_dir().join(format!("regulus-client-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(CONFIG_FILE),
+            "[server]\nprot = 1\n[client]\nstart_view = \"operate\"\ntheme = \"dark\"\n",
+        )
+        .unwrap();
+        let config = Config::load(&home).unwrap();
+        assert_eq!(config.client.start_view.as_deref(), Some("operate"));
+        assert_eq!(config.client.written.len(), 2);
+        assert_eq!(config.client.written["theme"].as_str(), Some("dark"));
+        let warnings = config.client_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("`client.theme`; kept for clients"),
+            "{warnings:?}"
+        );
+        assert!(
+            config.warnings.contains(&warnings[0]),
+            "{:?}",
+            config.warnings
         );
         let _ = fs::remove_dir_all(&home);
     }

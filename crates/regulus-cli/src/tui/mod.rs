@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event as TermEvent};
 use ratatui::DefaultTerminal;
+use regulus_core::config::ClientConfig;
 use regulus_core::Config;
 
 use self::app::App;
@@ -46,7 +47,7 @@ pub async fn run_with(
     timeout: Duration,
     client: Option<&toml::Table>,
 ) -> Result<()> {
-    let options = Options::from_client(client).map_err(anyhow::Error::msg)?;
+    let options = options(&config, client)?;
     let (events, incoming) = mpsc::channel();
     let core = core::spawn(config.clone(), timeout, events);
     core.send(Request::Status);
@@ -58,6 +59,21 @@ pub async fn run_with(
         ratatui::restore();
         result
     })
+}
+
+/// `[client]` of `config.toml` as [`run_with`] takes it: its `keys` and `tui` tables.
+pub fn client_table(client: &ClientConfig) -> toml::Table {
+    let mut table = toml::Table::new();
+    table.insert("keys".into(), toml::Value::Table(client.keys.clone()));
+    table.insert("tui".into(), toml::Value::Table(client.tui.clone()));
+    table
+}
+
+/// The keys and numbers `client` sets. A mistake stops the start with the file and the
+/// key it is in, before the terminal is taken.
+pub fn options(config: &Config, client: Option<&toml::Table>) -> Result<Options> {
+    Options::from_client(client)
+        .map_err(|e| anyhow::anyhow!("{}: [client] {e}", config.config_path().display()))
 }
 
 fn intro_status(connection: &Connection) -> &'static str {
@@ -145,5 +161,48 @@ fn screen(
             }
             refreshed = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn home(name: &str, text: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!("regulus-tui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("config.toml"), text).unwrap();
+        home
+    }
+
+    #[test]
+    fn config_toml_reaches_the_options() {
+        let home = home(
+            "options",
+            "[client.keys]\nsave = \"ctrl+w\"\n[client.tui]\nevent_page = 50\n",
+        );
+        let config = Config::load(&home).unwrap();
+        assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+        let options = options(&config, Some(&client_table(&config.client))).unwrap();
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(options.keys.save.matches(&ctrl_w));
+        assert_eq!(options.tuning.event_page, 50);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_mistake_names_the_file_and_the_key() {
+        let home = home("mistake", "[client.tui]\nevent_pag = 50\n");
+        let config = Config::load(&home).unwrap();
+        let error = options(&config, Some(&client_table(&config.client)))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("config.toml: [client] tui.event_pag"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -641,3 +641,55 @@ fn a_regulus_toml_that_is_not_toml_is_refused_on_open_and_listed_as_failed_on_st
         toml::from_str(&fs::read_to_string(s.dir.join("home/config.toml")).unwrap()).unwrap();
     assert!(config["projects"]["paths"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn config_client_puts_the_project_on_top_of_config_toml() {
+    let s = Setup::new("client");
+    let global: toml::Table =
+        toml::from_str("refresh_ms = 500\nintro = false\n[tui]\nevent_page = 50\n").unwrap();
+    s.core.set_client(
+        global,
+        vec!["config.toml: unknown key `client.x`; ignored".into()],
+    );
+
+    let plain = s.call(method::CONFIG_CLIENT, json!({})).unwrap();
+    assert_eq!(plain["client"]["refresh_ms"], 500);
+    assert_eq!(plain["client"]["tui"]["event_page"], 50);
+    assert_eq!(plain["sources"]["refresh_ms"], "config.toml");
+    assert_eq!(plain["warnings"].as_array().unwrap().len(), 1);
+
+    let demo = s.folder("demo");
+    fs::write(
+        demo.join("regulus.toml"),
+        "[client]\nrefresh_ms = 250\nshiny = \"yes\"\n[client.tui]\nvalue_max = 80\n",
+    )
+    .unwrap();
+    open(&s, &demo);
+    let layered = s
+        .call(method::CONFIG_CLIENT, json!({ "project_id": "demo" }))
+        .unwrap();
+    assert_eq!(layered["client"]["refresh_ms"], 250);
+    assert_eq!(layered["client"]["intro"], false);
+    assert_eq!(layered["client"]["shiny"], "yes");
+    assert_eq!(layered["client"]["tui"]["event_page"], 50);
+    assert_eq!(layered["client"]["tui"]["value_max"], 80);
+    assert_eq!(layered["sources"]["refresh_ms"], "regulus.toml");
+    assert_eq!(layered["sources"]["tui.event_page"], "config.toml");
+
+    // Without a project nothing of it shows.
+    assert_eq!(s.call(method::CONFIG_CLIENT, json!({})).unwrap(), plain);
+    let (code, _) = s
+        .call(method::CONFIG_CLIENT, json!({ "project_id": "nope" }))
+        .unwrap_err();
+    assert_eq!(code, code::PROJECT_NOT_FOUND);
+}
+
+#[test]
+fn config_client_without_config_toml_is_empty() {
+    let s = Setup::new("client-empty");
+    let answer = s.call(method::CONFIG_CLIENT, json!({})).unwrap();
+    assert_eq!(
+        answer,
+        json!({ "client": {}, "sources": {}, "warnings": [] })
+    );
+}

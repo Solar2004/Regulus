@@ -6,14 +6,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
 
 use regulus_proto::{
-    code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, Direction, DisabledNode,
-    EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, HookAnswer,
-    HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams, NameParams,
-    Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted, ProfileSaveParams,
-    ProfileSaved, ProjectDetails, ProjectFilter, ProjectOpenParams, ProjectSummary,
-    SecretSetParams, Severity, TemplateApplied, TemplateApplyParams, TemplateParams, TemplateText,
-    WireKind, Workflow, WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY,
-    WORKFLOW_SELF,
+    code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, ClientSettings, Direction,
+    DisabledNode, EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState,
+    HookAnswer, HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams,
+    NameParams, Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted,
+    ProfileSaveParams, ProfileSaved, ProjectDetails, ProjectFilter, ProjectOpenParams,
+    ProjectSummary, SecretSetParams, Severity, TemplateApplied, TemplateApplyParams,
+    TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams, WorkflowSent,
+    BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -129,6 +129,13 @@ pub struct ProjectHome {
     pub home: PathBuf,
 }
 
+/// `[client]` of `config.toml`, kept for `config.client`.
+#[derive(Debug, Clone, Default)]
+struct GlobalClient {
+    table: toml::Table,
+    warnings: Vec<String>,
+}
+
 /// Directories of nodes outside any project.
 const GLOBAL_DATA: &str = "global";
 /// Directories of nodes in a project, one per project id.
@@ -223,6 +230,9 @@ pub struct Core {
     projects: RwLock<Projects>,
     /// Without it, `project.open` and `project.close` change nothing on disk.
     project_home: RwLock<Option<ProjectHome>>,
+    /// `[client]` of `config.toml` as written, and what it has that the core does not know
+    /// (`set_client`).
+    client: RwLock<GlobalClient>,
     storage: Storage,
     bus: BusConfig,
     call: CallConfig,
@@ -316,6 +326,7 @@ impl Core {
             places: RwLock::default(),
             projects: RwLock::default(),
             project_home: RwLock::default(),
+            client: RwLock::default(),
             storage,
             executions: Mutex::default(),
             journal: Mutex::new(journal),
@@ -342,6 +353,29 @@ impl Core {
     pub fn set_projects(&self, projects: Projects, home: ProjectHome) {
         *self.projects.write().unwrap_or_else(|p| p.into_inner()) = projects;
         *self.project_home.write().unwrap_or_else(|p| p.into_inner()) = Some(home);
+    }
+
+    /// `[client]` of `config.toml` as written, and the warnings about it, for
+    /// `config.client`. Without it, a client gets only what a project sets.
+    pub fn set_client(&self, table: toml::Table, warnings: Vec<String>) {
+        *self.client.write().unwrap_or_else(|p| p.into_inner()) = GlobalClient { table, warnings };
+    }
+
+    /// `config.client`: the global `[client]` with the project's on top.
+    fn client_settings(&self, project_id: Option<&str>) -> Result<ClientSettings, RpcError> {
+        let project = project_id.map(|id| self.project(id)).transpose()?;
+        let global = self.client.read().unwrap_or_else(|p| p.into_inner());
+        let (table, sources) =
+            crate::config::layer_client(&global.table, project.as_ref().map(|p| &p.file.client));
+        let client = match serde_json::to_value(table) {
+            Ok(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        Ok(ClientSettings {
+            client,
+            sources,
+            warnings: global.warnings.clone(),
+        })
     }
 
     /// Reads again the `regulus.toml` files edited since they were read: a look at each
@@ -870,6 +904,10 @@ impl Core {
             }
             method::PROJECT_OPEN => json(self.open_project(parse(params)?)?),
             method::PROJECT_CLOSE => json(self.close_project(parse(params)?)?),
+            method::CONFIG_CLIENT => {
+                let filter: ProjectFilter = parse(params)?;
+                json(self.client_settings(filter.project_id.as_deref())?)
+            }
             method::TEMPLATE_LIST => json(self.list_templates()),
             method::TEMPLATE_GET => {
                 let params: TemplateParams = parse(params)?;

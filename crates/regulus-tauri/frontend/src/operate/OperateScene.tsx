@@ -30,6 +30,7 @@ function SettingsPanel() {
       <input type="number" min={operateLimits[key].min} max={operateLimits[key].max} value={settings[key]}
         onChange={(e) => settings.setSetting(key, Number(e.target.value))} />
       <small>{t(`operate.settings.${key}Description` as LocaleKey)}</small>
+      {settings.overrides[key] === undefined && settings.configuredFrom[key] && <small className="operate-source">{t("operate.settings.fromFile", { file: settings.configuredFrom[key] })}</small>}
     </label>)}
     <Button variant="outline" size="sm" onClick={settings.reset}><RotateCcw size={14} />{t("operate.settings.reset")}</Button>
   </section>;

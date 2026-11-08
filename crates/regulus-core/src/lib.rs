@@ -74,6 +74,7 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
         config.hooks.clone(),
     );
     core.set_template_places(config.template_places());
+    core.set_client(config.client.written.clone(), config.client_warnings());
     for project in projects.iter() {
         let found = project.warnings(|id| core.registry().is_installed(id));
         warnings.extend(found.iter().map(|w| format!("project {}: {w}", project.id)));

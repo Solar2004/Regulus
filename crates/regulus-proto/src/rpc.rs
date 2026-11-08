@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 /// `template.list`, `template.get` and `template.apply`; 1.11 adds what the app needs to
 /// edit: `module.manifest`, `profile.save` and `profile.delete`; 1.12 adds projects:
 /// `project.list`, `project.get`, `project.open`, `project.close`, `project_id` on
-/// templates and `template.apply`.
-pub const PROTOCOL: &str = "1.12";
+/// templates and `template.apply`; 1.13 adds `config.client`.
+pub const PROTOCOL: &str = "1.13";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -59,6 +59,9 @@ pub mod method {
     pub const PROJECT_OPEN: &str = "project.open";
     /// Forgets an open project; nothing on disk is deleted (`IdParams` → `ProjectSummary`).
     pub const PROJECT_CLOSE: &str = "project.close";
+    /// `[client]` of `config.toml` with a project's own `[client]` on top, for the clients
+    /// (`ProjectFilter` → `ClientSettings`). Read-only.
+    pub const CONFIG_CLIENT: &str = "config.client";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -86,6 +89,7 @@ pub mod method {
         PROJECT_GET,
         PROJECT_OPEN,
         PROJECT_CLOSE,
+        CONFIG_CLIENT,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -415,6 +419,24 @@ pub struct ProjectDetails {
     /// The whole file as read, unknown keys included where they were.
     #[serde(default)]
     pub content: serde_json::Value,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// `config.client`: the settings the clients read, only as far as they are written down;
+/// what is not there, each client takes from its own defaults.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClientSettings {
+    /// `[client]` of `config.toml` with the project's `[client]` on top, key by key; a table
+    /// on both sides (`keys`, `tui`) is merged key by key too. Keys the core does not know
+    /// are passed as they are: what a client understands is up to the client.
+    #[serde(default)]
+    pub client: serde_json::Map<String, serde_json::Value>,
+    /// The file each value came from (`config.toml` or `regulus.toml`), by `key` or, inside
+    /// a table, `table.key`.
+    #[serde(default)]
+    pub sources: std::collections::BTreeMap<String, String>,
+    /// What `config.toml` has in `[client]` that this core does not know.
     #[serde(default)]
     pub warnings: Vec<String>,
 }
