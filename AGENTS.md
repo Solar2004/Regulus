@@ -24,8 +24,11 @@ módulos de serie de [`docs/13-blocks.md`](docs/13-blocks.md) §3 están constru
 (lógica: `flow` · `files` · `process` · `judge` · `guards` · `triggers`; entorno:
 `workspace` · `tasks` · `memory` · `web` · `human` · `service`); las plantillas se
 aplican desde el core (`regulus template ls|show|apply`, `11-composition.md` §7).
-**Lo siguiente:** las plantillas de `13-blocks.md` §5, en orden (Ralph primero: `claude-pxl`
-no está instalado). La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+La caja Agente se encadena con cables "luego" (`prompt` · `reply` · `failed`, contexto nuevo
+por vuelta) y la primera plantilla, Ralph (`templates/ralph.toml`), corre con opencode.
+**Lo siguiente (Alexander, 2026-11-08): la app** (`plan.md` §3 filas 5-6: canvas editable,
+Operar, instalar plantillas); las plantillas 3-8 de `13-blocks.md` §5 van en paralelo, son
+datos. La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -169,8 +172,9 @@ Co-Authored-By: Tu nombre <email>
 
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
-| 1 | **Bloques** (`13-blocks.md` §7): ~~core~~ → ~~ranura `hooks`~~ → ~~módulos de lógica y entorno~~ → ~~aplicar plantillas~~ → plantillas de §5 | nada |
-| 2 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
+| 1 | **La app** (`plan.md` §3 filas 5-6): core para editar (`module.manifest`, `profile.save`) → canvas editable → Operar e instalar plantillas | nada |
+| 2 | **Plantillas 3-8** de `13-blocks.md` §5, en paralelo con la app (~~mecanismo~~, ~~Ralph~~) | pxl: `claude-pxl` no instalado |
+| 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
 ---
