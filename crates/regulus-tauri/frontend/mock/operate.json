@@ -1,0 +1,537 @@
+{
+  "manifests": [
+    {
+      "module": {
+        "id": "regulus/agent@0.1.0",
+        "name": "Agent",
+        "requires_proto": "^1.9",
+        "methods": [
+          "agent.prompt"
+        ],
+        "workflow_id": null
+      },
+      "node": [
+        {
+          "type": "agent",
+          "name": "Agent",
+          "port": [
+            {
+              "id": "engine",
+              "name": "engine",
+              "capability": "agent.engine@1",
+              "direction": "input",
+              "kind": "uses",
+              "required": true
+            },
+            {
+              "id": "prompt",
+              "name": "prompt",
+              "capability": "text@1",
+              "direction": "input",
+              "kind": "then",
+              "required": false
+            },
+            {
+              "id": "reply",
+              "name": "reply",
+              "capability": "text@1",
+              "direction": "output",
+              "kind": "then",
+              "required": false
+            },
+            {
+              "id": "failed",
+              "name": "failed",
+              "capability": "text@1",
+              "direction": "output",
+              "kind": "then",
+              "required": false
+            },
+            {
+              "id": "participant",
+              "name": "participant",
+              "capability": "participant@1",
+              "direction": "output",
+              "kind": "uses",
+              "required": false
+            }
+          ],
+          "field": []
+        }
+      ]
+    },
+    {
+      "module": {
+        "id": "regulus/engine-opencode@0.1.0",
+        "name": "opencode",
+        "requires_proto": "^1.9",
+        "methods": [
+          "opencode.detect"
+        ],
+        "workflow_id": null
+      },
+      "node": [
+        {
+          "type": "engine-opencode",
+          "name": "opencode",
+          "port": [
+            {
+              "id": "engine",
+              "name": "engine",
+              "capability": "agent.engine@1",
+              "direction": "output",
+              "kind": "uses",
+              "required": false
+            }
+          ],
+          "field": []
+        }
+      ]
+    },
+    {
+      "module": {
+        "id": "regulus/human@0.1.0",
+        "name": "Human",
+        "requires_proto": "^1.8",
+        "methods": [
+          "human.list",
+          "human.get",
+          "human.answer"
+        ],
+        "workflow_id": null
+      },
+      "node": [
+        {
+          "type": "review",
+          "name": "Review",
+          "port": [
+            {
+              "id": "in",
+              "name": "in",
+              "capability": "text@1",
+              "direction": "input",
+              "kind": "then",
+              "required": false
+            },
+            {
+              "id": "out",
+              "name": "out",
+              "capability": "text@1",
+              "direction": "output",
+              "kind": "then",
+              "required": false
+            }
+          ],
+          "field": []
+        }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "name": "echo",
+      "description": "Writes what reaches go and sends it back on done",
+      "path": "mock/templates/echo.toml",
+      "vars": [
+        {
+          "name": "who",
+          "description": "who is greeted"
+        },
+        {
+          "name": "file",
+          "description": "file the greeting goes to",
+          "default": "greeting.txt"
+        }
+      ],
+      "requires": [
+        {
+          "module": "regulus/files",
+          "version": ">=0.1"
+        }
+      ],
+      "text": "# Mock template: the real ones live in templates/ at the repo root.\nid = \"echo\"\nname = \"Echo for {{who}}\"\n",
+      "profile": {
+        "id": "echo",
+        "name": "Echo for {{who}}",
+        "project_id": null,
+        "extends": null,
+        "main_workflow_id": "main",
+        "workflows": [
+          {
+            "id": "main",
+            "name": "Echo",
+            "kind": "main",
+            "module_id": null,
+            "ports": [
+              {
+                "id": "go",
+                "name": "go",
+                "capability": "text@1",
+                "direction": "input",
+                "kind": "then",
+                "required": false
+              },
+              {
+                "id": "done",
+                "name": "done",
+                "capability": "text@1",
+                "direction": "output",
+                "kind": "then",
+                "required": false
+              }
+            ],
+            "nodes": [
+              {
+                "id": "note",
+                "name": "Write the greeting",
+                "type": "write",
+                "module_id": "regulus/files@0.1.0",
+                "resource": null,
+                "ports": [
+                  {
+                    "id": "in",
+                    "name": "in",
+                    "capability": "text@1",
+                    "direction": "input",
+                    "kind": "then",
+                    "required": false
+                  },
+                  {
+                    "id": "written",
+                    "name": "written",
+                    "capability": "path@1",
+                    "direction": "output",
+                    "kind": "then",
+                    "required": false
+                  }
+                ],
+                "config": {
+                  "path": "{{file}}"
+                },
+                "position": {
+                  "x": 350,
+                  "y": 100
+                },
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              }
+            ],
+            "wires": [
+              {
+                "id": "go-note",
+                "kind": "then",
+                "from": {
+                  "node_id": "self",
+                  "port_id": "go"
+                },
+                "to": {
+                  "node_id": "note",
+                  "port_id": "in"
+                }
+              },
+              {
+                "id": "note-done",
+                "kind": "then",
+                "from": {
+                  "node_id": "note",
+                  "port_id": "written"
+                },
+                "to": {
+                  "node_id": "self",
+                  "port_id": "done"
+                }
+              }
+            ],
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 900,
+              "height": 400
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "chat",
+      "description": "An agent with its engine, one without, and a channel",
+      "path": "mock/templates/chat.toml",
+      "vars": [
+        {
+          "name": "model",
+          "description": "model of the engine node",
+          "default": "opencode/glm-5.3-flash-free"
+        }
+      ],
+      "requires": [
+        {
+          "module": "regulus/agent",
+          "version": ">=0.1"
+        },
+        {
+          "module": "regulus/engine-opencode",
+          "version": ">=0.1"
+        }
+      ],
+      "text": "# Mock template.\nid = \"chat\"\nname = \"Agent and channel\"\n",
+      "profile": {
+        "id": "chat",
+        "name": "Agent and channel",
+        "project_id": null,
+        "extends": null,
+        "main_workflow_id": "main",
+        "workflows": [
+          {
+            "id": "main",
+            "name": "Agent and channel",
+            "kind": "main",
+            "module_id": null,
+            "ports": [
+              {
+                "id": "go",
+                "name": "go",
+                "capability": "text@1",
+                "direction": "input",
+                "kind": "then",
+                "required": false
+              },
+              {
+                "id": "done",
+                "name": "done",
+                "capability": "text@1",
+                "direction": "output",
+                "kind": "then",
+                "required": false
+              }
+            ],
+            "nodes": [
+              {
+                "id": "engine",
+                "name": "opencode",
+                "type": "engine-opencode",
+                "module_id": "regulus/engine-opencode@0.1.0",
+                "resource": null,
+                "ports": [
+                  {
+                    "id": "engine",
+                    "name": "engine",
+                    "capability": "agent.engine@1",
+                    "direction": "output",
+                    "kind": "uses",
+                    "required": false
+                  }
+                ],
+                "config": {
+                  "model": "{{model}}"
+                },
+                "position": {
+                  "x": 50,
+                  "y": 60
+                },
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "agent",
+                "name": "Agent",
+                "type": "agent",
+                "module_id": "regulus/agent@0.1.0",
+                "resource": null,
+                "ports": [
+                  {
+                    "id": "engine",
+                    "name": "engine",
+                    "capability": "agent.engine@1",
+                    "direction": "input",
+                    "kind": "uses",
+                    "required": true
+                  },
+                  {
+                    "id": "prompt",
+                    "name": "prompt",
+                    "capability": "text@1",
+                    "direction": "input",
+                    "kind": "then",
+                    "required": false
+                  },
+                  {
+                    "id": "reply",
+                    "name": "reply",
+                    "capability": "text@1",
+                    "direction": "output",
+                    "kind": "then",
+                    "required": false
+                  },
+                  {
+                    "id": "participant",
+                    "name": "participant",
+                    "capability": "participant@1",
+                    "direction": "output",
+                    "kind": "uses",
+                    "required": false
+                  }
+                ],
+                "config": {},
+                "position": {
+                  "x": 350,
+                  "y": 60
+                },
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "lonely",
+                "name": "Agent without engine",
+                "type": "agent",
+                "module_id": "regulus/agent@0.1.0",
+                "resource": null,
+                "ports": [
+                  {
+                    "id": "engine",
+                    "name": "engine",
+                    "capability": "agent.engine@1",
+                    "direction": "input",
+                    "kind": "uses",
+                    "required": true
+                  },
+                  {
+                    "id": "prompt",
+                    "name": "prompt",
+                    "capability": "text@1",
+                    "direction": "input",
+                    "kind": "then",
+                    "required": false
+                  },
+                  {
+                    "id": "reply",
+                    "name": "reply",
+                    "capability": "text@1",
+                    "direction": "output",
+                    "kind": "then",
+                    "required": false
+                  }
+                ],
+                "config": {},
+                "position": {
+                  "x": 350,
+                  "y": 260
+                },
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "room",
+                "name": "Room",
+                "type": "channel",
+                "module_id": "regulus/communication@0.1",
+                "resource": null,
+                "ports": [
+                  {
+                    "id": "participants",
+                    "name": "participants",
+                    "capability": "participant@1",
+                    "direction": "input",
+                    "kind": "uses",
+                    "required": false
+                  }
+                ],
+                "config": {},
+                "position": {
+                  "x": 650,
+                  "y": 60
+                },
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              }
+            ],
+            "wires": [
+              {
+                "id": "engine-agent",
+                "kind": "uses",
+                "from": {
+                  "node_id": "engine",
+                  "port_id": "engine"
+                },
+                "to": {
+                  "node_id": "agent",
+                  "port_id": "engine"
+                }
+              },
+              {
+                "id": "agent-room",
+                "kind": "uses",
+                "from": {
+                  "node_id": "agent",
+                  "port_id": "participant"
+                },
+                "to": {
+                  "node_id": "room",
+                  "port_id": "participants"
+                }
+              },
+              {
+                "id": "go-agent",
+                "kind": "then",
+                "from": {
+                  "node_id": "self",
+                  "port_id": "go"
+                },
+                "to": {
+                  "node_id": "agent",
+                  "port_id": "prompt"
+                }
+              },
+              {
+                "id": "agent-done",
+                "kind": "then",
+                "from": {
+                  "node_id": "agent",
+                  "port_id": "reply"
+                },
+                "to": {
+                  "node_id": "self",
+                  "port_id": "done"
+                }
+              }
+            ],
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 900,
+              "height": 400
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ralph",
+      "description": "Ralph: PROMPT.md to a fresh agent each turn until a test command passes",
+      "path": "mock/templates/ralph.toml",
+      "vars": [
+        {
+          "name": "workdir",
+          "description": "absolute path of the repo the agent works in"
+        }
+      ],
+      "requires": [
+        {
+          "module": "regulus/process",
+          "version": ">=0.1"
+        }
+      ],
+      "text": "# Mock template: needs regulus/process, which the mock lacks.\nid = \"ralph\"\n",
+      "profile": null
+    },
+    {
+      "name": "broken",
+      "description": "",
+      "path": "mock/templates/broken.toml",
+      "vars": [],
+      "requires": [],
+      "error": "TOML parse error at line 3, column 1: expected `=`",
+      "text": "id = \"broken\"\nname\n",
+      "profile": null
+    }
+  ]
+}

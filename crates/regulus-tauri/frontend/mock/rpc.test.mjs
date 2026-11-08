@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createSession, createState } from "./rpc.mjs";
 import fixture from "./profile.json" with { type: "json" };
 import manifests from "./manifests.json" with { type: "json" };
+import operate from "./operate.json" with { type: "json" };
 
 const request = (method, params = {}, id = 1) => JSON.stringify({ jsonrpc: "2.0", id, method, params });
 const negotiatedSession = (state) => {
@@ -35,7 +36,7 @@ test("profile state is separate from executions and module metadata", () => {
   const [{ id }] = session(request("profile.list")).result;
   assert.deepEqual(session(request("profile.get", { id })).result, fixture.profiles[0]);
   assert.deepEqual(session(request("execution.list")).result, []);
-  assert.equal(session(request("module.list")).result.length, fixture.modules.length + manifests.length);
+  assert.equal(session(request("module.list")).result.length, fixture.modules.length + manifests.length + operate.manifests.length);
 });
 
 test("every wire joins existing compatible ports of the same kind", () => {
@@ -107,4 +108,94 @@ test("profile.delete removes a profile unless an execution of it is live", () =>
   assert.deepEqual(session(request("profile.delete", { id })).result, { profile_id: id, path: `mock/profiles/${id}.toml` });
   assert.equal(session(request("profile.get", { id })).error.code, -32602);
   assert.equal(session(request("profile.delete", { id })).error.code, -32602);
+});
+
+test("template.list, template.get and template.apply mirror the core's shapes and errors", () => {
+  const session = negotiatedSession();
+  const list = session(request("template.list")).result;
+  assert.deepEqual(list.map((template) => template.name), ["echo", "chat", "ralph", "broken"]);
+  assert.ok(list.every((template) => !("text" in template) && !("profile" in template) && Array.isArray(template.vars)));
+  assert.match(list.find((template) => template.name === "broken").error, /TOML/);
+  assert.deepEqual(Object.keys(session(request("template.get", { template: "echo" })).result), ["name", "path", "text"]);
+  assert.equal(session(request("template.get", { template: "nope" })).error.code, -32004);
+  const missing = session(request("template.apply", { template: "echo", vars: {} }));
+  assert.equal(missing.error.code, -32602);
+  assert.match(missing.error.message, /`who`/);
+  const applied = session(request("template.apply", { template: "echo", vars: { who: "Ana" } })).result;
+  assert.deepEqual(applied, { profile_id: "echo", path: "mock/profiles/echo.toml", diagnostics: [] });
+  const profile = session(request("profile.get", { id: "echo" })).result;
+  assert.equal(profile.name, "Echo for Ana");
+  assert.equal(profile.workflows[0].nodes[0].config.path, "greeting.txt");
+  assert.equal(session(request("template.apply", { template: "echo", vars: { who: "Bo" } })).error.code, -32007);
+  assert.equal(session(request("template.apply", { template: "echo", vars: { who: "Bo" }, force: true })).result.profile_id, "echo");
+  assert.equal(session(request("template.apply", { template: "echo", vars: { who: "Bo" }, id: "echo2" })).result.profile_id, "echo2");
+  assert.equal(session(request("template.apply", { template: "ralph", vars: { workdir: "/x" } })).error.code, -32006);
+  assert.equal(session(request("template.apply", { template: "broken" })).error.code, -32005);
+  assert.equal(session(request("template.apply", { template: "nope" })).error.code, -32004);
+});
+
+test("execution.start and execution.stop run a profile and report disabled nodes", () => {
+  const session = negotiatedSession();
+  session(request("template.apply", { template: "chat", vars: {} }));
+  const started = session(request("execution.start", { profile_id: "chat" })).result;
+  assert.deepEqual(started, { id: "exec-1", profile_id: "chat", workflow_id: "main", project_id: null, state: { status: "running" }, disabled: [{ node_id: "lonely", missing: ["engine"] }] });
+  assert.equal(session(request("execution.list")).result.length, 1);
+  assert.equal(session(request("execution.start", { profile_id: "nope" })).error.code, -32602);
+  assert.equal(session(request("execution.start", { profile_id: "chat", workflow_id: "nope" })).error.code, -32602);
+  assert.deepEqual(session(request("execution.stop", { id: "exec-1" })).result.state, { status: "stopped" });
+  assert.equal(session(request("execution.stop", { id: "exec-9" })).error.code, -32602);
+});
+
+test("workflow.send emits from self and event.list pages the bus with its cursor", () => {
+  const session = negotiatedSession();
+  session(request("template.apply", { template: "echo", vars: { who: "Ana" } }));
+  const { id } = session(request("execution.start", { profile_id: "echo" })).result;
+  assert.deepEqual(session(request("workflow.send", { execution_id: id, port: "go", value: "hi" })).result, { event: 1 });
+  assert.equal(session(request("workflow.send", { execution_id: id, port: "done", value: "hi" })).error.code, -32602);
+  const all = session(request("event.list", { execution_id: id })).result;
+  assert.deepEqual(all.events.map((event) => [event.kind, `${event.from.node_id}.${event.from.port_id}`]), [["emitted", "self.go"], ["delivered", "self.go"], ["emitted", "self.done"]]);
+  assert.deepEqual(all.events[1].to, { node_id: "note", port_id: "in" });
+  assert.equal(all.events[2].value, "hi");
+  assert.equal(all.pending, 0);
+  const first = session(request("event.list", { execution_id: id, limit: 2 })).result;
+  assert.equal(first.events.length, 2);
+  const rest = session(request("event.list", { execution_id: id, since: first.next })).result;
+  assert.deepEqual(rest.events.map((event) => event.seq), [3]);
+  assert.deepEqual(session(request("event.list", { since: rest.next })).result, { events: [], next: rest.next, pending: 0 });
+  session(request("execution.stop", { id }));
+  assert.equal(session(request("workflow.send", { execution_id: id, port: "go", value: "hi" })).error.code, -32602);
+});
+
+test("agent.prompt answers an agent node of a live execution and refuses the rest", () => {
+  const session = negotiatedSession();
+  session(request("template.apply", { template: "chat", vars: {} }));
+  const { id } = session(request("execution.start", { profile_id: "chat" })).result;
+  assert.deepEqual(session(request("agent.prompt", { execution_id: id, node_id: "agent", text: "ping" })).result, { text: "(mock) ping", stop_reason: "end_turn" });
+  assert.equal(session(request("agent.prompt", { execution_id: id, node_id: "lonely", text: "ping" })).error.code, -32602);
+  assert.equal(session(request("agent.prompt", { execution_id: id, node_id: "room", text: "ping" })).error.code, -32602);
+  assert.equal(session(request("agent.prompt", { execution_id: "exec-9", node_id: "agent", text: "ping" })).error.code, -32602);
+});
+
+test("comm.history, comm.participants and comm.send serve a channel node", () => {
+  const session = negotiatedSession();
+  session(request("template.apply", { template: "chat", vars: {} }));
+  const { id } = session(request("execution.start", { profile_id: "chat" })).result;
+  const at = { execution_id: id, node_id: "room" };
+  assert.deepEqual(session(request("comm.history", at)).result, []);
+  assert.deepEqual(session(request("comm.participants", at)).result, [{ name: "agent", node: "agent", kind: "agent", state: "idle", queued: 0 }]);
+  const sent = session(request("comm.send", { ...at, from: "user", text: "hello" })).result;
+  assert.deepEqual({ ...sent, at: 0 }, { id: 1, at: 0, from: "user", to: ["agent"], text: "hello" });
+  assert.equal(session(request("comm.history", at)).result.length, 1);
+  assert.equal(session(request("comm.send", { ...at, from: "a user", text: "x" })).error.code, -32602);
+  assert.equal(session(request("comm.send", { ...at, from: "user", text: " " })).error.code, -32602);
+  assert.equal(session(request("comm.history", { execution_id: id, node_id: "agent" })).error.code, -32602);
+});
+
+test("human methods list nothing pending; module methods without their module are not found", () => {
+  const state = createState();
+  const session = negotiatedSession(state);
+  assert.deepEqual(session(request("human.list", {})).result, []);
+  assert.equal(session(request("human.answer", { id: "h-1", decision: "approve" })).error.code, -32602);
+  state.modules = state.modules.filter((module) => !module.id.startsWith("regulus/agent@"));
+  assert.equal(session(request("agent.prompt", { execution_id: "exec-1", node_id: "agent", text: "x" })).error.code, -32601);
 });
