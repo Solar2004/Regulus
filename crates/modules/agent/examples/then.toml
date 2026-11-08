@@ -6,7 +6,7 @@
 #   regulus serve --port 0 &
 #   regulus run then --detach                      # exec-1  then  running
 #   regulus send exec-1 go "Reply with exactly: pong"
-#   regulus events exec-1 | grep 'self.done'        # self.done emitted text@1 "pong"
+#   regulus events --execution exec-1 | grep self.done   # self.done emitted text@1 "pong"
 #
 # `failed` gets the error instead when a prompt fails; `usage` is not wired out here.
 id = "then"

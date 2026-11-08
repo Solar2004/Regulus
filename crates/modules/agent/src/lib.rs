@@ -45,6 +45,8 @@ const NAME_FIELD: &str = "name";
 const FRESH_FIELD: &str = "fresh_context";
 /// How many values may wait on `prompt` while one runs.
 const MAX_QUEUE_FIELD: &str = "max_queue";
+/// How much of a dropped value `failed` repeats, in characters.
+const ECHO_FIELD: &str = "failed_echo_chars";
 const YES: &str = "yes";
 /// The "then" input whose values are prompted into the session.
 const PROMPT_PORT: &str = "prompt";
@@ -146,6 +148,47 @@ fn usage(turn: &Value) -> Option<Value> {
         })
         .collect();
     (!counts.is_empty()).then_some(Value::Object(counts))
+}
+
+/// The panic's message, when it carried one.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".into())
+}
+
+/// At most `max` characters of `text`, marked when cut.
+fn truncated(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        None => text.to_string(),
+        Some((at, _)) => format!("{}…", &text[..at]),
+    }
+}
+
+/// Clears `busy` when a drain thread ends without doing it itself (a panic): the next
+/// value starts a thread again instead of queueing forever.
+struct Busy<'a> {
+    inner: &'a Inner,
+    me: &'a NodeRef,
+    stop: &'a Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut inboxes = lock(&self.inner.inboxes);
+        if let Some(inbox) = inboxes
+            .get_mut(self.me)
+            .filter(|inbox| Arc::ptr_eq(&inbox.stop, self.stop))
+        {
+            inbox.busy = false;
+        }
+    }
 }
 
 fn workdir(setting: Option<&Value>) -> Result<PathBuf, ModuleError> {
@@ -358,7 +401,10 @@ impl Inner {
         if let Some(inbox) = lock(&self.inboxes).remove(&me) {
             inbox.stop.store(true, Ordering::SeqCst);
         }
-        if let Some(running) = self.running().remove(&me) {
+        // Out of the map before the engine is called: a slow engine must not hold the lock
+        // every other node needs.
+        let removed = self.running().remove(&me);
+        if let Some(running) = removed {
             let args = engine::StopArgs {
                 session_id: running.session_id,
             };
@@ -426,6 +472,23 @@ impl Inner {
             text,
         })?)?;
         json(participant::Reply { text: turn.text })
+    }
+
+    /// A whole number field: the node's value (`16` or `16.0`), else the manifest default.
+    fn count(&self, node: &Node, field: &str) -> u64 {
+        let whole = |value: &Value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64))
+        };
+        node.config
+            .get(field)
+            .and_then(whole)
+            .or_else(|| {
+                let field = self.manifest.node_type(&node.node_type)?.field(field)?;
+                field.default.as_ref().and_then(whole)
+            })
+            .unwrap_or_default()
     }
 
     fn not_running(me: &NodeRef) -> ModuleError {
@@ -519,11 +582,7 @@ impl Inner {
             node_id: call.node.id.clone(),
         };
         let text = as_text(&event.value);
-        let max_queue = self
-            .manifest
-            .setting(&call.node, MAX_QUEUE_FIELD)
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
+        let max_queue = self.count(&call.node, MAX_QUEUE_FIELD);
         let stop = {
             let mut inboxes = lock(&self.inboxes);
             let inbox = inboxes.entry(me.clone()).or_default();
@@ -533,13 +592,18 @@ impl Inner {
                     return Ok(json!({ "queued": inbox.queue.len() }));
                 }
                 drop(inboxes);
+                // One signal, with the value, so whoever listens on `failed` can resend it.
+                let echo =
+                    usize::try_from(self.count(&call.node, ECHO_FIELD)).unwrap_or(usize::MAX);
                 let error = format!(
                     "agent `{}`: a prompt is running and {max_queue} wait (`{MAX_QUEUE_FIELD}`): \
-                     this one is dropped",
-                    me.node_id
+                     this one is dropped: {}",
+                    me.node_id,
+                    truncated(&text, echo)
                 );
+                eprintln!("regulus: {error}");
                 self.emit(&me, &call.node, FAILED_PORT, json!(error));
-                return Err(ModuleError::Failed(error));
+                return Ok(json!({ "dropped": true }));
             }
             inbox.busy = true;
             inbox.stop.clone()
@@ -555,15 +619,30 @@ impl Inner {
 
     /// Prompts `text`, then every value that queued meanwhile, emitting each answer.
     fn drain(&self, me: NodeRef, node: Node, stop: Arc<AtomicBool>, mut text: String) {
+        let mut busy = Busy {
+            inner: self,
+            me: &me,
+            stop: &stop,
+            armed: true,
+        };
         loop {
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            let outcome = self.prompt(PromptParams {
+            let params = PromptParams {
                 execution_id: me.execution_id.clone(),
                 node_id: me.node_id.clone(),
                 text,
-            });
+            };
+            // A panic in the turn is that turn's failure, not the end of the box.
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.prompt(params)))
+                    .unwrap_or_else(|panic| {
+                        Err(ModuleError::Failed(format!(
+                            "the turn panicked: {}",
+                            panic_text(panic.as_ref())
+                        )))
+                    });
             if stop.load(Ordering::SeqCst) {
                 return;
             }
@@ -578,7 +657,10 @@ impl Inner {
             match inbox.queue.pop_front() {
                 Some(next) => text = next,
                 None => {
+                    // Under the same lock as the check: a value arriving now starts a
+                    // thread of its own instead of waiting in a queue nobody drains.
                     inbox.busy = false;
+                    busy.armed = false;
                     return;
                 }
             }

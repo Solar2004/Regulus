@@ -2,7 +2,7 @@
 //! through `workflow.send`, replies out through the workflow's own outputs.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use regulus_contract_agent_engine as engine;
@@ -13,18 +13,51 @@ use serde_json::{json, Value};
 
 const FAKE: &str = "t/fake-engine@1.0.0";
 
-/// What the fake engine saw: sessions opened, sessions stopped.
+/// What the fake engine saw: sessions opened, sessions stopped, and `slow` turns that
+/// began and that returned.
 #[derive(Default)]
 struct Seen {
     started: Vec<String>,
     stopped: Vec<String>,
+    slow_began: usize,
+    slow_returned: usize,
+    /// Lets every `slow` turn finish.
+    open: bool,
 }
 
-/// An engine that answers `<session>:<turn in that session>:<text>`, fails on `boom` and
-/// reports usage on `count`.
+/// The fake engine's state, with a condvar to wake `slow` turns.
+#[derive(Default)]
+struct Shared {
+    seen: Mutex<Seen>,
+    wake: Condvar,
+}
+
+impl Shared {
+    fn seen(&self) -> std::sync::MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap()
+    }
+
+    fn open(&self) {
+        self.seen().open = true;
+        self.wake.notify_all();
+    }
+
+    /// Waits until `check` holds, or fails after a while.
+    fn wait(&self, check: impl Fn(&Seen) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !check(&self.seen()) {
+            assert!(Instant::now() < deadline, "the engine never got there");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// An engine that answers `<session>:<turn in that session>:<text>`, fails on `boom`,
+/// reports usage on `count`, and holds `slow` until opened or its session stops (then it
+/// fails, like a closed ACP session).
 struct FakeEngine {
     manifest: Manifest,
-    seen: Arc<Mutex<Seen>>,
+    shared: Arc<Shared>,
     turns: Mutex<Vec<(String, u32)>>,
 }
 
@@ -39,15 +72,29 @@ impl Module for FakeEngine {
         let call: NodeCall = serde_json::from_value(params).unwrap();
         match name {
             engine::SESSION_START => {
-                let mut seen = self.seen.lock().unwrap();
+                let mut seen = self.shared.seen();
                 let id = format!("s{}", seen.started.len() + 1);
                 seen.started.push(id.clone());
                 Ok(json!({ "session_id": id, "agent": { "name": "fake", "version": "1" } }))
             }
             engine::SESSION_PROMPT => {
                 let args: engine::PromptArgs = serde_json::from_value(call.args).unwrap();
+                if args.text == "panic" {
+                    panic!("the fake engine panicked");
+                }
                 if args.text == "boom" {
                     return Err(ModuleError::Failed("the engine blew up".into()));
+                }
+                if args.text == "slow" {
+                    let mut seen = self.shared.seen();
+                    seen.slow_began += 1;
+                    while !seen.open && !seen.stopped.contains(&args.session_id) {
+                        seen = self.shared.wake.wait(seen).unwrap();
+                    }
+                    seen.slow_returned += 1;
+                    if !seen.open {
+                        return Err(ModuleError::Failed("the agent session is closed".into()));
+                    }
                 }
                 let mut turns = self.turns.lock().unwrap();
                 let n = match turns.iter_mut().find(|(s, _)| *s == args.session_id) {
@@ -69,7 +116,8 @@ impl Module for FakeEngine {
             }
             engine::SESSION_STOP => {
                 let args: engine::StopArgs = serde_json::from_value(call.args).unwrap();
-                self.seen.lock().unwrap().stopped.push(args.session_id);
+                self.shared.seen().stopped.push(args.session_id);
+                self.shared.wake.notify_all();
                 Ok(Value::Null)
             }
             other => Err(ModuleError::UnknownMethod(other.into())),
@@ -86,7 +134,7 @@ fn port(id: &str, capability: &str, direction: &str, kind: &str) -> Value {
 
 /// `self.go → agent.prompt`, `agent.reply|failed|usage → self.<same>`, the fake engine
 /// wired into `engine`.
-fn profile(fresh: &str) -> Profile {
+fn profile(config: Value) -> Profile {
     let outs = [
         ("reply", "text@1"),
         ("failed", "text@1"),
@@ -113,7 +161,7 @@ fn profile(fresh: &str) -> Profile {
         "id": "p", "main_workflow_id": "main",
         "workflows": [{ "id": "main", "kind": "main", "ports": own, "wires": wires, "nodes": [
             { "id": "a", "type": "agent", "module_id": "regulus/agent@0.1.0",
-              "config": { "fresh_context": fresh, "workdir": "/" }, "ports": ports },
+              "config": config, "ports": ports },
             { "id": "e", "type": "engine", "module_id": FAKE,
               "ports": [port("engine", "agent.engine@1", "output", "uses")] },
         ]}]
@@ -127,19 +175,23 @@ fn data_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn start(fresh: &str, data: &Path) -> (Arc<Core>, String, Arc<Mutex<Seen>>) {
-    let seen: Arc<Mutex<Seen>> = Arc::default();
+fn start(fresh: &str, data: &Path) -> (Arc<Core>, String, Arc<Shared>) {
+    start_with(json!({ "fresh_context": fresh, "workdir": "/" }), data)
+}
+
+fn start_with(config: Value, data: &Path) -> (Arc<Core>, String, Arc<Shared>) {
+    let shared: Arc<Shared> = Arc::default();
     let fake = FakeEngine {
         manifest: parse_manifest(&format!(
             "[module]\nid = \"{FAKE}\"\nname = \"fake\"\n[[node]]\ntype = \"engine\"\nname = \"e\"\n"
         ))
         .unwrap(),
-        seen: seen.clone(),
+        shared: shared.clone(),
         turns: Mutex::default(),
     };
     let modules: Vec<Box<dyn Module>> = vec![Box::new(Agent::new()), Box::new(fake)];
     let mut profiles = ProfileStore::default();
-    profiles.insert(profile(fresh)).unwrap();
+    profiles.insert(profile(config)).unwrap();
     let storage = Storage {
         data_dir: Some(data.to_path_buf()),
         ..Storage::default()
@@ -150,7 +202,7 @@ fn start(fresh: &str, data: &Path) -> (Arc<Core>, String, Arc<Mutex<Seen>>) {
         .unwrap();
     assert_eq!(started["state"]["status"], "running", "{started}");
     let id = started["id"].as_str().unwrap().to_string();
-    (core, id, seen)
+    (core, id, shared)
 }
 
 fn send(core: &Core, id: &str, text: &str) {
@@ -210,10 +262,10 @@ fn prompts_queue_in_order_and_keep_their_session() {
         )
         .unwrap();
     assert_eq!(turn["text"], "s1:4:rpc");
-    assert_eq!(seen.lock().unwrap().started, ["s1"]);
+    assert_eq!(seen.seen().started, ["s1"]);
     core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
         .unwrap();
-    assert_eq!(seen.lock().unwrap().stopped, ["s1"]);
+    assert_eq!(seen.seen().stopped, ["s1"]);
     let _ = std::fs::remove_dir_all(&data);
 }
 
@@ -236,13 +288,13 @@ fn fresh_context_opens_a_session_per_prompt() {
         .unwrap();
     assert_eq!(turn["text"], "s3:1:rpc");
     {
-        let seen = seen.lock().unwrap();
+        let seen = seen.seen();
         assert_eq!(seen.started, ["s1", "s2", "s3"]);
         assert_eq!(seen.stopped, ["s1", "s2"]);
     }
     core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
         .unwrap();
-    assert_eq!(seen.lock().unwrap().stopped, ["s1", "s2", "s3"]);
+    assert_eq!(seen.seen().stopped, ["s1", "s2", "s3"]);
     let _ = std::fs::remove_dir_all(&data);
 }
 
@@ -267,7 +319,81 @@ fn a_failed_prompt_goes_to_failed_only_and_usage_comes_before_the_reply() {
         )
     );
     assert_eq!(out[2], reply("s1:1:count"));
+    // A turn that panics fails alone: the box still answers the next value. The core
+    // takes a module that panicked out of service, so that answer is a failure too.
+    send(&core, &id, "panic");
+    send(&core, &id, "after");
+    let out = outputs(&core, &id, 5);
+    assert_eq!(out[3].0, "failed");
+    assert!(
+        out[3].1.as_str().unwrap().contains("panicked"),
+        "{:?}",
+        out[3]
+    );
+    assert_eq!(out[4].0, "failed");
+    assert!(
+        out[4].1.as_str().unwrap().contains("unavailable"),
+        "{:?}",
+        out[4]
+    );
     core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
         .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_value_past_max_queue_goes_to_failed_with_its_text_and_nothing_else() {
+    let data = data_dir("full");
+    // `1.0`, not `1`: a whole number written as a float still counts.
+    let config = json!({ "workdir": "/", "max_queue": 1.0, "failed_echo_chars": 5 });
+    let (core, id, engine) = start_with(config, &data);
+    send(&core, &id, "slow");
+    engine.wait(|seen| seen.slow_began == 1);
+    send(&core, &id, "two");
+    send(&core, &id, "three and more");
+    let out = outputs(&core, &id, 1);
+    assert_eq!(out[0].0, "failed");
+    let error = out[0].1.as_str().unwrap();
+    assert!(error.contains("dropped: three…"), "{error}");
+    engine.open();
+    let out = outputs(&core, &id, 3);
+    assert_eq!(out[1..], [reply("s1:1:slow"), reply("s1:2:two")]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(outputs(&core, &id, 3).len(), 3);
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn stopping_with_a_prompt_in_flight_emits_nothing_and_does_not_hang() {
+    let data = data_dir("stop");
+    let (core, id, engine) = start("no", &data);
+    send(&core, &id, "slow");
+    send(&core, &id, "queued");
+    engine.wait(|seen| seen.slow_began == 1);
+    let began = Instant::now();
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        began.elapsed()
+    );
+    // The turn in flight returned (its session closed), so its thread is free to end.
+    engine.wait(|seen| seen.slow_returned == 1);
+    std::thread::sleep(Duration::from_millis(100));
+    let page: EventPage = serde_json::from_value(
+        core.dispatch(method::EVENT_LIST, json!({ "execution_id": id }))
+            .unwrap(),
+    )
+    .unwrap();
+    let emitted: Vec<_> = page
+        .events
+        .iter()
+        .filter(|e| e.from.node_id == "a")
+        .collect();
+    assert!(emitted.is_empty(), "{emitted:?}");
+    assert_eq!(engine.seen().stopped, ["s1"]);
     let _ = std::fs::remove_dir_all(&data);
 }

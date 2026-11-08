@@ -133,11 +133,19 @@ name = "Agent"
   default = "no"
   options = ["no", "yes"]
 
-  # How many values may wait on `prompt` while one runs. Past it a value goes to `failed`.
+  # How many values may wait on `prompt` while one runs. Past it a value goes to `failed`,
+  # with the value in the text, and is not retried. A value in flight when the node stops
+  # gives nothing, neither `reply` nor `failed`.
   [[node.field]]
   id      = "max_queue"
   type    = "number"
   default = 16
+
+  # How many characters of a dropped value `failed` repeats.
+  [[node.field]]
+  id      = "failed_echo_chars"
+  type    = "number"
+  default = 2000
 
   # Where the agent works. Empty: the user's home directory.
   [[node.field]]

@@ -175,7 +175,9 @@ queda desactivada y la de opencode sigue funcionando.
 
 **La caja en cadenas "luego" (2026-11-08).** Entrada `prompt` (`text@1`, varias): cada
 valor se manda a la sesión como `agent.prompt`; se encolan por nodo (campo `max_queue`,
-16) y van de uno en uno en un hilo de la caja, sin bloquear el bus. Salidas `reply`
+16) y van de uno en uno en un hilo de la caja, sin bloquear el bus. Un valor que no cabe
+en la cola va a `failed` con su texto (cortado a `failed_echo_chars`) y no se reintenta;
+uno en curso cuando el nodo se para no da nada, ni `reply` ni `failed`. Salidas `reply`
 (`text@1`, la respuesta final), `failed` (`text@1`, el error en su lugar, nunca las dos) y
 `usage` (`json@1`, `{ input_tokens, output_tokens }` antes de `reply`, solo si el motor da
 uso: `agent.engine@1` aún no lo lleva, así que hoy no sale). Campo `fresh_context`
