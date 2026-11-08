@@ -40,14 +40,14 @@ valores de Operar y la primera vista. **Siete de las ocho plantillas de `13-bloc
 están construidas** (2026-11-08, datos TOML en `templates/`, sin Rust nuevo): Ralph, SDD,
 evaluador-optimizador, best-of-N, equipo, research (cerrada de punta a punta con Claude) y
 CLI chateable y pxl (Agente escribe la rejilla, un script la convierte en PNG, juez o
-revisión humana; `65e0091`). **Las ocho están.** **Los huecos que las
-plantillas anotaron están cerrados** (2026-11-08, `47d98bd`): entrada "luego" `workdir` en la
+revisión humana; `e9f9109`). **Las ocho están.** **Los huecos que las
+plantillas anotaron están cerrados** (2026-11-08, `f150fbd`): entrada "luego" `workdir` en la
 caja Agente, `value_path` en las reglas de `flow`, `timeout_ms` en la barrera de `join`, y
 un turno colgado por el proveedor cierra en `failed` (`turn_timeout_ms`). **Los módulos
-locales de un proyecto corren como procesos** (2026-11-08, `87dcee5`, `03-modules.md` §6,
+locales de un proyecto corren como procesos** (2026-11-08, `94e5aa3`, `03-modules.md` §6,
 `11-composition.md` §13): JSON-RPC por stdio, solo en proyectos de confianza
 (`regulus project trust`), protocolo 1.14 con el estado `blocked`. **Release y
-actualización** (2026-11-08, `e0dba00`, `06-stack.md` §5.4): `scripts/release.sh` saca
+actualización** (2026-11-08, `52d6bfe`, `06-stack.md` §5.4): `scripts/release.sh` saca
 binario, AppImage y deb con manifiesto firmado (minisign); `regulus update` y Ajustes →
 Updates instalan solo lo que esa firma avala. **Lo siguiente:** pulir con uso real. La
 pasarela de proveedores queda aplazada. Plan y orden en
@@ -178,9 +178,9 @@ tipo(scope): asunto en imperativo, minúscula, sin punto, ≤72 caracteres
 El por qué. El qué está en el diff.
 
 Refs: docs/plan.md §3
-Co-Authored-By: Tu nombre <email>
 ```
 
+- **Sin `Co-Authored-By`** ni ningún otro trailer de coautoría (`09-git.md` regla 3).
 - Tipos y scopes válidos: [`.gitconventions`](.gitconventions). Scope nuevo → se añade ahí
   en el mismo commit que lo usa.
 - **Nada de `--no-verify`.** Si una regla te estorba, propón el cambio en

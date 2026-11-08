@@ -61,10 +61,10 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 4c | Proveedores como caja líquida: plantillas, ranuras, suscripción (`12-agents.md` §7); la pasarela, aplazada | — | ✅ base (2026-10-17) |
 | 4d | Skills (`12-agents.md` §3) y Comunicación, base (`11-composition.md` §3) | — | ✅ base (2026-10-18) |
 | 4e | Comunicación como caja y módulo Herramientas, 5 pasos (`11-composition.md` §3.0) | — | en curso |
-| 4f | **Bloques** (`13-blocks.md` §7): core (cable "luego" con dato, store, workflow como caja, `Call`), ranura `hooks`, módulos de lógica y entorno, plantillas | ~5 sem | ✅ decidido (2026-11-07); core, módulos y 7 de 8 plantillas hechos (2026-11-08); research cerrada e2e con Claude y los arreglos del core que las plantillas anotaron hechos (2026-11-08, `47d98bd`); pxl como plantilla, corrida con Claude (2026-11-08, `65e0091`): las ocho plantillas hechas |
+| 4f | **Bloques** (`13-blocks.md` §7): core (cable "luego" con dato, store, workflow como caja, `Call`), ranura `hooks`, módulos de lógica y entorno, plantillas | ~5 sem | ✅ decidido (2026-11-07); core, módulos y 7 de 8 plantillas hechos (2026-11-08); research cerrada e2e con Claude y los arreglos del core que las plantillas anotaron hechos (2026-11-08, `f150fbd`); pxl como plantilla, corrida con Claude (2026-11-08, `e9f9109`): las ocho plantillas hechas |
 | 5 | Canvas editable: crear nodos, tirar cables, guardar (`04-client.md` §9) | ~1 sem | ✅ hecho (2026-11-08, medio día; antes el core ganó `module.manifest`, `profile.save` y `profile.delete`) |
 | 6 | Vista Operar con ejecuciones reales, instalar plantillas (`04-client.md` §8) | ~1 sem | ✅ hecho (2026-11-08, medio día) |
-| 7 | **App completa**: Ajustes, TUI que edita como la app y `[client]` de `config.toml` para app y TUI (`04-client.md` §10, §7, §11); proyectos con `regulus.toml` (`11-composition.md` §13) | — | ✅ hecho (2026-11-08, un día); `ProcessModule` para `[[modules.local]]` hecho (2026-11-08, `87dcee5`); release + `regulus update` + Ajustes → Updates hechos (2026-11-08, `e0dba00`) |
+| 7 | **App completa**: Ajustes, TUI que edita como la app y `[client]` de `config.toml` para app y TUI (`04-client.md` §10, §7, §11); proyectos con `regulus.toml` (`11-composition.md` §13) | — | ✅ hecho (2026-11-08, un día); `ProcessModule` para `[[modules.local]]` hecho (2026-11-08, `94e5aa3`); release + `regulus update` + Ajustes → Updates hechos (2026-11-08, `52d6bfe`) |
 
 **Prueba de la base (paso 3):** la UI apunta al core real con `VITE_RPC_URL` y funciona
 sin cambiar una línea.

@@ -31,7 +31,6 @@ alternativa se descartó, qué documento lo manda.
                                       ← línea en blanco
 Refs: docs/plan.md §3
 BREAKING CHANGE: qué rompe y cómo se migra
-Co-Authored-By: Nombre del agente <email>
 ```
 
 | Parte | Regla | Lo aplica |
@@ -127,8 +126,9 @@ Esto es lo que se te pide **explícitamente** si no eres humano:
    revalida igualmente todo el rango, así que saltarse `commit-msg` solo retrasa el error.
 2. **No commitees nada que no te hayan pedido tocar.** Ni “limpieza” de paso, ni
    reformateos, ni dependencias actualizadas de propina.
-3. **Firma lo que escribes.** `Co-Authored-By:` con tu identidad real. No inventes la
-   coautoría de un humano que no ha escrito el código.
+3. **Sin `Co-Authored-By`.** Los commits van a nombre del autor del repo y nada más:
+   ningún trailer de coautoría, ni de agente ni de humano (decisión de Alexander,
+   2026-11-08; el historial se reescribió para quitarlos).
 4. **No empujes a un remoto sin que te lo hayan pedido.** Commitear es reversible; empujar
    es público. Tampoco crees tags ni releases por iniciativa propia.
 5. **Un commit por incremento verificado**, no uno gigante al final de la sesión.
