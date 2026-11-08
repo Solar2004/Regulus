@@ -8,22 +8,33 @@ use std::time::Duration;
 use anyhow::Result;
 use jsonrpsee::ws_client::WsClient;
 use regulus_core::{local, Config};
-use regulus_proto::{method, Execution, ModuleSummary, Profile, ProfileSummary};
+use regulus_proto::{
+    method, Diagnostic, EventPage, Execution, Manifest, ModuleSummary, Profile, ProfileSaved,
+    ProfileSummary, TemplateApplied, TemplateSummary, WorkflowSent,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-use crate::rpc;
+use crate::rpc::{self, CallError};
+
+/// A failed call with the core's code (`rpc::CallError`).
+pub type Failure = CallError;
 
 const CLIENT_NAME: &str = concat!("regulus-tui/", env!("CARGO_PKG_VERSION"));
 const AGENT_PROMPT: &str = "agent.prompt";
 const COMM_SEND: &str = "comm.send";
 const COMM_HISTORY: &str = "comm.history";
 const COMM_PARTICIPANTS: &str = "comm.participants";
+/// Methods of the module that holds decisions for a person; absent, they answer -32601.
+const HUMAN_LIST: &str = "human.list";
+const HUMAN_ANSWER: &str = "human.answer";
+const APPROVE: &str = "approve";
+const REJECT: &str = "reject";
 /// Who messages typed here are from.
 pub const SENDER: &str = "user";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     /// Executions and modules.
     Status,
@@ -32,8 +43,46 @@ pub enum Request {
         execution: String,
         node: String,
     },
+    /// `workflow: None` runs the profile's main workflow.
     Start {
         profile: String,
+        workflow: Option<String>,
+    },
+    /// Every module's manifest.
+    Manifests,
+    Save {
+        profile: Box<Profile>,
+        force: bool,
+    },
+    Check {
+        profile: String,
+    },
+    Templates,
+    Apply {
+        template: String,
+        vars: serde_json::Map<String, Value>,
+        id: Option<String>,
+        force: bool,
+    },
+    /// Bus events of an execution after `since`.
+    Events {
+        execution: String,
+        since: u64,
+        limit: usize,
+    },
+    /// Decisions waiting for a person in an execution.
+    Decisions {
+        execution: String,
+    },
+    Decide {
+        id: String,
+        approve: bool,
+    },
+    /// A value for an input of the workflow an execution runs.
+    WorkflowSend {
+        execution: String,
+        port: String,
+        value: Value,
     },
     Stop {
         execution: String,
@@ -97,6 +146,22 @@ pub struct ChannelState {
     pub participants: Vec<Participant>,
 }
 
+/// A decision that waits for a person, as `human.list` gives it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Pending {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub execution_id: String,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub value: Value,
+    #[serde(default)]
+    pub prompt: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Connection(Connection),
@@ -122,6 +187,25 @@ pub enum Event {
         node: String,
         result: Result<(), String>,
     },
+    Manifests(Result<Vec<Manifest>, Failure>),
+    Saved(Result<ProfileSaved, Failure>),
+    Checked {
+        profile: String,
+        result: Result<Vec<Diagnostic>, Failure>,
+    },
+    Templates(Result<Vec<TemplateSummary>, Failure>),
+    Applied(Result<TemplateApplied, Failure>),
+    Events {
+        execution: String,
+        since: u64,
+        result: Result<EventPage, Failure>,
+    },
+    Decisions {
+        execution: String,
+        result: Result<Vec<Pending>, Failure>,
+    },
+    Decided(Result<(), Failure>),
+    WorkflowSent(Result<u64, Failure>),
 }
 
 /// Where requests go. Dropping it ends the line.
@@ -250,8 +334,8 @@ async fn answer(ws: &WsClient, request: Request) -> Event {
                 state,
             }
         }
-        Request::Start { profile } => {
-            let params = json!({ "profile_id": profile });
+        Request::Start { profile, workflow } => {
+            let params = json!({ "profile_id": profile, "workflow_id": workflow });
             Event::Started(
                 rpc::call(ws, method::EXECUTION_START, params)
                     .await
@@ -265,6 +349,64 @@ async fn answer(ws: &WsClient, request: Request) -> Event {
                     .await
                     .map_err(text),
             )
+        }
+        Request::Manifests => {
+            Event::Manifests(rpc::call_coded(ws, method::MODULE_MANIFEST, Value::Null).await)
+        }
+        Request::Save { profile, force } => {
+            let params = json!({ "profile": profile, "force": force });
+            Event::Saved(rpc::call_coded(ws, method::PROFILE_SAVE, params).await)
+        }
+        Request::Check { profile } => {
+            let params = json!({ "id": profile });
+            let result = rpc::call_coded(ws, method::PROFILE_CHECK, params).await;
+            Event::Checked { profile, result }
+        }
+        Request::Templates => {
+            Event::Templates(rpc::call_coded(ws, method::TEMPLATE_LIST, Value::Null).await)
+        }
+        Request::Apply {
+            template,
+            vars,
+            id,
+            force,
+        } => {
+            let params = json!({ "template": template, "vars": vars, "id": id, "force": force });
+            Event::Applied(rpc::call_coded(ws, method::TEMPLATE_APPLY, params).await)
+        }
+        Request::Events {
+            execution,
+            since,
+            limit,
+        } => {
+            let params = json!({ "execution_id": execution, "since": since, "limit": limit });
+            let result = rpc::call_coded(ws, method::EVENT_LIST, params).await;
+            Event::Events {
+                execution,
+                since,
+                result,
+            }
+        }
+        Request::Decisions { execution } => {
+            let params = json!({ "execution_id": execution });
+            let result = rpc::call_coded(ws, HUMAN_LIST, params).await;
+            Event::Decisions { execution, result }
+        }
+        Request::Decide { id, approve } => {
+            let decision = if approve { APPROVE } else { REJECT };
+            let params = json!({ "id": id, "decision": decision });
+            let done: Result<Value, Failure> = rpc::call_coded(ws, HUMAN_ANSWER, params).await;
+            Event::Decided(done.map(|_| ()))
+        }
+        Request::WorkflowSend {
+            execution,
+            port,
+            value,
+        } => {
+            let params = json!({ "execution_id": execution, "port": port, "value": value });
+            let sent: Result<WorkflowSent, Failure> =
+                rpc::call_coded(ws, method::WORKFLOW_SEND, params).await;
+            Event::WorkflowSent(sent.map(|sent| sent.event))
         }
         Request::Prompt {
             execution,
@@ -312,4 +454,27 @@ async fn profiles(ws: &WsClient) -> Result<Vec<Profile>> {
         profiles.push(rpc::call(ws, method::PROFILE_GET, params).await?);
     }
     Ok(profiles)
+}
+
+/// JSON-RPC's "method not found": the module that serves it is not installed.
+pub const METHOD_NOT_FOUND: i32 = -32601;
+
+/// How the TUI words a failed call: by its code, never as a generic error. A module
+/// method that is not there is "not installed"; one whose module cannot serve, "unavailable"
+/// with the core's reason (docs/04-client.md §3, §8).
+pub fn describe(failure: &Failure) -> String {
+    use regulus_proto::code;
+    let message = &failure.message;
+    match failure.code {
+        Some(METHOD_NOT_FOUND) => "□ not installed".to_string(),
+        Some(code::MODULE_UNAVAILABLE) => format!("✗ unavailable: {message}"),
+        Some(code::TEMPLATE_NOT_FOUND) => format!("✗ no such template: {message}"),
+        Some(code::TEMPLATE_INVALID) => format!("✗ invalid template: {message}"),
+        Some(code::TEMPLATE_UNMET) => format!("✗ a required module is missing: {message}"),
+        Some(code::PROFILE_EXISTS) => format!("✗ already there: {message}"),
+        Some(code::PROFILE_INVALID) => format!("✗ the profile has errors: {message}"),
+        Some(code::PROFILE_IN_USE) => format!("✗ in use: {message}"),
+        Some(code::INVALID_PARAMS) => format!("✗ invalid values: {message}"),
+        _ => format!("✗ {message}"),
+    }
 }
