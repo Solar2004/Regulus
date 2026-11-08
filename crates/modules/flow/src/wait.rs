@@ -64,6 +64,11 @@ fn stop(held: &Held) {
 }
 
 /// Sleeps until `delay` passes or the node stops; true if it is still running.
+/// Whether the node stopped: whatever it holds is dropped.
+pub(crate) fn stopped(held: &Held) -> bool {
+    *lock(&held.stopped)
+}
+
 pub(crate) fn sleep(held: &Held, delay: Duration) -> bool {
     let deadline = Instant::now() + delay;
     let mut stopped = lock(&held.stopped);

@@ -155,6 +155,10 @@ impl Clock {
                 }
             };
             let Some(value) = ran_out else { continue };
+            // A stop that came while the round was taken: nothing leaves anymore.
+            if wait::stopped(&self.held) {
+                return;
+            }
             let ms = self.timeout.as_millis();
             if !self.has_output {
                 eprintln!(

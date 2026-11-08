@@ -83,7 +83,9 @@ name = "Switch"
   # parts of the same value, `value_path` instead of `value`: another path into it,
   # whose target is what `path`'s is compared with, e.g.
   # `{ port = "same", op = "equals", path = "/candidate/id", value_path = "/winner" }`.
-  # A `value_path` that points at nothing fails the case, whatever the op.
+  # `value_path` wins over `value`; one that points at nothing fails the case; `exists`
+  # and `empty` ignore it. `equals` and `not_equals` compare values, or their text when
+  # the values differ: "3" equals 3.
   [[node.field]]
   id      = "cases"
   type    = "rules"

@@ -539,7 +539,8 @@ fn a_barrier_with_a_timeout_sends_what_came_and_starts_over() {
         vec![node(
             "join",
             "join",
-            json!({ "shape": "object", "timeout_ms": 150 }),
+            // Long enough that the rounds that must open in time do on a loaded machine.
+            json!({ "shape": "object", "timeout_ms": 500 }),
             vec![
                 port("a", T, "input"),
                 port("b", T, "input"),

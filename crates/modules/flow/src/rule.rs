@@ -20,7 +20,8 @@ pub(crate) struct Rule {
     #[serde(default)]
     pub value: Value,
     /// A path into the same value, like `path`: when set, the subject is compared with
-    /// what it points at instead of `value`. If it points at nothing, the rule fails.
+    /// what it points at instead of `value` (it wins over `value`). If it points at
+    /// nothing, the rule fails. `exists` and `empty` compare with nothing and ignore it.
     #[serde(default)]
     pub value_path: String,
     /// For `switch`: the output a value that meets the rule goes out on.
@@ -182,7 +183,8 @@ impl Rule {
             .iter()
             .find(|(name, _)| *name == self.op)
             .ok_or_else(|| ModuleError::InvalidParams(format!("unknown op `{}`", self.op)))?;
-        let other = if self.value_path.trim().is_empty() {
+        let unary = matches!(self.op.as_str(), "exists" | "empty");
+        let other = if unary || self.value_path.trim().is_empty() {
             &self.value
         } else {
             match at(value, &self.value_path) {
@@ -305,6 +307,11 @@ pub(crate) mod tests {
         // A `value_path` that points at nothing fails the rule, whatever the op.
         assert!(!check(
             json!({ "op": "not_equals", "path": "score", "value_path": "missing" }),
+            scores.clone()
+        ));
+        // Ops that compare with nothing ignore it.
+        assert!(check(
+            json!({ "op": "exists", "path": "score", "value_path": "missing" }),
             scores
         ));
     }
