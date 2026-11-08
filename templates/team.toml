@@ -9,6 +9,7 @@
 #                                ⇅ participant / tools        (one task per line)
 #   channel ⇢ tools ⇢ mcp        ⇅
 #                           claim_N ─task→ join_N ← ready ── ws_N (worktree, quota)
+#                              │                  polecat_N.workdir ← ready
 #                              │   └──────→ create ───────────┘ └ info → info_N (variable)
 #                              │            join_N → prompt_N → witness_N → polecat_N
 #                              │                                 ▲ done ──── reply│failed
@@ -40,9 +41,9 @@
 # Risks: `permissions` is "allow" by default: it says yes to everything the agents ask,
 # unattended, with the user's own opencode setup; and `test_command` runs, with the
 # user's rights and no isolation, code the agent just wrote in the worktree (that is why
-# it has no default). The Agent box's `workdir` is a field, not an input: the polecats
-# start in `<workdir>` and are TOLD their worktree in the prompt; nothing forces them to
-# stay there. `repo` must have `base` checked out and clean (no tracked changes) for a
+# it has no default). Each polecat runs in its worktree (`ws_N.ready` → `polecat_N.workdir`:
+# its session opens there) and the prompt names it too; with `allow` nothing stops it from
+# writing elsewhere by absolute path. `repo` must have `base` checked out and clean (no tracked changes) for a
 # merge; keep `workdir` outside `repo`. The queue outlives the run: use a fresh `queue`
 # name for a fresh start. The mayor's reply is taken line by line: a model that chats
 # adds its chatter as tasks (send tasks on `tasks` to skip it).
@@ -113,7 +114,7 @@ requires = [
 
 [template.vars]
 repo = { description = "absolute path of the git repo the team works on; merges go into its `base`, which must be checked out and clean" }
-workdir = { description = "absolute path of an existing folder outside `repo`: the agents start there and the worktrees go under <workdir>/polecat-N/" }
+workdir = { description = "absolute path of an existing folder outside `repo`: the mayor runs there, the worktrees go under <workdir>/polecat-N/ and each polecat runs in its own" }
 model = { description = "model of the three engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
 base = { description = "branch the worktrees start from and merge into; empty: the repo's current branch", default = "" }
 branch_prefix = { description = "start of every worktree branch; each one is <branch_prefix>polecat-N/<execution>", default = "team/" }
@@ -413,6 +414,7 @@ ports = [
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
     { id = "participant", capability = "participant@1", direction = "output", kind = "uses" },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
   ]
@@ -545,6 +547,7 @@ ports = [
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
     { id = "participant", capability = "participant@1", direction = "output", kind = "uses" },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
   ]
@@ -759,6 +762,14 @@ ports = [
   from = { node_id = "ws_1", port_id = "ready" }
   to = { node_id = "join_1", port_id = "path" }
 
+  # Before the prompt, which goes through join, prompt and witness: the polecat moves into
+  # its worktree first.
+  [[workflows.wires]]
+  id = "ws_1-workdir"
+  kind = "then"
+  from = { node_id = "ws_1", port_id = "ready" }
+  to = { node_id = "polecat_1", port_id = "workdir" }
+
   [[workflows.wires]]
   id = "ws_1-info"
   kind = "then"
@@ -886,6 +897,14 @@ ports = [
   kind = "then"
   from = { node_id = "ws_2", port_id = "ready" }
   to = { node_id = "join_2", port_id = "path" }
+
+  # Before the prompt, which goes through join, prompt and witness: the polecat moves into
+  # its worktree first.
+  [[workflows.wires]]
+  id = "ws_2-workdir"
+  kind = "then"
+  from = { node_id = "ws_2", port_id = "ready" }
+  to = { node_id = "polecat_2", port_id = "workdir" }
 
   [[workflows.wires]]
   id = "ws_2-info"

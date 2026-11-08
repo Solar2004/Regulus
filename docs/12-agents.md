@@ -189,6 +189,19 @@ modelo sale de su setup. Ejemplo `crates/modules/agent/examples/then.toml`, prob
 CLI con el modelo gratis: dos prompts dan dos `reply` y, con `yes`, dos sesiones de
 opencode; con `no`, una.
 
+✅ **Entrada `workdir` (2026-11-08).** `path@1`, "luego", una: mueve al agente. Los
+turnos que empiezan después de que llegue un valor corren en ese directorio, y los
+siguientes también hasta que llegue otro; el campo `workdir` es dónde corre mientras no
+llega nada, y un texto vacío vuelve a él. Acepta la ruta como texto o un objeto con `path`
+(el `info` de un workspace); lo normal es cablear `workspace.ready`. **Cambiar de
+directorio cierra la sesión y abre otra, y el contexto se pierde:** ACP fija el cwd en
+`session/new` (`regulus-acp` lo manda ahí; el proceso del CLI sigue con el cwd de
+`serve`), así que el valor del turno gana abriendo una sesión nueva en él. Un valor que no
+es un directorio absoluto existente se rechaza al llegar y se guarda igual: los turnos
+siguientes fallan por `failed` en vez de correr en otro sitio. El cwd es dónde empieza el
+agente, no una valla: con `allow` puede escribir fuera por ruta absoluta. Lo usan
+`best-of-n`, `team` y `research` (`13-blocks.md` §5).
+
 ## 6. Proveedores
 
 ✅ **DECIDIDO** (Alexander, 2026-10-17: *"lo más flexible"*). Ese mismo día se amplió: el

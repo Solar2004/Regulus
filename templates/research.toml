@@ -63,8 +63,9 @@
 # hangs the agent: the Agent box gets neither `reply` nor `failed`, and `guards` can
 # only report it (`watchdog`, `timeout` forward and warn, they cannot end a turn), so
 # the flow waits until `regulus stop`. (f) the close writer → report_check → rubric has
-# NOT run end to end (see the run below). The agents start in `workdir` and are told the
-# workspace in the prompt. `experiment_command` and `report_check` may not hold `"` or
+# NOT run end to end (see the run below). The orchestrator and the researchers run in
+# `workdir`; the experimenter and the writer in the workspace folder (`workspace.ready` →
+# their `workdir` input), and the prompt names it too. `experiment_command` and `report_check` may not hold `"` or
 # `\`: use a script.
 #
 # Another engine: replace the nodes `engine_*` (e.g. `engine-claude`, no `model` field);
@@ -331,6 +332,7 @@ ports = [
   config = { engine = "folder", root = "{{workdir}}", autostart = "yes", quota_bytes = {{quota_bytes}} }
   ports = [
     { id = "write", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ready", capability = "path@1", direction = "output", kind = "then" },
     { id = "written", capability = "path@1", direction = "output", kind = "then" },
     { id = "quota_exceeded", capability = "json@1", direction = "output", kind = "then" },
     { id = "error", capability = "text@1", direction = "output", kind = "then" },
@@ -389,6 +391,7 @@ ports = [
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
@@ -494,6 +497,7 @@ ports = [
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
@@ -779,6 +783,20 @@ ports = [
   kind = "then"
   from = { node_id = "workspace", port_id = "written" }
   to = { node_id = "notes_path", port_id = "set" }
+
+  # The workspace folder is announced when the run starts (`autostart`), long before
+  # the notes: the experimenter and the writer run in it.
+  [[workflows.wires]]
+  id = "ready-experimenter"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "ready" }
+  to = { node_id = "experimenter", port_id = "workdir" }
+
+  [[workflows.wires]]
+  id = "ready-writer"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "ready" }
+  to = { node_id = "writer", port_id = "workdir" }
 
   [[workflows.wires]]
   id = "written-exp"

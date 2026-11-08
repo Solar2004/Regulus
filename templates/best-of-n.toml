@@ -32,11 +32,10 @@
 # anything else rejects it (`rejected`).
 #
 # Limits, each a gap of the boxes, worked around in data:
-# 1. The Agent box's `workdir` is a fixed field, so it cannot be the worktree each child
-#    makes: every agent runs with cwd `worktrees` and the prompt names its folder. The
-#    isolation is a request to the model, not a fence. Fix: an optional "then" input
-#    `workdir` (path@1) on the agent node that sets the cwd of its next session, wired from
-#    `ws.ready`.
+# 1. Fixed: `ws.ready` goes to the Agent box's `workdir` input, so each agent's session
+#    opens in its own worktree (the `workdir` field, `worktrees`, is only where it would
+#    run if no path came). The cwd is where the agent starts, not a fence: with `allow` it
+#    can still write elsewhere by absolute path.
 # 2. No box picks element n of an array, and `flow` rules compare a value with a constant
 #    only, so matching each candidate to the winner is a shell gate (`is_pick`) on the
 #    JSON. Fix: a `switch`/`loop` rule `op` that compares two paths of the value
@@ -61,7 +60,7 @@
 # bound by the per-argument limit.
 #
 # Risks: `permissions = "allow"` lets every agent edit files and run commands unattended,
-# from `worktrees`, with the user's own opencode setup. The winner is merged into `base`
+# from its worktree, with the user's own opencode setup. The winner is merged into `base`
 # with no person looking; put a `human` approval as a second gate of the queue
 # (`approved` → `pass_human`, `rejected` → `fail_human`) to review first. The judge never
 # verifies alone (§6), so `test_command` is required: the repo's tests, a build, a lint;
@@ -125,7 +124,7 @@ requires = [
 
 [template.vars]
 repo = { description = "absolute path of the git repository; its base branch must be checked out and clean for the merge" }
-worktrees = { description = "absolute path of an existing folder for the attempts' worktrees, outside the repo; the agents' cwd" }
+worktrees = { description = "absolute path of an existing folder for the attempts' worktrees, outside the repo; each agent runs in its own worktree under it" }
 judge_model = { description = "model id the judge asks, as its provider names it (an Ollama model you pulled, an OpenRouter id...)" }
 n = { description = "how many agents try the task", default = 3 }
 model = { description = "model of the agents' engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
@@ -597,20 +596,22 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
-  # The agent's cwd cannot follow the worktree (see the header): the prompt names it.
+  # The agent already runs in the worktree (`ws.ready` → `agent.workdir`); the prompt
+  # names it too, so the model knows the rules.
   [[workflows.nodes]]
   id = "compose"
   name = "Prompt"
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 350, y = 150 }
-  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Where\n\nYour own git worktree is {{/info/path}}. Work only inside it: change files there with absolute paths or after cd into it, and do not commit. Other agents do the same task in other worktrees; the best attempt is merged.\n\n# Reply\n\nWhen done, reply with a short summary of what you changed.\n" }
+  config = { conversion = "template", template = "# Task\n\n{{/task}}\n\n# Where\n\nYour own git worktree is {{/info/path}}, your working directory. Work only inside it: change files there with absolute paths or after cd into it, and do not commit. Other agents do the same task in other worktrees; the best attempt is merged.\n\n# Reply\n\nWhen done, reply with a short summary of what you changed.\n" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  # `allow`: the agent edits files and runs commands unattended. Its cwd is `worktrees`.
+  # `allow`: the agent edits files and runs commands unattended. Its cwd is the worktree
+  # that reaches `workdir`; the field is the fallback.
   [[workflows.nodes]]
   id = "agent"
   name = "Agent"
@@ -621,6 +622,7 @@ ports = [
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
@@ -698,6 +700,14 @@ ports = [
   kind = "then"
   from = { node_id = "ws", port_id = "info" }
   to = { node_id = "j_prompt", port_id = "info" }
+
+  # `info` and then `ready` leave `ws` in that order, and the bus delivers in order, so
+  # the agent has moved before the prompt that goes through `j_prompt` reaches it.
+  [[workflows.wires]]
+  id = "ws-workdir"
+  kind = "then"
+  from = { node_id = "ws", port_id = "ready" }
+  to = { node_id = "agent", port_id = "workdir" }
 
   [[workflows.wires]]
   id = "ws-reply"

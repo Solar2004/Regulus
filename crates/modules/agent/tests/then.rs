@@ -18,6 +18,8 @@ const FAKE: &str = "t/fake-engine@1.0.0";
 #[derive(Default)]
 struct Seen {
     started: Vec<String>,
+    /// The directory each session opened in, in the order they opened.
+    cwds: Vec<PathBuf>,
     stopped: Vec<String>,
     slow_began: usize,
     slow_returned: usize,
@@ -72,7 +74,9 @@ impl Module for FakeEngine {
         let call: NodeCall = serde_json::from_value(params).unwrap();
         match name {
             engine::SESSION_START => {
+                let args: engine::StartArgs = serde_json::from_value(call.args).unwrap();
                 let mut seen = self.shared.seen();
+                seen.cwds.push(args.cwd);
                 let id = format!("s{}", seen.started.len() + 1);
                 seen.started.push(id.clone());
                 Ok(json!({ "session_id": id, "agent": { "name": "fake", "version": "1" } }))
@@ -140,14 +144,20 @@ fn profile(config: Value) -> Profile {
         ("failed", "text@1"),
         ("usage", "json@1"),
     ];
-    let mut own = vec![port("go", "text@1", "input", "then")];
+    let mut own = vec![
+        port("go", "text@1", "input", "then"),
+        port("dir", "path@1", "input", "then"),
+    ];
     let mut ports = vec![
         port("engine", "agent.engine@1", "input", "uses"),
         port("prompt", "text@1", "input", "then"),
+        port("workdir", "path@1", "input", "then"),
     ];
     let mut wires = vec![
         json!({ "id": "w-go", "kind": "then", "from": { "node_id": "self", "port_id": "go" },
                 "to": { "node_id": "a", "port_id": "prompt" } }),
+        json!({ "id": "w-dir", "kind": "then", "from": { "node_id": "self", "port_id": "dir" },
+                "to": { "node_id": "a", "port_id": "workdir" } }),
         json!({ "id": "w-engine", "kind": "uses", "from": { "node_id": "e", "port_id": "engine" },
                 "to": { "node_id": "a", "port_id": "engine" } }),
     ];
@@ -206,9 +216,13 @@ fn start_with(config: Value, data: &Path) -> (Arc<Core>, String, Arc<Shared>) {
 }
 
 fn send(core: &Core, id: &str, text: &str) {
+    send_to(core, id, "go", text);
+}
+
+fn send_to(core: &Core, id: &str, port: &str, text: &str) {
     core.dispatch(
         method::WORKFLOW_SEND,
-        json!({ "execution_id": id, "port": "go", "value": text }),
+        json!({ "execution_id": id, "port": port, "value": text }),
     )
     .unwrap();
 }
@@ -225,7 +239,9 @@ fn outputs(core: &Core, id: &str, count: usize) -> Vec<(String, Value)> {
         let out: Vec<(String, Value)> = page
             .events
             .into_iter()
-            .filter(|e| e.from.node_id == "self" && e.from.port_id != "go")
+            .filter(|e| {
+                e.from.node_id == "self" && !["go", "dir"].contains(&e.from.port_id.as_str())
+            })
             .filter_map(|e| match e.kind {
                 BusEventKind::Emitted { value } => Some((e.from.port_id, value)),
                 _ => None,
@@ -396,4 +412,49 @@ fn stopping_with_a_prompt_in_flight_emits_nothing_and_does_not_hang() {
     assert!(emitted.is_empty(), "{emitted:?}");
     assert_eq!(engine.seen().stopped, ["s1"]);
     let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_workdir_value_moves_the_following_turns_to_a_session_opened_there() {
+    let data = data_dir("workdir");
+    let elsewhere = data_dir("workdir-target");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (core, id, engine) = start("no", &data);
+    send(&core, &id, "one");
+    assert_eq!(outputs(&core, &id, 1), [reply("s1:1:one")]);
+    // Turns after the value run in a session opened there; the next ones stay in it.
+    send_to(&core, &id, "dir", elsewhere.to_str().unwrap());
+    send(&core, &id, "two");
+    send(&core, &id, "three");
+    assert_eq!(
+        outputs(&core, &id, 3)[1..],
+        [reply("s2:1:two"), reply("s2:2:three")]
+    );
+    // A path that is no directory fails the turns instead of running them elsewhere.
+    send_to(&core, &id, "dir", "/no/such/regulus/dir");
+    send(&core, &id, "four");
+    let out = outputs(&core, &id, 4);
+    assert_eq!(out[3].0, "failed");
+    let error = out[3].1.as_str().unwrap();
+    assert!(
+        error.contains("not an existing absolute directory"),
+        "{error}"
+    );
+    // Empty text: back to the field.
+    send_to(&core, &id, "dir", "");
+    send(&core, &id, "five");
+    assert_eq!(outputs(&core, &id, 5)[4], reply("s3:1:five"));
+    {
+        let seen = engine.seen();
+        assert_eq!(seen.started, ["s1", "s2", "s3"]);
+        assert_eq!(
+            seen.cwds,
+            [PathBuf::from("/"), elsewhere.clone(), PathBuf::from("/")]
+        );
+        assert_eq!(seen.stopped, ["s1", "s2"]);
+    }
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": id }))
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&elsewhere);
 }

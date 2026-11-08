@@ -6,6 +6,10 @@
 //! its "then" input `prompt`. Values on `prompt` queue per node and run one at a time on a
 //! thread of the box, so the bus that delivered them goes on at once; the answer leaves
 //! by `reply`, or by `failed`, from that thread (a new chain on the bus, depth 0).
+//!
+//! The "then" input `workdir` moves the agent: the next turn runs in a session opened
+//! there (ACP fixes the working directory when a session opens), and so does every turn
+//! after it until another value comes. The `workdir` field is where it starts.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -50,6 +54,10 @@ const ECHO_FIELD: &str = "failed_echo_chars";
 const YES: &str = "yes";
 /// The "then" input whose values are prompted into the session.
 const PROMPT_PORT: &str = "prompt";
+/// The "then" input that moves the following turns to another directory, and the field
+/// that says where the first ones run.
+const WORKDIR_PORT: &str = "workdir";
+const WORKDIR_FIELD: &str = "workdir";
 /// The "then" outputs: the reply, the error instead of it, and the tokens it took.
 const REPLY_PORT: &str = "reply";
 const FAILED_PORT: &str = "failed";
@@ -73,6 +81,10 @@ struct Running {
     node: Node,
     /// Whether a prompt went into the session: a fresh one is not opened again.
     used: bool,
+    /// The directory the session was opened in.
+    cwd: PathBuf,
+    /// The last value of the `workdir` input, if one came: it wins over the field.
+    workdir: Option<String>,
     /// Held for a whole prompt: one turn at a time per node, whoever sends it.
     turn: Arc<Mutex<()>>,
 }
@@ -191,13 +203,26 @@ impl Drop for Busy<'_> {
     }
 }
 
-fn workdir(setting: Option<&Value>) -> Result<PathBuf, ModuleError> {
+/// The directory a value of `workdir` names: a path as text, or an object with a `path`
+/// (what a workspace's `info` carries). Empty text: back to the field.
+fn workdir_value(value: &Value) -> Result<String, ModuleError> {
+    match value {
+        Value::String(path) => Ok(path.trim().to_string()),
+        Value::Object(map) => match map.get("path") {
+            Some(Value::String(path)) => Ok(path.trim().to_string()),
+            _ => Err(ModuleError::InvalidParams(
+                "a `workdir` object needs a `path` text".into(),
+            )),
+        },
+        other => Err(ModuleError::InvalidParams(format!(
+            "`workdir` takes a path, not {other}"
+        ))),
+    }
+}
+
+fn workdir(setting: Option<&str>) -> Result<PathBuf, ModuleError> {
     let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    let dir = match setting
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    let dir = match setting.map(str::trim).filter(|s| !s.is_empty()) {
         None => home,
         Some(path) => match path.strip_prefix("~/") {
             Some(rest) => home.join(rest),
@@ -306,7 +331,8 @@ impl Inner {
             execution_id: call.execution_id.clone(),
             node_id: call.node.id.clone(),
         };
-        let (engine, started) = self.open(&me, &call.node)?;
+        let cwd = self.cwd(&call.node, None)?;
+        let (engine, started) = self.open(&me, &call.node, &cwd)?;
         let answer = json(&started)?;
         self.running().insert(
             me,
@@ -315,14 +341,30 @@ impl Inner {
                 session_id: started.session_id,
                 node: call.node,
                 used: false,
+                cwd,
+                workdir: None,
                 turn: Arc::default(),
             },
         );
         Ok(answer)
     }
 
-    /// Opens an engine session for `node` with everything wired into it.
-    fn open(&self, me: &NodeRef, node: &Node) -> Result<(Endpoint, engine::Started), ModuleError> {
+    /// Where the node's turns run: the last value of its `workdir` input, else its field.
+    fn cwd(&self, node: &Node, given: Option<&str>) -> Result<PathBuf, ModuleError> {
+        let field = self
+            .manifest
+            .setting(node, WORKDIR_FIELD)
+            .and_then(Value::as_str);
+        workdir(given.filter(|g| !g.is_empty()).or(field))
+    }
+
+    /// Opens an engine session for `node` in `cwd` with everything wired into it.
+    fn open(
+        &self,
+        me: &NodeRef,
+        node: &Node,
+        cwd: &std::path::Path,
+    ) -> Result<(Endpoint, engine::Started), ModuleError> {
         let engine = self
             .ctx
             .resolve(me, ENGINE_PORT)
@@ -379,7 +421,7 @@ impl Inner {
             .collect::<Result<Vec<toolset::Mount>, _>>()?;
         let hooks = self.hooks(me)?;
         let args = engine::StartArgs {
-            cwd: workdir(self.manifest.setting(node, "workdir"))?,
+            cwd: cwd.to_path_buf(),
             permissions,
             provider,
             slots,
@@ -511,20 +553,23 @@ impl Inner {
             .map(|r| r.turn.clone())
             .ok_or_else(|| Self::not_running(&me))?;
         let _turn = lock(&turn);
-        let (engine, session_id, node) = {
+        let (engine, session_id, renew) = {
             let mut running = self.running();
             let found = running.get_mut(&me).ok_or_else(|| Self::not_running(&me))?;
+            // A `workdir` that names no directory fails the turn: it never runs elsewhere.
+            let cwd = self.cwd(&found.node, found.workdir.as_deref())?;
             let used = std::mem::replace(&mut found.used, true);
             let fresh = self
                 .manifest
                 .setting(&found.node, FRESH_FIELD)
                 .and_then(Value::as_str)
                 == Some(YES);
-            let node = (fresh && used).then(|| found.node.clone());
-            (found.engine.clone(), found.session_id.clone(), node)
+            // A session keeps the directory it opened in: moving is opening another.
+            let renew = (fresh && used || cwd != found.cwd).then(|| (found.node.clone(), cwd));
+            (found.engine.clone(), found.session_id.clone(), renew)
         };
-        let (engine, session_id) = match node {
-            Some(node) => self.renew(&me, &node, engine, session_id)?,
+        let (engine, session_id) = match renew {
+            Some((node, cwd)) => self.renew(&me, &node, &cwd, engine, session_id)?,
             None => (engine, session_id),
         };
         let args = engine::PromptArgs {
@@ -540,6 +585,7 @@ impl Inner {
         &self,
         me: &NodeRef,
         node: &Node,
+        cwd: &std::path::Path,
         engine: Endpoint,
         session_id: String,
     ) -> Result<(Endpoint, String), ModuleError> {
@@ -548,7 +594,7 @@ impl Inner {
             engine::SESSION_STOP,
             json(engine::StopArgs { session_id })?,
         )?;
-        let (engine, started) = self.open(me, node)?;
+        let (engine, started) = self.open(me, node, cwd)?;
         let session_id = started.session_id;
         let mut running = self.running();
         match running.get_mut(me) {
@@ -556,6 +602,7 @@ impl Inner {
                 found.engine = engine.clone();
                 found.session_id = session_id.clone();
                 found.used = true;
+                found.cwd = cwd.to_path_buf();
                 Ok((engine, session_id))
             }
             None => {
@@ -571,6 +618,9 @@ impl Inner {
     /// of its own that then takes the queue in order.
     fn event(self: &Arc<Self>, call: NodeCall) -> Result<Value, ModuleError> {
         let event: NodeEvent = parse(call.args)?;
+        if event.port == WORKDIR_PORT {
+            return self.move_to(call.execution_id, call.node.id, &event.value);
+        }
         if event.port != PROMPT_PORT {
             return Err(ModuleError::InvalidParams(format!(
                 "`{}` is not an input of the agent",
@@ -615,6 +665,29 @@ impl Inner {
             .spawn(move || inner.drain(me, node, stop, text))
             .map_err(|e| ModuleError::Failed(format!("cannot start an agent thread: {e}")))?;
         Ok(json!({ "prompting": true }))
+    }
+
+    /// A value on `workdir`: the turns that start from now on run there. Kept even when it
+    /// names no directory, so those turns fail instead of running somewhere else; the
+    /// delivery says so at once too.
+    fn move_to(
+        &self,
+        execution_id: String,
+        node_id: String,
+        value: &Value,
+    ) -> Result<Value, ModuleError> {
+        let me = NodeRef {
+            execution_id,
+            node_id,
+        };
+        let path = workdir_value(value)?;
+        let mut running = self.running();
+        let found = running.get_mut(&me).ok_or_else(|| Self::not_running(&me))?;
+        found.workdir = Some(path.clone());
+        let checked = self.cwd(&found.node, Some(&path));
+        drop(running);
+        let cwd = checked?;
+        Ok(json!({ "workdir": cwd }))
     }
 
     /// Prompts `text`, then every value that queued meanwhile, emitting each answer.
