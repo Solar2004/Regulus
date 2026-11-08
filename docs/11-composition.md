@@ -422,9 +422,10 @@ templates = [".regulus/templates"]  # cajas y plantillas solo de este proyecto
 disable = ["web"]               # los nodos de `web` no corren en perfiles de este proyecto
 # enable = [...]                # si está, solo estos
 
-[[modules.local]]               # módulo solo de este proyecto, fuera de proceso
-manifest = "tools/mi-modulo/manifest.toml"
+[[modules.local]]               # módulo solo de este proyecto, fuera de proceso (03 §6)
+id = "mi-modulo"                # se lista como <proyecto>/mi-modulo
 command = ["tools/mi-modulo/run"]
+# cwd, env = { … }, version, manifest = "…": opcionales
 
 [client]                        # pisa el [client] global solo aquí (04-client.md §11)
 start_view = "operate"
@@ -437,7 +438,7 @@ start_view = "operate"
 | Registro | `project.list`, `project.get`, `project.open { path }`, `project.close` en el core; la lista de carpetas abiertas vive en `config.toml` `[projects] paths = []` (el cliente la pide, el core la sirve: decisión #15). CLI `regulus project ls\|open\|close\|show`. | ~1 día |
 | Perfiles y plantillas del proyecto | Al abrir, el core suma sus carpetas a las fuentes de `profile.*` y `template.*` con `project_id` fijado. Una **caja guardada como plantilla del proyecto es ya un "módulo especial solo para este"**: sin compilar nada ni cambiar el core. | incluido |
 | `[modules] disable/enable` | El core carga los módulos una vez (lista estática, decisión #10). Por proyecto no se descargan: se **vetan**: `profile.check` marca los nodos de un módulo vetado como *desactivado* con la razón "disabled in this project" y `execution.start` los rechaza con ese diagnóstico. Honesto y sin tocar el registro. | ~medio día |
-| `[[modules.local]]` | **`ProcessModule`** (§10 opción C, la puerta abierta de `02-architecture.md` §2): el core lanza `command`, habla JSON-RPC por stdio con el mismo contrato de `Module` (manifest, `call`, estados), lo lista como `<project>/<id>` y lo quita al cerrar el proyecto. Cualquier lenguaje. La ablación lo cubre: quitarlo deja el resto igual. | ~2-3 días, se hace después del resto |
+| `[[modules.local]]` | **`ProcessModule`** (§10 opción C, la puerta abierta de `02-architecture.md` §2): el core lanza `command`, habla JSON-RPC por stdio con el mismo contrato de `Module` (manifest, `call`, estados), lo lista como `<project>/<id>` y lo quita al cerrar el proyecto. Cualquier lenguaje. La ablación lo cubre: quitarlo deja el resto igual. Protocolo en [`03-modules.md` §6](03-modules.md). | ✅ hecho (2026-11-08) |
 | Tolerancia | `regulus.toml` se lee con `#[serde(flatten)] extra: toml::Table` y aviso por clave desconocida. **Se propone lo mismo para `config.toml`**: avisar en vez de fallar. | ~1 h |
 
 **Lo que no se decide aquí:** el aislamiento de ejecución (§9 nivel 2, fuera de v1); los
@@ -448,7 +449,7 @@ start_view = "operate"
 + veto primero, `ProcessModule` después.
 
 **Construido (2026-11-08)** ✅ — registro, perfiles y plantillas del proyecto, veto y
-tolerancia; `ProcessModule` no.
+tolerancia; `ProcessModule` también, más tarde el mismo día (último punto de la lista).
 
 - **Registro:** `project.list` · `get` · `open` · `close` (protocolo 1.12, códigos `-32010` a
   `-32013`, [`composition-preview.md`](composition-preview.md)) y `regulus project
@@ -461,7 +462,8 @@ tolerancia; `ProcessModule` no.
   `content`) y avisa, igual que una clave de tipo equivocado; un `regulus.toml` que no se lee
 o no es TOML, o un id inválido, **no abre** (`project.open` da `-32011`; al arrancar, el
 proyecto sale en `project.list` con `error` y sin nada cargado), para no correr sin su veto;
-  `[[modules.local]]` se lee, se devuelve y avisa "local modules are not supported yet";
+  `[[modules.local]]` se lee y se devuelve; una entrada sin `id`, con un id que no es un
+  nombre simple o sin `command` avisa y no se carga;
   `[client]` se devuelve tal cual y `config.client` lo pone encima del global para la app
   (`04-client.md` §11). `config.toml` igual: avisa al
   arrancar (`regulus: … unknown key`) y sigue; `hello` no devuelve avisos, no tenía dónde.
@@ -482,4 +484,18 @@ de tipo equivocado no sustituye a la última buena (el veto no cae por una errat
 cambiar el id o las carpetas de perfiles pide cerrar y abrir. `profiles` y `templates` solo
 aceptan rutas dentro de la carpeta: absolutas, con `..` o enlaces que salen se ignoran con aviso.
 (4) Una ejecución que se reanuda tras reiniciar el core no pasa el veto: corre la copia que
-tenía. **Queda:** `ProcessModule` para `[[modules.local]]`.
+tenía.
+
+**`ProcessModule` construido (2026-11-08)** ✅ — `[[modules.local]]` con `id`, `command`
+(lista; un programa con `/` es relativo al proyecto), y opcionales `cwd`, `env` (tabla de
+texto), `version` y `manifest` (se lee ese fichero en vez de preguntárselo al proceso).
+Protocolo, estados, límites y `[local_modules]` de `config.toml` en
+[`03-modules.md` §6](03-modules.md). Se arranca al abrir el proyecto y al arrancar el core
+con el proyecto abierto, en paralelo. `module ls` y `module.manifest` lo dan como
+`<proyecto>/<id>@<versión>`. Lo vetan `disable`/`enable` y `--without <proyecto>/<id>`, y
+`project.close` lo para: `stop`, luego SIGTERM y SIGKILL pasado `stop_grace_ms`. Si no
+arranca o muere, queda `broken` con su stderr. No se añadió un estado `error`: es el
+`Broken` de §3. Ejemplo en `examples/local-modules/echo/` (Python, solo la biblioteca
+estándar) y tests en `crates/regulus-cli/tests/local_modules.rs`.
+**Desvíos:** el ejemplo de arriba traía `manifest` sin `id`; ahora `id` es obligatorio y
+`manifest` opcional. Un módulo local no puede declarar `methods`.

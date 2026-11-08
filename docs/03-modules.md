@@ -111,8 +111,8 @@ Cuatro métodos. Nada más. Tres propiedades que esto compra:
 
 1. **`call` usa los mismos nombres de método que el socket externo.** Un módulo no sabe
    si la llamada vino de la GUI, del CLI o de otro módulo.
-2. **La puerta a otros lenguajes queda abierta sin coste hoy.** Un `ProcessModule` que
-   implemente este trait y hable por stdio encaja sin que el core cambie.
+2. **La puerta a otros lenguajes está abierta.** `ProcessModule` implementa este trait
+   y habla por stdio; el protocolo está en §6 (construido 2026-11-08).
 3. **Cada módulo es su propio crate** → se testea solo, se razona solo, y se borra
    quitando una línea del registro.
 
@@ -294,3 +294,68 @@ El camino completo, que es lo que la métrica norte mide (objetivo: menos de una
 
 **Si el paso 3 requiere tocar `regulus-core`, el contrato está mal.** Ese es el criterio
 de aceptación de v1.
+
+---
+
+## 6. Módulos fuera de proceso: el protocolo
+
+✅ **DECIDIDO** (2026-11-08, lo pidió `[[modules.local]]`, `11-composition.md` §13) — Un
+módulo puede ser **un proceso aparte en cualquier lenguaje**. El core lo arranca, le
+habla **JSON-RPC 2.0 por stdin/stdout, un objeto por línea**, y lo envuelve en
+`ProcessModule` (`regulus-core/src/process.rs`), que implementa el mismo trait `Module`.
+Para el resto del core es un módulo más.
+
+**Por qué esta forma:** el protocolo **es el trait, método a método**. No hay un
+segundo contrato que mantener: lo que valga dentro de proceso vale fuera, con los
+mismos nombres de método (§2, propiedad 1). JSON por líneas es lo que cualquier lenguaje
+lee con su biblioteca estándar. El ejemplo en Python (`examples/local-modules/echo/`)
+ocupa menos de cien líneas. Se descartó un protocolo "simplificado" (nodo, puerto y
+valor → salidas) porque cerraba la puerta al ciclo de vida de los nodos, a `node/hook` y
+a `node/child`.
+
+| Dirección | Mensaje | Equivale a | Qué lleva |
+|---|---|---|---|
+| core → proceso | `manifest` (petición) | `Module::manifest` | `params { protocol, project_id, id }`. Responde el manifiesto con la forma de `regulus-module.toml`: un objeto JSON o **el texto TOML** del fichero. `module.id` y `module.name` pueden faltar |
+| core → proceso | `start` (petición) | `Module::init` | `{ protocol, module_id, project_id, root }`. Opcional: si responde `-32601`, arranca igual |
+| core → proceso | `call` (petición) | `Module::call` | `{ method, params }`, con el método y los parámetros tal cual: `node/start`, `node/event`, `node/stop`, `node/child` y `node/hook` con su `NodeCall` (§2.2). Errores: `-32601` → `UnknownMethod` (un nodo sin ciclo de vida), `-32602` → `InvalidParams`, otro → `Failed` |
+| core → proceso | `stop` (petición) | `Module::shutdown` | `{}`. Opcional. Después se cierra su stdin, y llega SIGTERM al grupo y SIGKILL si pasa el margen |
+| proceso → core | `emit` (notificación) | `ModuleCtx::emit` | `{ execution_id, node_id, port, value }`. Lo emitido mientras atiende una `call` se publica en el hilo que llama, **antes** de que la llamada vuelva, y sigue su cadena: `[bus] max_depth` corta también los bucles que pasan por el proceso |
+| proceso → core | otra petición | — | se responde `-32601`. El resto de `ModuleCtx` (`resolve`, `call`, `store`, `checkpoint`, `node_dir`, `call_workflow`) **no se ofrece todavía**: se añade cuando un módulo local lo pida |
+
+El manifiesto pasa por el mismo código que uno enlazado: el mismo `Manifest`, la misma
+comprobación de `requires_proto` y la misma de id repetido. **El id lo pone el core:**
+`<proyecto>/<id>@<versión>`, con la versión de `regulus.toml`, si no la que el manifiesto
+dice tras `@`, y si no `0.0.0`. Así el veto (`disable = ["<proyecto>/<id>"]`), `--without`
+y los perfiles (`module_id = "<proyecto>/<id>"`) lo nombran como a cualquiera.
+
+**Estados (§3).** Un proceso que no arranca, que no responde `manifest` en
+`start_timeout_ms` o cuyo manifiesto no es válido queda **`broken`** con la razón y las
+últimas líneas de su stderr, y se mata. Uno que muere después pasa a `broken` igual. El
+core y los demás módulos no se enteran. Su stderr va al log del core con el prefijo
+`local module <id>:`.
+
+**Límites, a propósito:**
+- Un módulo local **no puede declarar `methods`**: los métodos del socket se registran al
+  arrancar el core. Se alcanza por sus nodos. Si lo declara, queda `broken` con la razón.
+- Se arranca al abrir el proyecto (o al arrancar el core con el proyecto abierto). Los de
+  un proyecto se arrancan **en paralelo**: el core espera al más lento, no la suma. Con el
+  ejemplo en Python el core pasó de 37 ms a 80 ms (build debug, 2026-11-08), dentro del
+  presupuesto de 200 ms.
+- Cambiar `[[modules.local]]` con el proyecto abierto exige cerrarlo y volver a abrirlo.
+- Mientras su proyecto está abierto, lo puede usar cualquier perfil, no solo los del
+  proyecto. Restringirlo sería cerrar una puerta que nadie pidió cerrar.
+- Una ejecución que lo usa cuando el proyecto se cierra sigue con su copia del workflow.
+  Las llamadas a ese nodo fallan a la vista en el bus.
+
+**Configuración** (`config.toml`, sección `[local_modules]`):
+
+| Clave | Por defecto | Qué |
+|---|---|---|
+| `start_timeout_ms` | `10000` | lo que tiene para responder `manifest` y `start` |
+| `call_timeout_ms` | `0` | lo que tiene para cada `call`; `0` = sin límite, como un módulo enlazado |
+| `stop_grace_ms` | `2000` | lo que tiene para responder `stop` y luego para acabar tras SIGTERM |
+| `stderr_lines` | `20` | líneas de stderr que se guardan para decir por qué se rompió |
+
+Ablación: la matriz (§4) tiene una fila para el módulo local. Quitar cualquier módulo
+enlazado lo deja usable, y quitarlo a él (`--without <proyecto>/<id>`) deja el resto igual
+y no arranca ningún proceso (`crates/regulus-cli/tests/ablation.rs`).

@@ -79,7 +79,8 @@ contenido mate el proceso.
 
 **La puerta que queda abierta:** si algún día hace falta un módulo en otro lenguaje, se
 escribe un `ProcessModule` que implementa el mismo trait y habla por stdio. El core no
-cambia. No se paga por ello hoy, pero no se cierra.
+cambia. **Construido** (2026-11-08) para los módulos de un proyecto (`[[modules.local]]`):
+el protocolo está en [`03-modules.md` §6](03-modules.md).
 
 ---
 
