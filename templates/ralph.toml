@@ -1,0 +1,349 @@
+# Ralph (ghuntley.com/ralph, docs/13-blocks.md §5 row 2): the same prompt, over and over,
+# to an agent that starts from nothing each turn, until a deterministic gate passes.
+#
+#   self.go → loop ─body→ budget → PROMPT.md ─┐
+#               ▲                  └──────────┴→ join → compose → agent ─reply→ fix_plan.md
+#               │                                    engine ⇢ ┘ │ failed            │
+#               ├──────────── agent_report ←─────────────────────┘                  ▼
+#               └──────────── gate_report ←─exit── gate (test_command) ←────────────┘
+#
+# Each turn: PROMPT.md is read again and joined with the last gate result (what was sent
+# to `go` on turn 1), the Agent box gets that text in a new session (`fresh_context`), its
+# reply is appended to fix_plan.md in `workdir`, and the gate runs `test_command` there.
+# The gate's exit goes back to the loop as text, "gate exit <code>" then its output: code
+# 0 meets `until` and the loop ends on `done`; anything else is the next turn's feedback,
+# up to `max_turns` (then `exhausted`). A failed prompt (`failed`) is fed back the same
+# way. The budget lets turns through until `max_ms` from the first one, then `exceeded`:
+# turns stop, the execution stays until `regulus stop`. By time only: `usage` would let
+# it count tokens, but no engine reports usage yet.
+#
+# Risk: `permissions = "allow"` says yes to everything the agent asks (writing files,
+# running commands), unattended, in `workdir` and wherever its tools reach. The engine
+# runs with the user's own opencode setup.
+#
+# Another engine: replace the node `engine` (e.g. `engine-claude`; it has no `model`
+# field, its setup picks the model). Another model: `--set model=provider/model`. Values
+# with a double quote or a backslash are refused (docs/11-composition.md §7), so a
+# `test_command` that needs quotes goes in a script.
+#
+# Judge instead of the gate (for "is it done?" without tests, instead of grepping for
+# <promise>COMPLETE</promise>): add `regulus/judge` and `regulus/providers` to `requires`,
+# replace node `gate` with a `judge` node (verdicts "pass, fail") fed from `agent.reply`
+# with a provider node on its `model` input, and wire `judge.pass` and `judge.feedback` to
+# two `convert` templates that say "gate exit 0" and "gate exit 1" plus the feedback, into
+# `loop.back`. Keep the gate when there are tests: the judge never verifies alone (§6).
+#
+# Run (2026-11-08, debug build, `regulus serve --port 0` with a temporary --home whose
+# config.toml has `[templates] paths` on this folder; <repo> holds PROMPT.md, which says
+# "make the check pass, the last check says what it wants; none yet: change nothing",
+# and <checker>/check.sh exits 0 only when hello.txt says hello):
+#
+#   regulus template apply ralph --set workdir=<repo> --set max_turns=3 \
+#     --set test_command="sh <checker>/check.sh"     # wrote <home>/profiles/ralph.toml
+#   regulus run ralph --detach                        # exec-1  ralph  running
+#   regulus send exec-1 go "none yet: no check has run"
+#   regulus events --execution exec-1 | grep emitted  # (prompt, join, compose left out)
+#     agent.reply emitted text@1 "Waiting for the first check."
+#     gate.exit emitted exit@1 {"code":1,…,"stdout":"FAIL: a file named hello.txt must…"}
+#     loop.body emitted text@1 "gate exit 1\n\nFAIL: a file named hello.txt must…"  ← turn 2
+#     agent.reply emitted text@1 "Created hello.txt containing \"hello\"."
+#     gate.exit emitted exit@1 {"code":0,"ms":6,"stdout":"ok: hello.txt says hello",…}
+#     self.passed emitted path@1 "<repo>/fix_plan.md"
+#     loop.done emitted text@1 "gate exit 0\n\nok: hello.txt says hello\n"
+#     self.done emitted text@1 "gate exit 0\n\nok: hello.txt says hello\n"   ← 15 s after send
+#   <repo>/fix_plan.md: the two replies, "---" between them. opencode's log shows a new
+#   session per turn, both in <repo>: ses_e46e1688… (03:05:52, at run) and
+#   ses_e46e1304… (03:06:06, before turn 2).
+#   With --set max_ms=1 and test_command=false: turn 2 goes to budget.exceeded and
+#   self.exceeded. Without workdir: "template `ralph` needs a value for var `workdir`".
+id = "ralph"
+name = "Ralph in {{workdir}}"
+main_workflow_id = "ralph"
+
+[template]
+name = "ralph"
+description = "Ralph: PROMPT.md to a fresh agent each turn until a test command passes"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/process", version = ">=0.1" },
+  { module = "regulus/guards", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path of the repo the agent works in; PROMPT.md is read and fix_plan.md written there" }
+model = { description = "model of the engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+test_command = { description = "shell line run in workdir after each turn; exit 0 ends the loop", default = "true" }
+max_turns = { description = "most turns before the loop gives up on exhausted", default = 5 }
+max_ms = { description = "milliseconds from the first turn after which no turn starts", default = 1800000 }
+
+[[workflows]]
+id = "ralph"
+name = "Ralph"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "done", capability = "text@1", direction = "output", kind = "then" },
+  { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  { id = "passed", capability = "path@1", direction = "output", kind = "then" },
+  { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  # Turns. What comes back on `back` is the last gate (or agent) result; "gate exit 0"
+  # ends the run on `done`.
+  [[workflows.nodes]]
+  id = "loop"
+  name = "Loop"
+  type = "loop"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 150 }
+  config = { max = {{max_turns}}, until = { op = "regex", value = '^gate exit 0\b' } }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "back", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Wall clock since the first turn; past it, the turn goes to `exceeded` and stops there.
+  [[workflows.nodes]]
+  id = "budget"
+  name = "Budget"
+  type = "budget"
+  module_id = "regulus/guards@0.1.0"
+  position = { x = 200, y = 150 }
+  config = { max_items = 0, max_ms = {{max_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # PROMPT.md, read again every turn: edit it while Ralph runs.
+  [[workflows.nodes]]
+  id = "prompt"
+  name = "PROMPT.md"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 350, y = 100 }
+  config = { path = "PROMPT.md", dir = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The prompt and the last result, together.
+  [[workflows.nodes]]
+  id = "join"
+  name = "Prompt + feedback"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 500, y = 150 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "feedback", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "compose"
+  name = "Turn prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { conversion = "template", template = "# Task\n\n{{/prompt}}\n\n# Result of the last check\n\n{{/feedback}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The agent: a new engine session before every prompt, so nothing carries over between
+  # turns. `allow` answers yes to whatever the agent asks permission for (writing files,
+  # running commands): it acts in `workdir` unattended.
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 800, y = 150 }
+  config = { workdir = "{{workdir}}", permissions = "allow", fresh_context = "yes" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The engine: the only node that knows the CLI. Swap it for another engine node.
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 800, y = 20 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # One entry per turn: the agent's reply.
+  [[workflows.nodes]]
+  id = "fix_plan"
+  name = "fix_plan.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 950, y = 150 }
+  config = { path = "fix_plan.md", dir = "{{workdir}}", mode = "append", separator = "\n\n---\n\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # The deterministic check: `test_command` in the repo. `exit` says how it went.
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Gate"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 950, y = 300 }
+  config = { command = "sh", args = ["-c", "{{test_command}}"], cwd = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "path@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "path@1", direction = "output", kind = "then" },
+    { id = "exit", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "gate_report"
+  name = "Gate result"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 300 }
+  config = { conversion = "template", template = "gate exit {{/code}}\n\n{{/stdout}}\n{{/stderr}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent_report"
+  name = "Agent failure"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 400 }
+  config = { conversion = "template", template = "agent failed\n\n{{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "go-loop"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "loop", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "loop-budget"
+  kind = "then"
+  from = { node_id = "loop", port_id = "body" }
+  to = { node_id = "budget", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "budget-prompt"
+  kind = "then"
+  from = { node_id = "budget", port_id = "out" }
+  to = { node_id = "prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "budget-feedback"
+  kind = "then"
+  from = { node_id = "budget", port_id = "out" }
+  to = { node_id = "join", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "prompt-join"
+  kind = "then"
+  from = { node_id = "prompt", port_id = "out" }
+  to = { node_id = "join", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "join-compose"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "compose", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "compose-agent"
+  kind = "then"
+  from = { node_id = "compose", port_id = "out" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-fix_plan"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "fix_plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "fix_plan-gate"
+  kind = "then"
+  from = { node_id = "fix_plan", port_id = "written" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-report"
+  kind = "then"
+  from = { node_id = "gate", port_id = "exit" }
+  to = { node_id = "gate_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-back"
+  kind = "then"
+  from = { node_id = "gate_report", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "agent-fail"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "agent_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-back"
+  kind = "then"
+  from = { node_id = "agent_report", port_id = "out" }
+  to = { node_id = "loop", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "gate-passed"
+  kind = "then"
+  from = { node_id = "gate", port_id = "pass" }
+  to = { node_id = "self", port_id = "passed" }
+
+  [[workflows.wires]]
+  id = "loop-done"
+  kind = "then"
+  from = { node_id = "loop", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "loop-exhausted"
+  kind = "then"
+  from = { node_id = "loop", port_id = "exhausted" }
+  to = { node_id = "self", port_id = "exhausted" }
+
+  [[workflows.wires]]
+  id = "budget-exceeded"
+  kind = "then"
+  from = { node_id = "budget", port_id = "exceeded" }
+  to = { node_id = "self", port_id = "exceeded" }
