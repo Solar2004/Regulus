@@ -107,6 +107,7 @@ impl Template {
             vars: self.vars.clone(),
             requires: self.requires.clone(),
             error: None,
+            project_id: None,
         }
     }
 }
@@ -307,6 +308,7 @@ pub fn list(places: &Places) -> Vec<TemplateSummary> {
                 vars: Vec::new(),
                 requires: Vec::new(),
                 error: Some(error.to_string()),
+                project_id: None,
             },
         })
         .collect()
@@ -446,30 +448,65 @@ pub fn profile_of(template: &Template, text: &str) -> Result<Profile, TemplateEr
     })
 }
 
-/// Gives the rendered profile another id by rewriting its top-level `id = …` line, the one
-/// before any table header. Comments and layout stay.
-pub fn rename(text: &str, id: &str) -> Result<String, TemplateError> {
-    let mut out = String::with_capacity(text.len() + id.len());
+/// Rewrites the top-level `key = …` line, the one before any table header, to `value`.
+/// Comments and layout stay. `None` if there is no such line.
+fn replace_top(text: &str, key: &str, value: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len() + value.len());
     let mut done = false;
     let mut in_tables = false;
+    let quoted = format!("\"{key}\"");
     for line in text.split_inclusive('\n') {
         in_tables |= header_key(line).is_some();
-        let key = line.split_once('=').map(|(key, _)| key.trim());
-        if !done && !in_tables && matches!(key, Some("id" | "\"id\"")) {
+        let found = line.split_once('=').map(|(k, _)| k.trim());
+        if !done && !in_tables && (found == Some(key) || found == Some(quoted.as_str())) {
             let end = if line.ends_with('\n') { "\n" } else { "" };
-            out.push_str(&format!("id = {}{end}", toml::Value::String(id.into())));
+            out.push_str(&format!(
+                "{key} = {}{end}",
+                toml::Value::String(value.into())
+            ));
             done = true;
         } else {
             out.push_str(line);
         }
     }
-    if done {
-        Ok(out)
-    } else {
-        Err(TemplateError::Invalid(
+    done.then_some(out)
+}
+
+/// Gives the rendered profile another id by rewriting its top-level `id = …` line, the one
+/// before any table header. Comments and layout stay.
+pub fn rename(text: &str, id: &str) -> Result<String, TemplateError> {
+    replace_top(text, "id", id).ok_or_else(|| {
+        TemplateError::Invalid(
             "cannot find the profile's top-level `id = …` line to change the id".into(),
-        ))
+        )
+    })
+}
+
+/// Sets the rendered profile's `project_id`: rewrites its top-level line, or adds one
+/// before the first table header.
+pub fn set_project(text: &str, project_id: &str) -> String {
+    const KEY: &str = "project_id";
+    if let Some(out) = replace_top(text, KEY, project_id) {
+        return out;
     }
+    let line = format!("{KEY} = {}\n", toml::Value::String(project_id.into()));
+    let at = text
+        .split_inclusive('\n')
+        .scan(0, |at, l| {
+            let start = *at;
+            *at += l.len();
+            Some((start, l))
+        })
+        .find(|(_, l)| header_key(l).is_some())
+        .map_or(text.len(), |(start, _)| start);
+    let mut out = String::with_capacity(text.len() + line.len() + 1);
+    out.push_str(&text[..at]);
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&line);
+    out.push_str(&text[at..]);
+    out
 }
 
 /// The file name a profile id is written as, if the id is a single safe name: one plain
@@ -837,6 +874,23 @@ kind = "main"
         assert_eq!(parse(Path::new("/t/a.toml"), &text).unwrap().name, "atoml");
         let text = ECHO.replace(r#"name = "echo""#, r#"name = "a.toml""#);
         assert!(parse(Path::new("/t/a.toml"), &text).is_err());
+    }
+
+    #[test]
+    fn set_project_rewrites_or_adds_the_top_level_line() {
+        let text = "id = \"x\"\nmain_workflow_id = \"m\"\n\n[[workflows]]\nid = \"m\"\n";
+        let set = set_project(text, "demo");
+        assert!(
+            set.contains("main_workflow_id = \"m\"\n\nproject_id = \"demo\"\n[[workflows]]"),
+            "{set}"
+        );
+        let again = set_project(&set, "other");
+        assert_eq!(again.matches("project_id").count(), 1, "{again}");
+        assert!(again.contains("project_id = \"other\""), "{again}");
+        assert_eq!(
+            set_project("id = \"x\"", "p"),
+            "id = \"x\"\nproject_id = \"p\"\n"
+        );
     }
 
     #[test]

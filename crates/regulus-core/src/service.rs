@@ -10,9 +10,10 @@ use regulus_proto::{
     EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, HookAnswer,
     HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams, NameParams,
     Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted, ProfileSaveParams,
-    ProfileSaved, ProjectFilter, SecretSetParams, Severity, TemplateApplied, TemplateApplyParams,
-    TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams, WorkflowSent,
-    BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
+    ProfileSaved, ProjectDetails, ProjectFilter, ProjectOpenParams, ProjectSummary,
+    SecretSetParams, Severity, TemplateApplied, TemplateApplyParams, TemplateParams, TemplateText,
+    WireKind, Workflow, WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY,
+    WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -21,10 +22,12 @@ use serde_json::Value;
 use crate::bus::{self, ChildNews, Journal, Listing, Pending};
 use crate::config::{BusConfig, CallConfig, HooksConfig, Resume};
 use crate::graph::{
-    boundary, check_fields, check_profile, flatten, missing_workflow, start_order, wire_end, End,
+    boundary, check_fields, check_profile, check_vetoed, flatten, missing_workflow, start_order,
+    wire_end, End,
 };
 use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::profiles::ProfileStore;
+use crate::projects::{self, Project, ProjectError, Projects};
 use crate::registry::{base_id, CallError, Registry};
 use crate::secrets::{SecretError, Secrets};
 use crate::store::{ModuleStore, Store, StoreError, StoredExecution};
@@ -86,6 +89,18 @@ impl From<TemplateError> for RpcError {
     }
 }
 
+impl From<ProjectError> for RpcError {
+    fn from(error: ProjectError) -> Self {
+        let code = match error {
+            ProjectError::NotFound(_) => code::PROJECT_NOT_FOUND,
+            ProjectError::Invalid(_) => code::PROJECT_INVALID,
+            ProjectError::Exists(_) => code::PROJECT_EXISTS,
+            ProjectError::Io(_) => code::MODULE_FAILED,
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 impl From<SecretError> for RpcError {
     fn from(error: SecretError) -> Self {
         let code = match error {
@@ -104,6 +119,14 @@ pub struct Storage {
     pub secrets: Secrets,
     pub data_dir: Option<PathBuf>,
     pub store: Option<Arc<Store>>,
+}
+
+/// Where `project.open` and `project.close` remember the open folders: `config.toml`, and
+/// the home its relative paths are resolved against.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectHome {
+    pub config: PathBuf,
+    pub home: PathBuf,
 }
 
 /// Directories of nodes outside any project.
@@ -195,6 +218,11 @@ pub struct Core {
     profile_writes: Mutex<()>,
     /// Where templates are read from and applied ones written (`set_template_places`).
     places: RwLock<Places>,
+    /// The open projects. Lock order: `profile_writes`, then `projects`, then `profiles`;
+    /// `executions` before `projects`.
+    projects: RwLock<Projects>,
+    /// Without it, `project.open` and `project.close` change nothing on disk.
+    project_home: RwLock<Option<ProjectHome>>,
     storage: Storage,
     bus: BusConfig,
     call: CallConfig,
@@ -286,6 +314,8 @@ impl Core {
             profiles: RwLock::new(profiles),
             profile_writes: Mutex::default(),
             places: RwLock::default(),
+            projects: RwLock::default(),
+            project_home: RwLock::default(),
             storage,
             executions: Mutex::default(),
             journal: Mutex::new(journal),
@@ -308,6 +338,137 @@ impl Core {
         *self.places.write().unwrap_or_else(|p| p.into_inner()) = places;
     }
 
+    /// The open projects, and where opening or closing one is remembered.
+    pub fn set_projects(&self, projects: Projects, home: ProjectHome) {
+        *self.projects.write().unwrap_or_else(|p| p.into_inner()) = projects;
+        *self.project_home.write().unwrap_or_else(|p| p.into_inner()) = Some(home);
+    }
+
+    /// Reads again the `regulus.toml` files edited since they were read: a look at each
+    /// file's time, and the write lock only if one changed.
+    fn refresh_projects(&self) {
+        if self.projects().iter().any(Project::is_stale) {
+            self.projects
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .refresh();
+        }
+    }
+
+    fn projects(&self) -> RwLockReadGuard<'_, Projects> {
+        self.projects.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn project(&self, id: &str) -> Result<Arc<Project>, RpcError> {
+        self.projects()
+            .get(id)
+            .ok_or_else(|| ProjectError::NotFound(format!("no open project `{id}`")).into())
+    }
+
+    fn project_warnings(&self, project: &Project) -> Vec<String> {
+        project.warnings(|id| self.registry.is_installed(id))
+    }
+
+    fn project_summary(&self, project: &Project) -> ProjectSummary {
+        project.summary(self.project_warnings(project))
+    }
+
+    /// `project.open`: makes a folder a project (a minimal `regulus.toml` if it has none),
+    /// remembers it in `config.toml` and serves it. Opening an open folder again changes
+    /// nothing.
+    fn open_project(&self, params: ProjectOpenParams) -> Result<ProjectSummary, RpcError> {
+        let _writing = self.writing();
+        let home = self
+            .project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let base = home.as_ref().map_or(PathBuf::new(), |h| h.home.clone());
+        let root = projects::folder(&base, Path::new(&params.path))?;
+        if let Some(open) = self.projects().by_root(&root) {
+            return Ok(self.project_summary(&open));
+        }
+        // config.toml must take the folder before the folder gets a file.
+        if let Some(home) = &home {
+            projects::read_config(&home.config)?;
+        }
+        projects::ensure_file(&root)?;
+        let project = Project::load(&root)?;
+        if let Some(other) = self.projects().get(&project.id) {
+            return Err(ProjectError::Exists(format!(
+                "project `{}` is already open at {}; give this one another `[project] id`",
+                other.id,
+                other.root.display()
+            ))
+            .into());
+        }
+        if let Some(home) = &home {
+            projects::remember(&home.config, &home.home, &root)?;
+        }
+        self.projects
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove_failed(None, Some(&root));
+        let (id, dirs) = (project.id.clone(), project.profiles.clone());
+        self.projects
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(project)?;
+        let found = self
+            .profiles
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .load_project(&id, &dirs);
+        let mut projects = self.projects.write().unwrap_or_else(|p| p.into_inner());
+        projects.note(&id, found);
+        let project = projects.get(&id).ok_or_else(|| {
+            RpcError::from(ProjectError::NotFound(format!("no open project `{id}`")))
+        })?;
+        drop(projects);
+        Ok(self.project_summary(&project))
+    }
+
+    /// `project.close`: stops serving a project and forgets it in `config.toml`. Nothing
+    /// in its folder is touched.
+    fn close_project(&self, params: IdParams) -> Result<ProjectSummary, RpcError> {
+        let _writing = self.writing();
+        let home = self
+            .project_home
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        // One that did not open on start is only forgotten.
+        let failed = self
+            .projects()
+            .failed()
+            .iter()
+            .find(|f| f.id == params.id)
+            .cloned();
+        if let Some(failed) = failed {
+            if let Some(home) = &home {
+                projects::forget(&home.config, &home.home, &failed.root)?;
+            }
+            self.projects
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove_failed(Some(&failed.id), None);
+            return Ok(failed.summary());
+        }
+        let project = self.project(&params.id)?;
+        if let Some(home) = &home {
+            projects::forget(&home.config, &home.home, &project.root)?;
+        }
+        self.projects
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&project.id);
+        self.profiles
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove_project(&project.id, &project.profiles);
+        Ok(self.project_summary(&project))
+    }
+
     fn profile_store(&self) -> RwLockReadGuard<'_, ProfileStore> {
         self.profiles.read().unwrap_or_else(|p| p.into_inner())
     }
@@ -319,12 +480,92 @@ impl Core {
             .clone()
     }
 
+    /// Where templates are looked up, with the project each place belongs to: `first`'s
+    /// templates (an open project) and the global ones; without it, the global ones, then
+    /// every open project's.
+    fn template_sources(&self, first: Option<&str>) -> Vec<(Places, Option<String>)> {
+        let global = self.template_places();
+        let project_places = |project: &Project| Places {
+            templates: project.templates.clone(),
+            ..global.clone()
+        };
+        let projects = self.projects();
+        let mut sources = Vec::new();
+        if let Some(project) = first.and_then(|id| projects.get(id)) {
+            sources.push((project_places(&project), Some(project.id.clone())));
+        }
+        sources.push((global.clone(), None));
+        if first.is_none() {
+            for project in projects.iter() {
+                sources.push((project_places(project), Some(project.id.clone())));
+            }
+        }
+        sources
+    }
+
+    /// A template by name, in the order of [`Core::template_sources`], or by path; with the
+    /// project it belongs to.
+    fn find_template(
+        &self,
+        wanted: &str,
+        project: Option<&str>,
+    ) -> Result<(templates::Template, Option<String>), RpcError> {
+        let mut searched = Vec::new();
+        for (places, owner) in self.template_sources(project) {
+            match templates::find(&places, wanted) {
+                Ok(template) => return Ok((template, owner.or(project.map(Into::into)))),
+                Err(TemplateError::NotFound(_)) => {
+                    searched.extend(places.templates.iter().map(|p| p.display().to_string()))
+                }
+                Err(other) => return Err(other.into()),
+            }
+        }
+        Err(TemplateError::NotFound(format!(
+            "no template named `{wanted}` in {}",
+            searched.join(", ")
+        ))
+        .into())
+    }
+
+    /// `template.list`: the global templates, then each open project's, tagged with it.
+    fn list_templates(&self) -> Vec<regulus_proto::TemplateSummary> {
+        self.template_sources(None)
+            .into_iter()
+            .flat_map(|(places, owner)| {
+                templates::list(&places).into_iter().map(move |mut t| {
+                    t.project_id = owner.clone();
+                    t
+                })
+            })
+            .collect()
+    }
+
+    /// Where a profile of `project_id` is written: the first profiles path of its project
+    /// if it is open, else the first `[profiles] paths` entry.
+    fn profiles_dir(&self, project_id: Option<&str>) -> Result<PathBuf, RpcError> {
+        if let Some(project) = project_id.and_then(|id| self.projects().get(id)) {
+            return project.profiles.first().cloned().ok_or_else(|| {
+                TemplateError::Io(format!(
+                    "project `{}` has no profiles path to write to",
+                    project.id
+                ))
+                .into()
+            });
+        }
+        self.template_places().profiles_dir.ok_or_else(|| {
+            TemplateError::Io("no [profiles] paths entry to write the profile to".into()).into()
+        })
+    }
+
     /// `template.apply`: renders, checks the modules it requires and the profile it makes,
     /// then writes the copy and loads it. Nothing is written unless every check passes, and
     /// an existing profile is only replaced with `force`.
     fn apply_template(&self, params: TemplateApplyParams) -> Result<TemplateApplied, RpcError> {
-        let places = self.template_places();
-        let template = templates::find(&places, &params.template)?;
+        if let Some(id) = &params.project_id {
+            self.project(id)?;
+        }
+        let (template, project) =
+            self.find_template(&params.template, params.project_id.as_deref())?;
         let mut values = std::collections::BTreeMap::new();
         for (name, value) in params.vars {
             let text = match value {
@@ -340,6 +581,9 @@ impl Core {
         }
         templates::check_requires(&template.requires, self.registry.ids())?;
         let mut text = templates::render(&template, &values)?;
+        if let Some(project) = &project {
+            text = templates::set_project(&text, project);
+        }
         let mut profile = templates::profile_of(&template, &text)?;
         if let Some(id) = params.id.filter(|id| *id != profile.id) {
             templates::file_name(&id)?;
@@ -359,9 +603,7 @@ impl Core {
             ))
             .into());
         }
-        let dir = places.profiles_dir.ok_or_else(|| {
-            TemplateError::Io("no [profiles] paths entry to write the profile to".into())
-        })?;
+        let dir = self.profiles_dir(project.as_deref())?;
         let text = templates::provenance(&template) + &text;
         let written = self.write_profile(&dir, profile, &text, params.force)?;
         Ok(TemplateApplied {
@@ -371,10 +613,46 @@ impl Core {
         })
     }
 
-    /// What `profile.check` finds: the errors, as `message (code)`, and the rest.
-    fn diagnose(&self, profile: &Profile) -> (Vec<String>, Vec<regulus_proto::Diagnostic>) {
+    /// Everything `profile.check` reports: the wiring rules, the fields the core
+    /// understands and the nodes the profile's project keeps from running.
+    fn check(&self, profile: &Profile) -> Vec<regulus_proto::Diagnostic> {
         let mut found = check_profile(profile, |id| self.registry.is_installed(id));
         found.extend(check_fields(profile, |id| self.registry.manifest(id)));
+        if let Some(project) = self.project_of(profile.project_id.as_deref()) {
+            found.extend(check_vetoed(profile, &project.id, |m| project.vetoes(m)));
+        }
+        found
+    }
+
+    /// The open project with this id, if any.
+    fn project_of(&self, project_id: Option<&str>) -> Option<Arc<Project>> {
+        project_id.and_then(|id| self.projects().get(id))
+    }
+
+    /// Why a workflow about to run cannot: the nodes of it whose module its project keeps
+    /// from running. `None` if it may run.
+    fn vetoed(&self, project_id: Option<&str>, workflow: &Workflow) -> Option<String> {
+        let project = self.project_of(project_id)?;
+        let nodes: Vec<String> = workflow
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                let module = n.module_id.as_deref().filter(|m| project.vetoes(m))?;
+                Some(format!("`{}` ({module})", n.id))
+            })
+            .collect();
+        (!nodes.is_empty()).then(|| {
+            format!(
+                "disabled in project {}: node {} (its [modules] disable/enable)",
+                project.id,
+                nodes.join(", ")
+            )
+        })
+    }
+
+    /// What `profile.check` finds: the errors, as `message (code)`, and the rest.
+    fn diagnose(&self, profile: &Profile) -> (Vec<String>, Vec<regulus_proto::Diagnostic>) {
+        let found = self.check(profile);
         let (errors, rest): (Vec<_>, Vec<_>) = found
             .into_iter()
             .partition(|d| d.severity == Severity::Error);
@@ -460,9 +738,7 @@ impl Core {
         let text = crate::profiles::to_toml(&profile).map_err(|e| {
             RpcError::invalid_params(format!("profile `{id}` cannot be written as TOML: {e}"))
         })?;
-        let dir = self.template_places().profiles_dir.ok_or_else(|| {
-            TemplateError::Io("no [profiles] paths entry to write the profile to".into())
-        })?;
+        let dir = self.profiles_dir(profile.project_id.as_deref())?;
         let written = self.write_profile(&dir, profile, &text, params.force)?;
         Ok(ProfileSaved {
             profile_id: id,
@@ -489,10 +765,16 @@ impl Core {
                 "profile `{id}` is loaded without a file; there is nothing to delete"
             ))
         })?;
+        let project_paths: Vec<PathBuf> = self
+            .projects()
+            .iter()
+            .flat_map(|p| p.profiles.clone())
+            .collect();
         let inside = self
             .template_places()
             .profile_paths
             .iter()
+            .chain(&project_paths)
             .any(|dir| origin.parent() == Some(dir.as_path()) && dir.is_dir());
         if !inside {
             return Err(TemplateError::Exists(format!(
@@ -558,6 +840,7 @@ impl Core {
 
     /// Answers every method except `hello`, which belongs to the connection.
     pub fn dispatch(&self, name: &str, params: Value) -> Result<Value, RpcError> {
+        self.refresh_projects();
         match name {
             method::PROFILE_LIST => {
                 let filter: ProjectFilter = parse(params)?;
@@ -571,14 +854,26 @@ impl Core {
             method::PROFILE_GET => json(&*self.profile(parse(params)?)?),
             method::PROFILE_CHECK => {
                 let profile = self.profile(parse(params)?)?;
-                let mut found = check_profile(&profile, |id| self.registry.is_installed(id));
-                found.extend(check_fields(&profile, |id| self.registry.manifest(id)));
-                json(found)
+                json(self.check(&profile))
             }
-            method::TEMPLATE_LIST => json(templates::list(&self.template_places())),
+            method::PROJECT_LIST => {
+                let projects = self.projects();
+                let open = projects.iter().map(|p| self.project_summary(p));
+                let failed = projects.failed().iter().map(|f| f.summary());
+                json(open.chain(failed).collect::<Vec<_>>())
+            }
+            method::PROJECT_GET => {
+                let params: IdParams = parse(params)?;
+                let project = self.project(&params.id)?;
+                let details: ProjectDetails = project.details(self.project_warnings(&project));
+                json(details)
+            }
+            method::PROJECT_OPEN => json(self.open_project(parse(params)?)?),
+            method::PROJECT_CLOSE => json(self.close_project(parse(params)?)?),
+            method::TEMPLATE_LIST => json(self.list_templates()),
             method::TEMPLATE_GET => {
                 let params: TemplateParams = parse(params)?;
-                let template = templates::find(&self.template_places(), &params.template)?;
+                let (template, _) = self.find_template(&params.template, None)?;
                 json(TemplateText {
                     name: template.name,
                     path: template.path.display().to_string(),
@@ -783,6 +1078,9 @@ impl Core {
                 missing_workflow(profile, &workflow, |id| self.registry.manifest(id))
             {
                 return Err(RpcError::invalid_params(error));
+            }
+            if let Some(error) = self.vetoed(profile.project_id.as_deref(), &workflow) {
+                return Err(RpcError::new(code::MODULE_DISABLED, error));
             }
             let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
             let execution = Execution {
@@ -1586,6 +1884,9 @@ impl Core {
         let workflow = Arc::new(flatten(profile, target).map_err(ModuleError::InvalidParams)?);
         if let Some(error) = missing_workflow(profile, &workflow, |id| self.registry.manifest(id)) {
             return Err(ModuleError::InvalidParams(error));
+        }
+        if let Some(error) = self.vetoed(profile.project_id.as_deref(), &workflow) {
+            return Err(ModuleError::Failed(error));
         }
         let number = self.next_execution.fetch_add(1, Ordering::Relaxed);
         let execution = Execution {

@@ -39,14 +39,24 @@ negociar un major compatible.
 | `event.list` *(1.5)* | `since?`, `execution_id?`, `project_id?`, `limit?` | `events` del bus (`emitted`, `delivered`, `failed`, `cut`), `next` (cursor) y `pending` |
 | `workflow.send` *(1.7)* | `execution_id`, `port`, `value` | `event`: el `seq` del `emitted`; la respuesta sale en `event.list` desde `self.<salida>` |
 | `hook.dispatch` *(1.9)* | `execution_id`, `node_id`, `hook_id?`, `timeout_ms?`, `returns?`, `request` (`HookRequest`) | `replies`: por cada nodo `hook@1` conectado a `node_id`, `node_id`, `answer` (`decision`: `none` \| `veto` + `reason` \| `context` + `text`) y `error?` |
-| `template.list` *(1.10)* | — | Plantillas de `[templates] paths`: `name`, `description`, `path`, `vars` (`name`, `description`, `default?`), `requires` (`module`, `version`) y `error?` si el fichero no se puede leer como plantilla |
+| `template.list` *(1.10)* | — | Plantillas de `[templates] paths` y de cada proyecto abierto: `name`, `description`, `path`, `vars` (`name`, `description`, `default?`), `requires` (`module`, `version`), `error?` si el fichero no se puede leer como plantilla y `project_id?` *(1.12)* |
 | `template.get` *(1.10)* | `template` (nombre o ruta) | `name`, `path` y `text`: el fichero tal cual |
-| `template.apply` *(1.10)* | `template`, `vars` (`{nombre: valor}`), `id?`, `force?` | `profile_id`, `path` (el fichero escrito) y `diagnostics` (avisos e información; un error de `profile.check` impide escribir) |
+| `template.apply` *(1.10)* | `template`, `vars` (`{nombre: valor}`), `id?`, `force?`, `project_id?` *(1.12)* | `profile_id`, `path` (el fichero escrito) y `diagnostics` (avisos e información; un error de `profile.check` impide escribir) |
 | `module.manifest` *(1.11)* | `id?` (con o sin versión) | El `Manifest` del módulo con los nombres del TOML (`module`, `node[]` con `type`, `name`, `port[]`, `field[]`: `id`, `type`, `default`, `options`); sin `id`, la lista de todos. También de un módulo `broken` o `incompatible` |
 | `profile.save` *(1.11)* | `profile` (el perfil entero, como lo da `profile.get`), `force?` | `profile_id`, `path` y `diagnostics`, como `template.apply` |
 | `profile.delete` *(1.11)* | `id` | `profile_id` y `path` (el fichero borrado) |
+| `project.list` *(1.12)* | — | Proyectos abiertos: `id`, `name`, `path` (la carpeta), `warnings` y `error?`: una carpeta de `[projects] paths` que no abrió al arrancar (`regulus.toml` ilegible o no TOML, id inválido, carpeta que no está) sale con `error` y nada suyo cargado; `project.open` lo reintenta y `project.close` la olvida |
+| `project.get` *(1.12)* | `id` | El `regulus.toml` resuelto: `id`, `name`, `path`, `file`, `profiles` y `templates` (rutas absolutas), `disable`, `enable?`, `local` (tal cual, sin cargar), `client` (tabla libre), `content` (el fichero entero con las claves desconocidas) y `warnings` |
+| `project.open` *(1.12)* | `path` (carpeta o su `regulus.toml`; relativa al home del core) | Como una entrada de `project.list`. Abrir una carpeta ya abierta no cambia nada |
+| `project.close` *(1.12)* | `id` | Como una entrada de `project.list`; no borra nada en disco |
 
-El core real (`regulus serve`) habla el protocolo `1.11`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.12`, compatible con el `1.0` del mock.
+Desde `1.12` hay proyectos ([`11-composition.md`](11-composition.md) §13): `project.open`
+añade la carpeta a `[projects] paths` de `config.toml` y suma sus perfiles y plantillas;
+`profile.save` de un perfil con `project_id` de un proyecto abierto y `template.apply` con
+`project_id` escriben en la carpeta de perfiles del proyecto; `profile.check` marca como
+`node.module_disabled` (aviso, "disabled in project <id>") los nodos de un módulo vetado en
+su proyecto y `execution.start` no los arranca.
 Desde `1.11` la app puede editar: `module.manifest` da los tipos de nodo con puertos, campos,
 defaults y opciones; `profile.save` escribe el perfil entero como `<id>.toml` en la primera
 ruta de `[profiles] paths` y lo carga sin reiniciar (nuevo sin `force`; uno cargado, solo con
@@ -71,7 +81,12 @@ falló o entró en pánico; de plantillas *(1.10)*: `-32004` no existe, `-32005`
 de perfiles *(1.11)*: `-32007` también si el perfil vive donde no se puede pisar ni borrar
 (otro fichero, un fichero con más perfiles, ninguno), `-32008` el perfil que se guarda tiene
 errores de `profile.check`, `-32009` el perfil que se borra está en uso; un id que no puede ser
-nombre de fichero o un `null` en un `config` (TOML no lo tiene) es `-32602`. Además pide el token de `<home>/token` en el upgrade
+nombre de fichero o un `null` en un `config` (TOML no lo tiene) es `-32602`; de proyectos
+*(1.12)*: `-32010` no hay proyecto abierto con ese id o la ruta no es una carpeta, `-32011` el
+proyecto no abre: su `regulus.toml` no se lee o no es TOML (el error de TOML va en el mensaje)
+o su id no vale como nombre de fichero, `-32012` otro proyecto abierto tiene ese id, `-32013`
+`execution.start` rechaza un nodo cuyo módulo está vetado en el proyecto; no poder escribir
+`config.toml` es `-32003`. Además pide el token de `<home>/token` en el upgrade
 (`?token=` desde la webview).
 
 El perfil contiene `project_id` nullable y `extends` reservado. Cada workflow contiene

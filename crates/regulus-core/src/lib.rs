@@ -8,6 +8,7 @@ pub mod graph;
 pub mod local;
 pub mod module;
 pub mod profiles;
+pub mod projects;
 pub mod registry;
 pub mod secrets;
 pub mod server;
@@ -34,7 +35,19 @@ pub use store::{ModuleStore, Store, StoreError, StoredExecution};
 /// A store that cannot open is a warning too: the core then keeps executions and bus events
 /// in memory only, as it did before the store existed.
 pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, Vec<String>) {
-    let (profiles, mut warnings) = ProfileStore::load(&config.profiles.paths);
+    let mut warnings = config.warnings.clone();
+    let (mut profiles, found) = ProfileStore::load(&config.profiles.paths);
+    warnings.extend(found);
+    // Global profiles first: on a clash of ids, the first one stays, as between files.
+    let (mut projects, found) = projects::Projects::load(&config.projects.paths);
+    warnings.extend(found);
+    let loaded: Vec<(String, Vec<String>)> = projects
+        .iter()
+        .map(|p| (p.id.clone(), profiles.load_project(&p.id, &p.profiles)))
+        .collect();
+    for (id, found) in loaded {
+        projects.note(&id, found);
+    }
     let store = match Store::open(&config.store_dir(), &config.store) {
         Ok(store) => {
             warnings.extend(store.warnings().iter().cloned());
@@ -61,6 +74,17 @@ pub fn assemble(config: &Config, modules: Vec<Box<dyn Module>>) -> (Arc<Core>, V
         config.hooks.clone(),
     );
     core.set_template_places(config.template_places());
+    for project in projects.iter() {
+        let found = project.warnings(|id| core.registry().is_installed(id));
+        warnings.extend(found.iter().map(|w| format!("project {}: {w}", project.id)));
+    }
+    core.set_projects(
+        projects,
+        service::ProjectHome {
+            config: config.config_path(),
+            home: config.home.clone(),
+        },
+    );
     (core, warnings)
 }
 

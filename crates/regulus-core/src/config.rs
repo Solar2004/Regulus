@@ -39,7 +39,7 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct ServerConfig {
     pub host: IpAddr,
     /// `0` picks a free port; the chosen one is written to `<home>/port` either way.
@@ -47,6 +47,9 @@ pub struct ServerConfig {
     /// Largest request a client may send, in bytes.
     pub max_request_bytes: u32,
     pub max_connections: u32,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for ServerConfig {
@@ -56,41 +59,66 @@ impl Default for ServerConfig {
             port: 7777,
             max_request_bytes: 1 << 20,
             max_connections: 64,
+            unknown: toml::Table::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct ProfilesConfig {
     /// Files or directories with profiles (`.json` or `.toml`). Relative paths are
     /// resolved against the home directory. Empty means `<home>/profiles`.
     pub paths: Vec<PathBuf>,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct TemplatesConfig {
     /// Files or directories with templates (`.toml`), read only when a client asks.
     /// Relative paths are resolved against the home directory. Empty means
     /// `<home>/templates`.
     pub paths: Vec<PathBuf>,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
+}
+
+/// Projects: folders with a `regulus.toml` (docs/11-composition.md §13).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectsConfig {
+    /// The open project folders. Relative paths are resolved against the home directory.
+    /// `project.open` and `project.close` edit this list.
+    pub paths: Vec<PathBuf>,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct ModulesConfig {
     /// Module ids (with or without version) that are not loaded.
     pub without: Vec<String>,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct SecretsConfig {
     /// Where secrets are looked up, in order; new ones go to the first. Today: `file`.
     pub sources: Vec<String>,
     /// The `file` source. Relative paths are resolved against the home directory.
     pub file: PathBuf,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for SecretsConfig {
@@ -98,29 +126,34 @@ impl Default for SecretsConfig {
         Self {
             sources: vec![FILE_SOURCE.into()],
             file: PathBuf::from(SECRETS_FILE),
+            unknown: toml::Table::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct DataConfig {
     /// Root of the directories modules keep per node (`ModuleCtx::node_dir`). Relative
     /// paths are resolved against the home directory.
     pub dir: PathBuf,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for DataConfig {
     fn default() -> Self {
         Self {
             dir: PathBuf::from(DATA_DIR),
+            unknown: toml::Table::new(),
         }
     }
 }
 
 /// The event bus that carries "then" wires (docs/02-architecture.md §6).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct BusConfig {
     /// Longest chain of deliveries before the core drops the value and reports a cut:
     /// the safety net against loops such as A → B → A (docs/11-composition.md §4).
@@ -135,6 +168,9 @@ pub struct BusConfig {
     /// Most events one `event.list` answers, whatever `limit` asks; the client follows
     /// with `next`. 0 means no limit.
     pub max_page: usize,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for BusConfig {
@@ -144,6 +180,7 @@ impl Default for BusConfig {
             max_queue: 4096,
             history: 1024,
             max_page: 1000,
+            unknown: toml::Table::new(),
         }
     }
 }
@@ -151,7 +188,7 @@ impl Default for BusConfig {
 /// Child executions (`ModuleCtx::call_workflow`): a node starts a workflow of its profile
 /// and hears back its result (docs/02-architecture.md §4).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct CallConfig {
     /// How deep children may nest: a top execution is at 0, its children at 1. Past it a
     /// call is refused: the safety net against a workflow that calls itself for ever.
@@ -159,6 +196,9 @@ pub struct CallConfig {
     /// Most live children one execution may have at once; past it a call is refused.
     /// 0 means no limit.
     pub max_children: usize,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for CallConfig {
@@ -166,6 +206,7 @@ impl Default for CallConfig {
         Self {
             max_nesting: 8,
             max_children: 32,
+            unknown: toml::Table::new(),
         }
     }
 }
@@ -173,7 +214,7 @@ impl Default for CallConfig {
 /// Hooks (`hook.dispatch`): how long the core waits for a hook node that names no time
 /// limit of its own (docs/13-blocks.md §4).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct HooksConfig {
     /// Milliseconds a hook may take to answer; past it, it counts as no answer and the
     /// agent goes on. A hook's own `timeout_ms` overrides it.
@@ -184,6 +225,9 @@ pub struct HooksConfig {
     /// own, which outlives a hook that hangs; past this, the node is skipped and counts as
     /// no answer. 0 means no limit.
     pub max_in_flight: usize,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for HooksConfig {
@@ -192,6 +236,7 @@ impl Default for HooksConfig {
             timeout_ms: 10_000,
             max_timeout_ms: 600_000,
             max_in_flight: 4,
+            unknown: toml::Table::new(),
         }
     }
 }
@@ -224,7 +269,7 @@ pub enum Synchronous {
 
 /// The SQLite store: one database for what belongs to no project and one per project.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct StoreConfig {
     /// Where the databases live. Relative paths are resolved against the home directory.
     pub dir: PathBuf,
@@ -235,6 +280,9 @@ pub struct StoreConfig {
     pub synchronous: Synchronous,
     /// How long a write waits for another connection holding the database, in ms.
     pub busy_timeout_ms: u64,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for StoreConfig {
@@ -245,13 +293,14 @@ impl Default for StoreConfig {
             max_events: 100_000,
             synchronous: Synchronous::default(),
             busy_timeout_ms: 5000,
+            unknown: toml::Table::new(),
         }
     }
 }
 
 /// How clients (the app, the terminal UI) find a core, or start one when none answers.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct ClientConfig {
     /// Start a core when none answers. Off, the client shows the command to run instead.
     pub autostart: bool,
@@ -263,6 +312,9 @@ pub struct ClientConfig {
     pub intro: bool,
     /// How often a client asks the core what is running, in milliseconds.
     pub refresh_ms: u64,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 impl Default for ClientConfig {
@@ -273,18 +325,24 @@ impl Default for ClientConfig {
             start_timeout_ms: 5000,
             intro: true,
             refresh_ms: 1000,
+            unknown: toml::Table::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     #[serde(skip)]
     pub home: PathBuf,
+    /// What `load` did not understand: unknown keys, one line each. The core says them on
+    /// start and goes on (docs/11-composition.md §13).
+    #[serde(skip)]
+    pub warnings: Vec<String>,
     pub server: ServerConfig,
     pub profiles: ProfilesConfig,
     pub templates: TemplatesConfig,
+    pub projects: ProjectsConfig,
     pub modules: ModulesConfig,
     pub secrets: SecretsConfig,
     pub data: DataConfig,
@@ -293,6 +351,9 @@ pub struct Config {
     pub hooks: HooksConfig,
     pub store: StoreConfig,
     pub client: ClientConfig,
+    /// Keys this version does not know: kept, reported as warnings, never fatal.
+    #[serde(flatten)]
+    pub unknown: toml::Table,
 }
 
 /// `REGULUS_HOME`, or `~/.regulus`.
@@ -316,6 +377,7 @@ impl Config {
             Err(source) => return Err(ConfigError::Read { path, source }),
         };
         config.home = home.to_path_buf();
+        config.warnings = config.unknown_keys(&path);
         if config.profiles.paths.is_empty() {
             config.profiles.paths.push(PathBuf::from(PROFILES_DIR));
         }
@@ -329,8 +391,33 @@ impl Config {
             .iter()
             .map(|p| home.join(p))
             .collect();
+        config.projects.paths = config.projects.paths.iter().map(|p| home.join(p)).collect();
         config.validate()?;
         Ok(config)
+    }
+
+    /// One warning per key no section knows, as `section.key`.
+    fn unknown_keys(&self, path: &Path) -> Vec<String> {
+        let sections: [(&str, &toml::Table); 13] = [
+            ("", &self.unknown),
+            ("server.", &self.server.unknown),
+            ("profiles.", &self.profiles.unknown),
+            ("templates.", &self.templates.unknown),
+            ("projects.", &self.projects.unknown),
+            ("modules.", &self.modules.unknown),
+            ("secrets.", &self.secrets.unknown),
+            ("data.", &self.data.unknown),
+            ("bus.", &self.bus.unknown),
+            ("call.", &self.call.unknown),
+            ("hooks.", &self.hooks.unknown),
+            ("store.", &self.store.unknown),
+            ("client.", &self.client.unknown),
+        ];
+        sections
+            .iter()
+            .flat_map(|(at, table)| table.keys().map(move |key| format!("{at}{key}")))
+            .map(|key| format!("{}: unknown key `{key}`; ignored", path.display()))
+            .collect()
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -362,6 +449,11 @@ impl Config {
         self.home.join(&self.store.dir)
     }
 
+    /// The file `load` reads, and `project.open` and `project.close` edit.
+    pub fn config_path(&self) -> PathBuf {
+        self.home.join(CONFIG_FILE)
+    }
+
     pub fn token_path(&self) -> PathBuf {
         self.home.join(TOKEN_FILE)
     }
@@ -388,5 +480,36 @@ impl Config {
 
     pub fn default_profiles_dir(&self) -> PathBuf {
         self.home.join(PROFILES_DIR)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_keys_warn_and_the_rest_still_loads() {
+        let home = std::env::temp_dir().join(format!("regulus-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(CONFIG_FILE),
+            "typo = 1\n[server]\nport = 0\nprot = 9\n[client]\nrefresh_ms = 50\n[later]\nx = 1\n",
+        )
+        .unwrap();
+        let config = Config::load(&home).unwrap();
+        assert_eq!(config.server.port, 0);
+        assert_eq!(config.client.refresh_ms, 50);
+        let all = config.warnings.join("\n");
+        for key in ["`typo`", "`server.prot`", "`later`"] {
+            assert!(all.contains(key), "{key} in {all}");
+        }
+        assert_eq!(config.warnings.len(), 3, "{all}");
+        let (_, warnings) = crate::assemble(&config, Vec::new());
+        assert!(
+            warnings.iter().any(|w| w.contains("`server.prot`")),
+            "{warnings:?}"
+        );
+        let _ = fs::remove_dir_all(&home);
     }
 }

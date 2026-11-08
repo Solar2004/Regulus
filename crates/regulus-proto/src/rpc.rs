@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 /// adds child executions: `Execution.parent` and `node/child` (`ChildEvent`); 1.9 adds
 /// the `hook@1` relay: `hook.dispatch` and `node/hook`; 1.10 adds templates:
 /// `template.list`, `template.get` and `template.apply`; 1.11 adds what the app needs to
-/// edit: `module.manifest`, `profile.save` and `profile.delete`.
-pub const PROTOCOL: &str = "1.11";
+/// edit: `module.manifest`, `profile.save` and `profile.delete`; 1.12 adds projects:
+/// `project.list`, `project.get`, `project.open`, `project.close`, `project_id` on
+/// templates and `template.apply`.
+pub const PROTOCOL: &str = "1.12";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -48,6 +50,15 @@ pub mod method {
     pub const PROFILE_SAVE: &str = "profile.save";
     /// Removes a profile's file and unloads it (`IdParams` → `ProfileDeleted`).
     pub const PROFILE_DELETE: &str = "profile.delete";
+    /// The open projects (→ `Vec<ProjectSummary>`).
+    pub const PROJECT_LIST: &str = "project.list";
+    /// One open project and its `regulus.toml` (`IdParams` → `ProjectDetails`).
+    pub const PROJECT_GET: &str = "project.get";
+    /// Opens a folder as a project and remembers it in `config.toml`
+    /// (`ProjectOpenParams` → `ProjectSummary`).
+    pub const PROJECT_OPEN: &str = "project.open";
+    /// Forgets an open project; nothing on disk is deleted (`IdParams` → `ProjectSummary`).
+    pub const PROJECT_CLOSE: &str = "project.close";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -71,6 +82,10 @@ pub mod method {
         MODULE_MANIFEST,
         PROFILE_SAVE,
         PROFILE_DELETE,
+        PROJECT_LIST,
+        PROJECT_GET,
+        PROJECT_OPEN,
+        PROJECT_CLOSE,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -112,6 +127,16 @@ pub mod code {
     pub const PROFILE_INVALID: i32 = -32008;
     /// `profile.delete`: an execution of the profile is starting or running.
     pub const PROFILE_IN_USE: i32 = -32009;
+    /// No open project has that id, or the path to open is not a folder.
+    pub const PROJECT_NOT_FOUND: i32 = -32010;
+    /// The project cannot open: its `regulus.toml` cannot be read or is not TOML, or its id
+    /// cannot be used (it must be a plain name, safe as a file name).
+    pub const PROJECT_INVALID: i32 = -32011;
+    /// Another open project has that id.
+    pub const PROJECT_EXISTS: i32 = -32012;
+    /// `execution.start`: a node's module is disabled in the profile's project
+    /// (`[modules] disable` or `enable` in its `regulus.toml`).
+    pub const MODULE_DISABLED: i32 = -32013;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +288,9 @@ pub struct TemplateSummary {
     pub requires: Vec<TemplateRequire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The open project the template belongs to; `None` for a global one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// `template.get`: a template by name, or by path when it contains `/` or ends in
@@ -283,7 +311,9 @@ pub struct TemplateText {
 /// `template.apply`: renders `template` with `vars` and writes the profile to the first
 /// `[profiles] paths` entry as `<id>.toml`. `id` defaults to the template's profile id; an
 /// existing profile is only replaced with `force`. Var values are text; a number or a
-/// boolean is taken as its JSON text.
+/// boolean is taken as its JSON text. With `project_id` (an open project), its templates
+/// are looked up first and the profile is written to its profiles folder with that
+/// `project_id`; without it, a template of a project goes to that project.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TemplateApplyParams {
     pub template: String,
@@ -293,6 +323,8 @@ pub struct TemplateApplyParams {
     pub id: Option<String>,
     #[serde(default)]
     pub force: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// The answer of `template.apply`: the profile now loaded, where it was written, and what
@@ -330,6 +362,61 @@ pub type ProfileSaved = TemplateApplied;
 pub struct ProfileDeleted {
     pub profile_id: String,
     pub path: String,
+}
+
+/// `project.open`: a folder (or its `regulus.toml`). A relative path is resolved against
+/// the core's home; clients send absolute ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectOpenParams {
+    pub path: String,
+}
+
+/// One entry of `project.list`, and the answer of `project.open` and `project.close`.
+/// `warnings` says what in its `regulus.toml` the core did not understand or use; they
+/// never stop it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    /// The folder.
+    pub path: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// Set when a folder of `[projects] paths` did not open on start (an unreadable
+    /// `regulus.toml`, an invalid id, a folder that is gone): it is listed so a client can
+    /// show it, but nothing of it is loaded. `project.open` tries again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The answer of `project.get`: the project's `regulus.toml` as the core resolved it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectDetails {
+    pub id: String,
+    pub name: String,
+    /// The folder.
+    pub path: String,
+    /// Its `regulus.toml`.
+    pub file: String,
+    /// Where its profiles and templates are read from, absolute.
+    pub profiles: Vec<String>,
+    pub templates: Vec<String>,
+    /// `[modules] disable` and `enable`: module ids whose nodes do not run in it.
+    #[serde(default)]
+    pub disable: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable: Option<Vec<String>>,
+    /// `[[modules.local]]` as written: kept, not loaded yet.
+    #[serde(default)]
+    pub local: Vec<serde_json::Value>,
+    /// `[client]`, as written, for the clients.
+    #[serde(default)]
+    pub client: serde_json::Map<String, serde_json::Value>,
+    /// The whole file as read, unknown keys included where they were.
+    #[serde(default)]
+    pub content: serde_json::Value,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

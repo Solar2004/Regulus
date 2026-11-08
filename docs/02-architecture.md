@@ -188,12 +188,12 @@ pub struct Execution {
     pub parent:   Option<ExecutionId>, // quién la llamó (regla 5)
 }
 
-pub struct Project {
-    pub id:   ProjectId,
-    pub root: PathBuf,
-    pub vcs:  Option<VcsInfo>,
-}
 ```
+
+**Proyecto** ✅ (2026-11-08): una carpeta con `regulus.toml`, abierta por
+`project.open` y recordada en `config.toml` `[projects] paths`; el core la sirve como
+`Project` (`regulus-core/src/projects.rs`). Forma, tolerancia y veto de módulos, en
+[`11-composition.md` §13](11-composition.md). No hay `vcs`: nadie lo pidió.
 
 Las posiciones y el layout del canvas viajan con el workflow, pero el core no los
 interpreta: son del cliente.
