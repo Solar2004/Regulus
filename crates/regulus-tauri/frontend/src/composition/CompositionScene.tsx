@@ -122,6 +122,7 @@ function Editor({ composition }: { composition: Composition }) {
       point = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 3 } : { x: 0, y: 0 };
     }
     let position = flow.screenToFlowPosition(point);
+    if (!screen) position = doc.freePosition(current, position, { x: settings.nodeWidth + settings.cascadeStep, y: settings.cascadeStep });
     if (settings.snapToGrid) position = { x: Math.round(position.x / settings.gridSize) * settings.gridSize, y: Math.round(position.y / settings.gridSize) * settings.gridSize };
     const taken = current.nodes.map((node) => node.id);
     let created;

@@ -9,7 +9,7 @@ import { addNode, addWire, newProfile, setConfig, workflowOf } from "./document"
 import { checkProfile, deleteProfile, getProfile, loadManifests, saveProfile, startExecution } from "./api";
 import { entryKey, findNodeType, nodeFromType } from "./palette";
 
-const url = process.env.REGULUS_RPC_URL;
+const url = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.REGULUS_RPC_URL;
 const id = `canvas-live-${Date.now()}`;
 
 type Page = { events: { kind: string; from: { node_id: string; port_id: string }; to?: { node_id: string; port_id: string }; value?: unknown }[]; pending: number };

@@ -155,3 +155,12 @@ describe("new profile ids", () => {
     expect(doc.profileIdProblem("demo-2", ["demo"])).toBeNull();
   });
 });
+
+describe("free position", () => {
+  test("a click-added node does not land on another", () => {
+    const main = sample().workflows[0];
+    expect(doc.freePosition(main, { x: 1000, y: 1000 }, { x: 290, y: 40 })).toEqual({ x: 1000, y: 1000 });
+    // a sits at 100,50 and b at 400,80: one step clears a, a second clears b.
+    expect(doc.freePosition(main, { x: 110, y: 60 }, { x: 290, y: 40 })).toEqual({ x: 690, y: 60 });
+  });
+});

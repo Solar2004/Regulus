@@ -15,6 +15,8 @@ export interface CanvasSettings {
   /** Space between the workflow's own ports and its nodes, in pixels. */
   selfGap: number;
   paletteGrouping: Grouping;
+  /** How far a node added by click moves away from one already there, in pixels. */
+  cascadeStep: number;
   autosave: boolean;
   autosaveMs: number;
   /** Keys that delete the selection (`KeyboardEvent.key` names). */
@@ -32,6 +34,7 @@ export const canvasDefaults: CanvasSettings = {
   nodeWidth: 250,
   selfGap: 320,
   paletteGrouping: "module",
+  cascadeStep: 40,
   autosave: false,
   autosaveMs: 30000,
   deleteKeys: ["Delete", "Backspace"],
@@ -46,6 +49,7 @@ export const canvasLimits = {
   gridSize: [2, 200],
   nodeWidth: [120, 800],
   selfGap: [40, 2000],
+  cascadeStep: [4, 400],
   autosaveMs: [2000, 3600000],
 } as const satisfies Partial<Record<keyof CanvasSettings, readonly [number, number]>>;
 

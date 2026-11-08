@@ -192,3 +192,11 @@ export function removeWorkflowPort(profile: Profile, workflowId: string, portId:
   const updated = updateWorkflow(profile, workflowId, (item) => ({ ...item, ports: item.ports!.filter((port) => port.id !== portId) }));
   return rewireBoundary(updated, workflowId, portId, null);
 }
+
+/** `point`, moved right by `size.x` until no node of the workflow sits within `size` of it. */
+export function freePosition(workflow: Workflow, point: Point, size: Point): Point {
+  let { x } = point;
+  const near = () => workflow.nodes.some((node) => Math.abs(node.position.x - x) < size.x && Math.abs(node.position.y - point.y) < size.y);
+  for (let tries = 0; tries < 100 && near(); tries++) x += size.x;
+  return { x, y: point.y };
+}
