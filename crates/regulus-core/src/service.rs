@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
 use regulus_proto::{
     code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, Direction, DisabledNode,
     EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState, HookAnswer,
-    HookDispatchParams, HookDispatched, HookReply, IdParams, NameParams, Node, NodeCall, NodeEvent,
-    NodeStart, PortRef, Profile, ProjectFilter, SecretSetParams, Severity, TemplateApplied,
-    TemplateApplyParams, TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams,
-    WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
+    HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams, NameParams,
+    Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted, ProfileSaveParams,
+    ProfileSaved, ProjectFilter, SecretSetParams, Severity, TemplateApplied, TemplateApplyParams,
+    TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams, WorkflowSent,
+    BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -185,8 +186,13 @@ pub struct Core {
     /// This core, for the threads that drain the bus.
     me: Weak<Core>,
     registry: Registry,
-    /// Written only by `template.apply`; executions copy what they run.
+    /// Written only by `template.apply`, `profile.save` and `profile.delete`; executions
+    /// copy what they run.
     profiles: RwLock<ProfileStore>,
+    /// Held by whoever writes or removes a profile file, so only one does at a time while
+    /// `profiles` stays free for readers. Lock order: `recovering`, `executions`, then
+    /// `profiles`.
+    profile_writes: Mutex<()>,
     /// Where templates are read from and applied ones written (`set_template_places`).
     places: RwLock<Places>,
     storage: Storage,
@@ -278,6 +284,7 @@ impl Core {
             me: core.clone(),
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
             profiles: RwLock::new(profiles),
+            profile_writes: Mutex::default(),
             places: RwLock::default(),
             storage,
             executions: Mutex::default(),
@@ -343,59 +350,208 @@ impl Core {
         templates::file_name(&id)
             .map_err(|e| TemplateError::Invalid(format!("template `{}`: {e}", template.name)))?;
         crate::profiles::normalize(&mut profile);
-        let mut found = check_profile(&profile, |id| self.registry.is_installed(id));
-        found.extend(check_fields(&profile, |id| self.registry.manifest(id)));
-        let (errors, diagnostics): (Vec<_>, Vec<_>) = found
-            .into_iter()
-            .partition(|d| d.severity == Severity::Error);
+        let (errors, diagnostics) = self.diagnose(&profile);
         if !errors.is_empty() {
-            let messages: Vec<String> = errors
-                .iter()
-                .map(|d| format!("{} ({})", d.message, d.code))
-                .collect();
             return Err(TemplateError::Invalid(format!(
                 "template `{}` renders a profile with errors: {}",
                 template.name,
-                messages.join("; ")
+                errors.join("; ")
             ))
             .into());
         }
         let dir = places.profiles_dir.ok_or_else(|| {
             TemplateError::Io("no [profiles] paths entry to write the profile to".into())
         })?;
-        let dest = dir.join(templates::file_name(&id)?);
-        let mut store = self.profiles.write().unwrap_or_else(|p| p.into_inner());
-        if let Some(origin) = store.origin(&id).filter(|origin| *origin != dest) {
-            return Err(TemplateError::Exists(format!(
-                "profile `{id}` is already defined in {}; choose another id",
-                origin.display()
-            ))
-            .into());
-        }
-        if store.get(&id).is_some() && store.origin(&id).is_none() {
-            return Err(TemplateError::Exists(format!(
-                "profile `{id}` is already loaded; choose another id"
-            ))
-            .into());
-        }
-        if !params.force && (dest.exists() || store.get(&id).is_some()) {
-            return Err(TemplateError::Exists(format!(
-                "profile `{id}` already exists at {}; apply with force to replace it",
-                dest.display()
-            ))
-            .into());
-        }
-        let written = templates::write(
-            &dir,
-            &id,
-            &(templates::provenance(&template) + &text),
-            params.force,
-        )?;
-        store.replace(profile, written.clone());
+        let text = templates::provenance(&template) + &text;
+        let written = self.write_profile(&dir, profile, &text, params.force)?;
         Ok(TemplateApplied {
             profile_id: id,
             path: written.display().to_string(),
             diagnostics,
+        })
+    }
+
+    /// What `profile.check` finds: the errors, as `message (code)`, and the rest.
+    fn diagnose(&self, profile: &Profile) -> (Vec<String>, Vec<regulus_proto::Diagnostic>) {
+        let mut found = check_profile(profile, |id| self.registry.is_installed(id));
+        found.extend(check_fields(profile, |id| self.registry.manifest(id)));
+        let (errors, rest): (Vec<_>, Vec<_>) = found
+            .into_iter()
+            .partition(|d| d.severity == Severity::Error);
+        let errors = errors
+            .iter()
+            .map(|d| format!("{} ({})", d.message, d.code))
+            .collect();
+        (errors, rest)
+    }
+
+    fn writing(&self) -> MutexGuard<'_, ()> {
+        self.profile_writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Writes `text`, the file of `profile`, as `<dir>/<id>.toml` and loads it in place of
+    /// the profile with that id. A profile that lives in another file, or in none, is never
+    /// replaced; one that lives here only with `force`. One writer at a time: the store is
+    /// locked to look and to swap, never while the disk is written.
+    fn write_profile(
+        &self,
+        dir: &Path,
+        profile: Profile,
+        text: &str,
+        force: bool,
+    ) -> Result<PathBuf, RpcError> {
+        let id = profile.id.clone();
+        let dest = dir.join(templates::file_name(&id)?);
+        let _writing = self.writing();
+        {
+            let store = self.profile_store();
+            let loaded = store.get(&id).is_some();
+            match store.origin(&id) {
+                Some(origin) if origin != dest => {
+                    return Err(TemplateError::Exists(format!(
+                        "profile `{id}` is already defined in {}, not in {}; edit that file or \
+                         choose another id",
+                        origin.display(),
+                        dir.display()
+                    ))
+                    .into())
+                }
+                None if loaded => {
+                    return Err(TemplateError::Exists(format!(
+                        "profile `{id}` is already loaded, without a file; choose another id"
+                    ))
+                    .into())
+                }
+                _ => {}
+            }
+            if !force && (loaded || dest.exists()) {
+                return Err(TemplateError::Exists(format!(
+                    "profile `{id}` already exists at {}; use force to replace it",
+                    dest.display()
+                ))
+                .into());
+            }
+        }
+        let written = templates::write(dir, &id, text, force)?;
+        self.profiles
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(profile, written.clone());
+        Ok(written)
+    }
+
+    /// `profile.save`: checks the whole profile a client sends, writes it as TOML to the
+    /// first `[profiles] paths` entry and loads it. Running executions keep the workflow
+    /// they started with.
+    fn save_profile(&self, params: ProfileSaveParams) -> Result<ProfileSaved, RpcError> {
+        let mut profile = params.profile;
+        let id = profile.id.clone();
+        templates::file_name(&id)?;
+        crate::profiles::normalize(&mut profile);
+        let (errors, diagnostics) = self.diagnose(&profile);
+        if !errors.is_empty() {
+            return Err(RpcError::new(
+                code::PROFILE_INVALID,
+                format!("profile `{id}` has errors: {}", errors.join("; ")),
+            ));
+        }
+        let text = crate::profiles::to_toml(&profile).map_err(|e| {
+            RpcError::invalid_params(format!("profile `{id}` cannot be written as TOML: {e}"))
+        })?;
+        let dir = self.template_places().profiles_dir.ok_or_else(|| {
+            TemplateError::Io("no [profiles] paths entry to write the profile to".into())
+        })?;
+        let written = self.write_profile(&dir, profile, &text, params.force)?;
+        Ok(ProfileSaved {
+            profile_id: id,
+            path: written.display().to_string(),
+            diagnostics,
+        })
+    }
+
+    /// `profile.delete`: unloads a profile and removes its file, if the file sits in a
+    /// `[profiles] paths` directory and holds that profile alone, and nothing of it is
+    /// running or waiting to resume.
+    fn delete_profile(&self, params: IdParams) -> Result<ProfileDeleted, RpcError> {
+        let id = params.id;
+        let _writing = self.writing();
+        let origin = {
+            let store = self.profile_store();
+            if store.get(&id).is_none() {
+                return Err(RpcError::invalid_params("Unknown profile"));
+            }
+            store.origin(&id).map(Path::to_path_buf)
+        };
+        let origin = origin.ok_or_else(|| {
+            TemplateError::Exists(format!(
+                "profile `{id}` is loaded without a file; there is nothing to delete"
+            ))
+        })?;
+        let inside = self
+            .template_places()
+            .profile_paths
+            .iter()
+            .any(|dir| origin.parent() == Some(dir.as_path()) && dir.is_dir());
+        if !inside {
+            return Err(TemplateError::Exists(format!(
+                "profile `{id}` lives in {}, which is not a file inside a [profiles] paths \
+                 directory; it is left as it is",
+                origin.display()
+            ))
+            .into());
+        }
+        templates::check_replace(&origin, &id)?;
+        // Unloaded under the locks `start` and `recover` go through, so nothing of it can
+        // start between the check and the swap.
+        let removed = {
+            let recovering = self.recovering();
+            let executions = self.executions();
+            let busy: Vec<&str> = recovering
+                .iter()
+                .map(|stored| &stored.execution)
+                .chain(
+                    executions
+                        .iter()
+                        .map(|live| &live.execution)
+                        .filter(|e| e.state.is_live()),
+                )
+                .filter(|e| e.profile_id == id)
+                .map(|e| e.id.as_str())
+                .collect();
+            if !busy.is_empty() {
+                return Err(RpcError::new(
+                    code::PROFILE_IN_USE,
+                    format!(
+                        "profile `{id}` is in use by {}; stop it first",
+                        busy.join(", ")
+                    ),
+                ));
+            }
+            self.profiles
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id)
+        };
+        match std::fs::remove_file(&origin) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                if let Some((profile, _)) = removed {
+                    self.profiles
+                        .write()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .replace(Profile::clone(&profile), origin.clone());
+                }
+                return Err(
+                    TemplateError::Io(format!("cannot remove {}: {e}", origin.display())).into(),
+                );
+            }
+        }
+        Ok(ProfileDeleted {
+            profile_id: id,
+            path: origin.display().to_string(),
         })
     }
 
@@ -430,6 +586,17 @@ impl Core {
             }
             method::TEMPLATE_APPLY => json(self.apply_template(parse(params)?)?),
             method::MODULE_LIST => json(self.registry.summaries()),
+            method::MODULE_MANIFEST => {
+                let params: ModuleManifestParams = parse(params)?;
+                match params.id {
+                    Some(id) => json(self.registry.manifest(&id).ok_or_else(|| {
+                        RpcError::invalid_params(format!("Unknown module `{id}`"))
+                    })?),
+                    None => json(self.registry.manifests().collect::<Vec<_>>()),
+                }
+            }
+            method::PROFILE_SAVE => json(self.save_profile(parse(params)?)?),
+            method::PROFILE_DELETE => json(self.delete_profile(parse(params)?)?),
             method::EXECUTION_LIST => {
                 let filter: ProjectFilter = parse(params)?;
                 json(self.list_executions(filter.project_id.as_deref())?)

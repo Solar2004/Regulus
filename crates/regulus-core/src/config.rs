@@ -381,6 +381,7 @@ impl Config {
         crate::templates::Places {
             templates: self.templates.paths.clone(),
             profiles_dir: self.profiles.paths.first().cloned(),
+            profile_paths: self.profiles.paths.clone(),
             home: Some(self.home.clone()),
         }
     }

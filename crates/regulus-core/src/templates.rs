@@ -30,9 +30,12 @@ const CLOSE: &str = "}}";
 pub struct Places {
     /// Files or directories with templates (`[templates] paths`), already resolved.
     pub templates: Vec<PathBuf>,
-    /// Where an applied template is written: the first `[profiles] paths` entry. `None`
-    /// refuses to apply.
+    /// Where an applied template or a saved profile is written: the first `[profiles]
+    /// paths` entry. `None` refuses to apply and to save.
     pub profiles_dir: Option<PathBuf>,
+    /// Every `[profiles] paths` entry: a profile is only deleted from a file inside one of
+    /// these directories.
+    pub profile_paths: Vec<PathBuf>,
     /// What a relative template path given by a client is resolved against.
     pub home: Option<PathBuf>,
 }
@@ -527,15 +530,16 @@ pub fn check_requires<'a>(
     Ok(())
 }
 
-/// Refuses to replace `dest` unless every profile it holds has the id `id`: replacing it
-/// whole would drop the others from disk. A file that does not parse is refused too.
-fn check_replace(dest: &Path, id: &str) -> Result<(), TemplateError> {
+/// Refuses to replace or remove `dest` unless every profile it holds has the id `id`:
+/// replacing it whole would drop the others from disk. A file that does not parse is
+/// refused too.
+pub(crate) fn check_replace(dest: &Path, id: &str) -> Result<(), TemplateError> {
     let profiles = match crate::profiles::parse(dest) {
         Ok(profiles) => profiles,
         Err(_) if !dest.exists() => return Ok(()),
         Err(e) => {
             return Err(TemplateError::Exists(format!(
-                "{} cannot be read as profiles, so it is not replaced: {e}",
+                "{} cannot be read as profiles, so it is left as it is: {e}",
                 dest.display()
             )))
         }
@@ -549,7 +553,8 @@ fn check_replace(dest: &Path, id: &str) -> Result<(), TemplateError> {
         return Ok(());
     }
     Err(TemplateError::Exists(format!(
-        "{} also holds profile {}; replacing it would drop them, so it is not replaced",
+        "{} also holds profile {}; replacing or removing it would drop them, so it is left \
+         as it is",
         dest.display(),
         quoted(&others)
     )))
