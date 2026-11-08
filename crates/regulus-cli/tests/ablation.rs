@@ -54,3 +54,71 @@ fn the_core_runs_with_no_modules_at_all() {
     assert!(registry.summaries().is_empty());
     assert_eq!(registry.methods().count(), 0);
 }
+
+/// The veto row (docs/11-composition.md §13): a project that disables a module the core
+/// was started without still opens, says the module is not loaded, and the rest stays
+/// usable. The core never knows the module by name.
+#[test]
+fn a_project_that_vetoes_a_removed_module_leaves_the_rest_working() {
+    use regulus_core::projects::{Project, Projects};
+    use regulus_core::service::ProjectHome;
+    use regulus_core::{Core, ProfileStore};
+    use regulus_proto::{method, ModuleSummary, ProjectSummary};
+
+    let root = std::env::temp_dir().join(format!("regulus-ablation-veto-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let folder = root.join("demo");
+    std::fs::create_dir_all(&folder).unwrap();
+    for removed in ids() {
+        std::fs::write(
+            folder.join("regulus.toml"),
+            format!(
+                "[modules]\ndisable = [{:?}]\n",
+                removed.split('@').next().unwrap()
+            ),
+        )
+        .unwrap();
+        let core = Core::build(
+            installed(),
+            std::slice::from_ref(&removed),
+            ProfileStore::default(),
+        );
+        let mut projects = Projects::default();
+        projects
+            .insert(Project::load(&folder.canonicalize().unwrap()).unwrap())
+            .unwrap();
+        core.set_projects(
+            projects,
+            ProjectHome {
+                config: root.join("config.toml"),
+                home: root.clone(),
+            },
+        );
+        let listed: Vec<ProjectSummary> = serde_json::from_value(
+            core.dispatch(method::PROJECT_LIST, serde_json::Value::Null)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1, "without {removed}");
+        assert!(
+            listed[0]
+                .warnings
+                .iter()
+                .any(|w| w.contains("is not loaded")),
+            "without {removed}: {:?}",
+            listed[0].warnings
+        );
+        let modules: Vec<ModuleSummary> = serde_json::from_value(
+            core.dispatch(method::MODULE_LIST, serde_json::Value::Null)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(modules.len(), ids().len() - 1, "without {removed}");
+        assert!(
+            modules.iter().all(|m| m.state.is_usable()),
+            "without {removed}"
+        );
+        core.shutdown();
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
