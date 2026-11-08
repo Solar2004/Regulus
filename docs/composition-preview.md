@@ -47,11 +47,12 @@ negociar un major compatible.
 | `profile.delete` *(1.11)* | `id` | `profile_id` y `path` (el fichero borrado) |
 | `project.list` *(1.12)* | — | Proyectos abiertos: `id`, `name`, `path` (la carpeta), `warnings` y `error?`: una carpeta de `[projects] paths` que no abrió al arrancar (`regulus.toml` ilegible o no TOML, id inválido, carpeta que no está) sale con `error` y nada suyo cargado; `project.open` lo reintenta y `project.close` la olvida |
 | `project.get` *(1.12)* | `id` | El `regulus.toml` resuelto: `id`, `name`, `path`, `file`, `profiles` y `templates` (rutas absolutas), `disable`, `enable?`, `local` (tal cual, sin cargar), `client` (tabla libre), `content` (el fichero entero con las claves desconocidas) y `warnings` |
-| `project.open` *(1.12)* | `path` (carpeta o su `regulus.toml`; relativa al home del core) | Como una entrada de `project.list`. Abrir una carpeta ya abierta no cambia nada |
+| `project.open` *(1.12)* | `path` (carpeta o su `regulus.toml`; relativa al home del core), `trust?` *(1.14)* | Como una entrada de `project.list`. Abrir una carpeta ya abierta no cambia nada, salvo que `trust` la haga de confianza |
+| `project.trust` *(1.14)* | `path`, `remove?` | `path` (la carpeta resuelta) y `trusted`. Edita `[projects] trusted` de `config.toml`; si el proyecto está abierto, sus módulos locales arrancan o se paran ya. Sin confianza quedan `blocked` ([`03-modules.md`](03-modules.md) §6) |
 | `project.close` *(1.12)* | `id` | Como una entrada de `project.list`; no borra nada en disco |
 | `config.client` *(1.13)* | `project_id?` | `client`: el `[client]` de `config.toml` tal como está escrito, con el del proyecto encima clave a clave (las tablas como `keys` y `tui`, también clave a clave; lo desconocido pasa tal cual); `sources`: de qué fichero sale cada valor (`config.toml` o `regulus.toml`, por `clave` o `tabla.clave`); `warnings`: las claves de `[client]` que el core no conoce. Proyecto que no está abierto: `-32010`. Detalle en [`04-client.md`](04-client.md) §11 |
 
-El core real (`regulus serve`) habla el protocolo `1.13`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.14`, compatible con el `1.0` del mock.
 Desde `1.12` hay proyectos ([`11-composition.md`](11-composition.md) §13): `project.open`
 añade la carpeta a `[projects] paths` de `config.toml` y suma sus perfiles y plantillas;
 `profile.save` de un perfil con `project_id` de un proyecto abierto y `template.apply` con

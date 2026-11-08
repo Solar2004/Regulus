@@ -27,12 +27,17 @@ command = ["python3", "tools/echo/echo.py"]
 # manifest = "tools/echo/regulus-module.toml"  # read this instead of asking the process
 ```
 
-Then open (or close and reopen) the project:
+Then open the project and trust it. Opening a folder never runs its code: without trust,
+its local modules are listed as `blocked` and no process starts.
 
 ```bash
-regulus project open .
-regulus module ls          # <project>/echo@0.1.0   idle
+regulus project open . --trust     # or later: regulus project trust .
+regulus module ls                  # <project>/echo@0.1.0   idle
+regulus project trust --remove .   # stops it again; it shows as blocked
 ```
+
+The process gets a clean environment: only `[local_modules] env_passthrough` of
+`config.toml` (`PATH`, `HOME`, `LANG`, `TERM` by default) plus its own `env`.
 
 Use it in a profile like any module, with `module_id = "<project>/echo@0.1.0"` on the
 node, and veto it with `[modules] disable = ["<project>/echo"]`. Closing the project stops

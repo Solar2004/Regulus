@@ -237,8 +237,12 @@ pub enum ModuleState {
     Idle     { last_used: Option<Timestamp> }, // cargado, nunca o hace mucho
     Disabled { missing: Vec<String> },      // falta una capacidad required
     Broken   { reason: String },            // panic o fallo en init
+    Blocked  { reason: String },            // no arrancado a propósito (§6, proto 1.14)
 }
 ```
+
+`Blocked` lo usa hoy un módulo local de un proyecto sin confianza (§6). No es usable, pero
+tampoco está roto: basta con decidir.
 
 `Idle` con `last_used: None` es el estado que importa: **un módulo que instalaste y
 nunca usaste.** La UI debe hacerlo visible sin que haya que buscarlo.
@@ -322,17 +326,59 @@ a `node/child`.
 | proceso → core | `emit` (notificación) | `ModuleCtx::emit` | `{ execution_id, node_id, port, value }`. Lo emitido mientras atiende una `call` se publica en el hilo que llama, **antes** de que la llamada vuelva, y sigue su cadena: `[bus] max_depth` corta también los bucles que pasan por el proceso |
 | proceso → core | otra petición | — | se responde `-32601`. El resto de `ModuleCtx` (`resolve`, `call`, `store`, `checkpoint`, `node_dir`, `call_workflow`) **no se ofrece todavía**: se añade cuando un módulo local lo pida |
 
+Una línea por mensaje, como viajan (`→` del core al proceso, `←` del proceso al core):
+
+```
+→ {"jsonrpc":"2.0","id":1,"method":"manifest","params":{"protocol":"1.14","project_id":"demo","id":"echo"}}
+← {"jsonrpc":"2.0","id":1,"result":"[module]\nname = \"Echo\"\n[[node]]\ntype = \"echo\"\n…"}
+→ {"jsonrpc":"2.0","id":2,"method":"start","params":{"protocol":"1.14","module_id":"demo/echo@0.1.0","project_id":"demo","root":"/home/a/demo"}}
+← {"jsonrpc":"2.0","id":2,"result":null}
+→ {"jsonrpc":"2.0","id":3,"method":"call","params":{"method":"node/event","params":{"execution_id":"exec-1","node":{"id":"e","type":"echo",…},"args":{"port":"in","capability":"text@1","value":"hola",…}}}}
+← {"jsonrpc":"2.0","method":"emit","params":{"execution_id":"exec-1","node_id":"e","port":"out","value":"hola"}}
+← {"jsonrpc":"2.0","id":3,"result":null}
+→ {"jsonrpc":"2.0","id":4,"method":"call","params":{"method":"node/start","params":{…}}}
+← {"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"unknown method `node/start`"}}
+```
+
 El manifiesto pasa por el mismo código que uno enlazado: el mismo `Manifest`, la misma
 comprobación de `requires_proto` y la misma de id repetido. **El id lo pone el core:**
 `<proyecto>/<id>@<versión>`, con la versión de `regulus.toml`, si no la que el manifiesto
 dice tras `@`, y si no `0.0.0`. Así el veto (`disable = ["<proyecto>/<id>"]`), `--without`
 y los perfiles (`module_id = "<proyecto>/<id>"`) lo nombran como a cualquiera.
 
+**Confianza.** ✅ (2026-11-08, revisión) — **Abrir una carpeta nunca ejecuta código.**
+Los módulos locales de un proyecto solo arrancan si su carpeta está en `[projects]
+trusted` de `config.toml`. Se añade con `regulus project open <ruta> --trust` o con
+`regulus project trust <ruta>`, y se quita con `regulus project trust --remove <ruta>`
+(`project.trust { path, remove? }` y `project.open { path, trust? }`, protocolo 1.14). Sin
+confianza, el proyecto se abre igual y cada módulo local queda **`blocked`** con "untrusted
+project: reopen with --trust", sin proceso. Si la confianza cambia con el proyecto abierto,
+sus módulos locales arrancan o se paran en ese momento. El core relee la lista del
+fichero cada vez: un solo sitio por dato.
+
+**El proceso no hereda el entorno del core:** se vacía (`env_clear`) y solo pasan las
+variables de `env_passthrough` (por defecto `PATH`, `HOME`, `LANG` y `TERM`) más el `env`
+de su entrada en `regulus.toml`. El token del core y los secretos nunca llegan.
+
 **Estados (§3).** Un proceso que no arranca, que no responde `manifest` en
 `start_timeout_ms` o cuyo manifiesto no es válido queda **`broken`** con la razón y las
 últimas líneas de su stderr, y se mata. Uno que muere después pasa a `broken` igual. El
 core y los demás módulos no se enteran. Su stderr va al log del core con el prefijo
 `local module <id>:`.
+
+**Antes de lanzar nada** se descartan, sin proceso: una entrada sin `id` o sin `command`,
+con un `id` que no es un nombre simple o con un `cwd` absoluto o con `..` (avisos de
+`regulus.toml`), y un **id repetido**, dentro de `[[modules.local]]` o con un módulo ya
+cargado, que queda `broken` con "duplicate id".
+
+**Líneas y señales.** Cada línea se lee con un tope, `max_line_bytes` (16 MiB), y lo que no
+es UTF-8 se lee igual (sustituido). Pasarse en stdout mata el proceso y lo deja `broken`
+con la razón. En stderr la línea se corta y se sigue leyendo. Al parar, las señales van
+al **grupo** del proceso (`killpg`), también si el líder ya salió, para no dejar huérfanos
+a sus hijos. En Linux el hijo recibe SIGTERM si el core muere sin pararlo
+(`PR_SET_PDEATHSIG`). Por eso todos los procesos se lanzan desde un hilo que vive tanto
+como el core: esa señal salta cuando muere el *hilo* que lanzó el proceso. `regulus serve`
+trata SIGTERM como Ctrl-C: se para limpio y para a sus módulos locales.
 
 **Límites, a propósito:**
 - Un módulo local **no puede declarar `methods`**: los métodos del socket se registran al
@@ -352,10 +398,13 @@ core y los demás módulos no se enteran. Su stderr va al log del core con el pr
 | Clave | Por defecto | Qué |
 |---|---|---|
 | `start_timeout_ms` | `10000` | lo que tiene para responder `manifest` y `start` |
-| `call_timeout_ms` | `0` | lo que tiene para cada `call`; `0` = sin límite, como un módulo enlazado |
+| `call_timeout_ms` | `600000` | lo que tiene para cada `call`; `0` = sin límite. **Una llamada colgada retiene el bus de esa ejecución** (sus entregas van en orden) hasta que vence, pero no el core ni las demás ejecuciones |
 | `stop_grace_ms` | `2000` | lo que tiene para responder `stop` y luego para acabar tras SIGTERM |
 | `stderr_lines` | `20` | líneas de stderr que se guardan para decir por qué se rompió |
+| `max_line_bytes` | `16777216` | la línea más larga que puede escribir (16 MiB) |
+| `env_passthrough` | `["PATH", "HOME", "LANG", "TERM"]` | las variables del entorno del core que le llegan |
 
 Ablación: la matriz (§4) tiene una fila para el módulo local. Quitar cualquier módulo
 enlazado lo deja usable, y quitarlo a él (`--without <proyecto>/<id>`) deja el resto igual
-y no arranca ningún proceso (`crates/regulus-cli/tests/ablation.rs`).
+y no arranca ningún proceso, comprobado buscando el proceso por su entorno
+(`crates/regulus-cli/tests/ablation.rs`).
