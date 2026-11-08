@@ -28,8 +28,13 @@ La caja Agente se encadena con cables "luego" (`prompt` · `reply` · `failed`, 
 por vuelta) y la primera plantilla, Ralph (`templates/ralph.toml`), corre con opencode.
 **La app ya edita y opera** (2026-11-08, `plan.md` §3 filas 5-6, `04-client.md` §8-9): canvas
 editable con paleta desde los manifiestos, Operar con ejecuciones y eventos reales, chat con
-agentes, e instalar plantillas desde un formulario. **Lo siguiente:** las plantillas 3-8 de
-`13-blocks.md` §5 (son datos) y pulir la app con uso real. La pasarela de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
+agentes, e instalar plantillas desde un formulario; Ajustes gestiona secretos, servicio y
+módulos (`04-client.md` §10). **Los proyectos son carpetas con `regulus.toml`** (2026-11-08,
+`11-composition.md` §13): perfiles y plantillas propios, veto de módulos por id, claves
+desconocidas conservadas con aviso, `regulus project ls|show|open|close`. **Lo siguiente:**
+la TUI que edita como la app (`feat/tui-edit`, en revisión), la app y la TUI leyendo
+`config.toml [client]`, y las plantillas 3-8 de `13-blocks.md` §5 (son datos). La pasarela
+de proveedores queda aplazada. Plan y orden en [`docs/plan.md`](docs/plan.md).
 
 ---
 
@@ -69,12 +74,12 @@ construir todas las habitaciones hoy.**
 | **`docs/plan.md`** | ~1.8k | **Si retomas en frío, empieza aquí.** Qué es base y qué es módulo, orden de trabajo, la pregunta abierta, lo rescatado de los docs antiguos (doctrina Predator, descartados, trampas) y cómo trabajar con Alexander. |
 | **`docs/concept.md`** | ~1k | Qué es Regulus en llano: piezas (módulo, nodo, cable, workflow, perfil, ejecución) y las dos vistas. |
 | **`docs/00-principles.md`** | ~2k | **Manda sobre todos los demás.** "Como el agua", **la caja líquida**, los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
-| **`docs/11-composition.md`** | ~2.6k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). |
+| **`docs/11-composition.md`** | ~5.5k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). **Proyectos** como carpetas con `regulus.toml` (§13). |
 | **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido. |
 | **`docs/13-blocks.md`** | ~8.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom), límites honestos y fuentes. |
 | **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
-| **`docs/04-client.md`** | ~0.9k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema. |
+| **`docs/04-client.md`** | ~2.5k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10). |
 | **`docs/composition-preview.md`** | ~0.8k | Contrato actual del mock (métodos JSON-RPC) y límites del canvas A'/B'. |
 | **`docs/06-stack.md`** | ~2.2k | Dependencias con versiones verificadas (único sitio), terminal, transporte, versionado. |
 | **`docs/08-design-system.md`** | ~1.8k | Diseño de la app: Regulus Midnight, paleta y tokens (`assets/design/`), iconos de estado. Recetas en `centaury-recipes.md`. |
@@ -174,7 +179,7 @@ Co-Authored-By: Tu nombre <email>
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
 | 1 | **Plantillas 3-8** de `13-blocks.md` §5 (~~mecanismo~~, ~~Ralph~~, ~~app~~) | pxl: `claude-pxl` no instalado |
-| 2 | **Pulir la app** con uso real: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~ (2026-11-08); ~~`pnpm tauri:dev`~~ (abre, lanza su core, conecta); ~~Ajustes: secretos, servicio y estado de módulos~~ (`04-client.md` §10); queda la app misma por configuración (`00-principles.md` §4) | nada |
+| 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13); quedan la TUI que edita como la app (rama `feat/tui-edit`), y la app y la TUI leyendo `config.toml [client]` (`00-principles.md` §4); después, `ProcessModule` para `[[modules.local]]` | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
 | — | Pasarela, Router, Traductor, motor Local (`12-agents.md` §7) | aplazado: la base de proveedores y skills basta |
 
