@@ -13,6 +13,18 @@ const PROGRAM: &str = env!("CARGO_BIN_EXE_regulus");
 /// Marks the processes of one test run, to find them in `/proc`.
 const MARK: &str = "REGULUS_LOCAL_MODULE_TEST";
 
+/// Whether `python3` runs here; the tests that need it are skipped, with a word, if not.
+fn python() -> bool {
+    let found = Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !found {
+        eprintln!("skipped: python3 is not available to run the echo example");
+    }
+    found
+}
+
 fn example() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/local-modules/echo/echo.py")
@@ -149,13 +161,19 @@ fn with_core(name: &str, project_file: &str, test: impl FnOnce(&Path, &Path)) {
 
 #[test]
 fn a_local_module_runs_a_profile_and_stops_with_its_project() {
+    if !python() {
+        return;
+    }
     let mark = format!("echo-{}", std::process::id());
     let file = format!(
         "[[modules.local]]\nid = \"echo\"\ncommand = [\"python3\", {:?}]\nenv = {{ {MARK} = {mark:?} }}\n",
         example().display().to_string()
     );
     with_core("local-echo", &file, |home, folder| {
-        let opened = regulus(home, &["project", "open", folder.to_str().unwrap()]);
+        let opened = regulus(
+            home,
+            &["project", "open", folder.to_str().unwrap(), "--trust"],
+        );
         assert!(opened.status.success(), "{}", text(&opened));
         assert_eq!(marked(&mark).len(), 1, "one echo process runs");
 
@@ -218,13 +236,19 @@ fn a_local_module_runs_a_profile_and_stops_with_its_project() {
 
 #[test]
 fn a_local_module_that_dies_is_broken_with_its_stderr_and_the_rest_works() {
+    if !python() {
+        return;
+    }
     let file = format!(
         "[[modules.local]]\nid = \"crash\"\ncommand = [\"sh\", \"-c\", \"echo boom >&2; exit 3\"]\n\n\
          [[modules.local]]\nid = \"echo\"\ncommand = [\"python3\", {:?}]\n",
         example().display().to_string()
     );
     with_core("local-crash", &file, |home, folder| {
-        let opened = regulus(home, &["project", "open", folder.to_str().unwrap()]);
+        let opened = regulus(
+            home,
+            &["project", "open", folder.to_str().unwrap(), "--trust"],
+        );
         assert!(opened.status.success(), "{}", text(&opened));
 
         let ls = regulus(home, &["module", "ls"]);
@@ -250,5 +274,55 @@ fn a_local_module_that_dies_is_broken_with_its_stderr_and_the_rest_works() {
 
         let run = regulus(home, &["run", "pipe", "--detach"]);
         assert!(run.status.success(), "{}", text(&run));
+    });
+}
+
+#[test]
+fn an_untrusted_project_runs_no_code_until_trusted() {
+    if !python() {
+        return;
+    }
+    let mark = format!("trust-{}", std::process::id());
+    let file = format!(
+        "[[modules.local]]\nid = \"echo\"\ncommand = [\"python3\", {:?}]\nenv = {{ {MARK} = {mark:?} }}\n\n\
+         [[modules.local]]\nid = \"echo\"\ncommand = [\"python3\", {:?}]\n",
+        example().display().to_string(),
+        example().display().to_string()
+    );
+    with_core("local-trust", &file, |home, folder| {
+        let path = folder.to_str().unwrap();
+        let opened = regulus(home, &["project", "open", path]);
+        assert!(opened.status.success(), "{}", text(&opened));
+        assert!(marked(&mark).is_empty(), "nothing runs untrusted");
+        let ls = text(&regulus(home, &["module", "ls"]));
+        let echo = ls
+            .lines()
+            .find(|l| l.starts_with("demo/echo"))
+            .unwrap_or_else(|| panic!("demo/echo listed: {ls}"));
+        assert!(echo.contains("blocked"), "{echo}");
+        assert!(
+            echo.contains("untrusted project: reopen with --trust"),
+            "{echo}"
+        );
+
+        let trusted = regulus(home, &["project", "trust", path]);
+        assert!(trusted.status.success(), "{}", text(&trusted));
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(config.contains("trusted"), "{config}");
+        assert_eq!(marked(&mark).len(), 1, "trusting starts it, once");
+        let ls = text(&regulus(home, &["module", "ls"]));
+        let lines: Vec<&str> = ls.lines().filter(|l| l.starts_with("demo/echo")).collect();
+        assert_eq!(lines.len(), 2, "{ls}");
+        assert!(lines[0].contains("idle"), "{ls}");
+        assert!(lines[1].contains("duplicate id"), "{ls}");
+
+        let removed = regulus(home, &["project", "trust", "--remove", path]);
+        assert!(removed.status.success(), "{}", text(&removed));
+        assert!(
+            marked(&mark).is_empty(),
+            "no longer trusted, no longer running"
+        );
+        let ls = text(&regulus(home, &["module", "ls"]));
+        assert!(ls.contains("blocked"), "{ls}");
     });
 }
