@@ -122,3 +122,71 @@ fn a_project_that_vetoes_a_removed_module_leaves_the_rest_working() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The local-module row (docs/03-modules.md §6): a project's `[[modules.local]]` is one
+/// more module. Removing any linked one leaves it working, and removing it (`--without
+/// <project>/<id>`) leaves the rest working and starts no process.
+#[test]
+fn a_local_module_is_removable_and_survives_any_removal() {
+    use regulus_core::projects::{Project, Projects};
+    use regulus_core::service::ProjectHome;
+    use regulus_core::{Core, ProfileStore};
+    use regulus_proto::{method, ModuleSummary};
+
+    const LOCAL: &str = "demo/echo";
+    let echo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/local-modules/echo/echo.py")
+        .canonicalize()
+        .unwrap();
+    let root = std::env::temp_dir().join(format!("regulus-ablation-local-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let folder = root.join("demo");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("regulus.toml"),
+        format!(
+            "[[modules.local]]\nid = \"echo\"\ncommand = [\"python3\", {:?}]\n",
+            echo.display().to_string()
+        ),
+    )
+    .unwrap();
+    let mut removals = ids();
+    removals.push(LOCAL.to_string());
+    for removed in removals {
+        let core = Core::build(
+            installed(),
+            std::slice::from_ref(&removed),
+            ProfileStore::default(),
+        );
+        let mut projects = Projects::default();
+        projects
+            .insert(Project::load(&folder.canonicalize().unwrap()).unwrap())
+            .unwrap();
+        core.set_projects(
+            projects,
+            ProjectHome {
+                config: root.join("config.toml"),
+                home: root.clone(),
+            },
+        );
+        core.start_local_modules();
+        let modules: Vec<ModuleSummary> = serde_json::from_value(
+            core.dispatch(method::MODULE_LIST, serde_json::Value::Null)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(modules.len(), ids().len(), "without {removed}");
+        for module in &modules {
+            assert!(
+                module.state.is_usable(),
+                "without {removed}: {} is {:?}",
+                module.id,
+                module.state
+            );
+        }
+        let local_listed = modules.iter().any(|m| m.id.starts_with(LOCAL));
+        assert_eq!(local_listed, removed != LOCAL, "without {removed}");
+        core.shutdown();
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
