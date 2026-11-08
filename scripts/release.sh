@@ -64,6 +64,8 @@ case "$os" in darwin) os="macos" ;; esac
 case "$arch" in arm64) arch="aarch64" ;; amd64) arch="x86_64" ;; esac
 platform="$os-$arch"   # as Rust names it: std::env::consts::{OS, ARCH}
 
+case "$out" in ""|/) die "--out must be a directory, not '$out'" ;; esac
+[ -n "$version" ] || die "no version in Cargo.toml"
 dest="$out/$version"
 rm -rf "$dest"
 mkdir -p "$dest"
@@ -156,7 +158,8 @@ signed=0
 if [ -n "$sign_key" ] || [ -n "${REGULUS_SIGNING_KEY:-}" ]; then
   key_args=()
   [ -n "$sign_key" ] && key_args=(--key "$sign_key")
-  "$bin" update sign "${key_args[@]}" --release-version "$version" manifest.json "${app_files[@]}" >/dev/null
+  # ${arr[@]+"${arr[@]}"}: an empty array is not "unbound" under set -u in bash < 4.4
+  "$bin" update sign ${key_args[@]+"${key_args[@]}"} --release-version "$version" manifest.json ${app_files[@]+"${app_files[@]}"} >/dev/null
   signed=1
 else
   say "unsigned: no --sign-key nor \$REGULUS_SIGNING_KEY; 'regulus update' will refuse this release"
