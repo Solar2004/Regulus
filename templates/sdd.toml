@@ -1,0 +1,860 @@
+# SDD, spec-driven development (docs/13-blocks.md §5 row 3): a chain of phases,
+# constitution → spec → plan → tasks → implement, each one a persona that sees a fixed
+# document, each artefact reviewed by a person and kept on disk, and an implement loop
+# that converges on a deterministic check. Rebuilds GitHub Spec Kit
+# (https://github.com/github/spec-kit: /constitution, /specify, /plan, /tasks, /implement),
+# Kiro's specs and steering (https://kiro.dev) and BMAD's personas (agents with their own
+# prompt, tools and model).
+#
+#   self.go ─┬→ feature (variable)
+#            └→ compose → [persona] → review ─→ constitution.md ─→ feature ─→ compose
+#   ┌──────────────────────────────────────────────────────────────────────────────┘
+#   └→ [persona] → review → spec.md
+#                    └──→ compose → [persona] → review → plan.md
+#                                                 └──→ compose → [persona] → review → tasks.md
+#   tasks.md written → start → converge ─body→ tasks.md (read) ─┐                        │
+#                                 ▲   └──────────────────────────┴→ join → compose      ◄┘
+#                                 │                                         │
+#                                 ├── agent_report ←failed── [persona] ←────┘
+#                                 └── gate_report ←exit── gate (test_command) ←out┘
+#
+#   [persona] = workflow `persona`, called once per value (`call`, a child execution):
+#     in ─┬→ constitution (read) → join → compose → agent ⇢ engine → out (or failed)
+#         └────────────────────────→┘
+#
+# Each phase: the previous approved artefact (on turn 1, what was sent to `go`) goes into
+# that phase's prompt, which a `call` hands to a new `persona` child. The persona reads
+# the constitution again from disk, puts it before the task (the fixed document, as Spec
+# Kit's constitution or Kiro's steering) and prompts a fresh agent; its reply is the
+# artefact. A `review` holds it until someone decides: approve as is, approve with an
+# edited text (`--file`/`--text`, what is written is the edited one), or reject (the text
+# leaves on `rejected` and the chain stops there). Approved artefacts are written under
+# `specs_dir` in `workdir`; the constitution phase rewrites the constitution itself. Once
+# tasks.md is written, `converge` (a `loop`) runs the implement persona, then the gate
+# runs `test_command` in `workdir`; "gate exit 0" ends the run on `done`, any other exit
+# is the next turn's feedback, up to `max_turns` (`exhausted`). Every turn reads tasks.md
+# again and every turn is a new agent: nothing carries over but the files.
+# `test_command` defaults to `true`, as in Ralph: the gate passes whatever was done and
+# the loop ends on turn 1 unless a real check is set.
+#
+# Risk: `permissions = "allow"` says yes to everything the agents ask (writing files,
+# running commands), unattended, in `workdir` and wherever their tools reach. The
+# implement phase needs it; the other phases only reply with text, and the prompts tell
+# them not to write files, but nothing enforces that. The engine runs with the user's
+# own opencode setup. The constitution must exist before `go` (a few lines are enough):
+# a persona that cannot read it never prompts its agent.
+#
+# Another engine: replace the node `engine` of workflow `persona` (e.g. `engine-claude`;
+# it has no `model` field, its setup picks the model). Another model: `--set
+# model=provider/model`. A persona per phase (BMAD: analyst, architect, developer, each
+# with its own model and tools): copy workflow `persona` under another id, change its
+# engine, model or tools, and point that phase's `call` node (`workflow`) at it. With
+# Claude and an isolated profile, the constitution can be a `document` node of `files`
+# on the agent's `hooks` input instead of the read and join (hooks do not reach opencode
+# yet). Values with a double quote or a backslash are refused (docs/11-composition.md
+# §7): prompts and the test command go without them, or in a file or a script.
+#
+# Run (2026-11-08, debug build, `regulus serve --port 0` with a temporary --home whose
+# config.toml has `[templates] paths` on this folder; <proj> holds a four-line
+# constitution.md, and <checker>/check.sh exits 0 only when hello.txt says hello):
+#
+#   regulus template apply sdd --set workdir=<proj> --set max_turns=2 \
+#     --set test_command="sh <checker>/check.sh"     # wrote <home>/profiles/sdd.toml
+#   regulus call profile.check '{"id":"sdd"}'        # []
+#   regulus run sdd --detach                          # exec-1  sdd  running
+#   regulus send exec-1 go "A file hello.txt in the project root holding exactly the line hello."
+#     call_constitution.out emitted "# Constitution (constitution.md)\n\nEverything you…"
+#     review_constitution.pending emitted {"id":"h-cd4c…","kind":"review",…}  ← 16 s
+#   regulus human answer h-cd4c… approve --file <edited>.md   # the model had copied the
+#     write_constitution.written emitted "<proj>/constitution.md"  # prompt's heading back
+#     feature.value emitted "A file hello.txt in the project root…"
+#     call_spec.out emitted "# Specification: `hello.txt`\n\n## 1. Overview…"
+#   regulus human answer <id> approve                  # spec, then plan, then tasks
+#     call_plan.out emitted "# Technical Plan: `hello.txt`\n\n## 1. Stack…"
+#     call_tasks.out emitted "1. **Create `hello.txt`** in the project root…"
+#     write_tasks.written emitted "<proj>/specs/tasks.md"
+#     converge.body emitted "none yet: no check has run"
+#     call_implement.out emitted "Done. `hello.txt` created in the project root…"
+#     gate.exit emitted exit@1 {"code":0,"ms":5,"stdout":"ok: hello.txt says hello",…}
+#     self.passed emitted "Done. …" · converge.done · self.done emitted "gate exit 0…"
+#   89 s from `send` to `self.done`, four reviews included. `regulus ps`: exec-2..6
+#   `persona`, stopped, children of exec-1 (one per phase, five opencode sessions, none
+#   left running). <proj>/specs/{spec,plan,tasks}.md and hello.txt on disk. Without
+#   workdir: "template `sdd` needs a value for var `workdir`".
+id = "sdd"
+name = "SDD in {{workdir}}"
+main_workflow_id = "sdd"
+
+[template]
+name = "sdd"
+description = "Spec-driven development: constitution, spec, plan and tasks reviewed by a person, then implement until a check passes"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/human", version = ">=0.1" },
+  { module = "regulus/process", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path of the project the agents work in; the constitution is read and the artefacts written there" }
+model = { description = "model of the engine node, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+constitution = { description = "the constitution, relative to workdir; it must exist before go, and the first phase rewrites it", default = "constitution.md" }
+specs_dir = { description = "folder under workdir for spec.md, plan.md and tasks.md", default = "specs" }
+test_command = { description = "shell line run in workdir after each implement turn; exit 0 ends the run", default = "true" }
+max_turns = { description = "most implement turns before the loop gives up on exhausted", default = 5 }
+permissions = { description = "what the agents answer when asked for permission: allow or reject (implement needs allow)", default = "allow" }
+review_timeout_ms = { description = "milliseconds a review waits for a person before the artefact leaves on rejected; 0 waits forever", default = 0 }
+constitution_prompt = { description = "the constitution phase: what the persona does with the constitution", default = "You are the project steward. Amend the constitution so it fits the feature below: short, testable principles. Keep what still holds." }
+spec_prompt = { description = "the spec phase (Spec Kit /specify)", default = "You are the product analyst. Write the specification of the feature below: what and why, user stories and acceptance criteria. No technology choices." }
+plan_prompt = { description = "the plan phase (Spec Kit /plan)", default = "You are the architect. Write the technical plan for the specification below: stack, structure, files and how each acceptance criterion is checked." }
+tasks_prompt = { description = "the tasks phase (Spec Kit /tasks)", default = "You are the scrum master. Break the plan below into a short numbered list of small tasks, each one with the file it touches and how to check it." }
+implement_prompt = { description = "the implement phase (Spec Kit /implement), every turn of the loop", default = "You are the developer. Implement the tasks below in this project, writing the files yourself. Then make the check pass: the last check says what it wants." }
+
+[[workflows]]
+id = "sdd"
+name = "SDD"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "pending", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "rejected", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "done", capability = "text@1", direction = "output", kind = "then" },
+  { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  { id = "passed", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  # The feature as sent to `go`, kept for the spec phase.
+  [[workflows.nodes]]
+  id = "feature"
+  name = "Feature"
+  type = "variable"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { scope = "execution" }
+  ports = [
+    { id = "set", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "get", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "value", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # Phase 1: constitution.
+  [[workflows.nodes]]
+  id = "compose_constitution"
+  name = "Constitution prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 150 }
+  config = { conversion = "template", template = "Phase 1 of 5: constitution.\n\n{{constitution_prompt}}\n\nReply with the whole constitution in Markdown and nothing else. Do not write any file.\n\n# Feature\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "call_constitution"
+  name = "Steward"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 150 }
+  config = { workflow = "persona" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "review_constitution"
+  name = "Review the constitution"
+  type = "review"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 500, y = 150 }
+  config = { prompt = "Constitution: approve, edit, or reject to stop", timeout_ms = {{review_timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "write_constitution"
+  name = "constitution.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { path = "{{constitution}}", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # Phase 2: spec, from the feature, once the new constitution is on disk.
+  [[workflows.nodes]]
+  id = "compose_spec"
+  name = "Spec prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 300 }
+  config = { conversion = "template", template = "Phase 2 of 5: specification.\n\n{{spec_prompt}}\n\nReply with the whole specification in Markdown and nothing else. Do not write any file.\n\n# Feature\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "call_spec"
+  name = "Analyst"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 300 }
+  config = { workflow = "persona" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "review_spec"
+  name = "Review the spec"
+  type = "review"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 500, y = 300 }
+  config = { prompt = "Spec: approve, edit, or reject to stop", timeout_ms = {{review_timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "write_spec"
+  name = "spec.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 650, y = 300 }
+  config = { path = "{{specs_dir}}/spec.md", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # Phase 3: plan, from the approved spec.
+  [[workflows.nodes]]
+  id = "compose_plan"
+  name = "Plan prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 450 }
+  config = { conversion = "template", template = "Phase 3 of 5: plan.\n\n{{plan_prompt}}\n\nReply with the whole plan in Markdown and nothing else. Do not write any file.\n\n# Specification ({{specs_dir}}/spec.md)\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "call_plan"
+  name = "Architect"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 450 }
+  config = { workflow = "persona" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "review_plan"
+  name = "Review the plan"
+  type = "review"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 500, y = 450 }
+  config = { prompt = "Plan: approve, edit, or reject to stop", timeout_ms = {{review_timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "write_plan"
+  name = "plan.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 650, y = 450 }
+  config = { path = "{{specs_dir}}/plan.md", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # Phase 4: tasks, from the approved plan.
+  [[workflows.nodes]]
+  id = "compose_tasks"
+  name = "Tasks prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 600 }
+  config = { conversion = "template", template = "Phase 4 of 5: tasks.\n\n{{tasks_prompt}}\n\nThe specification is in {{specs_dir}}/spec.md. Reply with the task list in Markdown and nothing else. Do not write any file.\n\n# Plan ({{specs_dir}}/plan.md)\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "call_tasks"
+  name = "Scrum master"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 600 }
+  config = { workflow = "persona" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "review_tasks"
+  name = "Review the tasks"
+  type = "review"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 500, y = 600 }
+  config = { prompt = "Tasks: approve to start implementing, edit, or reject to stop", timeout_ms = {{review_timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pending", capability = "json@1", direction = "output", kind = "then" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "rejected", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "write_tasks"
+  name = "tasks.md"
+  type = "write"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 650, y = 600 }
+  config = { path = "{{specs_dir}}/tasks.md", dir = "{{workdir}}", mode = "overwrite" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "written", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  # Phase 5: implement, a loop that converges on the gate, as Ralph does.
+  [[workflows.nodes]]
+  id = "start"
+  name = "First turn"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 800, y = 600 }
+  config = { conversion = "template", template = "none yet: no check has run" }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "converge"
+  name = "Converge"
+  type = "loop"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 950, y = 600 }
+  config = { max = {{max_turns}}, until = { op = "regex", value = '^gate exit 0\b' } }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "back", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "body", capability = "text@1", direction = "output", kind = "then" },
+    { id = "done", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exhausted", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # tasks.md, read again every turn: edit it while the loop runs.
+  [[workflows.nodes]]
+  id = "read_tasks"
+  name = "tasks.md"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 1100, y = 550 }
+  config = { path = "{{specs_dir}}/tasks.md", dir = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join"
+  name = "Tasks + feedback"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 600 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "tasks", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "feedback", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "compose_implement"
+  name = "Implement prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1400, y = 600 }
+  config = { conversion = "template", template = "Phase 5 of 5: implement.\n\n{{implement_prompt}}\n\nThe specification and the plan are in {{specs_dir}}/spec.md and {{specs_dir}}/plan.md.\n\n# Tasks ({{specs_dir}}/tasks.md)\n\n{{/tasks}}\n\n# Result of the last check\n\n{{/feedback}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "call_implement"
+  name = "Developer"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1550, y = 600 }
+  config = { workflow = "persona" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The deterministic check: `test_command` in the project. `exit` says how it went.
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Gate"
+  type = "gate"
+  module_id = "regulus/process@0.1.0"
+  position = { x = 1550, y = 750 }
+  config = { command = "sh", args = ["-c", "{{test_command}}"], cwd = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "text@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "text@1", direction = "output", kind = "then" },
+    { id = "exit", capability = "exit@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "gate_report"
+  name = "Gate result"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 750 }
+  config = { conversion = "template", template = "gate exit {{/code}}\n\n{{/stdout}}\n{{/stderr}}" }
+  ports = [
+    { id = "in", capability = "exit@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent_report"
+  name = "Agent failure"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 850 }
+  config = { conversion = "template", template = "agent failed\n\n{{.}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "go-feature"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "feature", port_id = "set" }
+
+  [[workflows.wires]]
+  id = "go-constitution"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "compose_constitution", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "constitution-call"
+  kind = "then"
+  from = { node_id = "compose_constitution", port_id = "out" }
+  to = { node_id = "call_constitution", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "constitution-review"
+  kind = "then"
+  from = { node_id = "call_constitution", port_id = "out" }
+  to = { node_id = "review_constitution", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "constitution-write"
+  kind = "then"
+  from = { node_id = "review_constitution", port_id = "out" }
+  to = { node_id = "write_constitution", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "constitution-feature"
+  kind = "then"
+  from = { node_id = "write_constitution", port_id = "written" }
+  to = { node_id = "feature", port_id = "get" }
+
+  [[workflows.wires]]
+  id = "feature-spec"
+  kind = "then"
+  from = { node_id = "feature", port_id = "value" }
+  to = { node_id = "compose_spec", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "spec-call"
+  kind = "then"
+  from = { node_id = "compose_spec", port_id = "out" }
+  to = { node_id = "call_spec", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "spec-review"
+  kind = "then"
+  from = { node_id = "call_spec", port_id = "out" }
+  to = { node_id = "review_spec", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "spec-write"
+  kind = "then"
+  from = { node_id = "review_spec", port_id = "out" }
+  to = { node_id = "write_spec", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "spec-plan"
+  kind = "then"
+  from = { node_id = "review_spec", port_id = "out" }
+  to = { node_id = "compose_plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "plan-call"
+  kind = "then"
+  from = { node_id = "compose_plan", port_id = "out" }
+  to = { node_id = "call_plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "plan-review"
+  kind = "then"
+  from = { node_id = "call_plan", port_id = "out" }
+  to = { node_id = "review_plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "plan-write"
+  kind = "then"
+  from = { node_id = "review_plan", port_id = "out" }
+  to = { node_id = "write_plan", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "plan-tasks"
+  kind = "then"
+  from = { node_id = "review_plan", port_id = "out" }
+  to = { node_id = "compose_tasks", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "tasks-call"
+  kind = "then"
+  from = { node_id = "compose_tasks", port_id = "out" }
+  to = { node_id = "call_tasks", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "tasks-review"
+  kind = "then"
+  from = { node_id = "call_tasks", port_id = "out" }
+  to = { node_id = "review_tasks", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "tasks-write"
+  kind = "then"
+  from = { node_id = "review_tasks", port_id = "out" }
+  to = { node_id = "write_tasks", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "tasks-start"
+  kind = "then"
+  from = { node_id = "write_tasks", port_id = "written" }
+  to = { node_id = "start", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "start-converge"
+  kind = "then"
+  from = { node_id = "start", port_id = "out" }
+  to = { node_id = "converge", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "converge-read"
+  kind = "then"
+  from = { node_id = "converge", port_id = "body" }
+  to = { node_id = "read_tasks", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "converge-feedback"
+  kind = "then"
+  from = { node_id = "converge", port_id = "body" }
+  to = { node_id = "join", port_id = "feedback" }
+
+  [[workflows.wires]]
+  id = "read-join"
+  kind = "then"
+  from = { node_id = "read_tasks", port_id = "out" }
+  to = { node_id = "join", port_id = "tasks" }
+
+  [[workflows.wires]]
+  id = "join-compose"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "compose_implement", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "implement-call"
+  kind = "then"
+  from = { node_id = "compose_implement", port_id = "out" }
+  to = { node_id = "call_implement", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "implement-gate"
+  kind = "then"
+  from = { node_id = "call_implement", port_id = "out" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-report"
+  kind = "then"
+  from = { node_id = "gate", port_id = "exit" }
+  to = { node_id = "gate_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "gate-back"
+  kind = "then"
+  from = { node_id = "gate_report", port_id = "out" }
+  to = { node_id = "converge", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "implement-fail"
+  kind = "then"
+  from = { node_id = "call_implement", port_id = "failed" }
+  to = { node_id = "agent_report", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-back"
+  kind = "then"
+  from = { node_id = "agent_report", port_id = "out" }
+  to = { node_id = "converge", port_id = "back" }
+
+  [[workflows.wires]]
+  id = "gate-passed"
+  kind = "then"
+  from = { node_id = "gate", port_id = "pass" }
+  to = { node_id = "self", port_id = "passed" }
+
+  [[workflows.wires]]
+  id = "converge-done"
+  kind = "then"
+  from = { node_id = "converge", port_id = "done" }
+  to = { node_id = "self", port_id = "done" }
+
+  [[workflows.wires]]
+  id = "converge-exhausted"
+  kind = "then"
+  from = { node_id = "converge", port_id = "exhausted" }
+  to = { node_id = "self", port_id = "exhausted" }
+
+  [[workflows.wires]]
+  id = "constitution-pending"
+  kind = "then"
+  from = { node_id = "review_constitution", port_id = "pending" }
+  to = { node_id = "self", port_id = "pending" }
+
+  [[workflows.wires]]
+  id = "constitution-rejected"
+  kind = "then"
+  from = { node_id = "review_constitution", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "constitution-failed"
+  kind = "then"
+  from = { node_id = "call_constitution", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "spec-pending"
+  kind = "then"
+  from = { node_id = "review_spec", port_id = "pending" }
+  to = { node_id = "self", port_id = "pending" }
+
+  [[workflows.wires]]
+  id = "spec-rejected"
+  kind = "then"
+  from = { node_id = "review_spec", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "spec-failed"
+  kind = "then"
+  from = { node_id = "call_spec", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "plan-pending"
+  kind = "then"
+  from = { node_id = "review_plan", port_id = "pending" }
+  to = { node_id = "self", port_id = "pending" }
+
+  [[workflows.wires]]
+  id = "plan-rejected"
+  kind = "then"
+  from = { node_id = "review_plan", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "plan-failed"
+  kind = "then"
+  from = { node_id = "call_plan", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "tasks-pending"
+  kind = "then"
+  from = { node_id = "review_tasks", port_id = "pending" }
+  to = { node_id = "self", port_id = "pending" }
+
+  [[workflows.wires]]
+  id = "tasks-rejected"
+  kind = "then"
+  from = { node_id = "review_tasks", port_id = "rejected" }
+  to = { node_id = "self", port_id = "rejected" }
+
+  [[workflows.wires]]
+  id = "tasks-failed"
+  kind = "then"
+  from = { node_id = "call_tasks", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+# A persona: the constitution, read again on every call, before the task, to a new
+# agent. Each `call` starts it as a child execution and takes its first answer.
+[[workflows]]
+id = "persona"
+name = "Persona"
+kind = "extra"
+ports = [
+  { id = "in", capability = "text@1", direction = "input", kind = "then" },
+  { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  # The fixed document.
+  [[workflows.nodes]]
+  id = "constitution"
+  name = "Constitution"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { path = "{{constitution}}", dir = "{{workdir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join"
+  name = "Constitution + task"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 200, y = 100 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "constitution", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "task", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "compose"
+  name = "Prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 350, y = 100 }
+  config = { conversion = "template", template = "# Constitution ({{constitution}})\n\nEverything you do follows it.\n\n{{/constitution}}\n\n# Task\n\n{{/task}}\n" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # A new child per call, so every phase starts from nothing but the files.
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 500, y = 100 }
+  config = { workdir = "{{workdir}}", permissions = "{{permissions}}" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The engine: the only node that knows the CLI. Swap it for another engine node.
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 500, y = 0 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "in-read"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "constitution", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "in-join"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "join", port_id = "task" }
+
+  [[workflows.wires]]
+  id = "read-join"
+  kind = "then"
+  from = { node_id = "constitution", port_id = "out" }
+  to = { node_id = "join", port_id = "constitution" }
+
+  [[workflows.wires]]
+  id = "join-compose"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "compose", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "compose-agent"
+  kind = "then"
+  from = { node_id = "compose", port_id = "out" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-out"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "self", port_id = "out" }
+
+  [[workflows.wires]]
+  id = "agent-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
