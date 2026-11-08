@@ -22,6 +22,7 @@ export function moduleStateOf(modules: ModuleDefinition[], moduleId: string | nu
   const module = modules.find((item) => item.id === moduleId) ?? modules.find((item) => baseModuleId(item.id) === baseModuleId(moduleId));
   if (!module) return "not-installed";
   const status = module.state?.status ?? "idle";
+  if (status === "blocked") return "broken";
   return status === "active" || status === "idle" ? "installed" : status;
 }
 

@@ -37,6 +37,13 @@ test("requires are installed, missing or broken by module state", () => {
   expect(requireState({ module: "regulus/agent", version: ">=0.1" }, modules)).toBe("missing");
 });
 
+test("a blocked module (an untrusted project's local module) is not usable", () => {
+  const modules: ModuleSummary[] = [
+    { id: "demo/echo@0.1.0", name: "Echo", node_types: ["echo"], workflow_id: null, state: { status: "blocked", reason: "untrusted project: reopen with --trust" } },
+  ];
+  expect(requireState({ module: "demo/echo", version: ">=0.1" }, modules)).toBe("broken");
+});
+
 test("core errors map to what the form says", () => {
   expect(applyErrorOf({ code: -32006 })).toBe("unmet");
   expect(applyErrorOf({ code: -32007 })).toBe("exists");

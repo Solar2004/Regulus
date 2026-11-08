@@ -1,0 +1,41 @@
+# The manifest of the `echo` local module: the same shape as any `regulus-module.toml`.
+# The core names it `<project>/echo@<version>` whatever `id` says here; `version` in
+# `regulus.toml` wins over the one after `@`.
+[module]
+id             = "local/echo@0.1.0"
+name           = "Echo"
+requires_proto = "^1"
+
+[[node]]
+type = "echo"
+name = "Echo"
+
+  [[node.port]]
+  id          = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+[[node]]
+type = "shout"
+name = "Shout"
+
+  [[node.port]]
+  id          = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"

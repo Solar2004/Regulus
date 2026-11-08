@@ -31,7 +31,9 @@ export type ModuleState =
   | { status: "idle"; last_used: number | null }
   | { status: "disabled"; missing: string[] }
   | { status: "broken"; reason: string }
-  | { status: "incompatible"; requires: string; have: string };
+  | { status: "incompatible"; requires: string; have: string }
+  /** Not started on purpose, e.g. a local module of an untrusted project (proto 1.14). */
+  | { status: "blocked"; reason: string };
 
 export interface ModuleSummary {
   id: string;

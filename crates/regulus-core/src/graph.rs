@@ -4,6 +4,7 @@
 //! client can show exactly what is wrong.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 
 use regulus_proto::{
     Cardinality, Diagnostic, Direction, Manifest, Node, Port, PortRef, Profile, Severity, Wire,
@@ -104,9 +105,9 @@ pub fn check_vetoed(
 /// up with that workflow's: the node feeds its inputs by id and gives back on the output
 /// of the same id, so each of its "then" inputs must be one of the workflow's and each of
 /// the workflow's "then" outputs one of its own, with the same capability.
-pub fn check_fields<'m>(
+pub fn check_fields<M: Deref<Target = Manifest>>(
     profile: &Profile,
-    manifest_of: impl Fn(&str) -> Option<&'m Manifest>,
+    manifest_of: impl Fn(&str) -> Option<M>,
 ) -> Vec<Diagnostic> {
     let mut report = Report {
         list: Vec::new(),
@@ -125,10 +126,10 @@ pub fn check_fields<'m>(
 
 /// The first node of a running copy whose [`FIELD_WORKFLOW`] field names a workflow the
 /// profile does not have: `execution.start` refuses it, the node could never run.
-pub fn missing_workflow<'m>(
+pub fn missing_workflow<M: Deref<Target = Manifest>>(
     profile: &Profile,
     plan: &Workflow,
-    manifest_of: impl Fn(&str) -> Option<&'m Manifest>,
+    manifest_of: impl Fn(&str) -> Option<M>,
 ) -> Option<String> {
     plan.nodes.iter().find_map(|node| {
         field_findings(profile, node, &manifest_of)
@@ -140,10 +141,10 @@ pub fn missing_workflow<'m>(
 
 const FIELD_WORKFLOW_MISSING: &str = "field.workflow_missing";
 
-fn field_findings<'m>(
+fn field_findings<M: Deref<Target = Manifest>>(
     profile: &Profile,
     node: &Node,
-    manifest_of: &impl Fn(&str) -> Option<&'m Manifest>,
+    manifest_of: &impl Fn(&str) -> Option<M>,
 ) -> Vec<(Severity, &'static str, String)> {
     let mut found = Vec::new();
     let Some(manifest) = node.module_id.as_deref().and_then(manifest_of) else {

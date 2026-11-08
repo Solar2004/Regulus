@@ -124,7 +124,8 @@ export function moduleStatus(module: ModuleDefinition): ModuleStatus {
     case "active": return { kind: "active", since: state.since };
     case "idle": return state.last_used === null || state.last_used === undefined ? { kind: "unused" } : { kind: "idle", lastUsed: state.last_used };
     case "disabled": return { kind: "disabled", missing: state.missing };
-    case "broken": return { kind: "broken", reason: state.reason };
+    case "broken":
+    case "blocked": return { kind: "broken", reason: state.reason };
     case "incompatible": return { kind: "incompatible", requires: state.requires, have: state.have };
     default: return { kind: "broken", reason: `unknown state \`${(state as { status: string }).status}\`` };
   }

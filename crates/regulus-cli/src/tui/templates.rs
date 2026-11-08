@@ -34,7 +34,11 @@ impl RequireState {
 pub fn require_state(require: &TemplateRequire, modules: &[ModuleSummary]) -> RequireState {
     match find_module(modules, &require.module).map(|m| &m.state) {
         None => RequireState::Missing,
-        Some(ModuleState::Broken { .. } | ModuleState::Incompatible { .. }) => RequireState::Broken,
+        Some(
+            ModuleState::Broken { .. }
+            | ModuleState::Incompatible { .. }
+            | ModuleState::Blocked { .. },
+        ) => RequireState::Broken,
         Some(_) => RequireState::Installed,
     }
 }

@@ -27,6 +27,8 @@ const DEFAULT_TEMPLATES: &str = ".regulus/templates";
 /// The table and key of `config.toml` that list the open project folders.
 const CONFIG_TABLE: &str = "projects";
 const CONFIG_PATHS: &str = "paths";
+/// The key of `[projects]` that lists the folders whose local modules may run.
+const CONFIG_TRUSTED: &str = "trusted";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProjectError {
@@ -70,16 +72,58 @@ pub struct ModulesTable {
     pub disable: Vec<String>,
     /// If present, only these modules run in this project.
     pub enable: Option<Vec<String>>,
-    /// Modules of this project only, run out of process. Kept, not loaded yet.
+    /// Modules of this project only, run out of process (docs/03-modules.md §6).
     pub local: Vec<LocalModule>,
     pub extra: toml::Table,
 }
 
+/// One `[[modules.local]]`: a module of this project that the core runs as a process and
+/// lists as `<project>/<id>`.
 #[derive(Debug, Clone, Default)]
 pub struct LocalModule {
-    pub manifest: Option<PathBuf>,
+    /// One plain name; the module is `<project>/<id>@<version>`.
+    pub id: Option<String>,
+    /// The program and its arguments. A program with a `/` is relative to the project.
     pub command: Vec<String>,
+    /// Where it runs, relative to the project; the project's folder by default.
+    pub cwd: Option<PathBuf>,
+    /// Added to the environment it inherits from the core.
+    pub env: Vec<(String, String)>,
+    /// Its version; what its manifest says by default.
+    pub version: Option<String>,
+    /// A manifest file, relative to the project, read instead of asking the process.
+    pub manifest: Option<PathBuf>,
     pub extra: toml::Table,
+}
+
+impl LocalModule {
+    /// Why the core cannot run it, if it cannot: no id, an id that is not one plain name,
+    /// or no command.
+    pub fn unusable(&self) -> Option<String> {
+        let Some(id) = &self.id else {
+            return Some("has no `id`".into());
+        };
+        if crate::templates::file_name(id).is_err() || id.contains('@') {
+            return Some(format!(
+                "id `{id}` must be one plain name, without `/`, `\\`, `@` or a leading `.`"
+            ));
+        }
+        if self.command.first().is_none_or(String::is_empty) {
+            return Some(format!("`{id}` has no `command`"));
+        }
+        let inside = |path: &PathBuf| {
+            path.components()
+                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        };
+        if let Some(cwd) = self.cwd.as_ref().filter(|cwd| !inside(cwd)) {
+            return Some(format!(
+                "`{id}` has `cwd = {}`, which is not inside the project (use a relative path \
+                 without `..`)",
+                cwd.display()
+            ));
+        }
+        None
+    }
 }
 
 /// Reading `regulus.toml`: what was understood, the file as it is, the keys it did not
@@ -211,11 +255,28 @@ fn parse(text: &str) -> Result<Parsed, String> {
             at: &at,
             problems: &mut problems,
         };
-        local.push(LocalModule {
-            manifest: t.text(&mut entry, "manifest").map(PathBuf::from),
+        let env = t
+            .take(&mut entry, "env", "a table of text", |v| match v {
+                toml::Value::Table(table) => table
+                    .into_iter()
+                    .map(|(k, v)| match v {
+                        toml::Value::String(s) => Some((k, s)),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>(),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let module = LocalModule {
+            id: t.text(&mut entry, "id"),
             command: t.list(&mut entry, "command").unwrap_or_default(),
+            cwd: t.text(&mut entry, "cwd").map(PathBuf::from),
+            env,
+            version: t.text(&mut entry, "version"),
+            manifest: t.text(&mut entry, "manifest").map(PathBuf::from),
             extra: entry,
-        });
+        };
+        local.push(module);
     }
     let file = ProjectFile {
         project: project_table,
@@ -235,12 +296,12 @@ fn parse(text: &str) -> Result<Parsed, String> {
     for (i, local) in file.modules.local.iter().enumerate() {
         unknown(&mut warnings, &format!("modules.local[{i}]."), &local.extra);
     }
-    if !file.modules.local.is_empty() {
-        warnings.push(format!(
-            "{PROJECT_FILE}: local modules are not supported yet; {} [[modules.local]] \
-             kept, not loaded",
-            file.modules.local.len()
-        ));
+    for (i, local) in file.modules.local.iter().enumerate() {
+        if let Some(why) = local.unusable() {
+            warnings.push(format!(
+                "{PROJECT_FILE}: modules.local[{i}] {why}; not loaded"
+            ));
+        }
     }
     Ok(Parsed {
         file,
@@ -753,9 +814,18 @@ fn paths_of<'a>(
     table: &'a mut toml::Table,
     path: &Path,
 ) -> Result<&'a mut Vec<toml::Value>, ProjectError> {
+    list_of(table, path, CONFIG_PATHS)
+}
+
+/// `[projects] <key>` of a `config.toml` read as a table, created empty if missing.
+fn list_of<'a>(
+    table: &'a mut toml::Table,
+    path: &Path,
+    key: &str,
+) -> Result<&'a mut Vec<toml::Value>, ProjectError> {
     let wrong = || {
         ProjectError::Io(format!(
-            "{}: `{CONFIG_TABLE}.{CONFIG_PATHS}` is not a list of paths; fix it by hand",
+            "{}: `{CONFIG_TABLE}.{key}` is not a list of paths; fix it by hand",
             path.display()
         ))
     };
@@ -765,7 +835,7 @@ fn paths_of<'a>(
         .as_table_mut()
         .ok_or_else(wrong)?;
     projects
-        .entry(CONFIG_PATHS)
+        .entry(key)
         .or_insert_with(|| toml::Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(wrong)
@@ -802,6 +872,32 @@ pub fn forget(path: &Path, home: &Path, root: &Path) -> Result<(), ProjectError>
     paths.retain(|entry| !same_folder(home, entry, root));
     if paths.len() == before {
         return Ok(());
+    }
+    write_config(path, &table)
+}
+
+/// Whether `[projects] trusted` of the `config.toml` at `path` names `root`: only then
+/// may its local modules run. A file that cannot be read trusts nothing.
+pub fn is_trusted(path: &Path, home: &Path, root: &Path) -> bool {
+    read_config(path).is_ok_and(|table| {
+        table
+            .get(CONFIG_TABLE)
+            .and_then(|t| t.get(CONFIG_TRUSTED))
+            .and_then(toml::Value::as_array)
+            .is_some_and(|list| list.iter().any(|entry| same_folder(home, entry, root)))
+    })
+}
+
+/// Adds `root` to `[projects] trusted` (or, with `trusted = false`, takes it out). Only that
+/// key changes, as with `remember`.
+pub fn trust(path: &Path, home: &Path, root: &Path, trusted: bool) -> Result<(), ProjectError> {
+    let mut table = read_config(path)?;
+    let list = list_of(&mut table, path, CONFIG_TRUSTED)?;
+    let there = list.iter().any(|entry| same_folder(home, entry, root));
+    match (trusted, there) {
+        (true, false) => list.push(toml::Value::String(root.display().to_string())),
+        (false, true) => list.retain(|entry| !same_folder(home, entry, root)),
+        _ => return Ok(()),
     }
     write_config(path, &table)
 }
@@ -874,7 +970,10 @@ x = 1
         ] {
             assert!(all.contains(key), "{key} in {all}");
         }
-        assert!(all.contains("local modules are not supported yet"), "{all}");
+        assert!(
+            all.contains("modules.local[0] has no `id`; not loaded"),
+            "{all}"
+        );
         assert_eq!(project.file.extra["color"].as_str(), Some("blue"));
         assert_eq!(project.file.project.extra["foo"].as_str(), Some("bar"));
         let details = project.details(project.warnings.clone());

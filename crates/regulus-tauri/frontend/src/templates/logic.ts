@@ -34,7 +34,8 @@ export type RequireState = "installed" | "missing" | "broken";
 export function requireState(require: TemplateRequire, modules: ModuleSummary[]): RequireState {
   const module = findModule(modules, require.module);
   if (!module) return "missing";
-  return module.state?.status === "broken" || module.state?.status === "incompatible" ? "broken" : "installed";
+  const status = module.state?.status;
+  return status === "broken" || status === "incompatible" || status === "blocked" ? "broken" : "installed";
 }
 
 export function canApply(template: TemplateSummary, values: FormValues): boolean {

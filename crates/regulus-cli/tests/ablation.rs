@@ -122,3 +122,118 @@ fn a_project_that_vetoes_a_removed_module_leaves_the_rest_working() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The ids of the processes whose environment has `<key>=<value>`.
+fn marked(key: &str, value: &str) -> usize {
+    let wanted = format!("{key}={value}");
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            std::fs::read(entry.path().join("environ"))
+                .is_ok_and(|env| env.split(|b| *b == 0).any(|var| var == wanted.as_bytes()))
+        })
+        .count()
+}
+
+/// The local-module row (docs/03-modules.md §6): a project's `[[modules.local]]` is one
+/// more module. Removing any linked one leaves it working, and removing it (`--without
+/// <project>/<id>`) leaves the rest working and starts no process.
+#[test]
+fn a_local_module_is_removable_and_survives_any_removal() {
+    use regulus_core::projects::{Project, Projects};
+    use regulus_core::service::ProjectHome;
+    use regulus_core::{Core, ProfileStore};
+    use regulus_proto::{method, ModuleSummary};
+
+    const LOCAL: &str = "demo/echo";
+    const MARK: &str = "REGULUS_ABLATION_MARK";
+    let python = std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !python {
+        eprintln!("skipped: python3 is not available to run the echo example");
+        return;
+    }
+    let echo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/local-modules/echo/echo.py")
+        .canonicalize()
+        .unwrap();
+    let mark = format!("ablation-{}", std::process::id());
+    let root = std::env::temp_dir().join(format!("regulus-ablation-local-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let folder = root.join("demo");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("regulus.toml"),
+        format!(
+            "[[modules.local]]\nid = \"echo\"\ncommand = [\"python3\", {:?}]\n\
+             env = {{ {MARK} = {mark:?} }}\n",
+            echo.display().to_string()
+        ),
+    )
+    .unwrap();
+    let folder = folder.canonicalize().unwrap();
+    std::fs::write(
+        root.join("config.toml"),
+        format!(
+            "[projects]\ntrusted = [{:?}]\n",
+            folder.display().to_string()
+        ),
+    )
+    .unwrap();
+    let mut removals = ids();
+    removals.push(LOCAL.to_string());
+    let result = std::panic::catch_unwind(|| {
+        for removed in removals {
+            let core = Core::build(
+                installed(),
+                std::slice::from_ref(&removed),
+                ProfileStore::default(),
+            );
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut projects = Projects::default();
+                projects.insert(Project::load(&folder).unwrap()).unwrap();
+                core.set_projects(
+                    projects,
+                    ProjectHome {
+                        config: root.join("config.toml"),
+                        home: root.clone(),
+                    },
+                );
+                core.start_local_modules();
+                let modules: Vec<ModuleSummary> = serde_json::from_value(
+                    core.dispatch(method::MODULE_LIST, serde_json::Value::Null)
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(modules.len(), ids().len(), "without {removed}");
+                for module in &modules {
+                    assert!(
+                        module.state.is_usable(),
+                        "without {removed}: {} is {:?}",
+                        module.id,
+                        module.state
+                    );
+                }
+                let local = removed != LOCAL;
+                assert_eq!(
+                    modules.iter().any(|m| m.id.starts_with(LOCAL)),
+                    local,
+                    "without {removed}"
+                );
+                assert_eq!(marked(MARK, &mark), usize::from(local), "without {removed}");
+            }));
+            core.shutdown();
+            if let Err(panic) = checked {
+                std::panic::resume_unwind(panic);
+            }
+        }
+    });
+    let _ = std::fs::remove_dir_all(&root);
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
