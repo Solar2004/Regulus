@@ -3,8 +3,11 @@
 //! action in it has a command (`run`, `stop`, `ps`, `agent prompt`, `msg send`/`log`/`who`).
 
 pub mod app;
+pub mod catalog;
 pub mod core;
+pub mod document;
 pub mod intro;
+pub mod keys;
 pub mod palette;
 pub mod view;
 
