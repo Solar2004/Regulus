@@ -264,12 +264,6 @@ fn check_workflow(
             );
             report.push(Severity::Error, "node.reserved_id", message, id, None);
         }
-        if node.is_box() {
-            for port in node.ports.iter().filter(|p| p.kind == WireKind::Uses) {
-                let message = uses_across(&port.id);
-                report.push(Severity::Error, "workflow.port_uses", message, id, None);
-            }
-        }
         if let Some(inner) = node
             .internal_workflow_id
             .as_deref()
@@ -300,15 +294,6 @@ fn check_workflow(
                 Severity::Error,
                 "workflow.port_duplicate",
                 message,
-                None,
-                None,
-            );
-        }
-        if port.kind == WireKind::Uses {
-            report.push(
-                Severity::Error,
-                "workflow.port_uses",
-                uses_across(&port.id),
                 None,
                 None,
             );
@@ -386,9 +371,30 @@ fn check_workflow(
                 wire_id,
             );
         }
+        // Several services behind a boundary input cannot reach a consumer that takes
+        // one: the running copy would wire them all into it.
+        if wire.kind == WireKind::Uses
+            && wire.from.node_id == WORKFLOW_SELF
+            && from.cardinality == Cardinality::Many
+            && to.cardinality == Cardinality::One
+            && to_dir == Direction::Input
+        {
+            let message = format!(
+                "workflow input `{}` takes many wires, but `{}.{}` accepts one",
+                wire.from.port_id, wire.to.node_id, wire.to.port_id
+            );
+            report.push(
+                Severity::Error,
+                "wire.boundary_cardinality",
+                message,
+                None,
+                wire_id,
+            );
+        }
     }
 
-    // Inside, the workflow's outputs take wires like inputs do.
+    // Inside, the workflow's outputs take wires like inputs do. A "uses" output hands out
+    // one service, so it takes one wire whatever its cardinality.
     for port in workflow
         .ports
         .iter()
@@ -398,7 +404,7 @@ fn check_workflow(
             .get(&(WORKFLOW_SELF, port.id.as_str()))
             .copied()
             .unwrap_or(0);
-        if count > 1 && port.cardinality == Cardinality::One {
+        if count > 1 && (port.cardinality == Cardinality::One || port.kind == WireKind::Uses) {
             let message = format!(
                 "workflow output `{}` accepts one wire and has {count}",
                 port.id
@@ -440,22 +446,6 @@ fn check_workflow(
                 );
             }
         }
-    }
-}
-
-/// Why a "uses" port on a workflow or a box is refused: nothing would serve it.
-fn uses_across(port: &str) -> String {
-    format!(
-        "`{port}` is a \"uses\" port: only \"then\" values cross a workflow's boundary for \
-         now, so nothing would serve it"
-    )
-}
-
-/// The first "uses" port among the ports of a boundary, as an error.
-fn refuse_uses(ports: &[Port], whose: &str) -> Result<(), String> {
-    match ports.iter().find(|p| p.kind == WireKind::Uses) {
-        None => Ok(()),
-        Some(port) => Err(format!("{whose}: {}", uses_across(&port.id))),
     }
 }
 
@@ -556,6 +546,11 @@ fn embeds<'a>(
 /// ports of its workflow, and that workflow's nodes and wires join it under the box's id
 /// (`box/node`), as deep as boxes go. Inner wires to `self` end on the box node; the top
 /// workflow's own `self` stays as it is. A box whose workflow is missing stays empty.
+///
+/// "Uses" wires do not stop at a box: each one that ends in a real input is joined with
+/// what feeds the box port it starts from, through as many boxes as there are, into one
+/// wire between the real ends (`collapse_uses`). "Then" wires keep the box ports: the bus
+/// passes values across them.
 pub fn flatten(profile: &Profile, workflow: &Workflow) -> Result<Workflow, String> {
     let mut plan = Workflow {
         nodes: Vec::with_capacity(workflow.nodes.len()),
@@ -564,6 +559,7 @@ pub fn flatten(profile: &Profile, workflow: &Workflow) -> Result<Workflow, Strin
     };
     let mut path = vec![workflow.id.as_str()];
     inline(profile, workflow, None, &mut path, &mut plan)?;
+    collapse_uses(&mut plan);
     // An id given twice in the copy is ambiguous: lookups find the first and the other
     // would start twice or take its events. Inlining can make one (`a/b` next to box `a`
     // with node `b`), and so can a plain duplicate.
@@ -589,7 +585,6 @@ fn inline<'a>(
         None => id.to_string(),
         Some(prefix) => format!("{prefix}{BOX_SEPARATOR}{id}"),
     };
-    refuse_uses(&workflow.ports, &format!("workflow `{}`", workflow.id))?;
     for wire in &workflow.wires {
         // `/` is how the copy tells which box a wire belongs to.
         if wire.id.contains(BOX_SEPARATOR) {
@@ -640,7 +635,6 @@ fn inline<'a>(
         if placed.ports.is_empty() {
             placed.ports = inner.ports.clone();
         }
-        refuse_uses(&placed.ports, &format!("box `{}`", placed.id))?;
         let id = placed.id.clone();
         plan.nodes.push(placed);
         path.push(&inner.id);
@@ -648,6 +642,100 @@ fn inline<'a>(
         path.pop();
     }
     Ok(())
+}
+
+/// The box whose wire this is in a running copy: what comes before the last `/` of its
+/// id, `None` for a wire of the top workflow.
+fn wire_owner(wire: &Wire) -> Option<&str> {
+    wire.id.rsplit_once(BOX_SEPARATOR).map(|(owner, _)| owner)
+}
+
+/// Whether a "uses" wire of a running copy touches a box port at either end.
+fn touches_box(plan: &Workflow, wire: &Wire) -> bool {
+    [&wire.from, &wire.to]
+        .into_iter()
+        .any(|end| plan.node(&end.node_id).is_some_and(Node::is_box))
+}
+
+/// Replaces every "uses" wire that touches a box port: one that ends in a real input (a
+/// node's, or an output of the top workflow) becomes one wire per real output that feeds
+/// it through the boxes, with the id of that last wire (`#<n>` added when there are
+/// several); the rest go. An input whose box port nothing feeds is left unwired. The top
+/// workflow's own `self` ports stay as they are: they are bound from outside.
+fn collapse_uses(plan: &mut Workflow) {
+    let mut wires = Vec::with_capacity(plan.wires.len());
+    for wire in &plan.wires {
+        if wire.kind != WireKind::Uses || !touches_box(plan, wire) {
+            wires.push(wire.clone());
+            continue;
+        }
+        let consumer = plan.node(&wire.to.node_id);
+        if consumer.is_some_and(Node::is_box) {
+            continue;
+        }
+        let mut seen = HashSet::from([wire.id.as_str()]);
+        let sources = uses_sources(plan, &wire.from, wire_owner(wire), &mut seen);
+        let several = sources.len() > 1;
+        for (n, from) in sources.into_iter().enumerate() {
+            wires.push(Wire {
+                id: if several {
+                    format!("{}#{}", wire.id, n + 1)
+                } else {
+                    wire.id.clone()
+                },
+                kind: WireKind::Uses,
+                from,
+                to: wire.to.clone(),
+            });
+        }
+    }
+    plan.wires = wires;
+}
+
+/// The real outputs behind `from`, the start of a "uses" wire of the box `owner` (or of
+/// the top workflow): `from` itself when it is a node's or the top workflow's own input,
+/// else what is wired into that box port on its other side, followed the same way. `seen`
+/// keeps a loop of pass-through wires from going round forever.
+fn uses_sources<'a>(
+    plan: &'a Workflow,
+    from: &PortRef,
+    owner: Option<&str>,
+    seen: &mut HashSet<&'a str>,
+) -> Vec<PortRef> {
+    if from.node_id == WORKFLOW_SELF {
+        return vec![from.clone()];
+    }
+    let Some(node) = plan.node(&from.node_id) else {
+        return Vec::new();
+    };
+    if !node.is_box() {
+        return vec![from.clone()];
+    }
+    let Some(port) = node.port(&from.port_id) else {
+        return Vec::new();
+    };
+    // From inside, a box input feeds: what feeds it comes from outside. From outside, a
+    // box output gives: what gives it comes from inside.
+    let inside = owner == Some(node.id.as_str());
+    let wanted = if inside {
+        Direction::Input
+    } else {
+        Direction::Output
+    };
+    if port.direction != wanted {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for feeder in plan.wires.iter().filter(|w| {
+        w.kind == WireKind::Uses
+            && w.to == *from
+            && (wire_owner(w) == Some(node.id.as_str())) != inside
+    }) {
+        if seen.insert(feeder.id.as_str()) {
+            found.extend(uses_sources(plan, &feeder.from, wire_owner(feeder), seen));
+        }
+    }
+    found
 }
 
 /// The boundary port at `end` of a running copy: a port of the workflow itself (`self`)

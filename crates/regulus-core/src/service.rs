@@ -1274,9 +1274,9 @@ impl Core {
     /// start fails the execution and stops the nodes already started.
     ///
     /// It refuses only what would make the running copy ambiguous or endless, which
-    /// `flatten` rejects: an id twice, a reserved id, a workflow inside itself, a "uses"
-    /// port on a boundary. Anything else `profile.check` reports still runs, as it always
-    /// did: a wire that does not fit fails visibly on the bus and the rest keeps working.
+    /// `flatten` rejects: an id twice, a reserved id, a workflow inside itself. Anything
+    /// else `profile.check` reports still runs, as it always did: a wire that does not fit
+    /// fails visibly on the bus and the rest keeps working.
     fn start(&self, params: ExecutionStartParams) -> Result<Execution, RpcError> {
         // The profile is read and the execution registered under the `executions` lock
         // (taken before `profiles`, as `profile.delete` does), so a delete either sees the
