@@ -177,6 +177,87 @@ test("agent.prompt answers an agent node of a live execution and refuses the res
   assert.equal(session(request("agent.prompt", { execution_id: "exec-9", node_id: "agent", text: "ping" })).error.code, -32602);
 });
 
+test("agent.send queues a turn; agent.history streams it step by step with one cursor; a decider's question waits in human.list", () => {
+  const session = negotiatedSession();
+  session(request("template.apply", { template: "chat", vars: {} }));
+  const { id } = session(request("execution.start", { profile_id: "chat" })).result;
+  const at = { execution_id: id, node_id: "agent" };
+  assert.deepEqual(session(request("agent.send", { ...at, text: "hello" })).result, { turn: "t-1" });
+  assert.deepEqual(session(request("agent.send", { ...at, text: "again" })).result, { turn: "t-2" });
+  assert.equal(session(request("agent.send", { execution_id: id, node_id: "room", text: "x" })).error.code, -32602);
+  assert.equal(session(request("agent.send", { execution_id: id, node_id: "lonely", text: "x" })).error.code, -32602);
+  // Each read moves the turn one step; the cursor pages entries and activity together.
+  let cursor = 0;
+  const seen = [];
+  const read = () => {
+    const page = session(request("agent.history", { ...at, since: cursor })).result;
+    for (const item of [...page.entries, ...page.activity]) { assert.ok(item.seq > cursor); seen.push(item); }
+    cursor = page.next;
+    return page;
+  };
+  assert.deepEqual(read().session, { engine_session_id: `mock-${id}-agent`, native_resume: false, state: "busy" });
+  for (let step = 0; step < 8; step++) read();
+  const kinds = () => seen.filter((item) => item.event).map((item) => item.event.kind);
+  assert.deepEqual(kinds(), ["turn_started", "state", "thought", "text", "tool_call", "tool_update", "plan", "permission_request"]);
+  assert.equal(seen.find((item) => item.event?.kind === "tool_call").event.tool_kind, "read");
+  // The permission request waits for a person: the turn does not move.
+  const [decision] = session(request("human.list", { execution_id: id })).result;
+  assert.equal(decision.kind, "decision");
+  assert.equal(decision.node_id, "decider");
+  assert.deepEqual(decision.value.context, { tool: "edit", title: "Edit notes.md", execution_id: id, node_id: "agent", request_id: "t-1-edit" });
+  assert.deepEqual(decision.form.properties.option.enum, ["allow", "reject"]);
+  assert.equal(read().entries.length + read().activity.length, 0);
+  assert.equal(session(request("human.answer", { id: decision.id, decision: "approve", fields: { option: "maybe" } })).error.code, -32602);
+  assert.equal(session(request("human.answer", { id: decision.id, decision: "approve", fields: { option: "allow" } })).result.port, "decisions");
+  assert.deepEqual(session(request("human.list", {})).result, []);
+  for (let step = 0; step < 2; step++) read();
+  assert.deepEqual(kinds().slice(8), ["permission_resolved", "text", "turn_ended", "state"]);
+  assert.equal(seen.find((item) => item.event?.kind === "permission_resolved").event.option, "allow");
+  assert.deepEqual(seen.filter((item) => item.role).map((item) => [item.role, item.text, item.turn]), [["user", "hello", "t-1"], ["agent", "(mock) You said: hello", "t-1"]]);
+  // A page read again from 0 gives the same records: nothing is lost or repeated.
+  const all = session(request("agent.history", { ...at, since: 0, limit: 5 })).result;
+  assert.equal(all.entries.length + all.activity.length, 5);
+  // The next turn starts; cancelling it cancels the waiting permission and ends it as cancelled.
+  for (let step = 0; step < 7; step++) read();
+  assert.equal(session(request("human.list", {})).result.length, 1);
+  assert.equal(session(request("agent.cancel", at)).result, null);
+  assert.deepEqual(session(request("human.list", {})).result, []);
+  const last = read();
+  // The cancelled turn's answer is what it had written.
+  assert.deepEqual(last.entries.map((entry) => [entry.role, entry.text, entry.turn]), [["agent", "(mock) You said: ", "t-2"]]);
+  const tail = [...seen].sort((a, b) => a.seq - b.seq).slice(-4).map((item) => item.event?.kind ?? item.role);
+  assert.deepEqual(tail, ["permission_resolved", "turn_ended", "agent", "state"]);
+  assert.equal(seen.find((item) => item.event?.kind === "turn_ended" && item.turn === "t-2").event.stop_reason, "cancelled");
+  // Stopped, the history still reads, as `stopped`; send and cancel do not.
+  session(request("execution.stop", { id }));
+  assert.equal(session(request("agent.history", at)).result.session.state, "stopped");
+  assert.equal(session(request("agent.send", { ...at, text: "x" })).error.code, -32602);
+  assert.equal(session(request("agent.cancel", at)).error.code, -32602);
+});
+
+test("workflow.send into an agent's prompt is its turn: activity and the reply come on the bus as event.list reads it", () => {
+  const session = negotiatedSession();
+  session(request("template.apply", { template: "chat", vars: {} }));
+  const { id } = session(request("execution.start", { profile_id: "chat" })).result;
+  session(request("workflow.send", { execution_id: id, port: "go", value: "hi" }));
+  let cursor = 0;
+  const events = [];
+  for (let read = 0; read < 12; read++) {
+    const page = session(request("event.list", { execution_id: id, since: cursor })).result;
+    events.push(...page.events);
+    cursor = page.next;
+    const [decision] = session(request("human.list", { execution_id: id })).result;
+    if (decision) session(request("human.answer", { id: decision.id, decision: "reject" }));
+  }
+  const emitted = events.filter((event) => event.kind === "emitted").map((event) => `${event.from.node_id}.${event.from.port_id}`);
+  assert.equal(emitted[0], "self.go");
+  assert.ok(emitted.includes("agent.activity"));
+  assert.deepEqual(emitted.slice(-2), ["agent.reply", "self.done"]);
+  assert.equal(events.at(-1).value, "(mock) You said: hi");
+  const resolved = events.find((event) => event.capability === "agent.event@1" && event.value.kind === "permission_resolved");
+  assert.equal(resolved.value.option, "reject");
+});
+
 test("comm.history, comm.participants and comm.send serve a channel node", () => {
   const session = negotiatedSession();
   session(request("template.apply", { template: "chat", vars: {} }));
@@ -199,6 +280,9 @@ test("human methods list nothing pending; module methods without their module ar
   assert.equal(session(request("human.answer", { id: "h-1", decision: "approve" })).error.code, -32602);
   state.modules = state.modules.filter((module) => !module.id.startsWith("regulus/agent@"));
   assert.equal(session(request("agent.prompt", { execution_id: "exec-1", node_id: "agent", text: "x" })).error.code, -32601);
+  for (const method of ["agent.send", "agent.history", "agent.cancel"]) {
+    assert.equal(session(request(method, { execution_id: "exec-1", node_id: "agent", text: "x" })).error.code, -32601);
+  }
 });
 
 // A profile with a greeter wired "then" to a writer, plus an agent box whose required

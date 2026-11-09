@@ -8,9 +8,12 @@ const baseId = (id) => id.split("@")[0];
 const failure = (code, message) => ({ error: [code, message] });
 const ok = (result) => ({ result });
 
-/** What `createState` adds: three modules, templates, the bus and the channels. */
+/** What `createState` adds: three modules, templates, the bus, the channels, agent conversations and decisions. */
 export function operateState() {
-  return { manifests: structuredClone(extra.manifests), templates: structuredClone(extra.templates), events: [], seq: 0, runs: 0, messages: new Map() };
+  return {
+    manifests: structuredClone(extra.manifests), templates: structuredClone(extra.templates), events: [], seq: 0, runs: 0, messages: new Map(),
+    conversations: new Map(), decisions: [], decided: new Map(), decisionIds: 0,
+  };
 }
 
 const hasModule = (state, id) => state.modules.some((module) => baseId(module.id) === baseId(id));
@@ -35,6 +38,142 @@ function liveNode(state, params) {
   const node = workflowOf(state, execution)?.nodes.find((item) => item.id === params.node_id);
   if (!node) return failure(-32602, `no node \`${params.node_id}\` in \`${execution.id}\``);
   if ((execution.disabled ?? []).some((item) => item.node_id === node.id)) return failure(-32602, `node \`${node.id}\` is disabled`);
+  return { execution, node };
+}
+
+// ── Agent conversations (module `agent`, docs/12-agents.md §5) ──────────────────────────
+// One per workflow node, like the box's `conv/<workflow>/<node>`: the next execution of the
+// same node goes on in it. A turn is scripted: every `agent.history` of the node, and every
+// `event.list` of its execution, moves it one step (thought, text, a tool call and its
+// update, a plan, a permission request when a decider is wired, more text, the end).
+
+const conversationKey = (execution, node) => `${execution.profile_id}/${execution.workflow_id}/${node.id}`;
+function conversationOf(state, execution, node) {
+  const key = conversationKey(execution, node);
+  if (!state.conversations.has(key)) state.conversations.set(key, { seq: 0, turns: 0, engineSeq: 0, engineTurn: 0, entries: [], activity: [], queue: [], current: null });
+  return state.conversations.get(key);
+}
+const outputOf = (node, id) => (node.ports ?? []).find((port) => port.direction === "output" && port.id === id);
+
+function addEntry(conversation, role, text, turn, execution) {
+  conversation.entries.push({ seq: ++conversation.seq, at: Date.now(), role, text, ...(turn ? { turn } : {}), execution_id: execution.id });
+}
+/** A session event: into the conversation and, if the node has `activity`, onto the bus as `agent.event@1`. */
+function addActivity(state, execution, node, conversation, turn, fields) {
+  const event = { seq: ++conversation.engineSeq, at: Date.now(), turn: conversation.engineTurn, ...fields };
+  conversation.activity.push({ seq: ++conversation.seq, at: event.at, ...(turn ? { turn } : {}), event });
+  const port = outputOf(node, "activity");
+  if (port) emit(state, execution, { node_id: node.id, port_id: port.id }, port.capability, event, 1);
+}
+/** The decider wired to the node's `decisions`, if its module is there. */
+function deciderOf(state, execution, node) {
+  if (!hasModule(state, "regulus/human")) return null;
+  const wire = workflowOf(state, execution)?.wires.find((item) => item.to.node_id === node.id && item.to.port_id === "decisions");
+  return wire ? wire.from.node_id : null;
+}
+/** The node's reply: on `reply`, then on each workflow output `reply` is wired to. */
+function reply(state, execution, node, text) {
+  const port = outputOf(node, "reply");
+  if (!port) return;
+  emit(state, execution, { node_id: node.id, port_id: port.id }, port.capability, text, 1);
+  const workflow = workflowOf(state, execution);
+  for (const wire of workflow.wires.filter((item) => item.from.node_id === node.id && item.from.port_id === port.id && item.to.node_id === "self")) {
+    const out = (workflow.ports ?? []).find((item) => item.id === wire.to.port_id && item.direction === "output");
+    if (out) emit(state, execution, { node_id: "self", port_id: out.id }, out.capability, text, 2);
+  }
+}
+const say = (text) => `(mock) You said: ${text}`;
+const PERMISSION_OPTIONS = [{ id: "allow", kind: "allow_once", name: "Allow" }, { id: "reject", kind: "reject_once", name: "Reject" }];
+
+function endTurn(state, execution, node, conversation, stopReason) {
+  const { turn, text, written } = conversation.current;
+  addActivity(state, execution, node, conversation, turn, { kind: "turn_ended", stop_reason: stopReason });
+  const answer = stopReason === "end_turn" ? say(text) : written;
+  addEntry(conversation, "agent", answer, turn, execution);
+  addActivity(state, execution, node, conversation, turn, { kind: "state", state: "idle" });
+  conversation.current = null;
+  if (stopReason === "end_turn") reply(state, execution, node, answer);
+}
+
+/** One step of the node's turn in flight, or the next queued turn starting. */
+function advance(state, execution, node, conversation) {
+  if (conversation.current && conversation.current.execution_id !== execution.id) { conversation.current = null; conversation.queue = []; }
+  const current = conversation.current;
+  if (!current) {
+    const next = conversation.queue.shift();
+    if (!next) return;
+    conversation.current = { ...next, execution_id: execution.id, step: 0, written: "" };
+    conversation.engineTurn += 1;
+    addEntry(conversation, "user", next.text, next.turn, execution);
+    addActivity(state, execution, node, conversation, next.turn, { kind: "turn_started" });
+    addActivity(state, execution, node, conversation, next.turn, { kind: "state", state: "busy" });
+    return;
+  }
+  const { turn } = current;
+  const activity = (fields) => addActivity(state, execution, node, conversation, turn, fields);
+  const write = (chunk) => { current.written += chunk; activity({ kind: "text", text: chunk }); };
+  if (current.waiting) {
+    if (!state.decided.has(current.waiting)) return;
+    activity({ kind: "permission_resolved", id: current.request, option: state.decided.get(current.waiting) });
+    current.waiting = null;
+  }
+  current.step += 1;
+  switch (current.step) {
+    case 1: return activity({ kind: "thought", text: "(mock) Reading what was asked, then the notes." });
+    case 2: return write("(mock) You said: ");
+    case 3: return activity({ kind: "tool_call", id: `${turn}-read`, title: "Read notes.md", tool_kind: "read", status: "in_progress" });
+    case 4: return activity({ kind: "tool_update", id: `${turn}-read`, status: "completed", content: [{ type: "content", content: { type: "text", text: "# Notes\nNothing urgent." } }] });
+    case 5: return activity({ kind: "plan", entries: [{ content: "Read the notes", status: "completed", priority: "medium" }, { content: "Answer", status: "in_progress", priority: "medium" }] });
+    case 6: {
+      // Like `permissions = ask` with a decider: the request waits in `human.list` as a decision.
+      const decider = deciderOf(state, execution, node);
+      if (!decider) return write(current.text);
+      const request = `${turn}-edit`;
+      activity({ kind: "permission_request", id: request, tool: "edit", title: "Edit notes.md", options: PERMISSION_OPTIONS });
+      const id = `h-mock-${++state.decisionIds}`;
+      state.decisions.push({
+        id, kind: "decision", execution_id: execution.id, node_id: decider,
+        value: { options: PERMISSION_OPTIONS, context: { tool: "edit", title: "Edit notes.md", execution_id: execution.id, node_id: node.id, request_id: request } },
+        prompt: `Agent \`${node.name || node.id}\` asks permission: Edit notes.md`,
+        form: { type: "object", properties: { option: { type: "string", enum: PERMISSION_OPTIONS.map((option) => option.id), description: PERMISSION_OPTIONS.map((option) => `${option.id} (${option.name})`).join(", ") } }, required: ["option"], additionalProperties: false },
+        created_ms: Date.now(),
+      });
+      current.waiting = id;
+      current.request = request;
+      return;
+    }
+    case 7: return current.written.endsWith(current.text) ? undefined : write(current.text);
+    default: return endTurn(state, execution, node, conversation, "end_turn");
+  }
+}
+
+/** Queues `text` as the node's next turn, as the box's `prompt` input and `agent.send` do. */
+function queueTurn(conversation, text) {
+  const turn = `t-${++conversation.turns}`;
+  conversation.queue.push({ turn, text });
+  return turn;
+}
+
+/** Every agent node of the execution moves one step: its turns run while the bus is read. */
+function advanceExecution(state, execution) {
+  if (!LIVE.has(execution.state.status)) return;
+  for (const node of workflowOf(state, execution)?.nodes ?? []) {
+    if (takes(node, "agent.engine") && state.conversations.has(conversationKey(execution, node))) advance(state, execution, node, conversationOf(state, execution, node));
+  }
+}
+
+/** An agent node of an execution the core knows: live for send and cancel, any for history. */
+function agentNode(state, params, { live }) {
+  if (live) {
+    const found = liveNode(state, params);
+    if (found.error) return found;
+    return takes(found.node, "agent.engine") ? found : failure(-32602, `no running agent \`${params.node_id}\` in execution \`${params.execution_id}\``);
+  }
+  const execution = state.executions.find((item) => item.id === params.execution_id);
+  const node = execution && workflowOf(state, execution)?.nodes.find((item) => item.id === params.node_id);
+  if (!node || !takes(node, "agent.engine") || (execution.disabled ?? []).some((item) => item.node_id === node.id)) {
+    return failure(-32602, `no running agent \`${params.node_id}\` in execution \`${params.execution_id}\``);
+  }
   return { execution, node };
 }
 
@@ -168,6 +307,8 @@ export function operateMethod(state, method, params) {
     }
     case "event.list": {
       const since = Number(params.since ?? 0);
+      const followed = params.execution_id && state.executions.find((item) => item.id === params.execution_id);
+      if (followed) advanceExecution(state, followed);
       const matching = state.events.filter((event) => event.seq > since &&
         (!params.execution_id || event.execution_id === params.execution_id) &&
         (!params.project_id || event.project_id === params.project_id));
@@ -181,10 +322,14 @@ export function operateMethod(state, method, params) {
       const port = (workflow?.ports ?? []).find((item) => item.id === params.port && item.direction === "input");
       if (!port) return failure(-32602, `workflow \`${execution.workflow_id}\` has no input port \`${params.port}\``);
       const seq = emit(state, execution, { node_id: "self", port_id: port.id }, port.capability, params.value);
-      for (const wire of workflow.wires.filter((item) => item.from.node_id === "self" && item.from.port_id === port.id)) deliver(state, execution, seq, wire.to);
-      // The canned reply: the value comes back on the workflow's first output.
+      const wires = workflow.wires.filter((item) => item.from.node_id === "self" && item.from.port_id === port.id);
+      for (const wire of wires) deliver(state, execution, seq, wire.to);
+      // A value that reaches an agent's `prompt` is a turn of that agent: the reply comes when it ends.
+      const agents = wires.map((wire) => wire.to.port_id === "prompt" && workflow.nodes.find((node) => node.id === wire.to.node_id && takes(node, "agent.engine"))).filter(Boolean);
+      for (const node of agents) queueTurn(conversationOf(state, execution, node), typeof params.value === "string" ? params.value : JSON.stringify(params.value));
+      // Otherwise the canned reply: the value comes back on the workflow's first output.
       const out = workflow.ports.find((item) => item.direction === "output");
-      if (out) emit(state, execution, { node_id: "self", port_id: out.id }, out.capability, params.value, 1);
+      if (out && !agents.length) emit(state, execution, { node_id: "self", port_id: out.id }, out.capability, params.value, 1);
       return ok({ event: seq });
     }
     case "agent.prompt": {
@@ -193,6 +338,46 @@ export function operateMethod(state, method, params) {
       if (found.error) return found;
       if (!takes(found.node, "agent.engine")) return failure(-32602, `node \`${found.node.id}\` is not an agent`);
       return ok({ text: `(mock) ${params.text}`, stop_reason: "end_turn" });
+    }
+    case "agent.send": {
+      if (!hasModule(state, "regulus/agent")) return null;
+      const found = agentNode(state, params, { live: true });
+      if (found.error) return found;
+      if (typeof params.text !== "string") return failure(-32602, "Invalid params");
+      return ok({ turn: queueTurn(conversationOf(state, found.execution, found.node), params.text) });
+    }
+    case "agent.history": {
+      if (!hasModule(state, "regulus/agent")) return null;
+      const found = agentNode(state, params, { live: false });
+      if (found.error) return found;
+      const live = LIVE.has(found.execution.state.status);
+      const conversation = conversationOf(state, found.execution, found.node);
+      if (live) advance(state, found.execution, found.node, conversation);
+      const since = Number(params.since ?? 0);
+      const seqs = [...conversation.entries, ...conversation.activity].map((item) => item.seq).filter((seq) => seq > since).sort((a, b) => a - b);
+      const shown = params.limit ? seqs.slice(0, params.limit) : seqs;
+      const last = shown.length ? shown[shown.length - 1] : since;
+      const within = (item) => item.seq > since && item.seq <= last;
+      return ok({
+        entries: conversation.entries.filter(within), activity: conversation.activity.filter(within), next: last,
+        session: { engine_session_id: `mock-${found.execution.id}-${found.node.id}`, native_resume: false, state: live ? (conversation.current ? "busy" : "idle") : "stopped" },
+      });
+    }
+    case "agent.cancel": {
+      if (!hasModule(state, "regulus/agent")) return null;
+      const found = agentNode(state, params, { live: true });
+      if (found.error) return found;
+      const conversation = conversationOf(state, found.execution, found.node);
+      const current = conversation.current;
+      if (current && current.execution_id === found.execution.id) {
+        // A cancel cancels the permission request waiting, as ACP asks.
+        if (current.waiting && !state.decided.has(current.waiting)) {
+          state.decisions = state.decisions.filter((item) => item.id !== current.waiting);
+          addActivity(state, found.execution, found.node, conversation, current.turn, { kind: "permission_resolved", id: current.request, option: null });
+        }
+        endTurn(state, found.execution, found.node, conversation, "cancelled");
+      }
+      return ok(null);
     }
     case "comm.history": case "comm.participants": case "comm.send": {
       if (!hasModule(state, "regulus/communication")) return null;
@@ -215,9 +400,24 @@ export function operateMethod(state, method, params) {
       state.messages.set(key, [...messages, message]);
       return ok(message);
     }
-    case "human.list": return hasModule(state, "regulus/human") ? ok([]) : null;
-    case "human.get": case "human.answer":
-      return hasModule(state, "regulus/human") ? failure(-32602, `no pending decision \`${params.id}\``) : null;
+    case "human.list": {
+      if (!hasModule(state, "regulus/human")) return null;
+      return ok(state.decisions.filter((item) => !params.execution_id || item.execution_id === params.execution_id));
+    }
+    case "human.get": case "human.answer": {
+      if (!hasModule(state, "regulus/human")) return null;
+      const pending = state.decisions.find((item) => item.id === params.id);
+      if (!pending) return failure(-32602, `no pending decision \`${params.id}\``);
+      if (method === "human.get") return ok(pending);
+      if (params.decision !== "approve" && params.decision !== "reject") return failure(-32602, "Invalid params");
+      // Only decider questions wait here: `option` names the answer, a rejection takes the reject option.
+      const ids = pending.value.options.map((option) => option.id);
+      const chosen = params.decision === "approve" ? params.fields?.option : pending.value.options.find((option) => option.kind.startsWith("reject"))?.id ?? null;
+      if (params.decision === "approve" && !ids.includes(chosen)) return failure(-32602, `field \`option\` must be one of ${ids.join(", ")}`);
+      state.decisions = state.decisions.filter((item) => item.id !== pending.id);
+      state.decided.set(pending.id, chosen);
+      return ok({ id: pending.id, decision: params.decision, execution_id: pending.execution_id, node_id: pending.node_id, port: "decisions" });
+    }
     default: return null;
   }
 }

@@ -6,7 +6,10 @@
         "name": "Agent",
         "requires_proto": "^1.9",
         "methods": [
-          "agent.prompt"
+          "agent.prompt",
+          "agent.send",
+          "agent.history",
+          "agent.cancel"
         ],
         "workflow_id": null
       },
@@ -22,6 +25,14 @@
               "direction": "input",
               "kind": "uses",
               "required": true
+            },
+            {
+              "id": "decisions",
+              "name": "decisions",
+              "capability": "decision@1",
+              "direction": "input",
+              "kind": "uses",
+              "required": false
             },
             {
               "id": "prompt",
@@ -53,6 +64,14 @@
               "capability": "participant@1",
               "direction": "output",
               "kind": "uses",
+              "required": false
+            },
+            {
+              "id": "activity",
+              "name": "activity",
+              "capability": "agent.event@1",
+              "direction": "output",
+              "kind": "then",
               "required": false
             }
           ],
@@ -119,6 +138,21 @@
               "capability": "text@1",
               "direction": "output",
               "kind": "then",
+              "required": false
+            }
+          ],
+          "field": []
+        },
+        {
+          "type": "decider",
+          "name": "Decider",
+          "port": [
+            {
+              "id": "decisions",
+              "name": "decisions",
+              "capability": "decision@1",
+              "direction": "output",
+              "kind": "uses",
               "required": false
             }
           ],
@@ -347,6 +381,14 @@
                     "required": true
                   },
                   {
+                    "id": "decisions",
+                    "name": "decisions",
+                    "capability": "decision@1",
+                    "direction": "input",
+                    "kind": "uses",
+                    "required": false
+                  },
+                  {
                     "id": "prompt",
                     "name": "prompt",
                     "capability": "text@1",
@@ -368,6 +410,14 @@
                     "capability": "participant@1",
                     "direction": "output",
                     "kind": "uses",
+                    "required": false
+                  },
+                  {
+                    "id": "activity",
+                    "name": "activity",
+                    "capability": "agent.event@1",
+                    "direction": "output",
+                    "kind": "then",
                     "required": false
                   }
                 ],
@@ -442,6 +492,30 @@
                 },
                 "internal_workflow_id": null,
                 "exposed_parameters": []
+              },
+              {
+                "id": "decider",
+                "name": "Decider",
+                "type": "decider",
+                "module_id": "regulus/human@0.1.0",
+                "resource": null,
+                "ports": [
+                  {
+                    "id": "decisions",
+                    "name": "decisions",
+                    "capability": "decision@1",
+                    "direction": "output",
+                    "kind": "uses",
+                    "required": false
+                  }
+                ],
+                "config": {},
+                "position": {
+                  "x": 350,
+                  "y": 260
+                },
+                "internal_workflow_id": null,
+                "exposed_parameters": []
               }
             ],
             "wires": [
@@ -491,6 +565,18 @@
                 "to": {
                   "node_id": "self",
                   "port_id": "done"
+                }
+              },
+              {
+                "id": "decider-agent",
+                "kind": "uses",
+                "from": {
+                  "node_id": "decider",
+                  "port_id": "decisions"
+                },
+                "to": {
+                  "node_id": "agent",
+                  "port_id": "decisions"
                 }
               }
             ],
