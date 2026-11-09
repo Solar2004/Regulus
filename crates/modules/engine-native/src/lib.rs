@@ -1,8 +1,9 @@
 //! The native engine (docs/12-agents.md §8): an `agent.engine@1` that Regulus runs
 //! itself, with no CLI behind it. Each prompt is a loop: ask the model wired into
 //! `model`, run the tool calls it asks for through the `tool@1` nodes wired into `tools`
-//! (directly, `tool.call`, no MCP), give it what they answered, and again, until it
-//! answers without a tool call or the turn runs out of steps.
+//! (directly, `tool.call`, no MCP) and the tool mounts the Agent box hands over
+//! (`StartArgs.tools`, MCP over stdio, see `mcp`), give it what they answered, and again,
+//! until it answers without a tool call or the turn runs out of steps.
 //!
 //! What the loop does is decided by what is wired, not only by its fields: the `hook@1`
 //! nodes in `context` add what the model sees (`session_start`, `prompt`), allow, ask or
@@ -13,6 +14,7 @@
 //! a call that must ask waits as a `permission_request` for `engine.session.decide`.
 
 mod hooks;
+mod mcp;
 mod model;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -112,6 +114,8 @@ struct Settings {
     hook_timeout: Duration,
     events_keep: usize,
     permission_timeout: Duration,
+    mount_start_timeout: Duration,
+    mount_call_timeout: Duration,
 }
 
 impl Settings {
@@ -193,6 +197,12 @@ impl Settings {
             permission_timeout: Duration::from_secs_f64(
                 number("permission_timeout_seconds", 600.0).max(0.0),
             ),
+            mount_start_timeout: Duration::from_millis(
+                count("mount_start_timeout_ms", 30000.0).max(1),
+            ),
+            mount_call_timeout: Duration::from_millis(
+                count("mount_call_timeout_ms", 300000.0).max(1),
+            ),
         })
     }
 }
@@ -269,10 +279,18 @@ impl Events {
     }
 }
 
-/// What wakes a turn that waits: the model's answer, a decision or a cancel.
+/// What wakes a turn that waits: the model's answer, a mounted tool's answer, a
+/// decision or a cancel.
 enum Wake {
     Model(Result<Reply, String>),
-    Decided { id: String, option: Option<String> },
+    Tool {
+        request: u64,
+        answer: Result<Value, String>,
+    },
+    Decided {
+        id: String,
+        option: Option<String>,
+    },
     Cancel,
 }
 
@@ -300,6 +318,8 @@ struct Session {
     caller: String,
     cwd: PathBuf,
     hooks: Vec<Wired>,
+    /// The Agent box's tool mounts that started, in its order.
+    mounts: Vec<Arc<mcp::Server>>,
     /// What `session_start` hooks added, for the whole session.
     session_context: String,
     events: Events,
@@ -321,10 +341,125 @@ enum Verdict {
     Refuse(String),
 }
 
-/// The tools of one turn: each name and the node behind it.
+/// Who answers a tool: a node wired into `tools`, or a mount and the tool's own name there.
+enum Owner {
+    Node(Endpoint),
+    Mount {
+        server: Arc<mcp::Server>,
+        name: String,
+    },
+}
+
+/// The tools of one turn: each name the model sees and who answers it.
 struct Toolbox {
     defs: Vec<ToolDef>,
-    owners: HashMap<String, Endpoint>,
+    owners: HashMap<String, Owner>,
+}
+
+/// A mount's tool under a name already taken: `<mount>__<tool>`, in the characters tool
+/// names may use.
+fn qualified(mount: &str, name: &str) -> String {
+    format!("{mount}__{name}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Lists the tools of every node wired into `tools`, then of every mount. A node's tool
+/// whose name was seen before is left out; a mount's goes as `<mount>__<tool>`, and is
+/// left out only if that is taken too. Each of those, and each list that failed, is a
+/// note.
+fn toolbox(
+    ctx: &ModuleCtx,
+    me: &NodeRef,
+    mounts: &[Arc<mcp::Server>],
+    timeout: Duration,
+) -> (Toolbox, Vec<String>) {
+    let mut toolbox = Toolbox {
+        defs: Vec::new(),
+        owners: HashMap::new(),
+    };
+    let mut notes = Vec::new();
+    let add = |toolbox: &mut Toolbox, name: String, spec: tool::Spec, owner: Owner| {
+        toolbox.defs.push(ToolDef {
+            schema: model::schema(&spec.input),
+            name: name.clone(),
+            description: spec.description,
+        });
+        toolbox.owners.insert(name, owner);
+    };
+    for endpoint in ctx.resolve(me, TOOLS_PORT) {
+        let id = endpoint.node().node_id.clone();
+        let specs = ctx
+            .call(&endpoint, tool::LIST, Value::Null)
+            .map_err(|e| e.to_string())
+            .and_then(|v| serde_json::from_value::<Vec<tool::Spec>>(v).map_err(|e| e.to_string()));
+        let specs = match specs {
+            Ok(specs) => specs,
+            Err(error) => {
+                notes.push(format!("tools of `{id}` left out: {error}"));
+                continue;
+            }
+        };
+        for spec in specs {
+            if toolbox.owners.contains_key(&spec.name) {
+                notes.push(format!(
+                    "two tools are named `{}`: the one of `{id}` is left out",
+                    spec.name
+                ));
+                continue;
+            }
+            add(
+                &mut toolbox,
+                spec.name.clone(),
+                spec,
+                Owner::Node(endpoint.clone()),
+            );
+        }
+    }
+    for server in mounts {
+        let specs = match server.list(timeout) {
+            Ok(specs) => specs,
+            Err(error) => {
+                notes.push(format!(
+                    "tools of the mount `{}` left out: {}",
+                    server.name,
+                    server.redact(&error)
+                ));
+                continue;
+            }
+        };
+        for spec in specs {
+            let mut name = spec.name.clone();
+            if toolbox.owners.contains_key(&name) {
+                let other = qualified(&server.name, &spec.name);
+                if toolbox.owners.contains_key(&other) {
+                    notes.push(format!(
+                        "two tools are named `{name}` and `{other}` is taken too: the one of the mount `{}` is left out",
+                        server.name
+                    ));
+                    continue;
+                }
+                notes.push(format!(
+                    "two tools are named `{name}`: the one of the mount `{}` goes as `{other}`",
+                    server.name
+                ));
+                name = other;
+            }
+            let owner = Owner::Mount {
+                server: server.clone(),
+                name: spec.name.clone(),
+            };
+            add(&mut toolbox, name, spec, owner);
+        }
+    }
+    (toolbox, notes)
 }
 
 impl Session {
@@ -340,49 +475,73 @@ impl Session {
         lock(&self.live).cancelled
     }
 
-    /// Lists the tools of every node wired into `tools`. A name seen before is left out.
+    /// The tools of this turn; what was left out or renamed goes to the log.
     fn toolbox(&self, ctx: &ModuleCtx) -> Toolbox {
-        let mut toolbox = Toolbox {
-            defs: Vec::new(),
-            owners: HashMap::new(),
-        };
-        for endpoint in ctx.resolve(&self.me, TOOLS_PORT) {
-            let specs = ctx
-                .call(&endpoint, tool::LIST, Value::Null)
-                .map_err(|e| e.to_string())
-                .and_then(|v| {
-                    serde_json::from_value::<Vec<tool::Spec>>(v).map_err(|e| e.to_string())
-                });
-            let specs = match specs {
-                Ok(specs) => specs,
-                Err(error) => {
-                    eprintln!(
-                        "regulus: native engine `{}`: tools of `{}` left out: {error}",
-                        self.me.node_id,
-                        endpoint.node().node_id
-                    );
-                    continue;
-                }
-            };
-            for spec in specs {
-                if toolbox.owners.contains_key(&spec.name) {
-                    eprintln!(
-                        "regulus: native engine `{}`: two tools are named `{}`: the one of `{}` is left out",
-                        self.me.node_id,
-                        spec.name,
-                        endpoint.node().node_id
-                    );
-                    continue;
-                }
-                toolbox.owners.insert(spec.name.clone(), endpoint.clone());
-                toolbox.defs.push(ToolDef {
-                    schema: model::schema(&spec.input),
-                    name: spec.name,
-                    description: spec.description,
-                });
-            }
+        let (toolbox, notes) = toolbox(
+            ctx,
+            &self.me,
+            &self.mounts,
+            self.settings.mount_start_timeout,
+        );
+        for note in notes {
+            eprintln!("regulus: native engine `{}`: {note}", self.me.node_id);
         }
         toolbox
+    }
+
+    /// Calls a mount's tool and waits for it, a cancel or `mount_call_timeout_ms`. A
+    /// cancel or a timeout tells the server and leaves its answer behind.
+    fn call_mount(
+        &self,
+        rx: &Receiver<Wake>,
+        tx: &Sender<Wake>,
+        server: &mcp::Server,
+        name: &str,
+        args: &Value,
+    ) -> Result<(Value, bool), Halt> {
+        let wake = tx.clone();
+        let sent = server.send(
+            "tools/call",
+            json!({ "name": name, "arguments": args }),
+            Box::new(move |request, answer| {
+                let _ = wake.send(Wake::Tool { request, answer });
+            }),
+        );
+        let id = match sent {
+            Ok(id) => id,
+            Err(error) => return Ok((json!(server.redact(&error)), true)),
+        };
+        let timeout = self.settings.mount_call_timeout;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(Wake::Tool { request, answer }) if request == id => {
+                    return Ok(match answer {
+                        Ok(result) => {
+                            let (text, error) = mcp::outcome(&result);
+                            (json!(text), error)
+                        }
+                        Err(error) => (json!(server.redact(&error)), true),
+                    });
+                }
+                Ok(Wake::Cancel) | Err(RecvTimeoutError::Disconnected) => {
+                    server.abandon(id, "cancelled");
+                    return Err(Halt::Cancelled);
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    server.abandon(id, "timed out");
+                    return Ok((
+                        json!(format!(
+                            "`{name}` of the mount `{}` did not answer in {} ms",
+                            server.name,
+                            timeout.as_millis()
+                        )),
+                        true,
+                    ));
+                }
+            }
+        }
     }
 
     /// Asks the model on a thread of its own, so a cancel ends the wait at once.
@@ -414,7 +573,7 @@ impl Session {
             match rx.recv() {
                 Ok(Wake::Model(answer)) => return answer.map_err(Halt::Failed),
                 Ok(Wake::Cancel) | Err(_) => return Err(Halt::Cancelled),
-                Ok(Wake::Decided { .. }) => {}
+                Ok(_) => {}
             }
         }
     }
@@ -572,6 +731,7 @@ impl Session {
         &self,
         ctx: &ModuleCtx,
         rx: &Receiver<Wake>,
+        tx: &Sender<Wake>,
         toolbox: &Toolbox,
         call: &ToolCall,
         spent: &mut u64,
@@ -619,19 +779,25 @@ impl Session {
             status: "in_progress".into(),
             content: None,
         });
-        let args = tool::Call {
-            name: call.name.clone(),
-            args: call.args.clone(),
-            caller: tool::Caller {
-                name: self.caller.clone(),
-            },
-        };
-        let outcome = to_json(&args)
-            .and_then(|args| ctx.call(owner, tool::CALL, args))
-            .and_then(parse::<tool::Outcome>);
-        let (data, error) = match outcome {
-            Ok(outcome) => (outcome.data, outcome.error),
-            Err(error) => (json!(error.to_string()), true),
+        let (data, error) = match owner {
+            Owner::Node(endpoint) => {
+                let args = tool::Call {
+                    name: call.name.clone(),
+                    args: call.args.clone(),
+                    caller: tool::Caller {
+                        name: self.caller.clone(),
+                    },
+                };
+                let outcome = to_json(&args)
+                    .and_then(|args| ctx.call(endpoint, tool::CALL, args))
+                    .and_then(parse::<tool::Outcome>);
+                match outcome {
+                    Ok(outcome) => (outcome.data, outcome.error),
+                    Err(error) => (json!(error.to_string()), true),
+                }
+            }
+            // The mount was started in the caller's name: its binding says who calls.
+            Owner::Mount { server, name } => self.call_mount(rx, tx, server, name, &call.args)?,
         };
         self.events.push(SessionEventKind::ToolUpdate {
             id: call.id.clone(),
@@ -793,7 +959,7 @@ impl Session {
                 calls: reply.calls.clone(),
             });
             for call in &reply.calls {
-                let answer = self.run_tool(ctx, rx, &toolbox, call, &mut spent)?;
+                let answer = self.run_tool(ctx, rx, tx, &toolbox, call, &mut spent)?;
                 messages.push(answer);
             }
         }
@@ -852,6 +1018,9 @@ impl Session {
             let _ = wake.send(Wake::Cancel);
         }
         drop(live);
+        for server in &self.mounts {
+            server.close("the session ended");
+        }
         self.events.push(SessionEventKind::State {
             state: SessionState::Ended,
         });
@@ -953,12 +1122,23 @@ impl NativeEngine {
                 failed("no model id: set `model` on the native engine or on its provider")
             })?;
         let ignored = [
-            (args.provider.is_some(), "the box's `provider`: the native engine asks its own `model` input"),
+            (
+                args.provider.is_some(),
+                "the box's `provider`: the native engine asks its own `model` input",
+            ),
             (!args.slots.is_empty(), "the box's provider slots"),
-            (!args.skills.is_empty(), "skills: the native engine has no skills folder"),
-            (!args.tools.is_empty(), "the box's tool mounts (MCP): wire `tool@1` nodes into the engine's `tools` instead"),
-            (!args.hooks.is_empty(), "the box's hooks (a CLI bridge): wire them into the engine's `context` instead"),
-            (args.resume.is_some(), "resume: the native engine cannot load an earlier session"),
+            (
+                !args.skills.is_empty(),
+                "skills: the native engine has no skills folder",
+            ),
+            (
+                !args.hooks.is_empty(),
+                "the box's hooks (a CLI bridge): wire them into the engine's `context` instead",
+            ),
+            (
+                args.resume.is_some(),
+                "resume: the native engine cannot load an earlier session",
+            ),
         ];
         for (_, what) in ignored.iter().filter(|(wired, _)| *wired) {
             warnings.push(format!("left out {what}"));
@@ -988,6 +1168,12 @@ impl NativeEngine {
             HookAnswer::Context { text } => text,
             HookAnswer::Nothing => String::new(),
         };
+        // The box's tool mounts, started now: a veto above starts none.
+        let (mounts, left_out) =
+            mcp::start_all(&args.tools, &args.cwd, settings.mount_start_timeout);
+        warnings.extend(left_out);
+        let (_, notes) = toolbox(&ctx, &me, &mounts, settings.mount_start_timeout);
+        warnings.extend(notes);
         for warning in &warnings {
             eprintln!("regulus: node `{}`: {warning}", me.node_id);
         }
@@ -1006,6 +1192,7 @@ impl NativeEngine {
             caller,
             cwd: args.cwd,
             hooks: wired,
+            mounts,
             session_context,
             history: Mutex::default(),
             turn: Mutex::default(),

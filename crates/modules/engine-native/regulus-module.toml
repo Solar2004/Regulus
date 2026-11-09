@@ -5,7 +5,8 @@ requires_proto = "^1.9"
 
 # An agent engine that Regulus runs itself, with no CLI behind it (docs/12-agents.md §8):
 # the loop asks the model wired into `model`, calls the tools wired into `tools` directly
-# (no MCP) and lets the hooks wired into `context` steer it: what the model sees
+# (no MCP) and those of the Agent box's tool mounts (MCP over stdio, the same `tools` the
+# CLI engines get), and lets the hooks wired into `context` steer it: what the model sees
 # (`session_start`, `prompt`), whether a tool call goes ahead (`pre_tool`), what it is
 # told after (`post_tool`) and whether the turn ends (`stop`). The fields are the
 # defaults for when nothing wired says otherwise.
@@ -164,3 +165,18 @@ name = "Native engine"
   id      = "permission_timeout_seconds"
   type    = "number"
   default = 600
+
+  # How long a tool mount of the Agent box (MCP over stdio) may take to start, and to
+  # list its tools at the start of each turn. Past it, the mount is left out with a
+  # warning (at start) or its tools for that turn (in the log).
+  [[node.field]]
+  id      = "mount_start_timeout_ms"
+  type    = "number"
+  default = 30000
+
+  # How long one call to a mounted tool may take; past it the call is cancelled on the
+  # server and the model gets an error.
+  [[node.field]]
+  id      = "mount_call_timeout_ms"
+  type    = "number"
+  default = 300000

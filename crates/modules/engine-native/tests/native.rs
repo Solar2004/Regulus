@@ -3,10 +3,17 @@
 //! policy waits for `decide`, `deny` refuses, `max_steps` ends the loop, hooks steer it
 //! (prompt context, a `pre_tool` veto, a `stop` that keeps it going), the history is
 //! trimmed, and the Agent box drives it like any other engine.
+//!
+//! The Agent box's tool mounts (`StartArgs.tools`) run against a fake MCP server: this
+//! same test binary started again with `FAKE_MCP` set, serving tools-mcp's own server
+//! over a fake backend. A mounted tool goes through the same policy and events, the
+//! mount's environment (the caller's binding) reaches it, a cancel ends a call that
+//! hangs, a stop kills the process, and mounts that fail are left out with a warning.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -125,6 +132,13 @@ impl Module for Fixture {
                 Ok(json!({ "data": { "echo": args.args } }))
             }
             "hook" => Ok(json!({ "event": config["event"] })),
+            // The Agent box asks for its tools in its own name.
+            "toolset.mount" => {
+                let args: regulus_contract_toolset::MountArgs =
+                    serde_json::from_value(call.args).unwrap();
+                let pid_file = PathBuf::from(config["pid_file"].as_str().unwrap());
+                Ok(serde_json::to_value(mount("box", "tools", &args.caller, &pid_file)).unwrap())
+            }
             "node/hook" => {
                 let request: regulus_proto::HookRequest =
                     serde_json::from_value(call.args).unwrap();
@@ -202,6 +216,7 @@ fn profile(
     config: Value,
     hooks: &[HookNode],
     with_box: Option<Value>,
+    toolset: Option<Value>,
 ) -> Profile {
     let mut nodes = vec![
         json!({ "id": "model", "type": "provider", "module_id": "regulus/providers@0.1.0",
@@ -231,9 +246,17 @@ fn profile(
         nodes.push(
             json!({ "id": "a", "type": "agent", "module_id": "regulus/agent@0.1.0",
                     "config": config,
-                    "ports": [port("engine", "agent.engine@1", "input", "uses")] }),
+                    "ports": [port("engine", "agent.engine@1", "input", "uses"),
+                              port("tools", "toolset@1", "input", "uses")] }),
         );
         wires.push(uses("n", "engine", "a", "engine"));
+    }
+    if let Some(config) = toolset {
+        nodes.push(
+            json!({ "id": "ts", "type": "toolset", "module_id": FIXTURE, "config": config,
+                    "ports": [port("toolset", "toolset@1", "output", "uses")] }),
+        );
+        wires.push(uses("ts", "toolset", "a", "tools"));
     }
     serde_json::from_value(json!({
         "id": "p", "main_workflow_id": "main",
@@ -251,7 +274,7 @@ struct Rig {
 }
 
 fn rig(url: &str, config: Value, hooks: &[HookNode], with_box: Option<Value>) -> Rig {
-    rig_on(url, "openai", config, hooks, with_box)
+    rig_on(url, "openai", config, hooks, with_box, None)
 }
 
 fn rig_on(
@@ -260,13 +283,15 @@ fn rig_on(
     config: Value,
     hooks: &[HookNode],
     with_box: Option<Value>,
+    toolset: Option<Value>,
 ) -> Rig {
     let shared: Arc<Shared> = Arc::default();
     let fixture = Fixture {
         manifest: parse_manifest(&format!(
             "[module]\nid = \"{FIXTURE}\"\nname = \"fixture\"\n\
              [[node]]\ntype = \"tools\"\nname = \"tools\"\n\
-             [[node]]\ntype = \"hook\"\nname = \"hook\"\n"
+             [[node]]\ntype = \"hook\"\nname = \"hook\"\n\
+             [[node]]\ntype = \"toolset\"\nname = \"toolset\"\n"
         ))
         .unwrap(),
         shared: shared.clone(),
@@ -281,7 +306,14 @@ fn rig_on(
     ];
     let mut profiles = ProfileStore::default();
     profiles
-        .insert(profile(url, protocol, config.clone(), hooks, with_box))
+        .insert(profile(
+            url,
+            protocol,
+            config.clone(),
+            hooks,
+            with_box,
+            toolset,
+        ))
         .unwrap();
     let core = Core::build(modules, &[], profiles);
     let started = core
@@ -306,10 +338,18 @@ impl Rig {
     }
 
     fn start(&self, permissions: &str) -> (String, engine::Started) {
+        self.start_with(permissions, &[])
+    }
+
+    fn start_with(
+        &self,
+        permissions: &str,
+        tools: &[regulus_contract_toolset::Mount],
+    ) -> (String, engine::Started) {
         let started: engine::Started = serde_json::from_value(
             self.call(
                 engine::SESSION_START,
-                json!({ "cwd": "/", "permissions": permissions }),
+                json!({ "cwd": "/", "permissions": permissions, "tools": tools }),
             )
             .unwrap(),
         )
@@ -708,6 +748,7 @@ fn an_anthropic_provider_gets_tool_use_and_tool_result_blocks() {
         json!({ "tool_policy": "allow", "system": "Sys." }),
         &[],
         None,
+        None,
     );
     let (session, _) = rig.start("reject");
     let turn = rig.prompt(&session, "go");
@@ -722,4 +763,372 @@ fn an_anthropic_provider_gets_tool_use_and_tool_result_blocks() {
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"][0]["type"], "tool_result");
     assert_eq!(messages[2]["content"][0]["tool_use_id"], "tu1");
+}
+
+// --- the fake MCP server ----------------------------------------------------------------
+
+/// Set in a mount's environment: what the fake server does (`tools`, `exit`, `bad_list`).
+const FAKE_MCP: &str = "REGULUS_TEST_FAKE_MCP";
+/// Where the fake server writes its pid.
+const PID_FILE: &str = "REGULUS_TEST_PID_FILE";
+/// The binding a tools box would put in a mount's environment: a secret.
+const SECRET: &str = "binding-5f0c2a9e7d41b3c8";
+
+struct FakeBackend {
+    mode: String,
+}
+
+impl regulus_module_tools_mcp::Backend for FakeBackend {
+    fn list(&self) -> Result<Vec<regulus_contract_tool::Spec>, String> {
+        let binding = std::env::var(regulus_module_tools_mcp::BINDING_ENV).unwrap_or_default();
+        if self.mode == "bad_list" {
+            return Err(format!("binding {binding} is not known"));
+        }
+        let spec = |name: &str, description: &str| regulus_contract_tool::Spec {
+            name: name.into(),
+            description: description.into(),
+            input: json!({ "type": "object" }),
+        };
+        Ok(vec![
+            spec("whoami", "Says the binding it was started with"),
+            spec("echo", "Echoes its arguments, from the mount"),
+            spec("wait", "Never answers in time"),
+        ])
+    }
+
+    fn call(&self, name: &str, args: Value) -> Result<(String, bool), String> {
+        match name {
+            "whoami" => Ok((
+                std::env::var(regulus_module_tools_mcp::BINDING_ENV).unwrap_or_default(),
+                false,
+            )),
+            "echo" => Ok((json!({ "mounted": args }).to_string(), false)),
+            "wait" => {
+                std::thread::sleep(Duration::from_secs(60));
+                Ok(("late".into(), false))
+            }
+            other => Err(format!("no tool `{other}`")),
+        }
+    }
+}
+
+/// Not a test: the fake MCP server, when this binary runs again with `FAKE_MCP` set.
+#[test]
+fn fake_mcp_server() {
+    let Ok(mode) = std::env::var(FAKE_MCP) else {
+        return;
+    };
+    if let Ok(file) = std::env::var(PID_FILE) {
+        std::fs::write(file, std::process::id().to_string()).unwrap();
+    }
+    if mode == "exit" {
+        std::process::exit(3);
+    }
+    regulus_module_tools_mcp::serve(&FakeBackend { mode }, "fake").unwrap();
+    std::process::exit(0);
+}
+
+/// A mount that starts the fake server in `mode`, with `binding` in its environment.
+fn mount(
+    name: &str,
+    mode: &str,
+    binding: &str,
+    pid_file: &std::path::Path,
+) -> regulus_contract_toolset::Mount {
+    regulus_contract_toolset::Mount {
+        protocol: "mcp-stdio".into(),
+        name: name.into(),
+        command: std::env::current_exe().unwrap(),
+        args: [
+            "fake_mcp_server",
+            "--exact",
+            "--nocapture",
+            "-q",
+            "--test-threads=1",
+        ]
+        .map(String::from)
+        .to_vec(),
+        env: [
+            (FAKE_MCP.to_string(), mode.to_string()),
+            (
+                regulus_module_tools_mcp::BINDING_ENV.to_string(),
+                binding.to_string(),
+            ),
+            (PID_FILE.to_string(), pid_file.display().to_string()),
+        ]
+        .into(),
+    }
+}
+
+fn pid_file(name: &str) -> PathBuf {
+    let file = std::env::temp_dir().join(format!(
+        "regulus-native-mcp-{name}-{}.pid",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&file);
+    file
+}
+
+/// The pid the fake server wrote, once it did.
+fn pid(file: &std::path::Path) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(pid) = std::fs::read_to_string(file)
+            .ok()
+            .and_then(|p| p.parse().ok())
+        {
+            return pid;
+        }
+        assert!(Instant::now() < deadline, "the fake server never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+fn until_gone(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "the mount's process {pid} outlived its session"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn tool_names(seen: &Seen, n: usize) -> Vec<String> {
+    seen.lock().unwrap()[n]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+// --- the mount tests ----------------------------------------------------------------------
+
+#[test]
+fn a_mounted_tool_is_listed_called_and_answered_like_a_wired_one() {
+    let (url, seen) = serve(|n, _| match n {
+        1 => tool_call("c1", "whoami", json!({})),
+        2 => tool_call("c2", "box__echo", json!({ "y": 2 })),
+        _ => text("done"),
+    });
+    let rig = rig(&url, json!({ "tool_policy": "allow" }), &[], None);
+    let file = pid_file("listed");
+    let (session, started) = rig.start_with("reject", &[mount("box", "tools", SECRET, &file)]);
+    // The fixture's `echo` was there first: the mount's goes under its mount's name.
+    assert!(
+        started.warnings.iter().any(|w| w.contains("`box__echo`")),
+        "{:?}",
+        started.warnings
+    );
+    assert!(
+        !started.warnings.iter().any(|w| w.contains("left out")),
+        "{:?}",
+        started.warnings
+    );
+    let turn = rig.prompt(&session, "who am I?");
+    assert_eq!(turn.text, "done");
+    assert_eq!(
+        tool_names(&seen, 0),
+        ["echo", "whoami", "box__echo", "wait"]
+    );
+    // The mount's environment reached the server: the caller's binding answers.
+    assert_eq!(contents(&seen, 1, "tool"), vec![SECRET]);
+    assert_eq!(
+        contents(&seen, 2, "tool")[1],
+        json!({ "mounted": { "y": 2 } }).to_string()
+    );
+    assert!(rig.calls().is_empty(), "the fixture's echo ran");
+    let statuses: Vec<String> = rig
+        .events(&session)
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            engine::SessionEventKind::ToolUpdate { status, .. } => Some(status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        ["in_progress", "completed", "in_progress", "completed"]
+    );
+    let pid = pid(&file);
+    assert!(alive(pid));
+    rig.call(engine::SESSION_STOP, json!({ "session_id": session }))
+        .unwrap();
+    until_gone(pid);
+}
+
+#[test]
+fn the_policy_and_hooks_apply_to_mounted_tools() {
+    let (url, seen) = serve(|n, _| match n {
+        1 => tool_call("c1", "whoami", json!({})),
+        _ => text("done"),
+    });
+    let denied = rig(
+        &url,
+        json!({ "tool_policy": "allow", "deny_tools": ["whoami"] }),
+        &[],
+        None,
+    );
+    let file = pid_file("policy");
+    let (session, _) = denied.start_with("reject", &[mount("box", "tools", SECRET, &file)]);
+    denied.prompt(&session, "go");
+    let observation = contents(&seen, 1, "tool");
+    assert!(observation[0].starts_with("refused:"), "{observation:?}");
+
+    let (url, seen) = serve(|n, _| match n {
+        1 => tool_call("c1", "whoami", json!({})),
+        _ => text("done"),
+    });
+    let rig = rig(
+        &url,
+        json!({ "tool_policy": "allow" }),
+        &[rule(
+            "guard",
+            json!({ "event": "pre_tool", "matcher": "whoami", "deny": "yes",
+                    "reason": "not today" }),
+        )],
+        None,
+    );
+    let (session, _) = rig.start_with("reject", &[mount("box", "tools", SECRET, &file)]);
+    rig.prompt(&session, "go");
+    assert_eq!(contents(&seen, 1, "tool"), vec!["refused: not today"]);
+}
+
+#[test]
+fn a_cancel_ends_a_mounted_call_and_a_stop_kills_the_mount() {
+    let (url, _seen) = serve(|n, _| match n {
+        1 => tool_call("c1", "wait", json!({})),
+        _ => text("done"),
+    });
+    let rig = Arc::new(rig(&url, json!({ "tool_policy": "allow" }), &[], None));
+    let file = pid_file("cancel");
+    let (session, _) = rig.start_with("reject", &[mount("box", "tools", SECRET, &file)]);
+    let turn = {
+        let (rig, session) = (rig.clone(), session.clone());
+        std::thread::spawn(move || rig.prompt(&session, "go"))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !rig.events(&session).iter().any(|e| {
+        matches!(&e.kind, engine::SessionEventKind::ToolUpdate { status, .. } if status == "in_progress")
+    }) {
+        assert!(Instant::now() < deadline, "the mounted call never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let cancelled = Instant::now();
+    rig.call(engine::SESSION_CANCEL, json!({ "session_id": session }))
+        .unwrap();
+    let turn = turn.join().unwrap();
+    assert_eq!(turn.stop_reason, "cancelled");
+    assert!(cancelled.elapsed() < Duration::from_secs(5));
+    let pid = pid(&file);
+    assert!(alive(pid), "a cancel ends the turn, not the mount");
+    rig.call(engine::SESSION_STOP, json!({ "session_id": session }))
+        .unwrap();
+    until_gone(pid);
+}
+
+#[test]
+fn a_mounted_call_past_its_timeout_is_an_error_for_the_model() {
+    let (url, seen) = serve(|n, _| match n {
+        1 => tool_call("c1", "wait", json!({})),
+        _ => text("done"),
+    });
+    let rig = rig(
+        &url,
+        json!({ "tool_policy": "allow", "mount_call_timeout_ms": 300 }),
+        &[],
+        None,
+    );
+    let file = pid_file("timeout");
+    let (session, _) = rig.start_with("reject", &[mount("box", "tools", SECRET, &file)]);
+    assert_eq!(rig.prompt(&session, "go").text, "done");
+    let observation = contents(&seen, 1, "tool");
+    assert!(
+        observation[0].contains("did not answer in 300 ms"),
+        "{observation:?}"
+    );
+    let pid = pid(&file);
+    rig.call(engine::SESSION_STOP, json!({ "session_id": session }))
+        .unwrap();
+    until_gone(pid);
+}
+
+#[test]
+fn mounts_that_fail_are_left_out_with_a_warning_that_hides_the_binding() {
+    let (url, seen) = serve(tool_then_text);
+    let rig = rig(
+        &url,
+        json!({ "tool_policy": "allow", "mount_start_timeout_ms": 5000 }),
+        &[],
+        None,
+    );
+    let mut sse = mount("remote", "tools", SECRET, &pid_file("sse"));
+    sse.protocol = "mcp-sse".into();
+    let mut missing = mount("missing", "tools", SECRET, &pid_file("missing"));
+    missing.command = PathBuf::from("/nonexistent/regulus-mcp");
+    let exits = pid_file("exits");
+    let mounts = [
+        mount("exits", "exit", SECRET, &exits),
+        mount("liar", "bad_list", SECRET, &pid_file("liar")),
+        sse,
+        missing,
+    ];
+    let (session, started) = rig.start_with("reject", &mounts);
+    let warnings = started.warnings.join("\n");
+    for name in ["exits", "liar", "remote", "missing"] {
+        assert!(warnings.contains(&format!("`{name}`")), "{warnings}");
+    }
+    assert!(
+        warnings.contains("speaks mcp-stdio, not `mcp-sse`"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("binding [hidden] is not known"),
+        "{warnings}"
+    );
+    assert!(!warnings.contains(SECRET), "{warnings}");
+    until_gone(pid(&exits));
+    // What did start still works: the wired tool runs and the turn ends.
+    assert_eq!(rig.prompt(&session, "go").text, "done");
+    assert_eq!(rig.calls().len(), 1);
+    assert_eq!(tool_names(&seen, 0), ["echo"]);
+}
+
+#[test]
+fn the_agent_box_mounts_its_tools_for_the_native_engine() {
+    let (url, seen) = serve(|n, _| match n {
+        1 => tool_call("c1", "whoami", json!({})),
+        _ => text("done"),
+    });
+    let file = pid_file("agent");
+    let rig = rig_on(
+        &url,
+        "openai",
+        json!({ "tool_policy": "ask" }),
+        &[],
+        Some(json!({ "workdir": "/", "permissions": "allow", "name": "scout" })),
+        Some(json!({ "pid_file": file.display().to_string() })),
+    );
+    let answer = rig
+        .core
+        .dispatch(
+            "agent.prompt",
+            json!({ "execution_id": rig.execution, "node_id": "a", "text": "go" }),
+        )
+        .unwrap();
+    assert_eq!(answer["text"], "done", "{answer}");
+    assert!(tool_names(&seen, 0).contains(&"whoami".to_string()));
+    // The fixture's toolset put the caller's name in the binding.
+    assert_eq!(contents(&seen, 1, "tool"), vec!["scout"]);
+    let pid = pid(&file);
+    rig.core
+        .dispatch(method::EXECUTION_STOP, json!({ "id": rig.execution }))
+        .unwrap();
+    until_gone(pid);
 }

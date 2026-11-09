@@ -10,6 +10,7 @@ authors.workspace = true
 regulus-contract-agent-engine.workspace = true
 regulus-contract-llm-endpoint.workspace = true
 regulus-contract-tool.workspace = true
+regulus-contract-toolset.workspace = true
 regulus-core.workspace = true
 regulus-proto.workspace = true
 serde.workspace = true
@@ -20,3 +21,4 @@ ureq.workspace = true
 regulus-module-agent = { path = "../agent" }
 regulus-module-hooks = { path = "../hooks" }
 regulus-module-providers = { path = "../providers" }
+regulus-module-tools-mcp = { path = "../tools-mcp" }
