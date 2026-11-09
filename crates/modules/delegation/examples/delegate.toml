@@ -74,7 +74,7 @@ ports = [
   config = { workers = { worker = "worker" }, max_workers = 3 }
   ports = [
     { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
-    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
     { id = "create", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "result", capability = "json@1", direction = "output", kind = "then" },
     { id = "closed", capability = "json@1", direction = "output", kind = "then" },

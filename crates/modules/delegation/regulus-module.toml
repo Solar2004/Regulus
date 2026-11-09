@@ -41,6 +41,8 @@ name = "Delegate"
   direction  = "output"
   kind       = "uses"
 
+  # Read only when a worker starts (`lazy`): an engine whose tools include this node's
+  # does not make a start-order loop.
   [[node.port]]
   id          = "engine"
   name        = "engine"
@@ -48,6 +50,7 @@ name = "Delegate"
   direction   = "input"
   kind        = "uses"
   cardinality = "many"
+  lazy        = true
 
   [[node.port]]
   id         = "provider"
@@ -55,6 +58,7 @@ name = "Delegate"
   capability = "llm.endpoint@1"
   direction  = "input"
   kind       = "uses"
+  lazy       = true
 
   # Each value: a worker to create, as the brief text or `{ brief, kind?, name?, engine? }`;
   # an array creates one per element.
