@@ -227,6 +227,14 @@ ejecuta en línea (sus nodos corren como `caja/nodo`) y el bus cruza sus puertos
 sentidos, a cualquier profundidad (`02-architecture.md` §4 regla 4, §6). Un nodo con
 módulo y workflow interno sigue siendo del módulo.
 
+Desde 2026-11-09 la caja también lleva puertos **"usa"**: un proveedor de fuera sirve a
+un agente de dentro (`proveedor ⇢ caja.model`, dentro `self.model ⇢ agente.provider`) y
+un toolset de dentro sirve fuera (`tools ⇢ self.toolset`, fuera `caja.toolset ⇢
+agente.tools`). Al correr, esos cables se funden en uno directo entre los extremos
+reales; una entrada de caja sin cable deja desactivado al nodo que la exige
+(`02-architecture.md` §4 regla 4). Un workflow arrancado como hija recibe sus entradas
+"usa" por **enlace** desde el nodo que la arranca (`ChildOptions::bindings`, §4 regla 5).
+
 ---
 
 ## 7. Perfiles
@@ -271,6 +279,22 @@ file = { description = "...", default = "greeting.txt" }
   sin `--force`; el id es un nombre de fichero simple.
 - `regulus template ls` · `show <nombre>` · `apply <nombre|ruta> --set k=v [--id x]
   [--force]`; por RPC, `template.list`, `template.get` y `template.apply`.
+- **Guardar como plantilla** ✅ (2026-11-09, protocolo 1.16): `template.save { name,
+  description?, profile_id, workflow_id?, vars?: { nombre: { description, default? } },
+  path?, force? }` → `{ path }`. Escribe el perfil y, al final, la tabla `[template]`.
+  Con `workflow_id`, solo ese workflow, como principal, más los que ejecuta a cualquier
+  profundidad: los que pone como caja y los que un nodo nombra en un campo de tipo
+  `workflow` (sin estos la plantilla no pasaría `profile.check`). El perfil de la
+  plantilla toma `name` como id y pierde `project_id` (lo decide quien la aplica).
+  `requires` sale de los módulos de sus nodos, `>=mayor.menor` de la versión que nombran
+  (o de la instalada). `vars` declara huecos que el texto ya tiene; antes de escribir, la
+  plantilla se relee y se renderiza con los defaults: un `{{nombre}}` sin declarar (o una
+  var mal nombrada) es `-32005` y no se escribe nada. Dónde: `path` (un `.toml` o una
+  carpeta para `<name>.toml`, relativa a la casa del core), si no la primera ruta de
+  plantillas del proyecto del perfil si está abierto, si no la primera de `[templates]
+  paths`. Un fichero existente sin `force` es `-32007`; con `force` solo se pisa si es
+  una plantilla. CLI: `regulus template save <perfil> --name <n> [--workflow w]
+  [--description d] [--var k=desc[=default]] [--force] [--path p]`.
 
 **Guardar desde la app** ✅ (2026-11-08): la app guarda el perfil entero (`profile.save`,
 mismas reglas de escritura que `apply`) y lo borra (`profile.delete`, no mientras corre). El

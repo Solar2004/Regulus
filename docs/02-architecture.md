@@ -218,10 +218,30 @@ interpreta: son del cliente.
    un workflow no acabe dentro de sí mismo y los ids reservados (`self` y `/` en nodos,
    `/` en cables). `execution.start` no pasa el validador entero: rechaza solo lo que haría
    ambigua o infinita la copia que corre (ids repetidos tras aplanar, reservados, ciclos de
-   cajas, puertos "usa" en un límite); lo demás corre y falla a la vista en el bus, como
-   antes. Un workflow con puertos es válido sin que nadie lo llame. **"Usa" no cruza
-   límites todavía:** un puerto "usa" en un workflow o en una caja es error y
-   `execution.start` lo rechaza.
+   cajas); lo demás corre y falla a la vista en el bus, como antes. Un workflow con puertos
+   es válido sin que nadie lo llame.
+
+   **"Usa" cruza límites** ✅ (2026-11-09, C1). Un workflow declara puertos `kind =
+   "uses"`: una **entrada** "usa" alimenta entradas "usa" de dentro (`self.model →
+   agente.provider`); una **salida** "usa" la da una salida "usa" de dentro
+   (`tools.toolset → self.toolset`). Fuera, la caja los lleva como cualquier nodo
+   (`proveedor.chat → caja.model`). Al aplanar, cada cable "usa" que acaba en una entrada
+   real se **funde** con lo que alimenta el puerto de caja del que sale, a través de
+   tantas cajas como haya, en un cable directo entre los extremos reales (id del último
+   cable; `#<n>` si hay varias fuentes). Los cables "usa" que tocan cajas desaparecen de
+   la copia; la caja se queda con sus puertos, para verla. Un puerto de caja sin nada
+   detrás deja la entrada de dentro sin cable: si es `required`, ese nodo queda
+   desactivado con `missing`. Orden de arranque, ciclos, `lazy` (el del consumidor final)
+   y `resolve` trabajan sobre la copia fundida sin cambios. Los puertos "usa" del workflow
+   de arriba (`self`) se quedan como cables `self.<p> → nodo.puerto`: son el punto donde
+   se **enlaza** una hija (regla 5). Los cables "luego" no cambian: siguen cruzando por el
+   bus. El validador añade `wire.boundary_cardinality` (error: una entrada de límite
+   `many` hacia un consumidor `one`; una `one` hacia varios consumidores está bien) y una
+   salida "usa" de workflow admite un solo cable (`port.too_many_wires`); un puerto de
+   caja `required` sin cable avisa con `port.required_unwired`. Cables "usa" que dan la
+   vuelta por puertos de caja sin llegar a ningún servicio son error
+   (`wire.uses_cycle`, y `execution.start` lo rechaza), igual que un id de cable repetido
+   dentro de una caja: nunca se borran en silencio. Desaparece `workflow.port_uses`.
 
 5. **Llamar y esperar** ✅ (2026-11-07, paso 1d de `13-blocks.md` §7). Un nodo arranca
    una **ejecución hija** de un workflow del mismo perfil con
@@ -246,6 +266,28 @@ interpreta: son del cliente.
    `workflow` del manifest: que el workflow exista (si no, `execution.start` y la llamada
    lo rechazan), que tenga alguna salida "luego" y, como aviso, que los puertos "luego" del
    nodo encajen por id y capacidad con los suyos. El nodo los declara; nada los copia.
+
+   **Hijas propias** ✅ (2026-11-09, C2, protocolo 1.16). `call_workflow` es
+   `ModuleCtx::start_child(nodo, workflow, entradas, ChildOptions { mode, tag, bindings })`
+   con `mode = Call`. Con `mode = Keep` la hija **sigue viva**: cada valor que llega a una
+   de sus salidas va al nodo como `node/child` `output` (puerto, capacidad, valor, evento)
+   y el core no la para; el módulo le manda más con `send_child(nodo, hija, puerto, valor)`
+   (como `workflow.send`; si se manda mientras atiende un evento sigue esa cadena, así que
+   un bucle a través de una hija lo corta `max_depth`), la para con `stop_child` y la mira
+   con `child_status` (viva, o como la dejó el store). Solo el nodo (y módulo) que la
+   arrancó puede: a otro se le responde `execution x is not a child of node y`. `tag` es
+   texto libre del módulo: vuelve en cada `ChildEvent` y en `Execution.tag`;
+   `Execution.caller` es el nodo del padre que la arrancó. `[call] max_children` cuenta
+   las hijas vivas de los dos modos. Una hija `Keep` que falla manda `ended { failed }` y
+   el módulo decide si la rearranca; tras reiniciar el core queda `interrupted`, como
+   toda hija. **Enlaces** (`bindings`): pares (puerto, endpoints) que el nodo resolvió en
+   sus propias entradas "usa"; solo puertos que el workflow de la hija declara como
+   entradas "usa" (si no, `InvalidParams`). En la hija, `resolve` de un cable que sale de
+   `self.<puerto>` da esos endpoints mientras su ejecución siga viva, y cuentan para
+   `required` al arrancar; `hook.dispatch` también los ve. Viven en memoria.
+   `execution.tree { execution_id }` (solo lectura) responde `{ execution, children:
+   [{ execution, children }] }` con lo que tiene `execution.list`; CLI `regulus exec tree
+   <id>`.
 
 6. **Preguntar con tiempo límite** ✅ (2026-11-07, paso 2 de `13-blocks.md` §7). Lo pidió
    la ranura `hooks`: `hook.dispatch` (desde fuera, el puente `regulus hook`) reenvía una
@@ -348,7 +390,8 @@ clientes por socket.
 - **Cruzar el límite de un workflow** (paso 1c): la ejecución corre una copia **aplanada**:
   cada caja conserva su nodo y el workflow de dentro se le une con ids `caja/nodo`, a
   cualquier profundidad; los módulos siguen viendo nodos normales y el store guarda esa
-  copia. Un valor que llega a un puerto de caja (o a `self`) queda `delivered` ahí y se
+  copia (con los cables "usa" ya fundidos, §4 regla 4). Un valor que llega a un puerto de
+  caja (o a `self`) queda `delivered` ahí y se
   emite de nuevo desde ese mismo puerto hacia el otro lado, **una entrega más hondo**:
   `max_depth` y `max_queue` valen igual a través de cajas y niveles. `workflow.send`
   (`execution_id`, `port`, `value`) mete un valor por una entrada del workflow de la
@@ -372,7 +415,8 @@ estado compartido degenere en variable global donde todos escriben.
   tiene los locks del bus nunca espera al disco. Un apagado limpio vacía la cola.
 - **Tablas** (iguales en todas): `executions` (id, número `N` de `exec-N`, proyecto,
   perfil, workflow y **su copia**, estado y motivo, nodos desactivados, `parent` y `caller`
-  —el nodo del padre que la llamó, migración 2—, inicio y fin) · `checkpoints` (ejecución, seq, nodo, estado JSON, fecha; solo
+  —el nodo del padre que la llamó, migración 2—, `tag` —el de `ChildOptions`, migración
+  3—, inicio y fin) · `checkpoints` (ejecución, seq, nodo, estado JSON, fecha; solo
   el último por nodo) · `events` (el diario del bus, los campos de `BusEvent`; por base se
   guardan `max_events`, al pasar del doble se borran los viejos) · `kv` (espacio
   clave-valor por módulo, clave `namespace` + `key`).

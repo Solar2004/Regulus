@@ -51,8 +51,14 @@ negociar un major compatible.
 | `project.trust` *(1.14)* | `path`, `remove?` | `path` (la carpeta resuelta) y `trusted`. Edita `[projects] trusted` de `config.toml`; si el proyecto está abierto, sus módulos locales arrancan o se paran ya. Sin confianza quedan `blocked` ([`03-modules.md`](03-modules.md) §6) |
 | `project.close` *(1.12)* | `id` | Como una entrada de `project.list`; no borra nada en disco |
 | `config.client` *(1.13)* | `project_id?` | `client`: el `[client]` de `config.toml` tal como está escrito, con el del proyecto encima clave a clave (las tablas como `keys` y `tui`, también clave a clave; lo desconocido pasa tal cual); `sources`: de qué fichero sale cada valor (`config.toml` o `regulus.toml`, por `clave` o `tabla.clave`); `warnings`: las claves de `[client]` que el core no conoce. Proyecto que no está abierto: `-32010`. Detalle en [`04-client.md`](04-client.md) §11 |
+| `execution.tree` *(1.16)* | `execution_id` | `{ execution, children: [{ execution, children }] }`: la ejecución y sus hijas a cualquier profundidad, en orden de arranque, de lo que da `execution.list`. Cada `Execution` lleva `parent?`, `caller?` (el nodo del padre que la arrancó) y `tag?` *(1.16)*. Id desconocido: `-32602` |
+| `template.save` *(1.16)* | `name`, `description?`, `profile_id`, `workflow_id?`, `vars?` (`{nombre: {description, default?}}`), `path?`, `force?` | `path`: el fichero escrito. Entrada mala (nombre, perfil o workflow desconocido, hueco sin declarar): `-32005`; fichero existente sin `force`, o que no es plantilla: `-32007`. Detalle en [`11-composition.md`](11-composition.md) §7 |
 
-El core real (`regulus serve`) habla el protocolo `1.15`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) habla el protocolo `1.16`, compatible con el `1.0` del mock.
+Desde `1.16` un nodo puede mantener viva una hija (`ChildEvent` `output`, `tag`), las
+ejecuciones dicen quién las arrancó (`caller`, `tag`) y hay `execution.tree` y
+`template.save`; los puertos "usa" cruzan cajas sin cambiar ningún método
+([`02-architecture.md`](02-architecture.md) §4 reglas 4-5).
 El mock contesta también `project.list` y `project.trust` (`mock/settings.mjs`): confiar
 arranca el módulo `blocked`, `remove` lo vuelve a bloquear.
 Desde `1.12` hay proyectos ([`11-composition.md`](11-composition.md) §13): `project.open`
