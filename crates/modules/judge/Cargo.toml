@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-judge"
 description = "Regulus judge: Judge, Classifier, Extractor and Rubric nodes over a swappable engine (an LLM with a strict schema by default)"
 version.workspace = true

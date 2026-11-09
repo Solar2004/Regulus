@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-contract-llm-endpoint"
 description = "The llm.endpoint@1 capability: where a model is and how to reach it"
 version.workspace = true

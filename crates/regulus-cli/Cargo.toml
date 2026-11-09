@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-cli"
 description = "The regulus command: runs the core and talks to it like any other client"
 version.workspace = true

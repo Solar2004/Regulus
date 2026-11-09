@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-acp"
 description = "ACP channel and kit shared by Regulus engine modules"
 version.workspace = true

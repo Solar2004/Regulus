@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-triggers"
 description = "Regulus triggers: Cron, Webhook, BusEvent, Chat and Idle/Threshold nodes that start work in a workflow"
 version.workspace = true

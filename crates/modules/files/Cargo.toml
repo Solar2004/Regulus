@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-files"
 description = "Regulus files: read a file into a prompt, write a prompt to a file, a fixed document injected every turn, and a file watcher"
 version.workspace = true

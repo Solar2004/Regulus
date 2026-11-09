@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-tools"
 description = "Tools: presents the operations modules offer to agents, over a swappable protocol"
 version.workspace = true

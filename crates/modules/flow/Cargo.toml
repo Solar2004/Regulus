@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-flow"
 description = "Regulus flow logic: Call, Switch, Loop, Join, Fan-out, Wait, Variable and Convert"
 version.workspace = true

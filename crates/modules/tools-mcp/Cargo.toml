@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-tools-mcp"
 description = "MCP engine for the tools box: mounts tools as an MCP server over stdio"
 version.workspace = true

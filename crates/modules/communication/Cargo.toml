@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-communication"
 description = "Communication: channels that deliver messages between participants, after hcom"
 version.workspace = true

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-contract-toolset"
 description = "The toolset@1 and tools.engine@1 capabilities: tools mounted into an agent"
 version.workspace = true

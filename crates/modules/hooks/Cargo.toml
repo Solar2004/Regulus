@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-hooks"
 description = "Regulus hooks: Rule, a hook@1 node that vetoes or adds context on an agent event"
 version.workspace = true

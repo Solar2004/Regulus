@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-contract-agent-engine"
 description = "The agent.engine@1 capability: what the Agent box asks of an engine"
 version.workspace = true

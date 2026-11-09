@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-service"
 description = "Regulus service: workflows with ports offered to outside systems as endpoints, with keys, policies and a request log"
 version.workspace = true

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-human"
 description = "Regulus human in the loop: Approval, Review and Decider nodes that wait until a person decides"
 version.workspace = true

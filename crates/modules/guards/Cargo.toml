@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-guards"
 description = "Regulus guards: Budget, Retry, Timeout, Error and Watchdog, wrappers that go in a then wire"
 version.workspace = true

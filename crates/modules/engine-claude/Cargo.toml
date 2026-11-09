@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-engine-claude"
 description = "Agent engine for Claude Code, over ACP"
 version.workspace = true

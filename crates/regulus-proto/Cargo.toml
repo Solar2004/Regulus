@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-proto"
 description = "Contract types shared by the Regulus core, its clients and its modules"
 version.workspace = true

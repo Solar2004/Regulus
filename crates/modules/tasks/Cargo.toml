@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-tasks"
 description = "Regulus tasks: a task queue with states and dependencies, a claim node with a leased lock, and an append-only ledger"
 version.workspace = true

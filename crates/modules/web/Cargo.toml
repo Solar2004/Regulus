@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-web"
 description = "Regulus web: HTTP requests, readable fetch, search over a swappable engine, PDF text and downloads, guarded against private destinations"
 version.workspace = true

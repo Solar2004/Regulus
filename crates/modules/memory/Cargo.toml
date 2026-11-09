@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-memory"
 description = "Regulus memory: a keyed store agents read and write as tools and as a hook, reflection over failures, and a skill library that grows"
 version.workspace = true

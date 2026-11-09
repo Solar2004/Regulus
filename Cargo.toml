@@ -42,6 +42,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["Alexander"]
+license = "Apache-2.0"
 
 # Versiones verificadas: docs/06-stack.md §2.1 (único sitio donde se documentan).
 [workspace.dependencies]

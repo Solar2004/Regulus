@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-hello"
 description = "Trivial Regulus module used to exercise the registry and the ablation matrix"
 version.workspace = true

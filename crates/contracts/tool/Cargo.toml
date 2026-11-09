@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-contract-tool"
 description = "The tool@1 capability: operations a module offers for agents to call"
 version.workspace = true

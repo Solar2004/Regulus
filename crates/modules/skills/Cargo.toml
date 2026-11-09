@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-skills"
 description = "Skills: point at a skill folder that agents load"
 version.workspace = true

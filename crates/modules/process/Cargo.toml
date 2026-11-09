@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-process"
 description = "Regulus processes: Command, Gate, Job and Terminal, nodes that run programs on their own threads"
 version.workspace = true

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-providers"
 description = "Providers: describe a model endpoint that agents and other nodes use directly"
 version.workspace = true

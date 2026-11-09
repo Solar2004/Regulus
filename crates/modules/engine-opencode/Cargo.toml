@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-engine-opencode"
 description = "Agent engine for opencode, over ACP"
 version.workspace = true
