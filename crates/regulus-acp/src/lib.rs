@@ -778,7 +778,10 @@ async fn run(
                     // Dropping this reply makes the caller wait for Outcome instead of
                     // returning the earlier, less useful transport-closed notification.
                     drop(reply);
-                    break;
+                    // Finishing this foreground callback would cancel the process
+                    // transport before its child watcher reports the exit. Let the
+                    // transport (or Session::close) finish this pending callback.
+                    return futures::future::pending().await;
                 }
                 let _ = reply.send(answer);
             }
