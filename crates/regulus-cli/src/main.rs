@@ -14,9 +14,9 @@ use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
 use regulus_proto::{
     method, BusEvent, BusEventKind, Diagnostic, Direction, EventPage, Execution, ExecutionState,
-    Manifest, ModuleSummary, Profile, ProfileDeleted, ProfileSaved, ProfileSummary, ProjectDetails,
-    ProjectSummary, ProjectTrusted, Severity, TemplateApplied, TemplateSummary, TemplateText,
-    WireKind, WorkflowSent, PROTOCOL, WORKFLOW_SELF,
+    ExecutionTree, Manifest, ModuleSummary, Profile, ProfileDeleted, ProfileSaved, ProfileSummary,
+    ProjectDetails, ProjectSummary, ProjectTrusted, Severity, TemplateApplied, TemplateSaved,
+    TemplateSummary, TemplateText, WireKind, WorkflowSent, PROTOCOL, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -124,6 +124,11 @@ enum Command {
     Stop { execution: String },
     /// List executions.
     Ps,
+    /// Executions, one at a time.
+    Exec {
+        #[command(subcommand)]
+        command: ExecCommand,
+    },
     /// Talk to an agent node of a running execution.
     Agent {
         #[command(subcommand)]
@@ -418,6 +423,13 @@ enum ProjectCommand {
 }
 
 #[derive(Subcommand)]
+enum ExecCommand {
+    /// An execution and the children its nodes started, as deep as they go: id, state,
+    /// workflow, the node that started each child and its tag.
+    Tree { execution: String },
+}
+
+#[derive(Subcommand)]
 enum TemplateCommand {
     /// List templates: name, description and the vars that need a value.
     Ls,
@@ -444,6 +456,31 @@ enum TemplateCommand {
         /// folder with its `project_id`.
         #[arg(long)]
         project: Option<String>,
+    },
+    /// Write a profile, or one workflow of it with the workflows it places as boxes, as a
+    /// template. Holes (`{{name}}`) already in the profile must be declared with --var.
+    Save {
+        /// The profile to save.
+        profile: String,
+        /// The template's name, and file name.
+        #[arg(long)]
+        name: String,
+        /// Only this workflow, as the main one, with the workflows it runs.
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// A var it declares: `name=description` or `name=description=default`.
+        /// Repeatable.
+        #[arg(long = "var", value_name = "NAME=DESCRIPTION[=DEFAULT]")]
+        var: Vec<String>,
+        /// Replace a template file written before.
+        #[arg(long)]
+        force: bool,
+        /// Where to write it: a `.toml` file or a folder. Defaults to the first templates
+        /// path.
+        #[arg(long)]
+        path: Option<String>,
     },
 }
 
@@ -680,6 +717,14 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Exec {
+            command: ExecCommand::Tree { execution },
+        } => {
+            let params = serde_json::json!({ "execution_id": execution });
+            let tree: ExecutionTree = client.request(method::EXECUTION_TREE, params).await?;
+            print_tree(&tree, "", "");
+            Ok(())
+        }
         Command::Agent {
             command:
                 AgentCommand::Send {
@@ -898,6 +943,69 @@ async fn template(client: &Client<'_>, command: TemplateCommand) -> Result<()> {
             print_diagnostics(applied.diagnostics);
             Ok(())
         }
+        TemplateCommand::Save {
+            profile,
+            name,
+            workflow,
+            description,
+            var,
+            force,
+            path,
+        } => {
+            let mut vars = serde_json::Map::new();
+            for spec in var {
+                let mut parts = spec.splitn(3, '=');
+                let (Some(var_name), Some(var_description)) = (parts.next(), parts.next()) else {
+                    bail!("`{spec}` is not NAME=DESCRIPTION or NAME=DESCRIPTION=DEFAULT");
+                };
+                let mut entry = serde_json::json!({ "description": var_description });
+                if let Some(default) = parts.next() {
+                    entry["default"] = Value::String(default.into());
+                }
+                vars.insert(var_name.trim().into(), entry);
+            }
+            let path = path.map(template_arg).transpose()?;
+            let params = serde_json::json!({
+                "name": name, "profile_id": profile, "workflow_id": workflow,
+                "description": description, "vars": vars, "path": path, "force": force,
+            });
+            let saved: TemplateSaved = client.request(method::TEMPLATE_SAVE, params).await?;
+            println!("wrote {}", saved.path);
+            Ok(())
+        }
+    }
+}
+
+/// One line per execution of a tree, children indented under their parent with the node
+/// that started them and their tag.
+fn print_tree(tree: &ExecutionTree, lead: &str, child_lead: &str) {
+    let execution = &tree.execution;
+    let mut line = format!(
+        "{lead}{}  {}  {}",
+        execution.id,
+        state_name(&execution.state),
+        execution.workflow_id
+    );
+    if let Some(caller) = &execution.caller {
+        line.push_str(&format!("  by {caller}"));
+    }
+    if let Some(tag) = &execution.tag {
+        line.push_str(&format!("  [{tag}]"));
+    }
+    println!("{line}");
+    let count = tree.children.len();
+    for (i, child) in tree.children.iter().enumerate() {
+        let last = i + 1 == count;
+        let (branch, rest) = if last {
+            ("└─ ", "   ")
+        } else {
+            ("├─ ", "│  ")
+        };
+        print_tree(
+            child,
+            &format!("{child_lead}{branch}"),
+            &format!("{child_lead}{rest}"),
+        );
     }
 }
 
@@ -1454,14 +1562,18 @@ fn print_event(event: &BusEvent) {
     println!("#{:<6} {:<12} {from} {what}", event.seq, event.execution_id);
 }
 
-fn print_execution(execution: &Execution) {
-    let state = match &execution.state {
+fn state_name(state: &ExecutionState) -> String {
+    match state {
         ExecutionState::Starting => "starting".to_string(),
         ExecutionState::Running => "running".to_string(),
         ExecutionState::Stopped => "stopped".to_string(),
         ExecutionState::Failed { reason } => format!("failed: {reason}"),
         ExecutionState::Interrupted { reason } => format!("interrupted: {reason}"),
-    };
+    }
+}
+
+fn print_execution(execution: &Execution) {
+    let state = state_name(&execution.state);
     let parent = match &execution.parent {
         Some(parent) => format!("  (child of {parent})"),
         None => String::new(),
