@@ -49,6 +49,62 @@ function render(template, vars) {
   return { profile: JSON.parse(text) };
 }
 
+/** The workflows a workflow places as boxes, at any depth, itself first. */
+function embedded(profile, id, seen = new Set()) {
+  if (seen.has(id)) return [];
+  seen.add(id);
+  const workflow = profile.workflows.find((item) => item.id === id);
+  if (!workflow) return [];
+  return [workflow, ...workflow.nodes.filter((node) => !node.module_id && node.internal_workflow_id).flatMap((node) => embedded(profile, node.internal_workflow_id, seen))];
+}
+
+/** `template.save`: the saved profile, or one workflow of it as main, kept as a template the Templates view lists. */
+function saveTemplate(state, params) {
+  const name = typeof params.name === "string" ? params.name.trim() : "";
+  if (!name || /[\/\\]/.test(name)) return failure(-32005, `template name \`${params.name}\` cannot be a file name`);
+  const profile = state.profiles.find((item) => item.id === params.profile_id);
+  if (!profile) return failure(-32602, `no profile \`${params.profile_id}\``);
+  let copy = structuredClone(profile);
+  if (params.workflow_id !== undefined) {
+    const workflows = embedded(copy, params.workflow_id);
+    if (!workflows.length) return failure(-32602, `profile \`${profile.id}\` has no workflow \`${params.workflow_id}\``);
+    copy = { ...copy, main_workflow_id: params.workflow_id, workflows };
+  }
+  const vars = params.vars ?? {};
+  if (vars === null || typeof vars !== "object" || Array.isArray(vars)) return failure(-32602, "Invalid params");
+  for (const [varName, spec] of Object.entries(vars)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName) || !spec || typeof spec !== "object") return failure(-32005, `var \`${varName}\` is not a valid template var`);
+  }
+  const path = typeof params.path === "string" && params.path.trim() ? params.path.trim() : `mock/templates/${name}.toml`;
+  const at = state.templates.findIndex((item) => item.name === name || item.path === path);
+  if (at >= 0 && params.force !== true) return failure(-32007, `template \`${name}\` already exists at ${path}; use force to replace it`);
+  const template = {
+    name, description: params.description ?? "", path, requires: [],
+    vars: Object.entries(vars).map(([varName, spec]) => ({ name: varName, description: spec.description ?? "", ...(spec.default !== undefined ? { default: spec.default } : {}) })),
+    text: `# mock template written by template.save\n[template]\nname = "${name}"\n`, profile: copy,
+  };
+  if (at >= 0) state.templates[at] = template; else state.templates.push(template);
+  return ok({ path });
+}
+
+/** `execution.tree`: an execution and the ones it started, at any depth, from the list. */
+function executionTree(state, id, seen = new Set()) {
+  const execution = state.executions.find((item) => item.id === id);
+  seen.add(id);
+  return { execution, children: state.executions.filter((item) => item.parent === id && !seen.has(item.id)).map((child) => executionTree(state, child.id, seen)) };
+}
+
+/** A field of type `workflow` in a node's manifest, set to a workflow of the profile: the core would start it as a child. */
+function calledWorkflows(state, profile, workflow) {
+  return workflow.nodes.flatMap((node) => {
+    const type = state.manifests.find((manifest) => baseId(manifest.module.id) === baseId(node.module_id ?? ""))?.node?.find((item) => item.type === node.type);
+    return (type?.field ?? []).filter((field) => field.type === "workflow")
+      .map((field) => node.config?.[field.id])
+      .filter((id) => typeof id === "string" && id !== workflow.id && profile.workflows.some((item) => item.id === id))
+      .map((id) => ({ node: node.id, workflow: id }));
+  });
+}
+
 /** Answers the Operate methods; `null` for any other method. */
 export function operateMethod(state, method, params) {
   switch (method) {
@@ -73,6 +129,12 @@ export function operateMethod(state, method, params) {
       if (at >= 0) state.profiles[at] = profile; else state.profiles.push(profile);
       return ok({ profile_id: profile.id, path, diagnostics: [] });
     }
+    case "template.save": return saveTemplate(state, params);
+    case "execution.tree": {
+      if (typeof params.execution_id !== "string") return failure(-32602, "Invalid params");
+      if (!state.executions.some((item) => item.id === params.execution_id)) return failure(-32602, `no execution \`${params.execution_id}\``);
+      return ok(executionTree(state, params.execution_id));
+    }
     case "execution.start": {
       const profile = state.profiles.find((item) => item.id === params.profile_id);
       if (!profile) return failure(-32602, "Unknown profile");
@@ -85,12 +147,23 @@ export function operateMethod(state, method, params) {
       });
       const execution = { id: `exec-${++state.runs}`, profile_id: profile.id, workflow_id: workflow.id, project_id: profile.project_id, state: { status: "running" }, ...(disabled.length ? { disabled } : {}) };
       state.executions.push(execution);
+      // A node that calls a workflow starts it as a child, as `call_workflow` does in the core.
+      for (const [index, call] of calledWorkflows(state, profile, workflow).entries()) {
+        state.executions.push({ id: `exec-${++state.runs}`, profile_id: profile.id, workflow_id: call.workflow, project_id: profile.project_id, state: { status: "running" }, parent: execution.id, caller: call.node, tag: `${call.node}/${index}` });
+      }
       return ok(execution);
     }
     case "execution.stop": {
       const execution = state.executions.find((item) => item.id === params.id);
       if (!execution) return failure(-32602, `no execution \`${params.id}\``);
-      execution.state = { status: "stopped" };
+      // Stopping a parent stops its children, at any depth.
+      const stop = (id) => {
+        for (const item of state.executions) if (item.id === id || item.parent === id) {
+          if (LIVE.has(item.state.status)) item.state = { status: "stopped" };
+          if (item.id !== id) stop(item.id);
+        }
+      };
+      stop(execution.id);
       return ok(execution);
     }
     case "event.list": {

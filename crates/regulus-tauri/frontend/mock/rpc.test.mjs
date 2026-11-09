@@ -355,3 +355,49 @@ test("config.client gives [client] as written, the project's on top key by key, 
   assert.equal(demo.sources["tui.value_max"], "regulus.toml");
   assert.equal(session(request("config.client", { project_id: "nope" })).error.code, -32010);
 });
+
+test("template.save writes the saved profile or one workflow of it, refusing an existing name without force", () => {
+  const session = negotiatedSession();
+  const [{ id }] = session(request("profile.list")).result;
+  const saved = session(request("template.save", { name: "mine", profile_id: id, description: "d", vars: { who: { description: "who", default: "me" }, model: { description: "m" } } }));
+  assert.deepEqual(saved.result, { path: "mock/templates/mine.toml" });
+  const listed = session(request("template.list")).result.find((item) => item.name === "mine");
+  assert.deepEqual(listed.vars, [{ name: "who", description: "who", default: "me" }, { name: "model", description: "m" }]);
+  assert.equal(session(request("template.save", { name: "mine", profile_id: id })).error.code, -32007);
+  assert.deepEqual(session(request("template.save", { name: "mine", profile_id: id, force: true, path: "/tmp/x.toml" })).result, { path: "/tmp/x.toml" });
+  // One workflow: it becomes the main one, with the workflows its boxes place (at any depth).
+  const box = (nodeId, inner) => ({ id: nodeId, type: "workflow", name: nodeId, module_id: null, resource: null, ports: [], config: {}, position: { x: 0, y: 0 }, internal_workflow_id: inner, exposed_parameters: [] });
+  const workflow = (wid, kind, nodes = []) => ({ id: wid, name: wid, kind, module_id: null, nodes, wires: [], layout: { x: 0, y: 0, width: 0, height: 0 } });
+  const boxes = { id: "boxes", name: "boxes", project_id: null, extends: null, main_workflow_id: "main",
+    workflows: [workflow("main", "main", [box("b", "inner")]), workflow("inner", "extra", [box("d", "deep")]), workflow("deep", "extra"), workflow("unused", "extra")] };
+  assert.ok(session(request("profile.save", { profile: boxes })).result);
+  session(request("template.save", { name: "part", profile_id: "boxes", workflow_id: "inner" }));
+  const applied = session(request("template.apply", { template: "part", vars: {}, id: "part-copy" })).result;
+  const copy = session(request("profile.get", { id: applied.profile_id })).result;
+  assert.equal(copy.main_workflow_id, "inner");
+  assert.deepEqual(copy.workflows.map((item) => item.id), ["inner", "deep"]);
+  assert.equal(session(request("template.save", { name: "", profile_id: id })).error.code, -32005);
+  assert.equal(session(request("template.save", { name: "x", profile_id: id, vars: { "2bad": { description: "" } } })).error.code, -32005);
+  assert.equal(session(request("template.save", { name: "x", profile_id: "nope" })).error.code, -32602);
+  assert.equal(session(request("template.save", { name: "x", profile_id: id, workflow_id: "nope" })).error.code, -32602);
+});
+
+test("execution.tree nests the children a calling node starts; stopping the parent stops them", () => {
+  const session = negotiatedSession();
+  const caller = { id: "c", type: "call", name: "c", module_id: "regulus/flow@0.1.0", resource: null, ports: [], config: { workflow: "worker" }, position: { x: 0, y: 0 }, internal_workflow_id: null, exposed_parameters: [] };
+  const workflow = (id, kind, nodes = []) => ({ id, name: id, kind, module_id: null, nodes, wires: [], layout: { x: 0, y: 0, width: 0, height: 0 } });
+  const profile = { id: "calls", name: "calls", project_id: null, extends: null, main_workflow_id: "main", workflows: [workflow("main", "main", [caller]), workflow("worker", "extra")] };
+  assert.ok(session(request("profile.save", { profile })).result);
+  const root = session(request("execution.start", { profile_id: "calls" })).result;
+  const listed = session(request("execution.list")).result;
+  const child = listed.find((item) => item.parent === root.id);
+  assert.deepEqual({ workflow: child.workflow_id, caller: child.caller, tag: child.tag }, { workflow: "worker", caller: "c", tag: "c/0" });
+  const tree = session(request("execution.tree", { execution_id: root.id })).result;
+  assert.equal(tree.execution.id, root.id);
+  assert.deepEqual(tree.children.map((item) => [item.execution.id, item.children.length]), [[child.id, 0]]);
+  assert.deepEqual(session(request("execution.tree", { execution_id: child.id })).result.children, []);
+  assert.equal(session(request("execution.tree", { execution_id: "nope" })).error.code, -32602);
+  assert.equal(session(request("execution.tree", {})).error.code, -32602);
+  session(request("execution.stop", { id: root.id }));
+  assert.deepEqual(session(request("execution.list")).result.find((item) => item.id === child.id).state, { status: "stopped" });
+});
