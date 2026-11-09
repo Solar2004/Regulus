@@ -908,6 +908,8 @@ impl Inner {
                     self.finish_job(&job, Some(outputs), None);
                 }
             }
+            // Only called children here: they return, they never send outputs.
+            ChildEventKind::Output { .. } => {}
             ChildEventKind::Ended { state } => {
                 let Some(mut flight) = lock(&self.flights).by_child.remove(child) else {
                     return;

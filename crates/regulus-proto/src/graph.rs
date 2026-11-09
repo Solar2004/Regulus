@@ -242,6 +242,13 @@ pub struct Execution {
     /// stops with it and its result goes back to the node that called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// For a child: the node of the parent that started it, so a client can draw who
+    /// started what (1.16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    /// For a child: the free text its caller gave it to tell its children apart (1.16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

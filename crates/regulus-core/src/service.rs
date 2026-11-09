@@ -9,24 +9,24 @@ use regulus_proto::ModuleState;
 use regulus_proto::{
     code, method, BusEvent, BusEventKind, ChildEvent, ChildEventKind, ClientSettings, Direction,
     DisabledNode, EventListParams, EventPage, Execution, ExecutionStartParams, ExecutionState,
-    HookAnswer, HookDispatchParams, HookDispatched, HookReply, IdParams, ModuleManifestParams,
-    NameParams, Node, NodeCall, NodeEvent, NodeStart, PortRef, Profile, ProfileDeleted,
-    ProfileSaveParams, ProfileSaved, ProjectDetails, ProjectFilter, ProjectOpenParams,
-    ProjectSummary, ProjectTrustParams, ProjectTrusted, SecretSetParams, Severity, TemplateApplied,
-    TemplateApplyParams, TemplateParams, TemplateText, WireKind, Workflow, WorkflowSendParams,
-    WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
+    ExecutionTree, ExecutionTreeParams, HookAnswer, HookDispatchParams, HookDispatched, HookReply,
+    IdParams, ModuleManifestParams, NameParams, Node, NodeCall, NodeEvent, NodeStart, PortRef,
+    Profile, ProfileDeleted, ProfileSaveParams, ProfileSaved, ProjectDetails, ProjectFilter,
+    ProjectOpenParams, ProjectSummary, ProjectTrustParams, ProjectTrusted, SecretSetParams,
+    Severity, TemplateApplied, TemplateApplyParams, TemplateParams, TemplateText, WireKind,
+    Workflow, WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::bus::{self, ChildNews, Journal, Listing, Pending};
+use crate::bus::{self, ChildNews, Journal, Listing, News, Pending};
 use crate::config::{BusConfig, CallConfig, HooksConfig, LocalModulesConfig, Resume};
 use crate::graph::{
     boundary, check_fields, check_profile, check_vetoed, flatten, missing_workflow, start_order,
     wire_end, End,
 };
-use crate::module::{Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
+use crate::module::{ChildMode, ChildOptions, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::process::{LocalSpec, ProcessModule};
 use crate::profiles::ProfileStore;
 use crate::projects::{self, Project, ProjectError, Projects};
@@ -176,6 +176,9 @@ struct Live {
     link: Option<CallLink>,
     /// The depth cut dropped a chain of this child before it returned: it is failed.
     cut: bool,
+    /// For a child: the endpoints its caller bound to "uses" inputs of its workflow, what
+    /// its `self.<port>` "uses" wires lead to (`ChildOptions::bindings`).
+    bindings: HashMap<String, Vec<Endpoint>>,
 }
 
 impl Live {
@@ -191,19 +194,24 @@ impl Live {
             nesting: 0,
             link: None,
             cut: false,
+            bindings: HashMap::new(),
         }
     }
 }
 
-/// The node a child execution answers to (`ModuleCtx::call_workflow`).
+/// The node a child execution answers to (`ModuleCtx::start_child`).
 struct CallLink {
     parent: String,
     node: String,
     /// The depth of the call in the parent's chain: news from the child is delivered at
-    /// it, so a loop through calls is still cut by `bus.max_depth`.
+    /// it, so a loop through calls is still cut by `bus.max_depth`. A send to a kept child
+    /// deeper in the parent's chain moves it down.
     depth: u32,
     /// It already returned its one value.
     returned: bool,
+    /// Kept (`ChildMode::Keep`): every output goes to the caller and the child goes on.
+    keep: bool,
+    tag: Option<String>,
 }
 
 /// Why a local module of a project that is not trusted does not run.
@@ -1127,6 +1135,7 @@ impl Core {
                 json(self.list_executions(filter.project_id.as_deref())?)
             }
             method::EXECUTION_START => json(self.start(parse(params)?)?),
+            method::EXECUTION_TREE => json(self.tree(parse(params)?)?),
             method::EXECUTION_STOP => {
                 let params: IdParams = parse(params)?;
                 // One still waiting for `recover` is stopped there. One that is not live
@@ -1320,6 +1329,8 @@ impl Core {
                 state: ExecutionState::Starting,
                 disabled: Vec::new(),
                 parent: None,
+                caller: None,
+                tag: None,
             };
             executions.push(Live::new(number, execution.clone(), workflow.clone()));
             (number, execution, workflow)
@@ -1381,15 +1392,15 @@ impl Core {
                     (Some(parent), Some(node)) => Some((parent.clone(), node)),
                     _ => None,
                 };
-                let ended = (
-                    execution.id.clone(),
-                    execution.workflow_id.clone(),
-                    execution.state.clone(),
-                );
+                let ended = ChildNews {
+                    execution_id: execution.id.clone(),
+                    workflow_id: execution.workflow_id.clone(),
+                    tag: execution.tag.clone(),
+                    kind: News::Ended(execution.state.clone()),
+                };
                 self.push_live(number, execution, Arc::new(workflow));
                 if let Some((parent, node)) = news {
-                    let (id, workflow_id, state) = ended;
-                    self.tell_parent(&parent, end_news(&id, workflow_id, state, node, 0));
+                    self.tell_parent(&parent, end_news(ended, node, 0));
                 }
                 continue;
             }
@@ -1450,6 +1461,20 @@ impl Core {
         checkpoints: &HashMap<String, Value>,
     ) -> Result<Execution, RpcError> {
         let id = id.to_string();
+        // What a caller bound to the "uses" inputs of this child: its `self` wires lead
+        // there.
+        let bound: HashSet<String> = self
+            .executions()
+            .iter()
+            .find(|live| live.execution.id == id)
+            .map(|live| {
+                live.bindings
+                    .iter()
+                    .filter(|(_, endpoints)| !endpoints.is_empty())
+                    .map(|(port, _)| port.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Resources (no module) take part as they are; a module node needs its module.
         let mut active: HashSet<&str> = workflow
@@ -1481,7 +1506,9 @@ impl Core {
                         w.kind == WireKind::Uses
                             && w.to.node_id == node.id
                             && w.to.port_id == p.id
-                            && active.contains(w.from.node_id.as_str())
+                            && (active.contains(w.from.node_id.as_str())
+                                || (w.from.node_id == WORKFLOW_SELF
+                                    && bound.contains(&w.from.port_id)))
                     })
                 })
                 .map(|p| p.id.clone())
@@ -1772,36 +1799,20 @@ impl Core {
         Ok(store.checkpoint(project.as_deref(), &node.execution_id, &node.node_id, state)?)
     }
 
-    /// What is wired over "uses" into `port` of a node (`ModuleCtx::resolve`).
+    /// What is wired over "uses" into `port` of a node (`ModuleCtx::resolve`). A wire from
+    /// the workflow's own input (`self.<port>`) leads to what the caller of a child bound
+    /// to it, as long as that is still live.
     pub(crate) fn resolve(&self, node: &NodeRef, port: &str) -> Vec<Endpoint> {
-        let (workflow, active) = {
-            let executions = self.executions();
-            let Some(live) = executions
-                .iter()
-                .find(|live| live.execution.id == node.execution_id)
-            else {
-                return Vec::new();
-            };
-            (live.workflow.clone(), live.active.clone())
-        };
-        workflow
-            .wires
+        let executions = self.executions();
+        let Some(live) = executions
             .iter()
-            .filter(|w| {
-                w.kind == WireKind::Uses && w.to.node_id == node.node_id && w.to.port_id == port
-            })
-            .filter(|w| active.contains(&w.from.node_id))
-            .filter_map(|w| {
-                let from = workflow.nodes.iter().find(|n| n.id == w.from.node_id)?;
-                Some(Endpoint {
-                    node: NodeRef {
-                        execution_id: node.execution_id.clone(),
-                        node_id: from.id.clone(),
-                    },
-                    module_id: from.module_id.clone()?,
-                })
-            })
-            .collect()
+            .find(|live| live.execution.id == node.execution_id)
+        else {
+            return Vec::new();
+        };
+        uses_endpoints(live, &executions, |w| {
+            w.to.node_id == node.node_id && w.to.port_id == port
+        })
     }
 
     /// Calls the module behind an endpoint with a `NodeCall` (`ModuleCtx::call`).
@@ -1838,49 +1849,37 @@ impl Core {
     /// the time limit. One that does not answer in time, fails or does not take hooks
     /// counts as no answer, with the reason; its thread is left to finish on its own.
     fn hook(&self, params: HookDispatchParams) -> Result<HookDispatched, RpcError> {
-        let (workflow, active) = {
+        let targets: Vec<Endpoint> = {
             let executions = self.executions();
             let live = executions
                 .iter()
                 .find(|live| live.execution.id == params.execution_id)
                 .filter(|live| live.execution.state.is_live())
                 .ok_or_else(|| RpcError::invalid_params("Unknown or stopped execution"))?;
-            (live.workflow.clone(), live.active.clone())
-        };
-        if !active.contains(&params.node_id) {
-            return Err(RpcError::invalid_params(format!(
-                "node `{}` is not running in `{}`",
-                params.node_id, params.execution_id
-            )));
-        }
-        let is_hook = |wire: &&regulus_proto::Wire| {
-            [End::From, End::To].into_iter().any(|end| {
-                wire_end(&workflow, wire, end).is_some_and(|p| p.capability == HOOK_CAPABILITY)
+            if !live.active.contains(&params.node_id) {
+                return Err(RpcError::invalid_params(format!(
+                    "node `{}` is not running in `{}`",
+                    params.node_id, params.execution_id
+                )));
+            }
+            let workflow = live.workflow.clone();
+            let is_hook = |wire: &regulus_proto::Wire| {
+                [End::From, End::To].into_iter().any(|end| {
+                    wire_end(&workflow, wire, end).is_some_and(|p| p.capability == HOOK_CAPABILITY)
+                })
+            };
+            uses_endpoints(live, &executions, |w| {
+                w.to.node_id == params.node_id && is_hook(w)
             })
-        };
-        let targets: Vec<Endpoint> = workflow
-            .wires
-            .iter()
-            .filter(|w| w.kind == WireKind::Uses && w.to.node_id == params.node_id)
-            .filter(is_hook)
-            .filter(|w| {
+            .into_iter()
+            .filter(|target| {
                 params
                     .hook_id
                     .as_ref()
-                    .is_none_or(|id| *id == w.from.node_id)
+                    .is_none_or(|id| *id == target.node.node_id)
             })
-            .filter(|w| active.contains(&w.from.node_id))
-            .filter_map(|w| {
-                let from = workflow.node(&w.from.node_id)?;
-                Some(Endpoint {
-                    node: NodeRef {
-                        execution_id: params.execution_id.clone(),
-                        node_id: from.id.clone(),
-                    },
-                    module_id: from.module_id.clone()?,
-                })
-            })
-            .collect();
+            .collect()
+        };
         if let Some(id) = params.hook_id.as_ref().filter(|_| targets.is_empty()) {
             return Err(RpcError::invalid_params(format!(
                 "no running hook `{id}` is wired into `{}`",
@@ -2005,20 +2004,22 @@ impl Core {
     // --- child executions -----------------------------------------------------------
 
     /// Starts a child execution of `workflow_id`, from the profile of `caller`'s
-    /// execution, with `inputs` put on its workflow's "then" inputs (`ModuleCtx::call_workflow`).
+    /// execution, with `inputs` put on its workflow's "then" inputs (`ModuleCtx::start_child`).
     /// Returns its id at once: its nodes start on a thread of their own, and what it
-    /// returns reaches `caller` as `node/child`, through the parent's queue.
+    /// returns or puts out reaches `caller` as `node/child`, through the parent's queue.
     ///
     /// Refused: a caller that is not a running node of `module_id`, a workflow that is
     /// missing or declares no "then" output (nothing would come back), an input that is
-    /// not one of its "then" inputs, a call deeper than `bus.max_depth` in the caller's
-    /// chain, and the `[call]` limits.
-    pub(crate) fn call_workflow(
+    /// not one of its "then" inputs, a binding to a port that is not one of its "uses"
+    /// inputs, a call deeper than `bus.max_depth` in the caller's chain, and the `[call]`
+    /// limits.
+    pub(crate) fn start_child(
         &self,
         module_id: &str,
         caller: &NodeRef,
         workflow_id: &str,
         inputs: Vec<(String, Value)>,
+        opts: ChildOptions,
     ) -> Result<String, ModuleError> {
         let depth = bus::handling_depth(&caller.execution_id).map_or(0, |d| d + 1);
         if depth > self.bus.max_depth {
@@ -2110,6 +2111,18 @@ impl Core {
                 })?;
             fed.push((port, capability, value));
         }
+        let mut bindings: HashMap<String, Vec<Endpoint>> = HashMap::new();
+        for (port, endpoints) in opts.bindings {
+            let declared = target
+                .port(&port)
+                .is_some_and(|p| p.direction == Direction::Input && p.kind == WireKind::Uses);
+            if !declared {
+                return Err(ModuleError::InvalidParams(format!(
+                    "`{port}` is not a \"uses\" input of workflow `{workflow_id}`"
+                )));
+            }
+            bindings.entry(port).or_default().extend(endpoints);
+        }
         let workflow = Arc::new(flatten(profile, target).map_err(ModuleError::InvalidParams)?);
         if let Some(error) = missing_workflow(profile, &workflow, |id| self.registry.manifest(id)) {
             return Err(ModuleError::InvalidParams(error));
@@ -2126,6 +2139,8 @@ impl Core {
             state: ExecutionState::Starting,
             disabled: Vec::new(),
             parent: Some(caller.execution_id.clone()),
+            caller: Some(caller.node_id.clone()),
+            tag: opts.tag.clone(),
         };
         self.persist(|store| {
             store.insert_child(number, &execution, &workflow, Some(&caller.node_id))
@@ -2133,11 +2148,14 @@ impl Core {
         let id = execution.id.clone();
         let mut child = Live::new(number, execution, workflow.clone());
         child.nesting = nesting;
+        child.bindings = bindings;
         child.link = Some(CallLink {
             parent: caller.execution_id.clone(),
             node: caller.node_id.clone(),
             depth,
             returned: false,
+            keep: opts.mode == ChildMode::Keep,
+            tag: opts.tag,
         });
         // Like `workflow.send`: each input starts a chain of the child's own, delivered
         // once its nodes run.
@@ -2184,12 +2202,13 @@ impl Core {
             let Some(link) = child.link.take() else {
                 return;
             };
-            let workflow_id = child.execution.workflow_id.clone();
-            let state = child.execution.state.clone();
-            (
-                link.parent,
-                end_news(child_id, workflow_id, state, link.node, link.depth),
-            )
+            let news = ChildNews {
+                execution_id: child_id.into(),
+                workflow_id: child.execution.workflow_id.clone(),
+                tag: link.tag,
+                kind: News::Ended(child.execution.state.clone()),
+            };
+            (link.parent, end_news(news, link.node, link.depth))
         };
         self.tell_parent(&news.0, news.1);
     }
@@ -2236,6 +2255,178 @@ impl Core {
         if spawned.is_err() {
             self.stop(child_id, true);
         }
+    }
+
+    /// The index in `executions` of `child`, if it is a child that `caller`, a node of
+    /// `module_id`, started; `None` if it is not in memory (an earlier run's). Refused: a
+    /// caller that is not this module's node, a child of another node.
+    fn own_child(
+        executions: &[Live],
+        module_id: &str,
+        caller: &NodeRef,
+        child: &str,
+    ) -> Result<Option<usize>, ModuleError> {
+        let parent = executions
+            .iter()
+            .find(|live| live.execution.id == caller.execution_id)
+            .ok_or_else(|| {
+                ModuleError::Failed(format!("execution `{}` is gone", caller.execution_id))
+            })?;
+        let owned = parent
+            .workflow
+            .node(&caller.node_id)
+            .and_then(|n| n.module_id.as_deref())
+            .is_some_and(|m| base_id(m) == base_id(module_id));
+        if !owned {
+            return Err(ModuleError::InvalidParams(format!(
+                "node `{}` does not belong to this module",
+                caller.node_id
+            )));
+        }
+        let not_child = || {
+            ModuleError::InvalidParams(format!(
+                "execution `{child}` is not a child of node `{}`",
+                caller.node_id
+            ))
+        };
+        match executions
+            .iter()
+            .position(|live| live.execution.id == child)
+        {
+            None => Ok(None),
+            Some(index) => {
+                let execution = &executions[index].execution;
+                if execution.parent.as_deref() == Some(caller.execution_id.as_str())
+                    && execution.caller.as_deref() == Some(caller.node_id.as_str())
+                {
+                    Ok(Some(index))
+                } else {
+                    Err(not_child())
+                }
+            }
+        }
+    }
+
+    /// `ModuleCtx::send_child`: like `workflow.send` on a live child of `caller`.
+    pub(crate) fn send_child(
+        &self,
+        module_id: &str,
+        caller: &NodeRef,
+        child: &str,
+        port: &str,
+        value: Value,
+    ) -> Result<(), ModuleError> {
+        let depth = bus::handling_depth(&caller.execution_id).map_or(0, |d| d + 1);
+        if depth > self.bus.max_depth {
+            return Err(ModuleError::Failed(format!(
+                "the send is more than {} deliveries deep",
+                self.bus.max_depth
+            )));
+        }
+        let mut executions = self.executions();
+        let index = Self::own_child(&executions, module_id, caller, child)?.ok_or_else(|| {
+            ModuleError::InvalidParams(format!(
+                "execution `{child}` is not a child of node `{}`",
+                caller.node_id
+            ))
+        })?;
+        let live = &mut executions[index];
+        if !live.execution.state.is_live() {
+            return Err(ModuleError::Failed(format!(
+                "execution `{child}` is not running"
+            )));
+        }
+        let capability = live
+            .workflow
+            .port(port)
+            .filter(|p| p.direction == Direction::Input && p.kind == WireKind::Then)
+            .map(|p| p.capability.clone())
+            .ok_or_else(|| {
+                ModuleError::InvalidParams(format!(
+                    "`{port}` is not a \"then\" input of workflow `{}`",
+                    live.execution.workflow_id
+                ))
+            })?;
+        // What comes back from this send is news at least as deep as the send.
+        if let Some(link) = live.link.as_mut() {
+            link.depth = link.depth.max(depth);
+        }
+        let from = PortRef {
+            node_id: WORKFLOW_SELF.into(),
+            port_id: port.into(),
+        };
+        self.publish(live, from, capability, value, 0);
+        drop(executions);
+        self.kick(child);
+        Ok(())
+    }
+
+    /// `ModuleCtx::stop_child`: stops a child of `caller`, which then hears `ended`.
+    pub(crate) fn stop_child(
+        &self,
+        module_id: &str,
+        caller: &NodeRef,
+        child: &str,
+    ) -> Result<Execution, ModuleError> {
+        self.child_status(module_id, caller, child)?;
+        self.stop(child, true)
+            .ok_or_else(|| ModuleError::Failed(format!("execution `{child}` is gone")))
+    }
+
+    /// `ModuleCtx::child_status`: a child of `caller` as it is now; one from an earlier
+    /// run of the core, as the store has it.
+    pub(crate) fn child_status(
+        &self,
+        module_id: &str,
+        caller: &NodeRef,
+        child: &str,
+    ) -> Result<Execution, ModuleError> {
+        let not_child = || {
+            ModuleError::InvalidParams(format!(
+                "execution `{child}` is not a child of node `{}`",
+                caller.node_id
+            ))
+        };
+        {
+            let executions = self.executions();
+            if let Some(index) = Self::own_child(&executions, module_id, caller, child)? {
+                return Ok(executions[index].execution.clone());
+            }
+        }
+        let stored = self
+            .stored(child)
+            .map_err(|e| ModuleError::Failed(e.message))?
+            .ok_or_else(not_child)?;
+        let execution = stored.execution;
+        if execution.parent.as_deref() == Some(caller.execution_id.as_str())
+            && execution.caller.as_deref() == Some(caller.node_id.as_str())
+        {
+            Ok(execution)
+        } else {
+            Err(not_child())
+        }
+    }
+
+    /// `execution.tree`: an execution and its children, from what `execution.list` has.
+    fn tree(&self, params: ExecutionTreeParams) -> Result<ExecutionTree, RpcError> {
+        let all = self.list_executions(None)?;
+        let root = all
+            .iter()
+            .find(|e| e.id == params.execution_id)
+            .cloned()
+            .ok_or_else(|| RpcError::invalid_params("Unknown execution"))?;
+        fn grow(all: &[Execution], execution: Execution) -> ExecutionTree {
+            let children = all
+                .iter()
+                .filter(|e| e.parent.as_deref() == Some(execution.id.as_str()))
+                .map(|e| grow(all, e.clone()))
+                .collect();
+            ExecutionTree {
+                execution,
+                children,
+            }
+        }
+        Ok(grow(&all, root))
     }
 
     // --- bus ----------------------------------------------------------------------------
@@ -2635,19 +2826,29 @@ impl Core {
         let Some(news) = pending.child else {
             return;
         };
-        let kind = match news.ended {
-            Some(state) => ChildEventKind::Ended { state },
-            None => ChildEventKind::Returned {
-                port: pending.from.port_id.clone(),
-                capability: pending.capability.clone(),
-                value: pending.value,
-                event: pending.event,
+        let (port, capability) = (pending.from.port_id.clone(), pending.capability.clone());
+        let (value, event) = (pending.value, pending.event);
+        let kind = match news.kind {
+            News::Ended(state) => ChildEventKind::Ended { state },
+            News::Returned => ChildEventKind::Returned {
+                port,
+                capability,
+                value,
+                event,
+            },
+            News::Output => ChildEventKind::Output {
+                port,
+                capability,
+                value,
+                event,
             },
         };
-        let returned = matches!(kind, ChildEventKind::Returned { .. });
+        // A value from the child is reported on the bus like a delivery; an end is not.
+        let returned = !matches!(kind, ChildEventKind::Ended { .. });
         let args = ChildEvent {
             execution_id: news.execution_id,
             workflow_id: news.workflow_id,
+            tag: news.tag,
             kind,
         };
         let node = workflow
@@ -2741,8 +2942,20 @@ impl Core {
             .as_mut()
             .filter(|link| output && !link.returned)
             .map(|link| {
-                link.returned = true;
-                (link.parent.clone(), link.node.clone(), link.depth)
+                link.returned = !link.keep;
+                let news = if link.keep {
+                    News::Output
+                } else {
+                    News::Returned
+                };
+                let tag = link.tag.clone();
+                (
+                    link.parent.clone(),
+                    link.node.clone(),
+                    link.depth,
+                    news,
+                    tag,
+                )
             });
         let workflow_id = live.execution.workflow_id.clone();
         let value = link.as_ref().map(|_| pending.value.clone());
@@ -2753,9 +2966,10 @@ impl Core {
             drop(executions);
             return self.fail_cut(execution_id);
         }
-        let (Some((parent, node, depth)), Some(value)) = (link, value) else {
+        let (Some((parent, node, depth, news, tag)), Some(value)) = (link, value) else {
             return;
         };
+        let keep = matches!(news, News::Output);
         if let Some(parent_live) = executions
             .iter_mut()
             .find(|live| live.execution.id == parent && live.execution.state.is_live())
@@ -2775,41 +2989,84 @@ impl Core {
                 child: Some(ChildNews {
                     execution_id: execution_id.into(),
                     workflow_id,
-                    ended: None,
+                    tag,
+                    kind: news,
                 }),
             });
         }
         drop(executions);
         self.kick(&parent);
-        // It returned: what is still on its way inside is dropped with it.
-        self.stop(execution_id, true);
+        // It returned: what is still on its way inside is dropped with it. A kept child
+        // goes on.
+        if !keep {
+            self.stop(execution_id, true);
+        }
     }
 }
 
-/// The news that a child ended, for the node `node` of its parent.
-fn end_news(
-    child_id: &str,
-    workflow_id: String,
-    state: ExecutionState,
-    node: String,
-    depth: u32,
-) -> Pending {
+/// The news that a child ended (`news`), for the node `node` of its parent.
+fn end_news(news: ChildNews, node: String, depth: u32) -> Pending {
     Pending {
         event: 0,
         depth,
-        from: child_self(child_id, ""),
+        from: child_self(&news.execution_id, ""),
         capability: String::new(),
         value: Value::Null,
         to: PortRef {
             node_id: node,
             port_id: String::new(),
         },
-        child: Some(ChildNews {
-            execution_id: child_id.into(),
-            workflow_id,
-            ended: Some(state),
-        }),
+        child: Some(news),
     }
+}
+
+/// The endpoints behind the "uses" wires of `live` that `wanted` picks: the nodes at
+/// their other end that take part, and for a wire from the workflow's own input
+/// (`self.<port>`), what its caller bound there, while that execution is live.
+fn uses_endpoints(
+    live: &Live,
+    executions: &[Live],
+    wanted: impl Fn(&regulus_proto::Wire) -> bool,
+) -> Vec<Endpoint> {
+    let workflow = &live.workflow;
+    let mut found = Vec::new();
+    for wire in workflow
+        .wires
+        .iter()
+        .filter(|w| w.kind == WireKind::Uses && wanted(w))
+    {
+        if wire.from.node_id == WORKFLOW_SELF {
+            let bound = live.bindings.get(&wire.from.port_id).into_iter().flatten();
+            found.extend(
+                bound
+                    .filter(|endpoint| {
+                        executions.iter().any(|other| {
+                            other.execution.id == endpoint.node.execution_id
+                                && other.execution.state.is_live()
+                        })
+                    })
+                    .cloned(),
+            );
+            continue;
+        }
+        if !live.active.contains(&wire.from.node_id) {
+            continue;
+        }
+        let Some(from) = workflow.node(&wire.from.node_id) else {
+            continue;
+        };
+        let Some(module_id) = from.module_id.clone() else {
+            continue;
+        };
+        found.push(Endpoint {
+            node: NodeRef {
+                execution_id: live.execution.id.clone(),
+                node_id: from.id.clone(),
+            },
+            module_id,
+        });
+    }
+    found
 }
 
 fn starting(state: &ExecutionState) -> bool {

@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 /// edit: `module.manifest`, `profile.save` and `profile.delete`; 1.12 adds projects:
 /// `project.list`, `project.get`, `project.open`, `project.close`, `project_id` on
 /// templates and `template.apply`; 1.13 adds `config.client`; 1.14 adds `project.trust`
-/// and the `blocked` module state; 1.15 adds `project` to the entries of `module.list`.
-pub const PROTOCOL: &str = "1.15";
+/// and the `blocked` module state; 1.15 adds `project` to the entries of `module.list`;
+/// 1.16 adds children a node keeps (`ChildEventKind::Output`, `ChildEvent.tag`,
+/// `Execution.caller` and `Execution.tag`) and `execution.tree`.
+pub const PROTOCOL: &str = "1.16";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -66,6 +68,9 @@ pub mod method {
     /// `[client]` of `config.toml` with a project's own `[client]` on top, for the clients
     /// (`ProjectFilter` → `ClientSettings`). Read-only.
     pub const CONFIG_CLIENT: &str = "config.client";
+    /// An execution and its children, as deep as they go (`ExecutionTreeParams` →
+    /// `ExecutionTree`). Read-only (1.16).
+    pub const EXECUTION_TREE: &str = "execution.tree";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -95,6 +100,7 @@ pub mod method {
         PROJECT_CLOSE,
         PROJECT_TRUST,
         CONFIG_CLIENT,
+        EXECUTION_TREE,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -235,13 +241,17 @@ pub struct NodeStart {
 }
 
 /// What a module receives with `node/child`, inside `NodeCall.args`: news from a child
-/// execution one of its nodes started (`ModuleCtx::call_workflow`). A child returns at
-/// most once, then ends; one that fails or is stopped from outside only ends.
+/// execution one of its nodes started (`ModuleCtx::call_workflow` or `start_child`). A
+/// child it calls returns at most once, then ends; one it keeps sends every output, until
+/// it ends. One that fails or is stopped from outside only ends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChildEvent {
     /// The child execution.
     pub execution_id: String,
     pub workflow_id: String,
+    /// What the caller tagged the child with when it started it (1.16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     #[serde(flatten)]
     pub kind: ChildEventKind,
 }
@@ -259,9 +269,32 @@ pub enum ChildEventKind {
         /// The `seq` of the child's `emitted` event from `self.<port>`.
         event: u64,
     },
+    /// A value reached an output of a child the node keeps (1.16): the child goes on.
+    Output {
+        /// The output port of the child's workflow.
+        port: String,
+        capability: String,
+        value: serde_json::Value,
+        /// The `seq` of the child's `emitted` event from `self.<port>`.
+        event: u64,
+    },
     /// The child is no longer live: `stopped` after it returned or was stopped,
     /// `failed` if a node of it failed to start.
     Ended { state: crate::ExecutionState },
+}
+
+/// `execution.tree`: an execution, the one at the root of the answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionTreeParams {
+    pub execution_id: String,
+}
+
+/// The answer of `execution.tree`: the execution asked about and its children, each with
+/// its own, in the order they started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionTree {
+    pub execution: crate::Execution,
+    pub children: Vec<ExecutionTree>,
 }
 
 /// A hole a template declares (`[template.vars]`). Without a default, applying it needs a

@@ -242,7 +242,9 @@ impl Flow {
         let child: ChildEvent = parse(call.args.clone())?;
         let here = self.here(call);
         match child.kind {
-            ChildEventKind::Returned { port, value, .. } => {
+            // This node only calls; a kept child's output would be handled the same.
+            ChildEventKind::Returned { port, value, .. }
+            | ChildEventKind::Output { port, value, .. } => {
                 if here.call.node.port(&port).is_none() {
                     return Err(ModuleError::InvalidParams(format!(
                         "node `{}` has no output `{port}` for what `{}` returned",

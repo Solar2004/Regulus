@@ -1075,6 +1075,8 @@ mod tests {
             state,
             disabled: vec![],
             parent: None,
+            caller: None,
+            tag: None,
         }
     }
 

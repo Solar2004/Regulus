@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Weak;
 
-use regulus_proto::Manifest;
+use regulus_proto::{Execution, Manifest};
 use serde_json::Value;
 
 use crate::service::Core;
@@ -37,6 +37,31 @@ impl Endpoint {
     pub fn node(&self) -> &NodeRef {
         &self.node
     }
+}
+
+/// How a node keeps a child execution it starts (`ModuleCtx::start_child`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChildMode {
+    /// The first value that reaches a "then" output of the child returns to the caller
+    /// and the core stops the child (`ModuleCtx::call_workflow`).
+    #[default]
+    Call,
+    /// The child stays live: every value on its outputs reaches the caller as `output`,
+    /// until the node stops it (`stop_child`), it fails or its parent stops.
+    Keep,
+}
+
+/// What a node asks for when it starts a child (`ModuleCtx::start_child`).
+#[derive(Debug, Clone, Default)]
+pub struct ChildOptions {
+    pub mode: ChildMode,
+    /// Echoed in every `ChildEvent` of the child, and shown on it (`Execution.tag`). Free
+    /// text, the module's own.
+    pub tag: Option<String>,
+    /// "Uses" inputs of the child's workflow, by port id, bound to endpoints the caller
+    /// resolved on its own "uses" inputs: what the child's `self.<port>` wires lead to.
+    /// Only ports the child's workflow declares as "uses" inputs.
+    pub bindings: Vec<(String, Vec<Endpoint>)>,
 }
 
 /// The only view of the world a module gets (docs/03-modules.md §2.1). Cheap to clone:
@@ -130,8 +155,46 @@ impl ModuleCtx {
         workflow: &str,
         inputs: Vec<(String, Value)>,
     ) -> Result<String, ModuleError> {
+        self.start_child(caller, workflow, inputs, ChildOptions::default())
+    }
+
+    /// Starts a child execution like [`ModuleCtx::call_workflow`], kept as `opts.mode`
+    /// says, tagged and with "uses" inputs bound (`ChildOptions`). Returns its id at once.
+    /// A kept child counts against `[call] max_children` until it ends.
+    pub fn start_child(
+        &self,
+        caller: &NodeRef,
+        workflow: &str,
+        inputs: Vec<(String, Value)>,
+        opts: ChildOptions,
+    ) -> Result<String, ModuleError> {
         self.core()?
-            .call_workflow(&self.module_id, caller, workflow, inputs)
+            .start_child(&self.module_id, caller, workflow, inputs, opts)
+    }
+
+    /// Puts `value` on the "then" input `port` of `child`, a live child `caller` started,
+    /// as `workflow.send` would. Sent while handling an event, it goes on that chain: a
+    /// loop through a kept child is cut past `bus.max_depth` like any other.
+    pub fn send_child(
+        &self,
+        caller: &NodeRef,
+        child: &str,
+        port: &str,
+        value: Value,
+    ) -> Result<(), ModuleError> {
+        self.core()?
+            .send_child(&self.module_id, caller, child, port, value)
+    }
+
+    /// Stops `child`, a child `caller` started, and returns it as it ended. Its caller
+    /// still hears `ended`.
+    pub fn stop_child(&self, caller: &NodeRef, child: &str) -> Result<Execution, ModuleError> {
+        self.core()?.stop_child(&self.module_id, caller, child)
+    }
+
+    /// `child`, a child `caller` started, as it is now: live, or as it ended.
+    pub fn child_status(&self, caller: &NodeRef, child: &str) -> Result<Execution, ModuleError> {
+        self.core()?.child_status(&self.module_id, caller, child)
     }
 
     /// This module's own key-value space in the store, keyed by its id without version: it

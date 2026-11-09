@@ -79,6 +79,8 @@ const MIGRATIONS: &[&str] = &[
     // 2: the node of the parent a child execution answers to, so a resumed parent still
     // hears that its child was interrupted.
     "ALTER TABLE executions ADD COLUMN caller TEXT;",
+    // 3: what the caller of a child tagged it with (`ChildOptions::tag`).
+    "ALTER TABLE executions ADD COLUMN tag TEXT;",
 ];
 
 /// An execution as the store keeps it: with its number (the `N` of `exec-N`, unique in a
@@ -124,7 +126,8 @@ fn to_json(value: &impl Serialize) -> rusqlite::Result<String> {
 
 /// The columns `stored_execution` reads, in order.
 const EXECUTION_COLUMNS: &str =
-    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow, parent, caller";
+    "number, id, project_id, profile_id, workflow_id, status, reason, disabled, workflow, parent, caller, \
+     tag";
 
 fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
     let number: i64 = row.get(0)?;
@@ -138,6 +141,8 @@ fn stored_execution(row: &Row) -> rusqlite::Result<StoredExecution> {
             state: state_of(row.get(5)?, row.get(6)?)?,
             disabled: json_column(row, 7)?,
             parent: row.get(9)?,
+            caller: row.get(10)?,
+            tag: row.get(11)?,
         },
         workflow: json_column(row, 8)?,
         caller: row.get(10)?,
@@ -481,8 +486,8 @@ impl Databases {
         self.db(execution.project_id.as_deref())?.with(|conn| {
             conn.execute(
                 "INSERT INTO executions (id, number, project_id, profile_id, workflow_id,
-                     workflow, status, reason, disabled, parent, started, caller)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                     workflow, status, reason, disabled, parent, started, caller, tag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     execution.id,
                     int(number),
@@ -496,6 +501,7 @@ impl Databases {
                     execution.parent,
                     int(at),
                     caller,
+                    execution.tag,
                 ],
             )
         })?;
@@ -1098,6 +1104,8 @@ mod tests {
             state,
             disabled: Vec::new(),
             parent: None,
+            caller: None,
+            tag: None,
         }
     }
 

@@ -23,7 +23,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub use config::{BusConfig, CallConfig, Config, HooksConfig, LocalModulesConfig};
-pub use module::{parse_manifest, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
+pub use module::{
+    parse_manifest, ChildMode, ChildOptions, Endpoint, Module, ModuleCtx, ModuleError, NodeRef,
+};
 pub use profiles::ProfileStore;
 pub use registry::Registry;
 pub use secrets::Secrets;

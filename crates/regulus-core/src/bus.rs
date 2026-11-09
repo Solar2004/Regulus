@@ -31,13 +31,24 @@ pub(crate) struct Pending {
     pub child: Option<ChildNews>,
 }
 
-/// What a child execution sends back to the node that called it. `to.port_id` and
-/// `from.port_id` of its `Pending` name the child's output it returned on.
+/// What a child execution sends back to the node that started it. `to.port_id` and
+/// `from.port_id` of its `Pending` name the child's output the value came out of.
 pub(crate) struct ChildNews {
     pub execution_id: String,
     pub workflow_id: String,
-    /// Set when it ended; otherwise it returned `Pending.value`.
-    pub ended: Option<ExecutionState>,
+    /// What its caller tagged it with.
+    pub tag: Option<String>,
+    pub kind: News,
+}
+
+/// Which news a child sends.
+pub(crate) enum News {
+    /// A called child returned `Pending.value`.
+    Returned,
+    /// A kept child put `Pending.value` on one of its outputs.
+    Output,
+    /// It is no longer live.
+    Ended(ExecutionState),
 }
 
 /// Where the answer to an `event.list` comes from.

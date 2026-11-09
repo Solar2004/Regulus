@@ -98,6 +98,9 @@ impl Module for Tester {
                     ChildEventKind::Ended { state } => {
                         log(format!("{} ended {state:?}", child.execution_id));
                     }
+                    ChildEventKind::Output { .. } => {
+                        log(format!("{} output from a called child", child.execution_id));
+                    }
                 }
                 Ok(Value::Null)
             }
