@@ -4581,6 +4581,15 @@ dependencies = [
  "regulus-contract-toolset",
  "regulus-proto",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-contract-decision"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

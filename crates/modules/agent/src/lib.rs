@@ -445,6 +445,7 @@ impl Inner {
             skills,
             tools,
             hooks,
+            resume: None,
         };
         let started: engine::Started =
             parse(self.ctx.call(&engine, engine::SESSION_START, json(args)?)?)?;

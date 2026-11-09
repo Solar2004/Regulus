@@ -11,3 +11,4 @@ regulus-contract-skill.workspace = true
 regulus-contract-toolset.workspace = true
 regulus-proto.workspace = true
 serde.workspace = true
+serde_json.workspace = true

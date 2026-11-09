@@ -390,7 +390,8 @@ impl<E: AcpEngine> EngineModule<E> {
             cwd: args.cwd,
             permissions: match args.permissions {
                 contract::Permissions::Allow => Permissions::Allow,
-                contract::Permissions::Reject => Permissions::Reject,
+                // Asking lands with the session's event buffer; until then it rejects.
+                contract::Permissions::Reject | contract::Permissions::Ask => Permissions::Reject,
             },
             meta: prepared.meta,
             setup: prepared.setup,
@@ -414,6 +415,9 @@ impl<E: AcpEngine> EngineModule<E> {
                 version: agent.version,
             },
             warnings,
+            capabilities: contract::EngineCapabilities::default(),
+            native_session_id: None,
+            resumed: false,
         })
     }
 
@@ -486,6 +490,7 @@ impl<E: AcpEngine> Module for EngineModule<E> {
                 json(contract::Turn {
                     stop_reason: turn.stop_reason,
                     text: turn.text,
+                    usage: None,
                 })
             }
             contract::SESSION_STATUS => {

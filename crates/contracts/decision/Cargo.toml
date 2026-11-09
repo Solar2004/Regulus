@@ -1,0 +1,10 @@
+[package]
+name = "regulus-contract-decision"
+description = "The decision@1 capability: ask someone to choose among options, then read the choice"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
