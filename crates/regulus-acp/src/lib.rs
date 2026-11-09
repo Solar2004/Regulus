@@ -22,8 +22,8 @@ pub mod engine;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, ContentChunk, EnvVariable, InitializeRequest,
     LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    PromptRequest, PromptResponse, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
@@ -841,20 +841,65 @@ async fn turn(
             Error::Protocol(e.to_string())
         }
     };
-    session.send_prompt(text).map_err(failed)?;
+    // The SDK's send_prompt callback propagates a transport-close response as a
+    // connection error. Keep it as this request's result so process shutdown can
+    // collect the actual exit diagnostic before Outcome answers the caller.
+    let (answers, mut replies) = async_mpsc::unbounded();
+    session
+        .connection()
+        .send_request(PromptRequest::new(
+            session.session_id().clone(),
+            vec![text.into()],
+        ))
+        .on_receiving_result(
+            async move |result: Result<PromptResponse, agent_client_protocol::Error>| {
+                let _ = answers.unbounded_send(result);
+                Ok(())
+            },
+        )
+        .map_err(failed)?;
     let mut output = String::new();
     let mut cancellable = true;
+    let mut completion = None;
     loop {
-        // Reading an update is cancel-safe (a channel), so a cancel can cut in between.
-        let update = if cancellable {
-            let read = session.read_update();
-            futures::pin_mut!(read);
-            match futures::future::select(read, cancels.next()).await {
-                futures::future::Either::Left((update, _)) => Ok(update),
-                futures::future::Either::Right((asked, _)) => Err(asked),
+        if let Some(reason) = completion.take() {
+            // Response callbacks have already queued earlier notifications. Drain
+            // them before returning the response, preserving all text chunks.
+            if let Some(Ok(update)) = session.read_update().now_or_never() {
+                completion = Some(reason);
+                record_update(update, events, &mut output).await?;
+                continue;
             }
-        } else {
-            Ok(session.read_update().await)
+            return Ok(completed_turn(reason, output));
+        }
+        let update = {
+            let read = async {
+                let update = session.read_update();
+                let response = replies.next();
+                futures::pin_mut!(update, response);
+                match futures::future::select(update, response).await {
+                    futures::future::Either::Left((update, _)) => {
+                        Some(update.map_err(|_| Error::Closed))
+                    }
+                    futures::future::Either::Right((Some(Ok(response)), _)) => {
+                        completion = Some(response.stop_reason);
+                        None
+                    }
+                    futures::future::Either::Right((Some(Err(error)), _)) => {
+                        Some(Err(failed(error)))
+                    }
+                    futures::future::Either::Right((None, _)) => Some(Err(Error::Closed)),
+                }
+            };
+            futures::pin_mut!(read);
+            if cancellable {
+                match futures::future::select(read, cancels.next()).await {
+                    futures::future::Either::Left((update, _)) => Ok(update),
+                    futures::future::Either::Right((asked, _)) => Err(asked),
+                }
+            } else {
+                Ok(read.await)
+            }
         };
         let update = match update {
             Ok(update) => update,
@@ -872,37 +917,47 @@ async fn turn(
                 continue;
             }
         };
-        match update.map_err(failed)? {
-            SessionMessage::SessionMessage(dispatch) => MatchDispatch::new(dispatch)
-                .if_notification(async |note: SessionNotification| {
-                    if let Some(event) = event_of(&note.update) {
-                        events.push(event);
-                    }
-                    if let SessionUpdate::AgentMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(text),
-                        ..
-                    }) = note.update
-                    {
-                        output.push_str(&text.text);
-                    }
-                    Ok(())
-                })
-                .await
-                .otherwise_ignore()
-                .map_err(failed)?,
-            SessionMessage::StopReason(reason) => {
-                let stop_reason = serde_json::to_value(reason)
-                    .ok()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "unknown".into());
-                return Ok(Turn {
-                    stop_reason,
-                    text: output,
-                });
-            }
-            _ => {}
+        let Some(update) = update else { continue };
+        match update? {
+            SessionMessage::StopReason(reason) => return Ok(completed_turn(reason, output)),
+            update => record_update(update, events, &mut output).await?,
         }
     }
+}
+
+fn completed_turn(reason: impl serde::Serialize, text: String) -> Turn {
+    let stop_reason = serde_json::to_value(reason)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "unknown".into());
+    Turn { stop_reason, text }
+}
+
+async fn record_update(
+    update: SessionMessage,
+    events: &Events,
+    output: &mut String,
+) -> Result<(), Error> {
+    if let SessionMessage::SessionMessage(dispatch) = update {
+        MatchDispatch::new(dispatch)
+            .if_notification(async |note: SessionNotification| {
+                if let Some(event) = event_of(&note.update) {
+                    events.push(event);
+                }
+                if let SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(text),
+                    ..
+                }) = note.update
+                {
+                    output.push_str(&text.text);
+                }
+                Ok(())
+            })
+            .await
+            .otherwise_ignore()
+            .map_err(|e| Error::Protocol(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// The sessions an engine module keeps open, under keys of its own: two agents may well

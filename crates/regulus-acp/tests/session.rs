@@ -36,6 +36,10 @@ fn opens_a_session_and_keeps_context_across_prompts() {
     let turn = session.prompt("hello").unwrap();
     assert_eq!(turn.stop_reason, "end_turn");
     assert_eq!(turn.text, "echo: hello");
+    for n in 0..32 {
+        let text = format!("chunked reply {n}");
+        assert_eq!(session.prompt(&text).unwrap().text, format!("echo: {text}"));
+    }
     assert_eq!(session.prompt("cwd").unwrap().text, "/tmp/regulus-acp-test");
 }
 
