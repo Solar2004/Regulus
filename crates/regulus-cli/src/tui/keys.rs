@@ -306,6 +306,9 @@ pub struct Tuning {
     /// The footprint the app draws a node with, so new nodes do not overlap there.
     pub node_width: f64,
     pub node_height: f64,
+    /// Records of a conversation kept on screen (and by `regulus talk` for `/history`),
+    /// like the app's `conversationKeep`. 0 keeps everything.
+    pub conversation_keep: usize,
 }
 
 impl Default for Tuning {
@@ -317,6 +320,7 @@ impl Default for Tuning {
             cascade_step: 40.0,
             node_width: 250.0,
             node_height: 160.0,
+            conversation_keep: 5000,
         }
     }
 }
@@ -346,6 +350,7 @@ impl Tuning {
                 "cascade_step" => tuning.cascade_step = number,
                 "node_width" => tuning.node_width = number,
                 "node_height" => tuning.node_height = number,
+                "conversation_keep" => tuning.conversation_keep = number as usize,
                 other => return Err(format!("tui.{other}: no such setting")),
             }
         }

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use jsonrpsee::ws_client::WsClient;
+use regulus_cli::conversation::describe_event;
 use regulus_cli::modules::TOOLS_MCP_COMMAND;
 use regulus_cli::rpc;
 use regulus_core::config::{default_home, Config};
@@ -1369,41 +1370,6 @@ async fn agent_history(
             }
             tokio::time::sleep(poll).await;
         }
-    }
-}
-
-/// One session event (`agent.engine@1`) in a line.
-fn describe_event(event: &Value) -> String {
-    let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
-    match event["kind"].as_str().unwrap_or_default() {
-        "text" => format!("text {:?}", text("text")),
-        "thought" => format!("thought {:?}", text("text")),
-        "tool_call" => format!("tool {} {} ({})", text("id"), text("title"), text("status")),
-        "tool_update" => format!("tool {} {}", text("id"), text("status")),
-        "plan" => format!("plan {}", event["entries"]),
-        "permission_request" => {
-            let options: Vec<String> = event["options"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|o| o["id"].as_str().unwrap_or_default().to_string())
-                .collect();
-            format!(
-                "permission {} asked: {} [{}]",
-                text("id"),
-                text("title"),
-                options.join(" | ")
-            )
-        }
-        "permission_resolved" => format!(
-            "permission {} answered: {}",
-            text("id"),
-            event["option"].as_str().unwrap_or("cancelled")
-        ),
-        "turn_started" => "turn started".into(),
-        "turn_ended" => format!("turn ended ({})", text("stop_reason")),
-        "state" => format!("state {}", text("state")),
-        other => format!("{other} {event}"),
     }
 }
 
