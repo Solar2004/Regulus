@@ -159,6 +159,12 @@ enum Command {
         #[arg(long, value_name = "TEXT")]
         once: Option<String>,
     },
+    /// Workers of a delegate node (module delegation) of a running execution, without
+    /// an agent in between.
+    Workers {
+        #[command(subcommand)]
+        command: WorkersCommand,
+    },
     /// Messages through a channel node of a running execution.
     Msg {
         #[command(subcommand)]
@@ -413,6 +419,50 @@ enum AgentCommand {
     },
     /// Ask the agent to end the turn in flight.
     Cancel { execution: String, node: String },
+}
+
+#[derive(Subcommand)]
+enum WorkersCommand {
+    /// Every worker: id, kind, state, results waiting, its execution.
+    Ls { execution: String, node: String },
+    /// Start a worker briefed with the text; prints its id.
+    Create {
+        execution: String,
+        node: String,
+        /// The kind of worker (a key of the node's `workers`); default: the node's.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Its name, besides its id.
+        #[arg(long)]
+        name: Option<String>,
+        /// The engine node it runs on, among those wired into the node's `engine`.
+        #[arg(long)]
+        engine: Option<String>,
+        #[arg(required = true, num_args = 1..)]
+        brief: Vec<String>,
+    },
+    /// Send a worker more text.
+    Send {
+        execution: String,
+        node: String,
+        worker: String,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Print a worker's next result, waiting up to `--wait-ms` for one.
+    Result {
+        execution: String,
+        node: String,
+        worker: String,
+        #[arg(long, default_value_t = 0)]
+        wait_ms: u64,
+    },
+    /// Stop a worker.
+    Close {
+        execution: String,
+        node: String,
+        worker: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -847,6 +897,7 @@ async fn main() -> Result<()> {
             let ws = client.connect().await?;
             regulus_cli::talk::run(&ws, &config, &settings, talk).await
         }
+        Command::Workers { command } => workers(&client, command).await,
         Command::Msg { command } => match command {
             MsgCommand::Send {
                 execution,
@@ -1350,6 +1401,87 @@ const EXPOSE_TOML: &str = r#"# Paste into the main workflow of the profile that 
   from = { node_id = "service-http", port_id = "engine" }
   to = { node_id = "service-{workflow}", port_id = "engine" }
 "#;
+
+/// `regulus workers …`: the `delegation.*` methods of the module that runs delegate nodes.
+async fn workers(client: &Client<'_>, command: WorkersCommand) -> Result<()> {
+    let on = |execution: &str, node: &str| serde_json::json!({ "execution_id": execution, "node_id": node });
+    match command {
+        WorkersCommand::Ls { execution, node } => {
+            let list: Value = client
+                .request("delegation.workers", on(&execution, &node))
+                .await?;
+            for worker in list.as_array().into_iter().flatten() {
+                println!(
+                    "{:<6} {:<12} {:<12} {:>3} waiting  {}",
+                    worker["worker"].as_str().unwrap_or_default(),
+                    worker["kind"].as_str().unwrap_or_default(),
+                    worker["state"].as_str().unwrap_or_default(),
+                    worker["pending_results"].as_u64().unwrap_or_default(),
+                    worker["execution"].as_str().unwrap_or_default(),
+                );
+            }
+        }
+        WorkersCommand::Create {
+            execution,
+            node,
+            kind,
+            name,
+            engine,
+            brief,
+        } => {
+            let mut params = on(&execution, &node);
+            params["brief"] = Value::String(brief.join(" "));
+            for (key, value) in [("kind", kind), ("name", name), ("engine", engine)] {
+                if let Some(value) = value {
+                    params[key] = Value::String(value);
+                }
+            }
+            let worker: Value = client.request("delegation.create", params).await?;
+            println!("{}", worker["worker"].as_str().unwrap_or_default());
+        }
+        WorkersCommand::Send {
+            execution,
+            node,
+            worker,
+            text,
+        } => {
+            let mut params = on(&execution, &node);
+            params["worker"] = Value::String(worker);
+            params["text"] = Value::String(text.join(" "));
+            let _: Value = client.request("delegation.send", params).await?;
+        }
+        WorkersCommand::Result {
+            execution,
+            node,
+            worker,
+            wait_ms,
+        } => {
+            let mut params = on(&execution, &node);
+            params["worker"] = Value::String(worker);
+            params["wait_ms"] = wait_ms.into();
+            let result: Value = client.request("delegation.result", params).await?;
+            match &result["value"] {
+                Value::Null => {
+                    let state = result["state"].as_str().unwrap_or_default();
+                    eprintln!("regulus: no result yet ({state})");
+                }
+                Value::String(text) => println!("{text}"),
+                other => println!("{other}"),
+            }
+        }
+        WorkersCommand::Close {
+            execution,
+            node,
+            worker,
+        } => {
+            let mut params = on(&execution, &node);
+            params["worker"] = Value::String(worker);
+            let closed: Value = client.request("delegation.close", params).await?;
+            println!("{}", closed["state"].as_str().unwrap_or_default());
+        }
+    }
+    Ok(())
+}
 
 /// `regulus agent history`: prints the recorded conversation after `since`, page after
 /// page; with `follow`, polls every `client.refresh_ms` for more until Ctrl-C.

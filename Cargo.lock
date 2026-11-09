@@ -4516,6 +4516,7 @@ dependencies = [
  "regulus-contract-agent-engine",
  "regulus-core",
  "regulus-module-agent",
+ "regulus-module-delegation",
  "regulus-module-engine-claude",
  "regulus-module-flow",
  "regulus-module-hello",
@@ -4546,6 +4547,7 @@ dependencies = [
  "regulus-core",
  "regulus-module-agent",
  "regulus-module-communication",
+ "regulus-module-delegation",
  "regulus-module-documents",
  "regulus-module-engine-claude",
  "regulus-module-engine-native",
@@ -4698,6 +4700,21 @@ dependencies = [
  "regulus-proto",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "regulus-module-delegation"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-participant",
+ "regulus-contract-tool",
+ "regulus-core",
+ "regulus-module-flow",
+ "regulus-module-hello",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

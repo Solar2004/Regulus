@@ -31,3 +31,4 @@ regulus-module-flow = { path = "../modules/flow" }
 regulus-module-hello = { path = "../modules/hello" }
 regulus-module-tools = { path = "../modules/tools" }
 regulus-module-tools-mcp = { path = "../modules/tools-mcp" }
+regulus-module-delegation = { path = "../modules/delegation" }

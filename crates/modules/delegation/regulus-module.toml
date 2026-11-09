@@ -1,0 +1,147 @@
+[module]
+id             = "regulus/delegation@0.1.0"
+name           = "Delegation"
+requires_proto = "^1.16"
+# Manage the workers of a `delegate` node without an agent (CLI `regulus workers …`):
+# `delegation.workers` { execution_id, node_id } → [worker…];
+# `delegation.create` { execution_id, node_id, brief, kind?, name?, engine? } → worker;
+# `delegation.send` { execution_id, node_id, worker, text };
+# `delegation.result` { execution_id, node_id, worker, wait_ms? };
+# `delegation.close` { execution_id, node_id, worker }.
+methods = ["delegation.workers", "delegation.create", "delegation.send", "delegation.result", "delegation.close"]
+
+# Workers that Regulus keeps alive (docs/13-blocks.md §3.3, docs/12-agents.md §5). Each
+# worker is a child execution of one of the workflows in `workers`, kept running
+# (`ChildMode::Keep`) with the stable id `w-<n>` as its tag: its brief goes to the
+# child's "then" input `prompt_port`, every value on its output `result_port` is buffered
+# as a result, and more text goes to the same input later. An agent drives it through the
+# tools on `tools` (`worker_create`, `worker_status`, `worker_result`, `worker_send`,
+# `worker_close`, `worker_list`); a channel, through `participant` (a group: `@w-1` in a
+# message reaches that worker, no mention reaches all). Whatever is wired into a "uses"
+# input of the node goes to the worker's "uses" input of the same id: wire engines into
+# `engine` and a worker workflow with a `self.engine` input runs on the one
+# `worker_create` names (by node id), or on the first. These are not the CLI's own
+# subagents (the `subagent` slot of the Agent box): those live inside one agent process;
+# these are Regulus executions, seen in `regulus exec tree`, stopped with their parent.
+[[node]]
+type = "delegate"
+name = "Delegate"
+
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id         = "participant"
+  name       = "participant"
+  capability = "participant@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id          = "engine"
+  name        = "engine"
+  capability  = "agent.engine@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "provider"
+  name       = "provider"
+  capability = "llm.endpoint@1"
+  direction  = "input"
+  kind       = "uses"
+
+  # Each value: a worker to create, as the brief text or `{ brief, kind?, name?, engine? }`;
+  # an array creates one per element.
+  [[node.port]]
+  id          = "create"
+  name        = "create"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # `{ worker, execution, kind, name, engine }` for each worker started.
+  [[node.port]]
+  id         = "created"
+  name       = "created"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `{ worker, port, value }` for each result a worker gives.
+  [[node.port]]
+  id         = "result"
+  name       = "result"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `{ worker, state }` for each worker that is no longer live.
+  [[node.port]]
+  id         = "closed"
+  name       = "closed"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The kinds of worker, `kind = "<workflow id>"`: what `worker_create` may start.
+  [[node.field]]
+  id      = "workers"
+  type    = "map"
+  default = {}
+
+  # The kind `worker_create` starts when it names none. Empty: the first in `workers`.
+  [[node.field]]
+  id      = "default_kind"
+  type    = "text"
+  default = ""
+
+  # Live workers at once; 0: as many as `[call] max_children` lets one execution have.
+  [[node.field]]
+  id      = "max_workers"
+  type    = "number"
+  default = 4
+
+  # The group's name in channels. Empty: the node's id.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""
+
+  # The worker output whose values are its results. Empty: every output.
+  [[node.field]]
+  id      = "result_port"
+  type    = "text"
+  default = "reply"
+
+  # The worker input that takes the brief and every later message.
+  [[node.field]]
+  id      = "prompt_port"
+  type    = "text"
+  default = "prompt"
+
+  # yes: when the node stops, it stops its workers (the core stops them with their parent
+  # execution anyway).
+  [[node.field]]
+  id      = "close_on_stop"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]
+
+  # Results kept per worker until read; past it the oldest go.
+  [[node.field]]
+  id      = "max_results"
+  type    = "number"
+  default = 100
+
+  # The longest `worker_result` may wait for a result, in milliseconds.
+  [[node.field]]
+  id      = "max_wait_ms"
+  type    = "number"
+  default = 600000

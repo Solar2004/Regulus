@@ -1,0 +1,19 @@
+[package]
+name = "regulus-module-delegation"
+description = "Regulus delegation: a node that lets an agent create, brief, follow and close worker workflows it keeps alive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+regulus-contract-tool.workspace = true
+regulus-contract-participant.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+regulus-module-hello = { path = "../hello" }
+regulus-module-flow = { path = "../flow" }
+toml.workspace = true
