@@ -369,7 +369,7 @@ fn cancel(here: &Here) -> Value {
 }
 
 /// Why a child that ended without an answer counts as failed.
-fn reason(state: &ExecutionState) -> String {
+pub(crate) fn reason(state: &ExecutionState) -> String {
     match state {
         ExecutionState::Failed { reason } => reason.clone(),
         other => {

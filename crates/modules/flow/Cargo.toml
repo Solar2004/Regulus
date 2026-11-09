@@ -1,7 +1,7 @@
 [package]
 license.workspace = true
 name = "regulus-module-flow"
-description = "Regulus flow logic: Call, Batch, Switch, Loop, Join, Fan-out, Wait, Variable and Convert"
+description = "Regulus flow logic: Call, Batch, Tool, Switch, Loop, Join, Fan-out, Wait, Variable and Convert"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 regulus-core.workspace = true
 regulus-proto.workspace = true
+regulus-contract-tool.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

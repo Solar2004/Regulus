@@ -4517,8 +4517,12 @@ dependencies = [
  "regulus-core",
  "regulus-module-agent",
  "regulus-module-engine-claude",
+ "regulus-module-flow",
+ "regulus-module-hello",
  "regulus-module-human",
  "regulus-module-providers",
+ "regulus-module-tools",
+ "regulus-module-tools-mcp",
  "regulus-proto",
  "serde",
  "serde_json",
@@ -4775,6 +4779,7 @@ name = "regulus-module-flow"
 version = "0.1.0"
 dependencies = [
  "regex",
+ "regulus-contract-tool",
  "regulus-core",
  "regulus-module-hello",
  "regulus-proto",

@@ -133,6 +133,92 @@ name = "Batch"
   default = "continue"
   options = ["continue", "cancel"]
 
+# A workflow as a tool (`tool@1`, docs/13-blocks.md §3.2): wire `tools` into a Tools box
+# and an agent calls the workflow like any other tool. Each call runs `workflow` as a
+# called child, its arguments on the child's "then" inputs. The node's "then" inputs
+# mirror the workflow's, like `call`'s (`field.workflow_ports_mismatch` otherwise), and
+# make the arguments' schema: one property per input, a string for `text@1`/`path@1`,
+# any value otherwise; or, with `input` set, one `text` string for that input. What the
+# child returns is the answer, `{ port, value }`, and also leaves on the node's output of
+# the same id. `call` mode waits up to `timeout_ms`; `job` mode answers `{ job }` at once
+# and adds `<name>_status`, `<name>_result` and `<name>_cancel`. Whatever is wired into a
+# "uses" input the node declares goes to the child's input of the same id: swap what is
+# wired there and the tool runs on something else, with no change to the tool.
+[[node]]
+type = "tool"
+name = "Workflow tool"
+
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id         = "in"
+  name       = "in"
+  capability = "text@1"
+  direction  = "input"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The id of a workflow of this profile with at least one "then" output.
+  [[node.field]]
+  id      = "workflow"
+  type    = "workflow"
+  default = ""
+
+  # The tool's name for the agent: letters, digits, `_` and `-`. Empty: the node's id.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""
+
+  # What it does, for the agent to decide when to call it. Empty: says which workflow.
+  [[node.field]]
+  id      = "description"
+  type    = "text"
+  default = ""
+
+  # call: the answer comes back in the same call. job: a handle at once, and three more
+  # tools to follow it.
+  [[node.field]]
+  id      = "mode"
+  type    = "select"
+  default = "call"
+  options = ["call", "job"]
+
+  # call mode: milliseconds to wait for the answer, then the child is stopped; 0: no limit.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 600000
+
+  # Calls and running jobs at once; past it a call is refused. 0: no limit here.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # The one "then" input that takes the `text` argument. Empty: one property per input.
+  [[node.field]]
+  id      = "input"
+  type    = "text"
+  default = ""
+
+  # job mode: finished jobs remembered for `_result`; the oldest go first. 0: all.
+  [[node.field]]
+  id      = "jobs_keep"
+  type    = "number"
+  default = 100
+
 # The nodes below take any capability: their ports are declared on each node in the
 # profile, and the ones here are the defaults the canvas starts from. A value leaves with
 # the capability of the output it goes out on, unchanged; to change what a value is, put

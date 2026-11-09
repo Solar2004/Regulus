@@ -27,3 +27,7 @@ regulus-module-agent = { path = "../modules/agent" }
 regulus-module-providers = { path = "../modules/providers" }
 regulus-module-engine-claude = { path = "../modules/engine-claude" }
 regulus-module-human = { path = "../modules/human" }
+regulus-module-flow = { path = "../modules/flow" }
+regulus-module-hello = { path = "../modules/hello" }
+regulus-module-tools = { path = "../modules/tools" }
+regulus-module-tools-mcp = { path = "../modules/tools-mcp" }

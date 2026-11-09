@@ -1,7 +1,7 @@
 //! Flow logic (docs/13-blocks.md §3.2): the nodes that decide where a value goes next.
 //! `call` runs a workflow as a child execution per value; `batch` runs one per element
 //! of an array, a few at a time, and collects the answers; `switch` routes by rules;
-//! `loop` repeats a body until a rule or a cap; `join` waits for several branches;
+//! `tool` offers a workflow to agents as a `tool@1` operation; `loop` repeats a body until a rule or a cap; `join` waits for several branches;
 //! `fanout` copies or splits; `wait` delays without holding the bus; `variable` keeps a
 //! value in the store; `convert` changes what a value is between capabilities.
 //!
@@ -16,6 +16,7 @@ mod join;
 mod repeat;
 mod route;
 mod rule;
+mod tool;
 mod variable;
 mod wait;
 
@@ -65,6 +66,8 @@ pub struct Flow {
     memory: Mutex<HashMap<String, Value>>,
     /// The batches each `batch` node has going.
     batches: batch::Batches,
+    /// The calls each `tool` node waits on, and its jobs.
+    tools: tool::Tools,
 }
 
 pub(crate) fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ModuleError> {
@@ -203,6 +206,7 @@ impl Flow {
             memory: Mutex::default(),
             regexes: rule::Regexes::default(),
             batches: batch::Batches::default(),
+            tools: tool::Tools::default(),
         }
     }
 
@@ -239,6 +243,7 @@ impl Flow {
             "wait" => wait::start(&here),
             "join" => join::start(&here),
             "loop" => repeat::start(&here),
+            "tool" => tool::start(&here),
             _ => Ok(Value::Null),
         }
     }
@@ -250,6 +255,7 @@ impl Flow {
         lock(&self.joins).remove(&me);
         self.timers.cancel(&me);
         self.batches.stop(&me);
+        self.tools.stop(&me);
         Ok(Value::Null)
     }
 
@@ -258,8 +264,10 @@ impl Flow {
     fn child(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let child: ChildEvent = parse(call.args.clone())?;
         let here = self.here(call);
-        if here.call.node.node_type == "batch" {
-            return batch::child(&here, child);
+        match here.call.node.node_type.as_str() {
+            "batch" => return batch::child(&here, child),
+            "tool" => return tool::child(&here, child),
+            _ => {}
         }
         match child.kind {
             // This node only calls; a kept child's output would be handled the same.
@@ -288,6 +296,24 @@ impl Flow {
     }
 }
 
+impl Flow {
+    /// `tool@1` on a `tool` node: what it offers, and running it.
+    fn tool_method(&self, method: &str, mut call: NodeCall) -> Result<Value, ModuleError> {
+        if call.node.node_type != "tool" {
+            return Err(ModuleError::InvalidParams(format!(
+                "node type `{}` offers no tools",
+                call.node.node_type
+            )));
+        }
+        let args = std::mem::take(&mut call.args);
+        let here = self.here(call);
+        if method == regulus_contract_tool::LIST {
+            return tool::list(&here);
+        }
+        tool::call(&here, parse(args)?)
+    }
+}
+
 impl Default for Flow {
     fn default() -> Self {
         Self::new()
@@ -310,6 +336,9 @@ impl Module for Flow {
             method::NODE_CHILD => self.child(parse(params)?),
             method::NODE_STOP => self.stop(parse(params)?),
             method::NODE_START => self.start(parse(params)?),
+            regulus_contract_tool::LIST | regulus_contract_tool::CALL => {
+                self.tool_method(method, parse(params)?)
+            }
             other => Err(ModuleError::UnknownMethod(other.into())),
         }
     }
@@ -345,7 +374,9 @@ pub(crate) mod tests {
         for (node_type, _) in EVENTS {
             assert!(manifest.node_type(node_type).is_some(), "{node_type}");
         }
-        assert_eq!(manifest.nodes.len(), EVENTS.len());
+        // `tool` takes calls from agents, not events.
+        assert!(manifest.node_type("tool").is_some());
+        assert_eq!(manifest.nodes.len(), EVENTS.len() + 1);
     }
 
     #[test]

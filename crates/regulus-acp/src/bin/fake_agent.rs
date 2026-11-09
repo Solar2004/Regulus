@@ -7,6 +7,7 @@
 //! - `permission` asks the client for permission and answers the option it chose
 //! - `provider` answers what `providers/set` received before the session, or `<unset>`
 //! - `meta` answers the `_meta` of `session/new`
+//! - `mcp` answers the `mcpServers` of `session/new`
 //! - `exit` kills the process mid-turn, saying so on stderr
 //! - `hang` answers nothing until `session/cancel`, then ends the turn as `cancelled`
 //! - `deaf` never answers, cancel or not
@@ -86,6 +87,7 @@ fn main() {
     let mut cwd = String::new();
     let mut provider = Value::Null;
     let mut meta = Value::Null;
+    let mut mcp = Value::Null;
     while let Some(Ok(line)) = lines.next() {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -101,6 +103,7 @@ fn main() {
             Some("session/new") => {
                 cwd = params["cwd"].as_str().unwrap_or_default().to_string();
                 meta = params["_meta"].clone();
+                mcp = params["mcpServers"].clone();
                 json!({ "sessionId": "fake-session" })
             }
             Some("session/load") if loads => {
@@ -147,6 +150,8 @@ fn main() {
                 if text == "exit" {
                     eprintln!("fake-agent: told to exit");
                     std::process::exit(3);
+                } else if text == "mcp" {
+                    chunk(&mut out, &session, &mcp.to_string());
                 } else if text == "cwd" {
                     chunk(&mut out, &session, &cwd);
                 } else if let Some(name) = text.strip_prefix("env ") {
