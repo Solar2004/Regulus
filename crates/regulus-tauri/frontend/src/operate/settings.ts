@@ -1,10 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { clientValue, useClientConfig, type ClientSettings } from "@/core/clientConfig";
+import { readConfiguredBindings, readOwnBindings, bindingKey, type ConfiguredBinding, type ConversationBinding } from "./conversation";
 import { defaultLayout, readLayout, type PanelEntry } from "./panels";
 
 /** Where `config.client` sets the panels of an execution (docs/04-client.md §8). */
 export const panelsKey = "operate.panels";
+/** Where `config.client` binds workflows as conversations: `[{ profile, workflow, input, output }]`. */
+export const conversationsKey = "operate.conversations";
 
 /** The panel layout in effect: the person's on this device, else config.toml's, else the default. */
 export const effectivePanels = (own: PanelEntry[] | null, configured: PanelEntry[] | null): PanelEntry[] => own ?? configured ?? defaultLayout();
@@ -23,6 +26,8 @@ export const operateLimits = {
   startTimeoutMs: { default: 120000, min: 5000, max: 600000 },
   /** How long an `agent.prompt` turn may take. */
   agentTimeoutMs: { default: 600000, min: 5000, max: 3600000 },
+  /** Entries, replies and activity kept on screen per conversation; older ones drop off. */
+  conversationKeep: { default: 5000, min: 100, max: 50000 },
 } as const;
 
 export type OperateSettingKey = keyof typeof operateLimits;
@@ -99,6 +104,13 @@ interface OperateSettingsState extends OperateSettings {
   /** What applies now (`effectivePanels`). */
   panels: PanelEntry[];
   setPanels: (panels: PanelEntry[]) => void;
+  /** Workflows the person bound as conversations here, by `<profile>/<workflow>`. Persisted; reset leaves them. */
+  ownConversations: Record<string, ConversationBinding>;
+  /** `operate.conversations` of `config.client` (read-only), and its file. */
+  configuredConversations: ConfiguredBinding[];
+  conversationsFrom: string | null;
+  /** Binds a workflow of a profile as a conversation; null forgets the person's choice. */
+  bindConversation: (profileId: string, workflowId: string, binding: ConversationBinding | null) => void;
   setSetting: (key: OperateSettingKey, value: number) => void;
   setProject: (projectId: string | null) => void;
   /** Drops the person's changes: config.toml or the defaults apply again. */
@@ -117,6 +129,13 @@ export const useOperateSettings = create<OperateSettingsState>()(persist((set, g
   panelsFrom: null,
   panels: defaultLayout(),
   setPanels: (panels) => set({ ownPanels: panels, panels }),
+  ownConversations: {},
+  configuredConversations: [],
+  conversationsFrom: null,
+  bindConversation: (profileId, workflowId, binding) => {
+    const { [bindingKey(profileId, workflowId)]: _dropped, ...rest } = get().ownConversations;
+    set({ ownConversations: binding ? { ...rest, [bindingKey(profileId, workflowId)]: binding } : rest });
+  },
   setSetting: (key, value) => {
     const overrides = { ...get().overrides, ...sanitizeOverrides({ [key]: value }) };
     set({ overrides, ...effectiveSettings(overrides, get().configured) });
@@ -126,7 +145,9 @@ export const useOperateSettings = create<OperateSettingsState>()(persist((set, g
   applyClient: (settings) => {
     const { values, from } = configuredSettings(settings);
     const configuredPanels = readLayout(clientValue(settings.client, panelsKey), "hidden");
+    const configuredConversations = readConfiguredBindings(clientValue(settings.client, conversationsKey));
     set({
+      configuredConversations, conversationsFrom: configuredConversations.length ? settings.sources[conversationsKey] ?? "config.toml" : null,
       configured: values, configuredFrom: from, ...effectiveSettings(get().overrides, values),
       configuredPanels, panelsFrom: configuredPanels ? settings.sources[panelsKey] ?? "config.toml" : null, panels: effectivePanels(get().ownPanels, configuredPanels),
     });
@@ -136,9 +157,9 @@ export const useOperateSettings = create<OperateSettingsState>()(persist((set, g
   version: 1,
   // Without `migrate`, zustand drops a stored state of another version; `merge` reads both.
   migrate: (stored) => stored as OperateSettingsState,
-  partialize: (state) => ({ overrides: state.overrides, projectId: state.projectId, ownPanels: state.ownPanels }),
+  partialize: (state) => ({ overrides: state.overrides, projectId: state.projectId, ownPanels: state.ownPanels, ownConversations: state.ownConversations }),
   merge: (saved, current): OperateSettingsState => {
-    const stored = (saved ?? {}) as { overrides?: unknown; projectId?: unknown; ownPanels?: unknown };
+    const stored = (saved ?? {}) as { overrides?: unknown; projectId?: unknown; ownPanels?: unknown; ownConversations?: unknown };
     // Before version 1 every setting was saved, changed or not: only a value away from the
     // default counts as a change. One the person set back to the default is lost as a change
     // and config.toml may now set it; nothing tells the two apart in the old data.
@@ -147,7 +168,8 @@ export const useOperateSettings = create<OperateSettingsState>()(persist((set, g
     const projectId = typeof stored.projectId === "string" ? stored.projectId : null;
     // A saved layout gets the panels added since, shown.
     const ownPanels = readLayout(stored.ownPanels, "shown");
-    return { ...current, overrides, projectId, ...effectiveSettings(overrides, current.configured), ownPanels, panels: effectivePanels(ownPanels, current.configuredPanels) };
+    const ownConversations = readOwnBindings(stored.ownConversations);
+    return { ...current, overrides, projectId, ...effectiveSettings(overrides, current.configured), ownPanels, panels: effectivePanels(ownPanels, current.configuredPanels), ownConversations };
   },
 }));
 

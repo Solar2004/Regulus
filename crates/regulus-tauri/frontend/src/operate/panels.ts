@@ -4,6 +4,7 @@
 // (docs/04-client.md §8). Pure: tested in panels.test.ts.
 import type { Port, Workflow } from "@/composition/model";
 import type { LocaleKey } from "@/lib/i18n";
+import { hasConversation } from "./conversation";
 import type { Execution } from "./model";
 
 export type Placement = "main" | "aside";
@@ -30,6 +31,8 @@ const always = () => true;
 /** Every panel the view knows, in their default order. */
 export const panelRegistry = [
   { id: "nodes", title: "operate.nodes.title", placement: "main", isAvailable: always },
+  // A direct agent node, or a workflow with text in and out (bound by the person, never by itself).
+  { id: "conversation", title: "operate.conversation.title", placement: "main", isAvailable: (ctx) => hasConversation(ctx.workflow) },
   { id: "send", title: "operate.sendForm.title", placement: "main", isAvailable: (ctx) => ctx.inputs.length > 0 },
   { id: "events", title: "operate.events.title", placement: "main", isAvailable: always },
   { id: "tree", title: "operate.tree.title", placement: "aside", isAvailable: (ctx) => !!ctx.execution.parent || ctx.children.length > 0 },

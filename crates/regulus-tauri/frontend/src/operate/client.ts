@@ -1,7 +1,7 @@
 // The Operate view's calls, over any JSON-RPC line with `request` (the shared RpcClient
 // in the app, a plain socket in the live test). Each is the same call a CLI command makes.
 import type { Profile, ProfileSummary } from "@/composition/model";
-import type { AgentTurn, ChannelMessage, EventPage, Execution, HumanAnswered, ModuleSummary, Participant, PendingDecision } from "./model";
+import type { AgentHistory, AgentTurn, ChannelMessage, EventPage, Execution, HumanAnswered, ModuleSummary, Participant, PendingDecision } from "./model";
 
 export interface Rpc {
   request<T>(method: string, params?: Record<string, unknown>, timeout?: number): Promise<T>;
@@ -19,6 +19,9 @@ export const methods = {
   eventList: "event.list",
   workflowSend: "workflow.send",
   agentPrompt: "agent.prompt",
+  agentSend: "agent.send",
+  agentHistory: "agent.history",
+  agentCancel: "agent.cancel",
   commHistory: "comm.history",
   commParticipants: "comm.participants",
   commSend: "comm.send",
@@ -66,6 +69,25 @@ export function operateApi(rpc: Rpc) {
     send: (executionId: string, port: string, value: unknown) => rpc.request<{ event: number }>(methods.workflowSend, { execution_id: executionId, port, value }),
     /** `regulus agent prompt`: answers when the turn ends. */
     prompt: (executionId: string, nodeId: string, text: string, timeout: number) => rpc.request<AgentTurn>(methods.agentPrompt, { execution_id: executionId, node_id: nodeId, text }, timeout),
+    /** `regulus agent send`: queued like a value on the box's `prompt` input; answers at once with the turn id. */
+    agentSend: (executionId: string, nodeId: string, text: string) => rpc.request<{ turn: string }>(methods.agentSend, { execution_id: executionId, node_id: nodeId, text }),
+    /** `regulus agent history [--since N]`: one page of the box's conversation after `since`. */
+    history: (executionId: string, nodeId: string, since: number, limit: number) =>
+      rpc.request<AgentHistory>(methods.agentHistory, { execution_id: executionId, node_id: nodeId, since, limit }),
+    /** Pages of `agent.history` after `since` until a short one, at most `maxPagesPerRefresh`. */
+    async historyAfter(executionId: string, nodeId: string, since: number, limit: number): Promise<AgentHistory> {
+      let page = await this.history(executionId, nodeId, since, limit);
+      const entries = [...page.entries];
+      const activity = [...page.activity];
+      for (let pages = 1; page.entries.length + page.activity.length >= limit && pages < maxPagesPerRefresh; pages++) {
+        page = await this.history(executionId, nodeId, page.next, limit);
+        entries.push(...page.entries);
+        activity.push(...page.activity);
+      }
+      return { entries, activity, next: page.next, session: page.session };
+    },
+    /** `regulus agent cancel`: asks the engine to end the turn in flight. */
+    agentCancel: (executionId: string, nodeId: string) => rpc.request<null>(methods.agentCancel, { execution_id: executionId, node_id: nodeId }),
     /** `regulus msg history` and the participants of a channel node. */
     async channel(executionId: string, nodeId: string) {
       const params = { execution_id: executionId, node_id: nodeId };

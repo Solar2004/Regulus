@@ -112,14 +112,14 @@ export interface Participant {
 /** A decision waiting for a person (module `human`, `human.list`). */
 export interface PendingDecision {
   id: string;
-  /** `approval` or `review`. */
+  /** `approval`, `review` or `decision` (a decider's question). */
   kind: string;
   execution_id: string;
   node_id: string;
   value: unknown;
   prompt: string;
   /** JSON schema of the fields an approval fills in. */
-  form?: { properties?: Record<string, { type?: string; description?: string }>; required?: string[] } | null;
+  form?: { properties?: Record<string, { type?: string; description?: string; enum?: unknown[] }>; required?: string[] } | null;
   created_ms: number;
   deadline_ms?: number;
 }
@@ -130,4 +130,76 @@ export interface HumanAnswered {
   execution_id: string;
   node_id: string;
   port: string;
+}
+
+/** One answer a permission request offers (`agent.engine@1`). */
+export interface PermissionOption {
+  id: string;
+  /** `allow_once`, `allow_always`, `reject_once` or `reject_always`. */
+  kind: string;
+  name: string;
+}
+
+interface SessionEventBase {
+  seq: number;
+  /** Milliseconds since the Unix epoch. */
+  at: number;
+  /** The engine's turn number in its session, if it happened inside a turn. */
+  turn?: number;
+}
+
+/**
+ * Something that happened in an engine's session (`agent.engine@1` `SessionEvent`, flat
+ * with a `kind` tag). A kind this app does not know reads as `other` with the raw value.
+ */
+export type SessionEvent = SessionEventBase & (
+  | { kind: "turn_started" }
+  | { kind: "text"; text: string }
+  | { kind: "thought"; text: string }
+  /** `tool_kind`, not `kind`: `kind` is the tag. */
+  | { kind: "tool_call"; id: string; title: string; tool_kind?: string; status: string }
+  | { kind: "tool_update"; id: string; status: string; content?: unknown }
+  | { kind: "plan"; entries: unknown }
+  | { kind: "permission_request"; id: string; tool?: string; title: string; options: PermissionOption[] }
+  /** `option` null: the request was cancelled. */
+  | { kind: "permission_resolved"; id: string; option: string | null }
+  | { kind: "turn_ended"; stop_reason: string }
+  | { kind: "state"; state: string }
+  | { kind: "other"; name: string; raw: unknown }
+);
+
+/** Something said in an agent box's conversation (`agent.history` `entries`). */
+export interface HistoryEntry {
+  seq: number;
+  at: number;
+  /** `user`, `agent` or `system`. */
+  role: string;
+  text: string;
+  /** The box's turn, `t-<n>`. */
+  turn?: string;
+  execution_id: string;
+}
+
+/** Something that happened in the session during the conversation (`agent.history` `activity`). */
+export interface HistoryActivity {
+  seq: number;
+  at: number;
+  turn?: string;
+  event: unknown;
+}
+
+/** Where an agent box's session stands (`agent.history` `session`). */
+export interface AgentSession {
+  engine_session_id?: string | null;
+  native_resume: boolean;
+  /** `idle`, `busy`, `ended`, `stopped` (the node stopped) or `unknown`. */
+  state: string;
+}
+
+/** `agent.history`: entries and activity share one `seq`; `next` is the cursor. */
+export interface AgentHistory {
+  entries: HistoryEntry[];
+  activity: HistoryActivity[];
+  next: number;
+  session: AgentSession;
 }

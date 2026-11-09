@@ -3,7 +3,7 @@ import { configuredSettings, effectiveSettings, operateDefaults, operateLimits, 
 import { useClientConfig } from "@/core/clientConfig";
 
 test("defaults match the TUI refresh and the documented values", () => {
-  expect(operateDefaults).toEqual({ refreshMs: 1000, eventPageSize: 200, eventKeep: 1000, maxValueLength: 240, startTimeoutMs: 120000, agentTimeoutMs: 600000 });
+  expect(operateDefaults).toEqual({ refreshMs: 1000, eventPageSize: 200, eventKeep: 1000, maxValueLength: 240, startTimeoutMs: 120000, agentTimeoutMs: 600000, conversationKeep: 5000 });
 });
 
 test("saved values are clamped, rounded, and unreadable ones take the default", () => {

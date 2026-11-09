@@ -7,6 +7,8 @@ import type { Profile } from "@/composition/model";
 import { useCore } from "@/core/connection";
 import { t, type LocaleKey } from "@/lib/i18n";
 import { operateApi, type OperateApi } from "./client";
+import { ConversationPanel } from "./Conversation";
+import { bindingFor, pickSubject, subjectsOf, type Subject } from "./conversation";
 import {
   errorText, eventTouches, fill, inputPorts, isLive, mergeEvents, nodeRows, parseSendValue, portName,
   projectsOf, runnableWorkflows, workflowOf, type NodeRow,
@@ -193,6 +195,8 @@ function ExecutionDetail({ api, execution, executions, profiles, modules, onStop
   onStop: (id: string) => void; onNotice: (notice: Notice) => void; onSelect: (id: string) => void;
 }) {
   const layout = useOperateSettings((state) => state.panels);
+  const ownConversations = useOperateSettings((state) => state.ownConversations);
+  const configuredConversations = useOperateSettings((state) => state.configuredConversations);
   const workflow = workflowOf(profiles, execution);
   const rows = nodeRows(workflow, execution, modules);
   const ports = inputPorts(workflow);
@@ -200,13 +204,23 @@ function ExecutionDetail({ api, execution, executions, profiles, modules, onStop
   const selected = rows.find((row) => row.id === nodeId) ?? null;
   const ctx: PanelContext = { execution, workflow, inputs: ports, children: executions.filter((item) => item.parent === execution.id) };
   const shown = arrangePanels(layout, ctx);
+  const conversationShown = shown.main.includes("conversation") || shown.aside.includes("conversation");
+  // What the conversation talks to: picked there, or the agent node selected, or the bound workflow.
+  const [picked, setPicked] = useState<Subject | null>(null);
+  const bound = !!bindingFor(ownConversations, configuredConversations, execution.profile_id, workflow);
+  const subject = pickSubject(picked, nodeId, workflow, bound);
+  const selectNode = (id: string | null) => {
+    setNodeId(id);
+    const row = rows.find((item) => item.id === id);
+    if (row?.kind === "agent") setPicked({ kind: "agent", nodeId: row.id });
+  };
   // Each panel of the registry, drawn; the layout says which, where and in what order.
   const render: Record<PanelId, () => React.ReactNode> = {
     nodes: () => <section className="operate-panel" aria-label={t("operate.nodes.title")}>
       <header><h3>{t("operate.nodes.title")}</h3><span className="operate-count">{rows.length}</span></header>
       {!workflow && <p className="operate-empty">{t("operate.nodes.unknown")}</p>}
       <ul className="node-rows">{rows.map((row) => <li key={row.id}>
-        <button type="button" aria-pressed={row.id === nodeId} onClick={() => setNodeId(row.id === nodeId ? null : row.id)}>
+        <button type="button" aria-pressed={row.id === nodeId} onClick={() => selectNode(row.id === nodeId ? null : row.id)}>
           <span className="node-name">{row.kind === "agent" ? <Bot size={14} /> : row.kind === "channel" ? <MessagesSquare size={14} /> : null}{row.name}</span>
           <small>{row.type}</small>
           <NodeStateMark state={row.state} />
@@ -215,10 +229,11 @@ function ExecutionDetail({ api, execution, executions, profiles, modules, onStop
         </button>
       </li>)}</ul>
     </section>,
+    conversation: () => <ConversationPanel api={api} execution={execution} workflow={workflow} rows={rows} subjects={subjectsOf(workflow)} subject={subject} onSubject={setPicked} />,
     send: () => <SendForm api={api} execution={execution} ports={ports} onSent={onNotice} />,
     events: () => <EventLog api={api} execution={execution} nodes={rows} />,
     tree: () => <TreePanel api={api} execution={execution} executions={executions} onSelect={onSelect} onStop={onStop} />,
-    node: () => selected ? <NodePanel api={api} executionId={execution.id} row={selected} /> : <p className="operate-empty">{t("operate.nodes.pick")}</p>,
+    node: () => selected ? <NodePanel api={api} executionId={execution.id} row={selected} conversationShown={conversationShown} onTalk={() => setPicked({ kind: "agent", nodeId: selected.id })} /> : <p className="operate-empty">{t("operate.nodes.pick")}</p>,
     decisions: () => <Decisions api={api} executionId={execution.id} />,
   };
   return <div className="operate-detail">

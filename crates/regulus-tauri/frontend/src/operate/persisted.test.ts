@@ -79,5 +79,23 @@ test("the panel layout: the person's saved one wins over config.toml's, which wi
   expect(state().panels.filter((entry) => !entry.hidden).map((entry) => entry.id)).toEqual(["tree", "events"]);
   expect(JSON.parse(saved.get("regulus-operate-settings")!).state.ownPanels).toBeNull();
   useClientConfig.getState().set({ client: {}, sources: {}, warnings: [] });
-  expect(state().panels.map((entry) => entry.id)).toEqual(["nodes", "send", "events", "tree", "node", "decisions"]);
+  expect(state().panels.map((entry) => entry.id)).toEqual(["nodes", "conversation", "send", "events", "tree", "node", "decisions"]);
+});
+
+test("conversation bindings: the person's are saved on the device, config.toml's are read-only, reset leaves them", async () => {
+  saved.set("regulus-operate-settings", JSON.stringify({ state: { overrides: {}, projectId: null, ownPanels: null, ownConversations: { "chat/main": { input: "go", output: "done" }, bad: { input: 3 } } }, version: 1 }));
+  const { useOperateSettings } = await import("./settings");
+  const { useClientConfig } = await import("@/core/clientConfig");
+  const state = () => useOperateSettings.getState();
+  expect(state().ownConversations).toEqual({ "chat/main": { input: "go", output: "done" } });
+  useClientConfig.getState().set({ client: { operate: { conversations: [{ profile: "p", workflow: "w", input: "a", output: "b" }, { profile: "x" }] } }, sources: { "operate.conversations": "/p/regulus.toml" }, warnings: [] });
+  expect(state().configuredConversations).toEqual([{ profile: "p", workflow: "w", input: "a", output: "b" }]);
+  expect(state().conversationsFrom).toBe("/p/regulus.toml");
+  state().bindConversation("p", "w", { input: "c", output: "b" });
+  state().bindConversation("chat", "main", null);
+  state().reset();
+  expect(JSON.parse(saved.get("regulus-operate-settings")!).state.ownConversations).toEqual({ "p/w": { input: "c", output: "b" } });
+  useClientConfig.getState().set({ client: {}, sources: {}, warnings: [] });
+  expect(state().configuredConversations).toEqual([]);
+  expect(state().conversationsFrom).toBeNull();
 });
