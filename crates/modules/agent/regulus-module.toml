@@ -219,12 +219,35 @@ name = "Agent"
   options = ["reject", "allow", "ask"]
 
   # yes: the box records the conversation (prompts, replies, failures and the session's
-  # events) in its store, per workflow node, across executions: `agent.history`.
+  # events) in its store, in the conversation `conversation` names: `agent.history`.
   [[node.field]]
   id      = "history"
   type    = "select"
   default = "yes"
   options = ["yes", "no"]
+
+  # Which conversation the node records into and, with `resume = native`, resumes the
+  # engine session of. `execution`: its own, one per execution and node; two executions
+  # of one workflow (two workers called at once) never see each other's turns, and the
+  # same execution finds it again after a reconnect or a core restart. `named`: the one
+  # called `conversation_id`, for whichever node names it next, so a later execution goes
+  # on with it. `workflow`: one per workflow node across executions, the earlier layout,
+  # which also reads what was recorded before this field existed. A shared one (`named`,
+  # `workflow`) is held by one running node at a time: another node that asks for it while
+  # it is held fails to start and says who holds it.
+  [[node.field]]
+  id      = "conversation"
+  type    = "select"
+  default = "execution"
+  options = ["execution", "named", "workflow"]
+
+  # The conversation's name with `conversation = named`: letters, digits, `-`, `_`, `.`
+  # and `:`. It is shared by the whole project: two nodes naming it continue one
+  # conversation, one after the other.
+  [[node.field]]
+  id      = "conversation_id"
+  type    = "text"
+  default = ""
 
   # How many entries, and how many events, the history keeps; the oldest go first.
   [[node.field]]
@@ -232,11 +255,13 @@ name = "Agent"
   type    = "number"
   default = 2000
 
-  # native: a new execution loads the engine's last session by its own id (ACP
-  # `session/load`), so the agent keeps its context, when the engine can; otherwise it
-  # starts a new session and the history says so. Never with `fresh_context = yes`. no:
-  # every execution starts a new session; the history is Regulus' record, not the
-  # agent's context.
+  # native: the node loads the last engine session of its conversation by the engine's
+  # own id (ACP `session/load`), so the agent keeps its context, when the engine can;
+  # otherwise it starts a new session and the history says so. Only a conversation that
+  # had a session resumes: with `conversation = execution`, the same execution after a
+  # core restart; with `named` or `workflow`, the next execution that continues it.
+  # Never with `fresh_context = yes` or `history = no`. no: every start opens a new
+  # session; the history is Regulus' record, not the agent's context.
   [[node.field]]
   id      = "resume"
   type    = "select"

@@ -1,9 +1,10 @@
 //! The box's own record of a conversation (docs/12-agents.md §5): what was asked, what
 //! the agent answered and what happened in between, kept by Regulus whatever the engine
-//! remembers. One conversation per workflow node, in the module's store of the node's
-//! project, so it outlives executions and restarts. Without a store it lives in memory.
+//! remembers. One conversation per key, in the module's store of the node's project, so
+//! it outlives restarts; the box picks the key (`conversation` field). Without a store it
+//! lives in memory.
 //!
-//! Layout under the conversation's key `K` (`conv/<workflow>/<node>`): `K/meta`, the
+//! Layout under the conversation's key `K`: `K/meta`, the
 //! counters and the native session id; `K/e/<seq>`, an entry; `K/a/<seq>`, an activity
 //! event. Entries and activity share one sequence, so one cursor pages through both.
 

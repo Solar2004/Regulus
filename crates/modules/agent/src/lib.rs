@@ -66,8 +66,19 @@ const DECISION_POLL_FIELD: &str = "decision_poll_ms";
 const ACTIVITY_EMIT_FIELD: &str = "activity_emit";
 /// The threads that wait on a decision for a permission request.
 const DECISION_THREAD: &str = "regulus-agent-decision";
-/// The store prefix of conversations: `conv/<workflow>/<node>`.
-const CONVERSATIONS: &str = "conv";
+/// Whose conversation a node continues: `execution` (its own, per execution and node),
+/// `workflow` (one per workflow node across executions, the earlier layout) or `named`
+/// (the one called `conversation_id`, for any node that names it).
+const CONVERSATION_FIELD: &str = "conversation";
+const CONVERSATION_ID_FIELD: &str = "conversation_id";
+const BY_EXECUTION: &str = "execution";
+const BY_WORKFLOW: &str = "workflow";
+const BY_NAME: &str = "named";
+/// The store prefixes of conversations: `chat/exec/<execution>/<node>`, `chat/id/<id>` and
+/// the earlier `conv/<workflow>/<node>`, which `conversation = workflow` still reads.
+const EXECUTION_CONVERSATIONS: &str = "chat/exec";
+const NAMED_CONVERSATIONS: &str = "chat/id";
+const WORKFLOW_CONVERSATIONS: &str = "conv";
 /// The kind prefix of the option that refuses a permission request.
 const REJECT_KIND: &str = "reject";
 const ENGINE_PORT: &str = "engine";
@@ -136,8 +147,9 @@ struct Running {
     dropped: bool,
     /// Held for a whole prompt: one turn at a time per node, whoever sends it.
     turn: Arc<Mutex<()>>,
-    /// The conversation the box records; none with `history = "no"`.
+    /// The conversation the box records, and its key; none with `history = "no"`.
     conv: Option<Arc<Mutex<Conversation>>>,
+    conv_key: Option<String>,
     /// Where the box is in the session's events.
     feed: Arc<Mutex<Feed>>,
     /// What the session answers permission requests with, after the downgrade of `ask`
@@ -210,8 +222,12 @@ struct Inner {
     running: Mutex<HashMap<NodeRef, Running>>,
     inboxes: Mutex<HashMap<NodeRef, Inbox>>,
     bridge: HookBridge,
-    /// Every conversation loaded, by its key, so two executions of a node share one.
+    /// Every conversation loaded, by its key: a node that goes on with one (its own
+    /// execution started again, or a shared one) finds it here without a store.
     conversations: Mutex<HashMap<String, Arc<Mutex<Conversation>>>>,
+    /// Which running node holds each conversation: one at a time, so two agents never
+    /// write into one transcript or resume one engine session at once.
+    holders: Mutex<HashMap<String, NodeRef>>,
     finished: Mutex<HashMap<NodeRef, Finished>>,
 }
 
@@ -317,6 +333,23 @@ impl Drop for Busy<'_> {
     }
 }
 
+/// A conversation taken by a node that is starting: given back when dropped armed, so a
+/// start that fails, or panics, does not keep it from everyone else.
+struct Claim<'a> {
+    inner: &'a Inner,
+    key: String,
+    me: NodeRef,
+    armed: bool,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.inner.release(&self.key, &self.me);
+        }
+    }
+}
+
 /// The directory a value of `workdir` names: a path as text, or an object with a `path`
 /// (what a workspace's `info` carries). Empty text: back to the field.
 fn workdir_value(value: &Value) -> Result<String, ModuleError> {
@@ -374,6 +407,7 @@ impl Agent {
                 inboxes: Mutex::default(),
                 bridge,
                 conversations: Mutex::default(),
+                holders: Mutex::default(),
                 finished: Mutex::default(),
             }),
         }
@@ -456,7 +490,13 @@ impl Inner {
         };
         let node = call.node;
         let cwd = self.cwd(&node, None)?;
-        let conv = (self.text(&node, HISTORY_FIELD) == YES).then(|| self.conversation(&me, &node));
+        let key = match self.text(&node, HISTORY_FIELD) == YES {
+            true => Some(self.conversation_key(&me, &node)?),
+            false => None,
+        };
+        // Held from here; given back if the start fails before the node runs.
+        let claim = key.as_deref().map(|key| self.claim(key, &me)).transpose()?;
+        let conv = key.as_ref().map(|key| self.conversation(key, &me, &node));
         let decisions = self.ctx.resolve(&me, DECISIONS_PORT).into_iter().next();
         let mut notes = Vec::new();
         let permissions = match self.text(&node, PERMISSIONS_FIELD).as_str() {
@@ -498,6 +538,9 @@ impl Inner {
             }
         }
         let answer = json(&started)?;
+        if let Some(mut claim) = claim {
+            claim.armed = false;
+        }
         self.running().insert(
             me,
             Running {
@@ -510,6 +553,7 @@ impl Inner {
                 dropped: false,
                 turn: Arc::default(),
                 conv,
+                conv_key: key,
                 feed: Arc::default(),
                 permissions,
                 decisions,
@@ -532,25 +576,88 @@ impl Inner {
             .to_string()
     }
 
-    /// The node's conversation, loaded once per key: `conv/<workflow>/<node>`, in the
-    /// store of the node's project. A core without a data directory keys it by
-    /// execution, and one without a store keeps it in memory.
-    fn conversation(&self, me: &NodeRef, node: &Node) -> Arc<Mutex<Conversation>> {
-        let depth = me.node_id.split(regulus_proto::BOX_SEPARATOR).count();
-        let workflow = self.ctx.node_dir(me).ok().and_then(|dir| {
-            dir.ancestors()
-                .nth(depth)
-                .and_then(|d| d.file_name())
-                .and_then(|d| d.to_str())
-                .map(String::from)
-        });
-        let scope = workflow.unwrap_or_else(|| me.execution_id.clone());
-        let key = format!("{CONVERSATIONS}/{scope}/{}", me.node_id);
+    /// Where the node's conversation lives, in the store of the node's project, as its
+    /// `conversation` field says: `chat/exec/<execution>/<node>` by default, so every
+    /// execution, and every child execution of one workflow, starts its own;
+    /// `chat/id/<conversation_id>` for `named`; `conv/<workflow>/<node>`, the earlier
+    /// layout, for `workflow` (a core without a data directory keys that one by
+    /// execution).
+    fn conversation_key(&self, me: &NodeRef, node: &Node) -> Result<String, ModuleError> {
+        match self.text(node, CONVERSATION_FIELD).as_str() {
+            BY_WORKFLOW => {
+                let depth = me.node_id.split(regulus_proto::BOX_SEPARATOR).count();
+                let workflow = self.ctx.node_dir(me).ok().and_then(|dir| {
+                    dir.ancestors()
+                        .nth(depth)
+                        .and_then(|d| d.file_name())
+                        .and_then(|d| d.to_str())
+                        .map(String::from)
+                });
+                let scope = workflow.unwrap_or_else(|| me.execution_id.clone());
+                Ok(format!("{WORKFLOW_CONVERSATIONS}/{scope}/{}", me.node_id))
+            }
+            BY_NAME => {
+                let id = self.text(node, CONVERSATION_ID_FIELD);
+                let fits = |c: char| c.is_ascii_alphanumeric() || "-_.:".contains(c);
+                if id.is_empty() || !id.chars().all(fits) {
+                    return Err(ModuleError::InvalidParams(format!(
+                        "`{CONVERSATION_FIELD} = {BY_NAME}` needs a `{CONVERSATION_ID_FIELD}` \
+                         of letters, digits, `-`, `_`, `.` or `:`; got `{id}`"
+                    )));
+                }
+                Ok(format!("{NAMED_CONVERSATIONS}/{id}"))
+            }
+            "" | BY_EXECUTION => Ok(format!(
+                "{EXECUTION_CONVERSATIONS}/{}/{}",
+                me.execution_id, me.node_id
+            )),
+            other => Err(ModuleError::InvalidParams(format!(
+                "`{CONVERSATION_FIELD}` is `{BY_EXECUTION}`, `{BY_WORKFLOW}` or `{BY_NAME}`, \
+                 not `{other}`"
+            ))),
+        }
+    }
+
+    /// Takes `key` for `me` until it stops. A conversation another running node holds is
+    /// refused: two agents in one transcript would mix their turns and resume each
+    /// other's engine session.
+    fn claim<'a>(&'a self, key: &str, me: &NodeRef) -> Result<Claim<'a>, ModuleError> {
+        let mut holders = lock(&self.holders);
+        if let Some(holder) = holders.get(key).filter(|holder| *holder != me) {
+            return Err(ModuleError::Failed(format!(
+                "conversation `{key}` is in use by agent `{}` in execution `{}`: stop that \
+                 execution, or give this node its own (`{CONVERSATION_FIELD} = {BY_EXECUTION}`, \
+                 or another `{CONVERSATION_ID_FIELD}`)",
+                holder.node_id, holder.execution_id
+            )));
+        }
+        holders.insert(key.to_string(), me.clone());
+        Ok(Claim {
+            inner: self,
+            key: key.to_string(),
+            me: me.clone(),
+            armed: true,
+        })
+    }
+
+    /// Gives `key` back, if `me` holds it.
+    fn release(&self, key: &str, me: &NodeRef) {
+        let mut holders = lock(&self.holders);
+        if holders.get(key) == Some(me) {
+            holders.remove(key);
+        }
+    }
+
+    /// The conversation at `key`, loaded once: from the store of the node's project, or
+    /// in memory when the core has no store.
+    fn conversation(&self, key: &str, me: &NodeRef, node: &Node) -> Arc<Mutex<Conversation>> {
         let max = usize::try_from(self.count(node, HISTORY_MAX_FIELD)).unwrap_or(usize::MAX);
         let store = self.ctx.store(Some(me)).ok();
         lock(&self.conversations)
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(Conversation::load(key, store, max))))
+            .entry(key.to_string())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(Conversation::load(key.to_string(), store, max)))
+            })
             .clone()
     }
 
@@ -667,6 +774,9 @@ impl Inner {
         // Out of the map before the engine is called: a slow engine must not hold the lock
         // every other node needs.
         let removed = self.running().remove(&me);
+        if let Some(key) = removed.as_ref().and_then(|r| r.conv_key.as_deref()) {
+            self.release(key, &me);
+        }
         if let Some(running) = &removed {
             lock(&self.finished).insert(
                 me.clone(),
