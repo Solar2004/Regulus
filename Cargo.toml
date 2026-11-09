@@ -38,6 +38,7 @@ members = [
     "crates/modules/tasks",
     "crates/modules/workspace",
     "crates/modules/documents",
+    "crates/modules/inference",
 ]
 resolver = "2"
 

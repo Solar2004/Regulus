@@ -1,0 +1,109 @@
+[module]
+id             = "regulus/inference@0.1.0"
+name           = "Inference"
+requires_proto = "^1.5"
+
+# One model call per value, without an agent (docs/13-blocks.md §3.3): the model behind
+# the provider wired into `model` (`llm.endpoint@1`, protocols `openai` and `anthropic`)
+# gets `system` and the value as the user's message; its text leaves on `out` and what it
+# cost on `usage`. Each value runs on a thread of its own, `max_in_flight` at once and
+# `max_queue` waiting; past both it goes to `error`. A network failure, a timeout, a 408,
+# a 429 or a 5xx is tried again (`retries`, `backoff_ms` apart); any other answer (a 401,
+# a bad request) is not. Errors never show the credential.
+[[node]]
+type = "complete"
+name = "Complete"
+
+  [[node.port]]
+  id         = "model"
+  name       = "model"
+  capability = "llm.endpoint@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  # The prompt as text, or `{ system?, prompt, max_tokens? }` (a node may declare it
+  # `json@1`): those win over the fields for that value.
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `{ protocol, model, input_tokens, output_tokens, total_tokens, attempts, ms }`.
+  [[node.port]]
+  id         = "usage"
+  name       = "usage"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `{ from, message, value, at }`, as the `error` node of `guards` gives it: `value` is
+  # what arrived, for a `retry` to send again.
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "error@1"
+  direction  = "output"
+  kind       = "then"
+
+  # What the model is told before the value. Empty: nothing.
+  [[node.field]]
+  id      = "system"
+  type    = "text"
+  default = ""
+
+  # The model id. Empty: the first one the provider offers.
+  [[node.field]]
+  id      = "model"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "max_tokens"
+  type    = "number"
+  default = 1024
+
+  [[node.field]]
+  id      = "temperature"
+  type    = "number"
+  default = 0.2
+
+  # Milliseconds one request may take.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 60000
+
+  # Extra attempts after a failure that may pass (network, timeout, 408, 429, 5xx).
+  [[node.field]]
+  id      = "retries"
+  type    = "number"
+  default = 1
+
+  # Milliseconds between attempts.
+  [[node.field]]
+  id      = "backoff_ms"
+  type    = "number"
+  default = 500
+
+  # Values one node runs at once, each on a thread of its own.
+  [[node.field]]
+  id      = "max_in_flight"
+  type    = "number"
+  default = 4
+
+  # Values waiting for a free thread; past it a value goes to `error`.
+  [[node.field]]
+  id      = "max_queue"
+  type    = "number"
+  default = 16

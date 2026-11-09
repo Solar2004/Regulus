@@ -1,0 +1,17 @@
+[package]
+name = "regulus-module-inference"
+description = "Regulus inference: one model call per value over an llm.endpoint@1 (OpenAI chat completions or Anthropic messages)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+regulus-contract-llm-endpoint.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+regulus-module-providers = { path = "../providers" }

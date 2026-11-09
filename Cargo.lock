@@ -4551,6 +4551,7 @@ dependencies = [
  "regulus-module-hello",
  "regulus-module-hooks",
  "regulus-module-human",
+ "regulus-module-inference",
  "regulus-module-judge",
  "regulus-module-memory",
  "regulus-module-process",
@@ -4805,6 +4806,19 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "regulus-module-inference"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-llm-endpoint",
+ "regulus-core",
+ "regulus-module-providers",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
