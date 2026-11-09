@@ -623,5 +623,20 @@
   "editor.template.error.exists": "A template with that name already exists. Tick replace, or choose another name.",
   "editor.template.error.unsupported": "This core cannot save templates: it is older than the method.",
   "editor.template.error.params": "A field is missing or invalid.",
-  "editor.template.error.other": "The core could not save the template."
+  "editor.template.error.other": "The core could not save the template.",
+  "operate.tree.title": "Invocation tree",
+  "operate.tree.empty": "This execution has started no other.",
+  "operate.tree.caller": "from node {node}",
+  "operate.tree.tag": "tag {tag}",
+  "operate.tree.select": "Select {id}",
+  "operate.tree.selectShort": "Select",
+  "operate.tree.fromList": "Built from the executions list: this core has no execution.tree.",
+  "operate.panels.title": "Panels of an execution",
+  "operate.panels.help": "Tick to show, pick the column, move up or down. A panel with nothing to show for an execution stays out.",
+  "operate.panels.node": "Selected node",
+  "operate.panels.place": "Column of {panel}",
+  "operate.panels.main": "Main",
+  "operate.panels.aside": "Side",
+  "operate.panels.up": "Move {panel} up",
+  "operate.panels.down": "Move {panel} down"
 }

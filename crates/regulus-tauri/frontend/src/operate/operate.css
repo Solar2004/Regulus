@@ -119,3 +119,15 @@
 .operate-scene > .graph-connection-state { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:var(--rg-space-4); padding:var(--rg-space-8); text-align:center; }
 .operate-scene > .graph-connection-state svg { color:var(--rg-color-steel); }
 .operate-scene .graph-reason { max-width:36rem; padding:var(--rg-space-2) var(--rg-space-3); border-radius:var(--rg-radius-small); background:var(--rg-color-surface); font-family:var(--rg-font-mono); font-size:.75rem; color:var(--rg-color-text-muted); white-space:pre-wrap; text-align:left; }
+/* Panel layout (view settings) and the invocation tree. */
+.operate-panels-layout { grid-column:1 / -1; display:grid; gap:var(--rg-space-2); border:1px solid var(--rg-color-border); border-radius:var(--rg-radius-small); padding:var(--rg-space-3); font-size:.6875rem; color:var(--rg-color-text-muted); }
+.operate-panels-layout legend { font-size:.75rem; color:var(--rg-color-text-secondary); padding:0 var(--rg-space-1); }
+.operate-panels-layout ol { display:grid; gap:var(--rg-space-1); }
+.operate-panels-layout li { display:grid; grid-template-columns:minmax(10rem, 1fr) auto auto auto; align-items:center; gap:var(--rg-space-2); }
+.operate-panels-layout select { border:1px solid var(--rg-color-control-border); border-radius:var(--rg-radius-control); padding:var(--rg-space-1) var(--rg-space-2); background:var(--rg-color-surface); color:var(--rg-color-text); font-size:.6875rem; }
+.execution-tree, .execution-tree ul { display:grid; gap:var(--rg-space-1); }
+.execution-tree ul { margin-left:var(--rg-space-4); padding-left:var(--rg-space-2); border-left:1px solid var(--rg-color-border); }
+.tree-row { display:flex; flex-wrap:wrap; align-items:center; gap:var(--rg-space-2); padding:var(--rg-space-1) var(--rg-space-2); border-radius:var(--rg-radius-small); font-size:.6875rem; }
+.tree-row small { color:var(--rg-color-text-muted); }
+.tree-row.is-current { background:var(--rg-color-selected); box-shadow:var(--rg-shadow-rim); }
+.tree-actions { display:inline-flex; gap:var(--rg-space-1); margin-left:auto; }

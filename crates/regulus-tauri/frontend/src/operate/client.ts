@@ -15,6 +15,7 @@ export const methods = {
   executionList: "execution.list",
   executionStart: "execution.start",
   executionStop: "execution.stop",
+  executionTree: "execution.tree",
   eventList: "event.list",
   workflowSend: "workflow.send",
   agentPrompt: "agent.prompt",
@@ -45,6 +46,8 @@ export function operateApi(rpc: Rpc) {
     /** `regulus run <profile> [--workflow]`. */
     start: (profileId: string, workflowId: string | undefined, timeout: number) =>
       rpc.request<Execution>(methods.executionStart, workflowId ? { profile_id: profileId, workflow_id: workflowId } : { profile_id: profileId }, timeout),
+    /** `regulus exec tree <id>`: the execution and the ones it started, as the core answers. */
+    tree: (id: string) => rpc.request<unknown>(methods.executionTree, { execution_id: id }),
     /** `regulus stop <id>`. */
     stop: (id: string) => rpc.request<Execution>(methods.executionStop, { id }),
     /** `regulus events --execution <id>`: one page after `since`. */

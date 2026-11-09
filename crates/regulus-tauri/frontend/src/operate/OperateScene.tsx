@@ -1,7 +1,7 @@
 // The Operate view (docs/04-client.md §2, §9): what runs now. Mirrors the TUI
 // (crates/regulus-cli/src/tui/) over the same methods; every action has its CLI command.
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Activity, Bot, MessagesSquare, Play, RefreshCw, RotateCcw, Send, SlidersHorizontal, Square } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Activity, ArrowDown, ArrowUp, Bot, Crosshair, GitFork, MessagesSquare, Play, RefreshCw, RotateCcw, Send, SlidersHorizontal, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Profile } from "@/composition/model";
 import { useCore } from "@/core/connection";
@@ -12,7 +12,9 @@ import {
   projectsOf, runnableWorkflows, workflowOf, type NodeRow,
 } from "./logic";
 import type { BusEvent, Execution, ModuleSummary } from "./model";
+import { arrangePanels, changePanel, movePanel, panelRegistry, type PanelContext, type PanelId, type Placement } from "./panels";
 import { operateLimits, useOperateSettings, type OperateSettingKey } from "./settings";
+import { descendants, loadTree, type ExecutionTree } from "./tree";
 import { ExecutionStateMark, NodeStateMark } from "./StateMark";
 import { Decisions, NodePanel } from "./Talk";
 import { usePolling } from "./usePolling";
@@ -32,8 +34,28 @@ function SettingsPanel() {
       <small>{t(`operate.settings.${key}Description` as LocaleKey)}</small>
       {settings.overrides[key] === undefined && settings.configuredFrom[key] && <small className="operate-source">{t("operate.settings.fromFile", { file: settings.configuredFrom[key] })}</small>}
     </label>)}
+    <PanelLayout />
     <Button variant="outline" size="sm" onClick={settings.reset}><RotateCcw size={14} />{t("operate.settings.reset")}</Button>
   </section>;
+}
+
+/** Order, column and visibility of the execution's panels; saved on this device like the numbers above. */
+function PanelLayout() {
+  const { panels, ownPanels, panelsFrom, setPanels } = useOperateSettings();
+  const title = (id: PanelId) => t(panelRegistry.find((panel) => panel.id === id)!.title);
+  return <fieldset className="operate-panels-layout">
+    <legend>{t("operate.panels.title")}</legend>
+    <small>{t("operate.panels.help")}</small>
+    {!ownPanels && panelsFrom && <small className="operate-source">{t("operate.settings.fromFile", { file: panelsFrom })}</small>}
+    <ol>{panels.map((entry, index) => <li key={entry.id}>
+      <label className="operate-check"><input type="checkbox" checked={!entry.hidden} onChange={(e) => setPanels(changePanel(panels, entry.id, { hidden: !e.target.checked }))} />{title(entry.id)}</label>
+      <select aria-label={fill(t("operate.panels.place"), { panel: title(entry.id) })} value={entry.place} onChange={(e) => setPanels(changePanel(panels, entry.id, { place: e.target.value as Placement }))}>
+        <option value="main">{t("operate.panels.main")}</option><option value="aside">{t("operate.panels.aside")}</option>
+      </select>
+      <Button variant="ghost" size="icon-sm" disabled={index === 0} aria-label={fill(t("operate.panels.up"), { panel: title(entry.id) })} onClick={() => setPanels(movePanel(panels, entry.id, -1))}><ArrowUp size={13} /></Button>
+      <Button variant="ghost" size="icon-sm" disabled={index === panels.length - 1} aria-label={fill(t("operate.panels.down"), { panel: title(entry.id) })} onClick={() => setPanels(movePanel(panels, entry.id, 1))}><ArrowDown size={13} /></Button>
+    </li>)}</ol>
+  </fieldset>;
 }
 
 function ProfileRow({ profile, onRun, busy }: { profile: Profile; onRun: (workflowId: string | undefined) => void; busy: boolean }) {
@@ -118,44 +140,100 @@ function EventLog({ api, execution, nodes }: { api: OperateApi; execution: Execu
   </section>;
 }
 
-function ExecutionDetail({ api, execution, profiles, modules, onStop, onNotice, onSelect }: {
-  api: OperateApi; execution: Execution; profiles: Profile[]; modules: ModuleSummary[];
+function TreeRows({ tree, currentId, onSelect, onStop }: { tree: ExecutionTree; currentId: string; onSelect: (id: string) => void; onStop: (id: string) => void }) {
+  const { execution } = tree;
+  const current = execution.id === currentId;
+  return <li>
+    <div className={`tree-row${current ? " is-current" : ""}`}>
+      <GitFork size={13} aria-hidden="true" />
+      <strong>{execution.id}</strong>
+      <small>{execution.workflow_id}</small>
+      <ExecutionStateMark state={execution.state} />
+      {execution.caller && <small>{fill(t("operate.tree.caller"), { node: execution.caller })}</small>}
+      {execution.tag && <small>{fill(t("operate.tree.tag"), { tag: execution.tag })}</small>}
+      <span className="tree-actions">
+        {!current && <Button size="sm" variant="ghost" aria-label={fill(t("operate.tree.select"), { id: execution.id })} onClick={() => onSelect(execution.id)}><Crosshair size={13} />{t("operate.tree.selectShort")}</Button>}
+        {!current && isLive(execution.state) && <Button size="sm" variant="outline" aria-label={fill(t("operate.stopOne"), { id: execution.id })} onClick={() => onStop(execution.id)}><Square size={13} />{t("operate.stop")}</Button>}
+      </span>
+    </div>
+    {tree.children.length > 0 && <ul>{tree.children.map((child) => <TreeRows key={child.execution.id} tree={child} currentId={currentId} onSelect={onSelect} onStop={onStop} />)}</ul>}
+  </li>;
+}
+
+/** The executions this one started, at any depth (`execution.tree`, or the list's `parent` on an older core). */
+function TreePanel({ api, execution, executions, onSelect, onStop }: {
+  api: OperateApi; execution: Execution; executions: Execution[]; onSelect: (id: string) => void; onStop: (id: string) => void;
+}) {
+  const { refreshMs } = useOperateSettings();
+  const [loaded, setLoaded] = useState<Awaited<ReturnType<typeof loadTree>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const list = useRef(executions);
+  list.current = executions;
+  usePolling(async (current) => {
+    try {
+      const next = await loadTree(api.tree, list.current, execution.id);
+      if (!current()) return;
+      setLoaded(next);
+      setError(null);
+    } catch (failure) { if (current()) setError(errorText(failure)); }
+  }, refreshMs, [api, execution.id]);
+  const tree = loaded?.tree;
+  return <section className="operate-panel tree" aria-label={t("operate.tree.title")}>
+    <header><h3>{t("operate.tree.title")}</h3>{tree && <span className="operate-count">{descendants(tree)}</span>}</header>
+    {execution.parent && <p className="operate-subtle"><button type="button" className="link-button" onClick={() => onSelect(execution.parent!)}>{fill(t("operate.execution.childOf"), { parent: execution.parent })}</button></p>}
+    {error && <p className="operate-error" role="alert">{error}</p>}
+    {loaded?.source === "list" && <small className="operate-subtle">{t("operate.tree.fromList")}</small>}
+    {tree && (tree.children.length ? <ul className="execution-tree"><TreeRows tree={tree} currentId={execution.id} onSelect={onSelect} onStop={onStop} /></ul>
+      : <p className="operate-empty">{t("operate.tree.empty")}</p>)}
+  </section>;
+}
+
+function ExecutionDetail({ api, execution, executions, profiles, modules, onStop, onNotice, onSelect }: {
+  api: OperateApi; execution: Execution; executions: Execution[]; profiles: Profile[]; modules: ModuleSummary[];
   onStop: (id: string) => void; onNotice: (notice: Notice) => void; onSelect: (id: string) => void;
 }) {
+  const layout = useOperateSettings((state) => state.panels);
   const workflow = workflowOf(profiles, execution);
   const rows = nodeRows(workflow, execution, modules);
   const ports = inputPorts(workflow);
   const [nodeId, setNodeId] = useState<string | null>(null);
   const selected = rows.find((row) => row.id === nodeId) ?? null;
+  const ctx: PanelContext = { execution, workflow, inputs: ports, children: executions.filter((item) => item.parent === execution.id) };
+  const shown = arrangePanels(layout, ctx);
+  // Each panel of the registry, drawn; the layout says which, where and in what order.
+  const render: Record<PanelId, () => React.ReactNode> = {
+    nodes: () => <section className="operate-panel" aria-label={t("operate.nodes.title")}>
+      <header><h3>{t("operate.nodes.title")}</h3><span className="operate-count">{rows.length}</span></header>
+      {!workflow && <p className="operate-empty">{t("operate.nodes.unknown")}</p>}
+      <ul className="node-rows">{rows.map((row) => <li key={row.id}>
+        <button type="button" aria-pressed={row.id === nodeId} onClick={() => setNodeId(row.id === nodeId ? null : row.id)}>
+          <span className="node-name">{row.kind === "agent" ? <Bot size={14} /> : row.kind === "channel" ? <MessagesSquare size={14} /> : null}{row.name}</span>
+          <small>{row.type}</small>
+          <NodeStateMark state={row.state} />
+          {row.state.kind === "disabled" && <small className="node-why">{fill(t("operate.node.missing"), { inputs: row.state.missing.join(", ") })}</small>}
+          {(row.state.kind === "broken") && <small className="node-why">{row.state.reason}</small>}
+        </button>
+      </li>)}</ul>
+    </section>,
+    send: () => <SendForm api={api} execution={execution} ports={ports} onSent={onNotice} />,
+    events: () => <EventLog api={api} execution={execution} nodes={rows} />,
+    tree: () => <TreePanel api={api} execution={execution} executions={executions} onSelect={onSelect} onStop={onStop} />,
+    node: () => selected ? <NodePanel api={api} executionId={execution.id} row={selected} /> : <p className="operate-empty">{t("operate.nodes.pick")}</p>,
+    decisions: () => <Decisions api={api} executionId={execution.id} />,
+  };
   return <div className="operate-detail">
     <div className="operate-main">
       <header className="operate-detail-head">
         <div><h2>{execution.id}</h2><small>{execution.profile_id} · {workflow?.name ?? execution.workflow_id}
-          {execution.parent && <> · <button type="button" className="link-button" onClick={() => onSelect(execution.parent!)}>{fill(t("operate.execution.childOf"), { parent: execution.parent })}</button></>}</small></div>
+          {execution.parent && <> · <button type="button" className="link-button" onClick={() => onSelect(execution.parent!)}>{fill(t("operate.execution.childOf"), { parent: execution.parent })}</button></>}
+          {execution.caller && <> · {fill(t("operate.tree.caller"), { node: execution.caller })}</>}</small></div>
         <ExecutionStateMark state={execution.state} />
         {isLive(execution.state) && <Button size="sm" variant="outline" onClick={() => onStop(execution.id)}><Square size={14} />{t("operate.stop")}</Button>}
       </header>
       {"reason" in execution.state && <p className="operate-error">{execution.state.reason}</p>}
-      <section className="operate-panel" aria-label={t("operate.nodes.title")}>
-        <header><h3>{t("operate.nodes.title")}</h3><span className="operate-count">{rows.length}</span></header>
-        {!workflow && <p className="operate-empty">{t("operate.nodes.unknown")}</p>}
-        <ul className="node-rows">{rows.map((row) => <li key={row.id}>
-          <button type="button" aria-pressed={row.id === nodeId} onClick={() => setNodeId(row.id === nodeId ? null : row.id)}>
-            <span className="node-name">{row.kind === "agent" ? <Bot size={14} /> : row.kind === "channel" ? <MessagesSquare size={14} /> : null}{row.name}</span>
-            <small>{row.type}</small>
-            <NodeStateMark state={row.state} />
-            {row.state.kind === "disabled" && <small className="node-why">{fill(t("operate.node.missing"), { inputs: row.state.missing.join(", ") })}</small>}
-            {(row.state.kind === "broken") && <small className="node-why">{row.state.reason}</small>}
-          </button>
-        </li>)}</ul>
-      </section>
-      {ports.length > 0 && <SendForm api={api} execution={execution} ports={ports} onSent={onNotice} />}
-      <EventLog api={api} execution={execution} nodes={rows} />
+      {shown.main.map((id) => <Fragment key={id}>{render[id]()}</Fragment>)}
     </div>
-    <aside className="operate-side">
-      {selected ? <NodePanel api={api} executionId={execution.id} row={selected} /> : <p className="operate-empty">{t("operate.nodes.pick")}</p>}
-      <Decisions api={api} executionId={execution.id} />
-    </aside>
+    {shown.aside.length > 0 && <aside className="operate-side">{shown.aside.map((id) => <Fragment key={id}>{render[id]()}</Fragment>)}</aside>}
   </div>;
 }
 
@@ -250,7 +328,7 @@ export default function OperateScene() {
           </li>)}</ul>
         </section>
       </nav>
-      {selected ? <ExecutionDetail key={selected.id} api={api} execution={selected} profiles={profiles} modules={modules} onStop={(id) => void stop(id)} onNotice={setNotice} onSelect={setSelectedId} />
+      {selected ? <ExecutionDetail key={selected.id} api={api} execution={selected} executions={executions} profiles={profiles} modules={modules} onStop={(id) => void stop(id)} onNotice={setNotice} onSelect={setSelectedId} />
         : <p className="operate-empty operate-pick">{t("operate.pick")}</p>}
     </div>}
   </section>;

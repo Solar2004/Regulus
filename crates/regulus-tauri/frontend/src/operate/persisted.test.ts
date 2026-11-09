@@ -62,3 +62,22 @@ test("with nothing saved, start_view opens the app", async () => {
   useRegulusUi.getState().applyStartView("operate");
   expect(useRegulusUi.getState().view).toBe("operate");
 });
+
+test("the panel layout: the person's saved one wins over config.toml's, which wins over the default", async () => {
+  saved.set("regulus-operate-settings", JSON.stringify({ state: { overrides: {}, projectId: null, ownPanels: [{ id: "events", place: "aside", hidden: false }, "bogus"] }, version: 1 }));
+  const { useOperateSettings } = await import("./settings");
+  const { useClientConfig } = await import("@/core/clientConfig");
+  const state = () => useOperateSettings.getState();
+  // Saved before the other panels existed: they come back, shown.
+  expect(state().panels[0]).toEqual({ id: "events", place: "aside", hidden: false });
+  expect(state().panels.every((entry) => !entry.hidden)).toBe(true);
+  useClientConfig.getState().set({ client: { operate: { panels: ["tree", "events"] } }, sources: { "operate.panels": "/p/regulus.toml" }, warnings: [] });
+  expect(state().configuredPanels?.filter((entry) => !entry.hidden).map((entry) => entry.id)).toEqual(["tree", "events"]);
+  expect(state().panelsFrom).toBe("/p/regulus.toml");
+  expect(state().panels[0].id).toBe("events");
+  state().reset();
+  expect(state().panels.filter((entry) => !entry.hidden).map((entry) => entry.id)).toEqual(["tree", "events"]);
+  expect(JSON.parse(saved.get("regulus-operate-settings")!).state.ownPanels).toBeNull();
+  useClientConfig.getState().set({ client: {}, sources: {}, warnings: [] });
+  expect(state().panels.map((entry) => entry.id)).toEqual(["nodes", "send", "events", "tree", "node", "decisions"]);
+});

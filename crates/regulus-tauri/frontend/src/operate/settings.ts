@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { clientValue, useClientConfig, type ClientSettings } from "@/core/clientConfig";
+import { defaultLayout, readLayout, type PanelEntry } from "./panels";
+
+/** Where `config.client` sets the panels of an execution (docs/04-client.md §8). */
+export const panelsKey = "operate.panels";
+
+/** The panel layout in effect: the person's on this device, else config.toml's, else the default. */
+export const effectivePanels = (own: PanelEntry[] | null, configured: PanelEntry[] | null): PanelEntry[] => own ?? configured ?? defaultLayout();
 
 /** What a person can tune in the Operate view, with its limits. Persisted on this device. */
 export const operateLimits = {
@@ -84,6 +91,14 @@ interface OperateSettingsState extends OperateSettings {
   configuredFrom: Partial<Record<OperateSettingKey, string>>;
   /** The project shown, client state (docs/04-client.md §5); null: all of them. */
   projectId: string | null;
+  /** The panel layout the person arranged here; null: config.toml's or the default. Persisted. */
+  ownPanels: PanelEntry[] | null;
+  /** `operate.panels` of `config.client`, and its file. */
+  configuredPanels: PanelEntry[] | null;
+  panelsFrom: string | null;
+  /** What applies now (`effectivePanels`). */
+  panels: PanelEntry[];
+  setPanels: (panels: PanelEntry[]) => void;
   setSetting: (key: OperateSettingKey, value: number) => void;
   setProject: (projectId: string | null) => void;
   /** Drops the person's changes: config.toml or the defaults apply again. */
@@ -97,31 +112,42 @@ export const useOperateSettings = create<OperateSettingsState>()(persist((set, g
   configured: {},
   configuredFrom: {},
   projectId: null,
+  ownPanels: null,
+  configuredPanels: null,
+  panelsFrom: null,
+  panels: defaultLayout(),
+  setPanels: (panels) => set({ ownPanels: panels, panels }),
   setSetting: (key, value) => {
     const overrides = { ...get().overrides, ...sanitizeOverrides({ [key]: value }) };
     set({ overrides, ...effectiveSettings(overrides, get().configured) });
   },
   setProject: (projectId) => set({ projectId }),
-  reset: () => set({ overrides: {}, ...effectiveSettings({}, get().configured) }),
+  reset: () => set({ overrides: {}, ...effectiveSettings({}, get().configured), ownPanels: null, panels: effectivePanels(null, get().configuredPanels) }),
   applyClient: (settings) => {
     const { values, from } = configuredSettings(settings);
-    set({ configured: values, configuredFrom: from, ...effectiveSettings(get().overrides, values) });
+    const configuredPanels = readLayout(clientValue(settings.client, panelsKey), "hidden");
+    set({
+      configured: values, configuredFrom: from, ...effectiveSettings(get().overrides, values),
+      configuredPanels, panelsFrom: configuredPanels ? settings.sources[panelsKey] ?? "config.toml" : null, panels: effectivePanels(get().ownPanels, configuredPanels),
+    });
   },
 }), {
   name: "regulus-operate-settings",
   version: 1,
   // Without `migrate`, zustand drops a stored state of another version; `merge` reads both.
   migrate: (stored) => stored as OperateSettingsState,
-  partialize: (state) => ({ overrides: state.overrides, projectId: state.projectId }),
+  partialize: (state) => ({ overrides: state.overrides, projectId: state.projectId, ownPanels: state.ownPanels }),
   merge: (saved, current): OperateSettingsState => {
-    const stored = (saved ?? {}) as { overrides?: unknown; projectId?: unknown };
+    const stored = (saved ?? {}) as { overrides?: unknown; projectId?: unknown; ownPanels?: unknown };
     // Before version 1 every setting was saved, changed or not: only a value away from the
     // default counts as a change. One the person set back to the default is lost as a change
     // and config.toml may now set it; nothing tells the two apart in the old data.
     const legacy = Object.fromEntries(Object.entries(sanitizeOverrides(saved)).filter(([key, value]) => operateDefaults[key as OperateSettingKey] !== value));
     const overrides = stored.overrides !== undefined ? sanitizeOverrides(stored.overrides) : legacy;
     const projectId = typeof stored.projectId === "string" ? stored.projectId : null;
-    return { ...current, overrides, projectId, ...effectiveSettings(overrides, current.configured) };
+    // A saved layout gets the panels added since, shown.
+    const ownPanels = readLayout(stored.ownPanels, "shown");
+    return { ...current, overrides, projectId, ...effectiveSettings(overrides, current.configured), ownPanels, panels: effectivePanels(ownPanels, current.configuredPanels) };
   },
 }));
 

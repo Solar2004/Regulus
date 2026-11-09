@@ -24,6 +24,10 @@ export interface Execution {
   disabled?: DisabledNode[];
   /** The execution that started this one as a child (protocol 1.8). */
   parent?: string;
+  /** The node of the parent that started it (protocol 1.16). */
+  caller?: string;
+  /** What the caller tagged it with, to tell its children apart (protocol 1.16). */
+  tag?: string;
 }
 
 export type ModuleState =
