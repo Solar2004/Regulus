@@ -42,7 +42,7 @@ ports = [
   { id = "passed", capability = "json@1", direction = "output", kind = "then" },
   { id = "failed", capability = "json@1", direction = "output", kind = "then" },
   { id = "reply", capability = "text@1", direction = "output", kind = "then" },
-  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
 ]
 
   [[workflows.nodes]]
@@ -55,7 +55,7 @@ ports = [
   ports = [
     { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
-    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
     { id = "chunker", capability = "chunker@1", direction = "input", kind = "uses" },
     { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses" },
     { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
@@ -71,7 +71,7 @@ ports = [
   ports = [
     { id = "query", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "hits", capability = "json@1", direction = "output", kind = "then" },
-    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
     { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses" },
     { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
   ]

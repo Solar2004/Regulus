@@ -183,6 +183,11 @@ enum Command {
         #[command(subcommand)]
         command: HumanCommand,
     },
+    /// The documents of a live `ingest` or `retrieve` node (module `documents`).
+    Docs {
+        #[command(subcommand)]
+        command: DocsCommand,
+    },
     /// Workflows offered to outside systems: keys, endpoints and the request log.
     Service {
         #[command(subcommand)]
@@ -314,6 +319,31 @@ enum HumanCommand {
         /// A review's edited text, read from this file.
         #[arg(long, conflicts_with = "text")]
         file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DocsCommand {
+    /// The sources of the node's collection: id, version, chunks, title and location.
+    Ls { execution: String, node: String },
+    /// Search the node's collection, best hits first.
+    Query {
+        execution: String,
+        node: String,
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// Hits at most. Default: the node's `k`.
+        #[arg(long)]
+        k: Option<u64>,
+        /// Characters of each hit's text shown.
+        #[arg(long, default_value_t = 200)]
+        chars: usize,
+    },
+    /// Delete a source, its chunks and its index entries.
+    Rm {
+        execution: String,
+        node: String,
+        source_id: String,
     },
 }
 
@@ -866,6 +896,7 @@ async fn main() -> Result<()> {
             }
         },
         Command::Human { command } => human(&client, command).await,
+        Command::Docs { command } => docs(&client, command).await,
         Command::Service { command } => service(&client, command).await,
     }
 }
@@ -1453,6 +1484,89 @@ async fn human(client: &Client<'_>, command: HumanCommand) -> Result<()> {
                 done["node_id"].as_str().unwrap_or_default(),
                 done["port"].as_str().unwrap_or_default(),
             );
+            Ok(())
+        }
+    }
+}
+
+/// `regulus docs`: talks to the `documents.*` methods of the running core.
+async fn docs(client: &Client<'_>, command: DocsCommand) -> Result<()> {
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    match command {
+        DocsCommand::Ls { execution, node } => {
+            let params = serde_json::json!({ "execution_id": execution, "node_id": node });
+            let sources: Vec<Value> = client
+                .request(regulus_module_documents::LIST, params)
+                .await?;
+            if sources.is_empty() {
+                eprintln!("no sources");
+            }
+            for s in sources {
+                let version = text(&s["version"]);
+                println!(
+                    "{:<14} {:<9} {:>4} chunks {:>8} chars  {}  {}",
+                    text(&s["source_id"]),
+                    version.get(..8).unwrap_or(&version),
+                    s["chunks"],
+                    s["chars"],
+                    text(&s["title"]),
+                    text(&s["location"]),
+                );
+            }
+            Ok(())
+        }
+        DocsCommand::Query {
+            execution,
+            node,
+            query,
+            k,
+            chars,
+        } => {
+            let params = serde_json::json!({
+                "execution_id": execution, "node_id": node, "query": query.join(" "), "k": k,
+            });
+            let found: Value = client
+                .request(regulus_module_documents::QUERY, params)
+                .await?;
+            let hits = found["hits"].as_array().cloned().unwrap_or_default();
+            if hits.is_empty() {
+                eprintln!("no hits");
+            }
+            for (n, hit) in hits.iter().enumerate() {
+                let score = hit["score"].as_f64().unwrap_or_default();
+                println!(
+                    "[{}] {score:.3}  {}  {}#{}-{}",
+                    n + 1,
+                    text(&hit["chunk_id"]),
+                    text(&hit["location"]),
+                    hit["start"],
+                    hit["end"],
+                );
+                let body: String = text(&hit["text"]).chars().take(chars).collect();
+                println!("    {}", body.replace('\n', "\n    "));
+            }
+            Ok(())
+        }
+        DocsCommand::Rm {
+            execution,
+            node,
+            source_id,
+        } => {
+            let params = serde_json::json!({
+                "execution_id": execution, "node_id": node, "source_id": source_id,
+            });
+            let done: Value = client
+                .request(regulus_module_documents::DELETE, params)
+                .await?;
+            if done["deleted"] == true {
+                println!("deleted {source_id} ({} chunks)", done["chunks"]);
+            } else {
+                bail!("no source `{source_id}` in that collection");
+            }
             Ok(())
         }
     }
