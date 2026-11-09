@@ -15,6 +15,13 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Contribuir al proyecto:** licencia Apache-2.0 en `LICENSE` y metadatos de los paquetes,
+  `CONTRIBUTING.md`, guías de entrada en inglés, tareas iniciales propuestas y descargas
+  verificadas al principio del README. GIF real de 25 segundos de composición y
+  conversación con el ejemplo Greeter; distingue desarrollo de la versión publicada.
+- **Herramientas MCP en el motor nativo** (`docs/12-agents.md` §8): monta los toolsets
+  `mcp-stdio` de la caja Agente, conserva las políticas y hooks y libera el proceso al
+  parar la sesión. Comprobado escribiendo y leyendo memoria por el puente real.
 - **Cajas que se cruzan** (`docs/02-architecture.md` §4, `docs/11-composition.md` §6-7,
   protocolo `1.16`): un cable "usa" entra o sale de una caja o workflow (se colapsa al
   aplanar; avisos `wire.uses_cycle` y `wire.boundary_cardinality`); un nodo mantiene
@@ -184,3 +191,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   del canvas (zoom, rejilla, ancho de nodo, agrupación, autoguardado) en el dispositivo. El
   mock suma `profile.check` y los diagnósticos de `profile.save`; `pnpm test` (vitest)
   prueba la lógica.
+
+### Corregido
+
+- **Historial independiente por ejecución** (`docs/12-agents.md` §5): dos trabajadores
+  del mismo workflow no mezclan transcript, actividad ni referencia de sesión nativa.
+  `conversation = named` permite continuar una conversación elegida; `workflow` accede
+  al formato anterior. Un único nodo vivo puede poseer cada conversación reutilizable.

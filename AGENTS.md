@@ -175,8 +175,10 @@ desincroniza. Si encuentras una duplicación, bórrala y deja un enlace.
 
 Todo lo que forma parte de la app (`ui/`, `crates/`, `src-tauri/`) se escribe en
 **inglés**: comentarios, identificadores, logs, mensajes de error y commits. Los textos
-visibles van en los ficheros de traducción (`04-client.md` §6). **Solo los docs van en
-español.** Decisión #20. docguard lo vigila.
+visibles van en los ficheros de traducción (`04-client.md` §6). **Los documentos de diseño
+van en español; las guías públicas de contribución (`CONTRIBUTING.md`,
+`docs/contributing/`) y el README van en inglés.** Excepción pública aprobada el
+2026-11-09. Decisión #20 para el código; docguard lo vigila.
 
 ### 7. Cómo se commitea
 
