@@ -1,6 +1,6 @@
 [package]
 name = "regulus-module-human"
-description = "Regulus human in the loop: Approval and Review nodes that pause a value until a person decides"
+description = "Regulus human in the loop: Approval, Review and Decider nodes that wait until a person decides"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,6 +11,7 @@ regulus-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 getrandom.workspace = true
+regulus-contract-decision.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

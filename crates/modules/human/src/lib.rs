@@ -1,6 +1,9 @@
 //! Human in the loop (docs/13-blocks.md §3.3): **Approval** and **Review**. A value that
 //! reaches `in` stops at the node under an id until a person decides, by id, through
 //! `human.answer` (`regulus human answer`) or a value on `decide`; or until `timeout_ms`.
+//! **Decider** offers `decision@1`: another box asks (`decision.ask`), the question waits
+//! in the same list, a person answers it the same way and the box reads the choice
+//! (`decision.poll`).
 //!
 //! Each pending decision is a row in the module's store (the node's project database), so
 //! it outlives the core: the node checkpoints when something waits, `[store] resume =
@@ -13,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use regulus_contract_decision as decision;
 use regulus_core::{parse_manifest, Module, ModuleCtx, ModuleError, NodeRef};
 use regulus_proto::{method, Manifest, Node, NodeCall, NodeEvent};
 use serde::{Deserialize, Serialize};
@@ -31,8 +35,17 @@ pub const ANSWER: &str = "human.answer";
 
 const APPROVAL: &str = "approval";
 const REVIEW: &str = "review";
+const DECIDER: &str = "decider";
+/// The kind of a decider's pending rows in `human.list`.
+const DECISION_KIND: &str = "decision";
 /// Where pending rows live in the store: `pending/<execution>/<id>`.
 const ROW: &str = "pending/";
+/// Where a decider's answered rows live: `decided/<execution>/<id>`, a `decision::Poll`.
+const DECIDED: &str = "decided/";
+/// The form field a decision is answered with.
+const OPTION_FIELD: &str = "option";
+/// The kind prefix of an option a refusal picks.
+const REJECT_KIND: &str = "reject";
 const YES: &str = "yes";
 
 mod port {
@@ -72,7 +85,7 @@ fn fresh_id() -> Result<String, ModuleError> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pending {
     pub id: String,
-    /// `approval` or `review`.
+    /// `approval`, `review` or `decision` (a decider's question).
     pub kind: String,
     pub execution_id: String,
     pub node_id: String,
@@ -134,6 +147,8 @@ struct State {
     nodes: HashMap<Key, Node>,
     /// Every pending decision of a started node, by id.
     pending: HashMap<String, Pending>,
+    /// What a decider's answered questions came to, by id, for `decision.poll`.
+    decided: HashMap<String, (Key, decision::Poll)>,
 }
 
 struct Inner {
@@ -229,6 +244,49 @@ fn fill(form: &Value, fields: Map<String, Value>) -> Result<Map<String, Value>, 
     }
     Ok(out)
 }
+
+/// The options a decision offers, as its row keeps them.
+fn options_of(value: &Value) -> Vec<decision::Choice> {
+    value
+        .get("options")
+        .cloned()
+        .and_then(|o| serde_json::from_value(o).ok())
+        .unwrap_or_default()
+}
+
+/// The option a refusal picks: the first whose kind starts with `reject`.
+fn reject_option(value: &Value) -> Option<String> {
+    options_of(value)
+        .into_iter()
+        .find(|o| {
+            o.kind
+                .as_deref()
+                .is_some_and(|k| k.starts_with(REJECT_KIND))
+        })
+        .map(|o| o.id)
+}
+
+/// Checks that every filled field the form gives an `enum` holds one of its values.
+fn one_of(form: &Value, fields: &Map<String, Value>) -> Result<(), String> {
+    let properties = form.get("properties").and_then(Value::as_object);
+    for (name, value) in fields {
+        let allowed = properties
+            .and_then(|p| p.get(name))
+            .and_then(|f| f.get("enum"))
+            .and_then(Value::as_array);
+        if let Some(allowed) = allowed.filter(|a| !a.contains(value)) {
+            let names: Vec<String> = allowed.iter().map(Value::to_string).collect();
+            return Err(format!(
+                "field `{name}` must be one of {}, got {value}",
+                names.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The uses output a decider offers `decision@1` on, named in answers.
+const DECISIONS_PORT: &str = "decisions";
 
 impl Inner {
     fn text(&self, node: &Node, field: &str) -> String {
@@ -344,6 +402,7 @@ impl Inner {
         state
             .pending
             .retain(|_, p| (&p.execution_id, &p.node_id) != (&node.0, &node.1));
+        state.decided.retain(|_, (owner, _)| *owner != node);
         state.nodes.remove(&node);
     }
 
@@ -433,7 +492,10 @@ impl Inner {
                 })?;
             let fields = match (&pending.form, answer.decision) {
                 (Some(form), Decision::Approve) => {
-                    fill(form, answer.fields.clone()).map_err(ModuleError::InvalidParams)?
+                    let filled =
+                        fill(form, answer.fields.clone()).map_err(ModuleError::InvalidParams)?;
+                    one_of(form, &filled).map_err(ModuleError::InvalidParams)?;
+                    filled
                 }
                 _ => answer.fields.clone(),
             };
@@ -444,6 +506,29 @@ impl Inner {
             execution_id: pending.execution_id.clone(),
             node_id: pending.node_id.clone(),
         };
+        if pending.kind == DECISION_KIND {
+            let chosen = match answer.decision {
+                Decision::Approve => fields
+                    .get(OPTION_FIELD)
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                Decision::Reject => reject_option(&pending.value),
+            };
+            let poll = decision::Poll {
+                pending: false,
+                option: chosen,
+                timed_out: false,
+            };
+            self.settle(&me, &pending, poll);
+            let decision = match answer.decision {
+                Decision::Approve => "approve",
+                Decision::Reject => "reject",
+            };
+            return Ok(
+                json!({ "id": pending.id, "decision": decision, "execution_id": me.execution_id,
+                        "node_id": me.node_id, "port": DECISIONS_PORT }),
+            );
+        }
         let merge = self.text(&node, "merge_fields") == YES;
         let (port, value) = match (pending.kind.as_str(), answer.decision) {
             (REVIEW, Decision::Approve) => (
@@ -524,6 +609,21 @@ impl Inner {
             execution_id: pending.execution_id.clone(),
             node_id: pending.node_id.clone(),
         };
+        if pending.kind == DECISION_KIND {
+            let default = self.text(&node, "default_option");
+            let offered = options_of(&pending.value);
+            let option = offered
+                .iter()
+                .find(|o| !default.is_empty() && o.id == default)
+                .map(|o| o.id.clone());
+            let poll = decision::Poll {
+                pending: false,
+                option,
+                timed_out: true,
+            };
+            self.settle(&me, &pending, poll);
+            return;
+        }
         let port = if node.port(port::TIMEOUT).is_some() {
             port::TIMEOUT
         } else {
@@ -539,6 +639,119 @@ impl Inner {
                     .insert(pending.id.clone(), pending);
             }
         }
+    }
+
+    /// `decision.ask` on a decider: the question waits under an id like any decision.
+    fn ask(self: &Arc<Self>, call: NodeCall) -> Result<Value, ModuleError> {
+        if call.node.node_type != DECIDER {
+            return Err(ModuleError::InvalidParams(format!(
+                "node `{}` is not a decider",
+                call.node.id
+            )));
+        }
+        let args: decision::AskArgs = parse(call.args)?;
+        if args.options.is_empty() {
+            return Err(ModuleError::InvalidParams(
+                "a decision needs at least one option".into(),
+            ));
+        }
+        let me = NodeRef {
+            execution_id: call.execution_id,
+            node_id: call.node.id.clone(),
+        };
+        if !lock(&self.state).nodes.contains_key(&key(&me)) {
+            return Err(ModuleError::Failed(format!(
+                "node `{}` is not running",
+                me.node_id
+            )));
+        }
+        let ids: Vec<Value> = args.options.iter().map(|o| json!(o.id)).collect();
+        let names: Vec<String> = args
+            .options
+            .iter()
+            .map(|o| format!("{} ({})", o.id, o.name))
+            .collect();
+        let form = json!({ "type": "object",
+            "properties": { OPTION_FIELD: { "type": "string", "enum": ids,
+                                            "description": names.join(", ") } },
+            "required": [OPTION_FIELD], "additionalProperties": false });
+        let timeout = args
+            .timeout_ms
+            .unwrap_or_else(|| self.number(&call.node, "timeout_ms"));
+        let created = now_ms();
+        let pending = Pending {
+            id: fresh_id()?,
+            kind: DECISION_KIND.into(),
+            execution_id: me.execution_id.clone(),
+            node_id: me.node_id.clone(),
+            value: json!({ "options": args.options, "context": args.context }),
+            prompt: args.prompt,
+            form: Some(form),
+            created_ms: created,
+            deadline_ms: (timeout > 0).then(|| created.saturating_add(timeout)),
+        };
+        lock(&self.state)
+            .pending
+            .insert(pending.id.clone(), pending.clone());
+        self.persist(&me, &pending, true);
+        self.arm(&pending);
+        serde_json::to_value(decision::Asked { id: pending.id })
+            .map_err(|e| ModuleError::Failed(e.to_string()))
+    }
+
+    /// `decision.poll`: pending, or what it came to.
+    fn poll(&self, call: NodeCall) -> Result<Value, ModuleError> {
+        let args: decision::PollArgs = parse(call.args)?;
+        let me = NodeRef {
+            execution_id: call.execution_id,
+            node_id: call.node.id,
+        };
+        let poll = {
+            let state = lock(&self.state);
+            let mine = |p: &Pending| p.execution_id == me.execution_id && p.node_id == me.node_id;
+            if state.pending.get(&args.id).is_some_and(mine) {
+                Some(decision::Poll {
+                    pending: true,
+                    ..decision::Poll::default()
+                })
+            } else {
+                state
+                    .decided
+                    .get(&args.id)
+                    .filter(|(owner, _)| *owner == key(&me))
+                    .map(|(_, poll)| poll.clone())
+            }
+        };
+        let poll = match poll {
+            Some(poll) => poll,
+            None => self
+                .ctx
+                .store(Some(&me))
+                .ok()
+                .and_then(|store| {
+                    let row = format!("{DECIDED}{}/{}", me.execution_id, args.id);
+                    store.get_json::<decision::Poll>(&row).ok().flatten()
+                })
+                .ok_or_else(|| {
+                    ModuleError::InvalidParams(format!("no decision `{}` here", args.id))
+                })?,
+        };
+        serde_json::to_value(poll).map_err(|e| ModuleError::Failed(e.to_string()))
+    }
+
+    /// A decider's question was answered or ran out: its row goes, its result stays for
+    /// `decision.poll`.
+    fn settle(&self, me: &NodeRef, pending: &Pending, poll: decision::Poll) {
+        if let Ok(store) = self.ctx.store(Some(me)) {
+            let row = format!("{DECIDED}{}/{}", me.execution_id, pending.id);
+            if let Err(error) = store.set_json(&row, &poll) {
+                eprintln!("regulus: human: `{}`: {error}", pending.id);
+            }
+        }
+        lock(&self.state)
+            .decided
+            .insert(pending.id.clone(), (key(me), poll));
+        self.persist(me, pending, false);
     }
 
     fn list(&self, params: ListParams) -> Vec<Pending> {
@@ -617,6 +830,8 @@ impl Module for Human {
                 })
             }
             ANSWER => inner.answer(parse(params)?, None),
+            decision::ASK => inner.ask(parse(params)?),
+            decision::POLL => inner.poll(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),
         }
     }
@@ -634,7 +849,7 @@ mod tests {
     #[test]
     fn manifest_declares_the_nodes_and_methods() {
         let human = Human::new();
-        for kind in [APPROVAL, REVIEW] {
+        for kind in [APPROVAL, REVIEW, DECIDER] {
             assert!(human.manifest().node_type(kind).is_some(), "{kind}");
         }
         assert_eq!(human.manifest().module.methods, [LIST, GET, ANSWER]);

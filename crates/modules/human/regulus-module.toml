@@ -172,3 +172,33 @@ name = "Review"
   id      = "timeout_ms"
   type    = "number"
   default = 0
+
+# A person decides for another box: offers `decision@1` over a "uses" wire, so a box
+# that needs a choice (the Agent box, for its engine's permission requests) asks here.
+# Each `decision.ask` waits as a `decision` in `regulus human list`, with a form whose
+# `option` field takes one of the option ids: `regulus human answer <id> approve --field
+# option=<id>`. `reject` picks the option whose kind is `reject…`, or none. Nobody
+# deciding within the time limit gives `default_option` (empty: none) as timed out.
+[[node]]
+type = "decider"
+name = "Decider"
+
+  [[node.port]]
+  id         = "decisions"
+  name       = "decisions"
+  capability = "decision@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The option id chosen when nobody decides in time. Empty: no option, and the asker
+  # treats it as a refusal.
+  [[node.field]]
+  id      = "default_option"
+  type    = "text"
+  default = ""
+
+  # Milliseconds a decision may wait when the asker does not say. 0: forever.
+  [[node.field]]
+  id      = "timeout_ms"
+  type    = "number"
+  default = 0
