@@ -139,7 +139,7 @@ fn steps(home: &Path) {
         4,
         "{copy}"
     );
-    assert!(copy.contains("count = 3"), "{copy}");
+    assert!(copy.contains("max_in_flight = 3"), "{copy}");
     wired(&copy);
     clean(home);
 
@@ -170,8 +170,8 @@ fn steps(home: &Path) {
         "{copy}"
     );
     assert!(copy.contains(r#"credential = """#), "{copy}");
-    assert!(copy.contains("count = 2"), "{copy}");
-    assert!(copy.contains("max_items = 2"), "{copy}");
+    assert!(copy.contains("max_in_flight = 2"), "{copy}");
+    assert!(copy.contains("timeout_ms = 1800000"), "{copy}");
     assert_eq!(
         copy.matches(r#"permissions = "reject""#).count(),
         4,
@@ -189,11 +189,15 @@ fn wired(copy: &str) {
             ("workspace.ready", "experimenter.workdir"),
             ("workspace.ready", "writer.workdir"),
             ("orchestrator.reply", "split.in"),
-            ("fanout.out", "lines.in"),
-            ("lines.other", "budget.in"),
-            ("budget.out", "call.in"),
-            ("call.out", "gather.in"),
-            ("gather.out", "notes.in"),
+            ("split.out", "batch.in"),
+            ("batch.values", "notes.in"),
+            ("batch.partial", "partial_text.in"),
+            ("batch.item", "note_text.in"),
+            ("note_obj.out", "notes_ingest.in"),
+            ("notes_search.tools", "tools.tools"),
+            ("tools.toolset", "writer.tools"),
+            ("blank.other", "source.in"),
+            ("blank.empty", "self.out"),
             ("notes_write.out", "workspace.write"),
             ("workspace.written", "exp_prompt.in"),
             ("workspace.quota_exceeded", "quota_text.in"),

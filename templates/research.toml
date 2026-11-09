@@ -6,11 +6,12 @@
 # Agent Laboratory (arxiv.org/html/2501.04227: literature, experiment, report) and open
 # deep research (langchain.com/blog/open-deep-research: planner, parallel researchers).
 #
-#   self.question → plan_prompt → orchestrator ─reply→ split → fanout → lines → budget → call
-#        │                                            (blank lines dropped) exceeded ┘  │ (one child
-#        └→ question (variable)          gather (barrier, `questions`) ← out ┘  per line)
-#   self.paper → pdf → paper.md            │ notes
-#                                          ▼
+#   self.question → plan_prompt → orchestrator ─reply→ split → batch (flow: one child of
+#        │                                                 `investigate` per line, at most
+#        └→ question (variable)                            `questions` at once, `max_ms`)
+#   self.paper → pdf → paper.md     notes ← values ┘ │ item → note_text → note_obj → notes_ingest
+#                                     │      partial → partial_text → self.exceeded (documents)
+#                                     ▼     retrieve (same collection) ⇢ tools ⇢ mcp ⇢ writer
 #   notes_file + notes → notes_write → workspace (folder, quota) ─written→ notes_path
 #                                        └ quota_exceeded → quota_text → self.error
 #                                           └→ exp_prompt → experimenter ─reply│failed┐
@@ -22,15 +23,19 @@
 #                                     provider ⇢ model ┘ pass│fail│score│error → self
 #
 #   investigate (child workflow, one per sub-question):
-#   self.in → source (web fetch of `search_url`) ─out│error→ join ← self.in
-#     join → prompt → researcher ─reply│failed→ self.out
+#   self.in → blank ─other→ source (web fetch of `search_url`) ─out│error→ join ← other
+#     join → prompt → researcher ─reply│failed→ self.out      blank ─empty→ self.out
 #
 # Stages: (1) plan: the orchestrator answers with `questions` sub-questions, one per
-# line. (2) investigate: each line, through the budget (at most `questions` of them and
-# `max_ms` from the first), runs the child workflow `investigate` (`call`, flow): a web
-# fetch of `search_url` (Wikipedia's search API by default, no key) and a researcher agent
-# that reads it and may fetch more with its own tools; children run side by side. The
-# barrier waits for `questions` answers. (3) notes: written as notes.md into a folder
+# line. (2) investigate: the batch (`flow.batch`) runs the child workflow `investigate`
+# once per line, at most `questions` side by side: a web fetch of `search_url`
+# (Wikipedia's search API by default, no key) and a researcher agent that reads it and
+# may fetch more with its own tools; a blank line answers empty at once. When every child
+# is over, their notes go on in line order; `max_ms` after the first start, the children
+# still running are stopped, the notes are made of what came and the batch's summary
+# leaves on `exceeded`. Each note is also ingested into the documents collection
+# `collection` (`documents`), which the writer searches (`search_documents`, with chunk
+# ids) through the Tools box. (3) notes: written as notes.md into a folder
 # workspace `<workdir>/<execution>` with `quota_bytes`. (4) experiment: an experimenter
 # agent writes a script there; a job runs `experiment_command` in that folder, killed
 # after `job_timeout_ms`; its exit becomes the rubric's `experiment` gate. (5) report: a
@@ -54,12 +59,10 @@
 # run with the user's rights (prompt injection to execution; no isolation,
 # docs/11-composition.md §12; the quota measures, it does not stop other programs).
 # (b) with `quality_by = criteria` the whole report is sent to an external service (the
-# judge's provider, OpenRouter by default). (c) the barrier `gather` waits for exactly
-# `questions` answers: fewer lines from the orchestrator, or `max_ms` running out before
-# every child started (`exceeded` does not feed it), and it waits until `regulus stop`
-# unless `join_timeout_ms` is set: then, that long after the first answer, the notes are
-# made of the answers that came (the barrier's `timeout`); extra lines go out on
-# `exceeded`. (d) `paginate` with `chunk_chars` on `source`: the
+# judge's provider, OpenRouter by default). (c) every line the orchestrator gives is
+# investigated, more than `questions` too (`questions` caps how many run at once, not
+# the total); `max_ms` bounds the whole stage. The collection is the project's: notes of
+# earlier runs with the same `collection` are searched too (another name starts empty). (d) `paginate` with `chunk_chars` on `source`: the
 # researcher gets the first chunk only, the rest is dropped (a truncation, not paging).
 # (e) a provider that keeps retrying inside the turn (the free model past its quota)
 # hangs the agent (it is what stalled the opencode run below): with `turn_timeout_ms`
@@ -87,6 +90,7 @@
 #
 #   regulus template apply research --set workdir=<work> --set questions=2 \
 #     --set quality_by=gate --set judge_credential=   # profile.check: []
+#   (that run predates the batch: fanout, budget, call and a barrier did stage 2)
 #   regulus send exec-2 question "What is the Tokio runtime in Rust?"     # 19:21:50
 #     orchestrator.reply "Tokio async runtime Rust overview\nTokio runtime scheduler
 #       architecture" → split.out → fanout.out ×2 → lines.other ×2 → budget.out ×2
@@ -102,7 +106,7 @@
 # Earlier run with opencode's free model (same setup, engines as shipped): the flow ran
 # through stage 5, then the writer's turn and every later rerun stalled on "Free usage
 # limit reached" (opencode retries inside the turn; `turn_timeout_ms` now ends such a
-# turn). Its first stages:
+# turn). Its first stages (also before the batch):
 #
 #   regulus template apply research --set workdir=<work> --set questions=2 \
 #     --set quality_by=gate --set judge_credential=   # profile.check: []
@@ -144,14 +148,17 @@ requires = [
   { module = "regulus/guards", version = ">=0.1" },
   { module = "regulus/judge", version = ">=0.1" },
   { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/documents", version = ">=0.1" },
+  { module = "regulus/tools", version = ">=0.1" },
+  { module = "regulus/tools-mcp", version = ">=0.1" },
 ]
 
 [template.vars]
 workdir = { description = "absolute path of an existing folder: the agents start there, the workspaces go in <workdir>/<execution>, paper.md and the report are written there" }
 model = { description = "model of the engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
-questions = { description = "sub-questions the orchestrator is asked for; the barrier waits for this many answers", default = 3 }
-join_timeout_ms = { description = "milliseconds the notes barrier waits for every sub-question, from the first answer; past it the notes are made of the ones that came. 0: it waits forever", default = 0 }
-max_ms = { description = "milliseconds from the first sub-question after which no other starts", default = 1800000 }
+questions = { description = "sub-questions the orchestrator is asked for; at most this many are investigated at once", default = 3 }
+max_ms = { description = "milliseconds from the first sub-question after which the ones still running are stopped and the notes are made of what came; 0: no limit", default = 1800000 }
+collection = { description = "documents collection the notes are ingested into and the writer searches; the project's, shared by runs that name the same", default = "research" }
 search_url = { description = "URL each sub-question is fetched from; {{input}} is the sub-question, percent-encoded", default = "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch={{input}}" }
 source_chars = { description = "characters of the fetched page a researcher gets", default = 6000 }
 quota_bytes = { description = "bytes the workspace may hold; past it, it refuses writes and says so on self.error", default = 1073741824 }
@@ -231,7 +238,7 @@ ports = [
   config = { model = "{{model}}" }
   ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
 
-  # ── 2. Investigate: one child per line, through the budget ──────────────────────────
+  # ── 2. Investigate: one child per line, `questions` at a time ───────────────────────
 
   [[workflows.nodes]]
   id = "split"
@@ -245,71 +252,100 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
+  # One child of `investigate` per line, `questions` at a time; their notes in line order.
   [[workflows.nodes]]
-  id = "fanout"
-  name = "One per line"
-  type = "fanout"
+  id = "batch"
+  name = "Investigate each"
+  type = "batch"
   module_id = "regulus/flow@0.1.0"
   position = { x = 650, y = 50 }
-  config = { mode = "split" }
+  config = { workflow = "investigate", input = "in", max_in_flight = {{questions}}, timeout_ms = {{max_ms}} }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "item", capability = "json@1", direction = "output", kind = "then" },
+    { id = "values", capability = "json@1", direction = "output", kind = "then" },
+    { id = "partial", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # `max_ms` ran out: the batch's summary, as text.
+  [[workflows.nodes]]
+  id = "partial_text"
+  name = "Out of time"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 850, y = 150 }
+  config = { conversion = "json_to_text" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  # A blank line of the orchestrator's reply is dropped here (`empty`, unwired), so it
-  # does not spend one of the budget's `max_items`; every other line goes on.
+  # Each note, as `{ text }`, into the documents collection the writer searches.
   [[workflows.nodes]]
-  id = "lines"
-  name = "Skip blank lines"
-  type = "switch"
+  id = "note_text"
+  name = "Note"
+  type = "convert"
   module_id = "regulus/flow@0.1.0"
-  position = { x = 750, y = 150 }
-  config = { cases = [{ port = "empty", op = "empty" }] }
+  position = { x = 850, y = 250 }
+  config = { conversion = "template", template = "{{/value}}" }
   ports = [
-    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
-    { id = "empty", capability = "text@1", direction = "output", kind = "then" },
-    { id = "other", capability = "text@1", direction = "output", kind = "then" },
-  ]
-
-  # At most `questions` sub-agents, and none after `max_ms`.
-  [[workflows.nodes]]
-  id = "budget"
-  name = "Budget"
-  type = "budget"
-  module_id = "regulus/guards@0.1.0"
-  position = { x = 850, y = 50 }
-  config = { max_items = {{questions}}, max_ms = {{max_ms}} }
-  ports = [
-    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
-    { id = "out", capability = "text@1", direction = "output", kind = "then" },
-    { id = "exceeded", capability = "text@1", direction = "output", kind = "then" },
-  ]
-
-  [[workflows.nodes]]
-  id = "call"
-  name = "Investigate"
-  type = "call"
-  module_id = "regulus/flow@0.1.0"
-  position = { x = 1050, y = 50 }
-  config = { workflow = "investigate" }
-  ports = [
-    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
-  id = "gather"
-  name = "All the notes"
+  id = "note_obj"
+  name = "Note as a document"
   type = "join"
   module_id = "regulus/flow@0.1.0"
-  position = { x = 1250, y = 50 }
-  config = { mode = "barrier", count = {{questions}}, shape = "array", timeout_ms = {{join_timeout_ms}} }
+  position = { x = 1050, y = 250 }
+  config = { mode = "barrier", shape = "object" }
   ports = [
-    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "text", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
-    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
   ]
+
+  [[workflows.nodes]]
+  id = "notes_ingest"
+  name = "Notes collection"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 1250, y = 250 }
+  config = { collection = "{{collection}}", chunker = "markdown" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  # The writer's tools: search_documents and read_chunk over the notes.
+  [[workflows.nodes]]
+  id = "notes_search"
+  name = "Search the notes"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 3050, y = 650 }
+  config = { collection = "{{collection}}" }
+  ports = [{ id = "tools", capability = "tool@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "tools"
+  name = "Tools"
+  type = "tools"
+  module_id = "regulus/tools@0.1.0"
+  position = { x = 3250, y = 650 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "engine", capability = "tools.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "toolset", capability = "toolset@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mcp"
+  name = "MCP"
+  type = "tools-mcp"
+  module_id = "regulus/tools-mcp@0.1.0"
+  position = { x = 3250, y = 800 }
+  ports = [{ id = "engine", capability = "tools.engine@1", direction = "output", kind = "uses" }]
 
   [[workflows.nodes]]
   id = "notes"
@@ -509,7 +545,7 @@ ports = [
   type = "convert"
   module_id = "regulus/flow@0.1.0"
   position = { x = 3050, y = 450 }
-  config = { conversion = "template", template = "You write the report of a piece of research. Read the notes at {{/notes}} (and paper.md in {{workdir}}, if it exists). Use only what the notes and the experiment below say, and cite the URLs the notes give.\n\n# Question\n\n{{/question}}\n\n# Experiment (exit code {{/experiment/code}})\n\n{{/experiment/tail}}\n\nReply with the report only, in Markdown, short: the answer first, then the evidence with its sources.\n" }
+  config = { conversion = "template", template = "You write the report of a piece of research. Read the notes at {{/notes}} (and paper.md in {{workdir}}, if it exists). Use only what the notes and the experiment below say, and cite the URLs the notes give. The notes are also in a document collection: search_documents finds the passages on a point.\n\n# Question\n\n{{/question}}\n\n# Experiment (exit code {{/experiment/code}})\n\n{{/experiment/tail}}\n\nReply with the report only, in Markdown, short: the answer first, then the evidence with its sources.\n" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
@@ -524,6 +560,7 @@ ports = [
   config = { name = "writer", workdir = "{{workdir}}", permissions = "{{permissions}}", fresh_context = "yes", turn_timeout_ms = {{turn_timeout_ms}} }
   ports = [
     { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "workdir", capability = "path@1", direction = "input", kind = "then" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
@@ -723,53 +760,70 @@ ports = [
   to = { node_id = "self", port_id = "error" }
 
   [[workflows.wires]]
-  id = "split-fanout"
+  id = "split-batch"
   kind = "then"
   from = { node_id = "split", port_id = "out" }
-  to = { node_id = "fanout", port_id = "in" }
+  to = { node_id = "batch", port_id = "in" }
 
   [[workflows.wires]]
-  id = "fanout-lines"
+  id = "batch-notes"
   kind = "then"
-  from = { node_id = "fanout", port_id = "out" }
-  to = { node_id = "lines", port_id = "in" }
+  from = { node_id = "batch", port_id = "values" }
+  to = { node_id = "notes", port_id = "in" }
 
   [[workflows.wires]]
-  id = "lines-budget"
+  id = "batch-partial"
   kind = "then"
-  from = { node_id = "lines", port_id = "other" }
-  to = { node_id = "budget", port_id = "in" }
+  from = { node_id = "batch", port_id = "partial" }
+  to = { node_id = "partial_text", port_id = "in" }
 
   [[workflows.wires]]
-  id = "budget-call"
+  id = "partial-exceeded"
   kind = "then"
-  from = { node_id = "budget", port_id = "out" }
-  to = { node_id = "call", port_id = "in" }
-
-  [[workflows.wires]]
-  id = "budget-exceeded"
-  kind = "then"
-  from = { node_id = "budget", port_id = "exceeded" }
+  from = { node_id = "partial_text", port_id = "out" }
   to = { node_id = "self", port_id = "exceeded" }
 
   [[workflows.wires]]
-  id = "call-gather"
+  id = "batch-note"
   kind = "then"
-  from = { node_id = "call", port_id = "out" }
-  to = { node_id = "gather", port_id = "in" }
-
-  # The time ran out (`join_timeout_ms`): what came goes on the same way.
-  [[workflows.wires]]
-  id = "gather-notes-timeout"
-  kind = "then"
-  from = { node_id = "gather", port_id = "timeout" }
-  to = { node_id = "notes", port_id = "in" }
+  from = { node_id = "batch", port_id = "item" }
+  to = { node_id = "note_text", port_id = "in" }
 
   [[workflows.wires]]
-  id = "gather-notes"
+  id = "note-obj"
   kind = "then"
-  from = { node_id = "gather", port_id = "out" }
-  to = { node_id = "notes", port_id = "in" }
+  from = { node_id = "note_text", port_id = "out" }
+  to = { node_id = "note_obj", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "note-ingest"
+  kind = "then"
+  from = { node_id = "note_obj", port_id = "out" }
+  to = { node_id = "notes_ingest", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ingest-error"
+  kind = "then"
+  from = { node_id = "notes_ingest", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "search-tools"
+  kind = "uses"
+  from = { node_id = "notes_search", port_id = "tools" }
+  to = { node_id = "tools", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "mcp-tools"
+  kind = "uses"
+  from = { node_id = "mcp", port_id = "engine" }
+  to = { node_id = "tools", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "tools-writer"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "writer", port_id = "tools" }
 
   [[workflows.wires]]
   id = "notes-file"
@@ -1114,6 +1168,20 @@ ports = [
   { id = "out", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
 ]
 
+  # A blank line answers empty at once: nothing to fetch, no agent turn.
+  [[workflows.nodes]]
+  id = "blank"
+  name = "Blank line?"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { cases = [{ port = "empty", op = "empty" }] }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "empty", capability = "text@1", direction = "output", kind = "then" },
+    { id = "other", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
   [[workflows.nodes]]
   id = "source"
   name = "Source"
@@ -1176,15 +1244,27 @@ ports = [
   ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
 
   [[workflows.wires]]
-  id = "in-source"
+  id = "in-blank"
   kind = "then"
   from = { node_id = "self", port_id = "in" }
+  to = { node_id = "blank", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "blank-out"
+  kind = "then"
+  from = { node_id = "blank", port_id = "empty" }
+  to = { node_id = "self", port_id = "out" }
+
+  [[workflows.wires]]
+  id = "in-source"
+  kind = "then"
+  from = { node_id = "blank", port_id = "other" }
   to = { node_id = "source", port_id = "in" }
 
   [[workflows.wires]]
   id = "in-join"
   kind = "then"
-  from = { node_id = "self", port_id = "in" }
+  from = { node_id = "blank", port_id = "other" }
   to = { node_id = "join", port_id = "question" }
 
   [[workflows.wires]]
