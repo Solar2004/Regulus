@@ -15,10 +15,28 @@ and that is verified by a test on every push, not promised.
 **Status (2026-11-08):** the core, the CLI, the desktop app and the TUI work end to
 end. Agents run through Claude Code and opencode, twenty-two modules ship with the
 program, and eight ready-made agent systems install as templates. Release builds and
-signed self-update are in. What is next is polishing with real use. The documentation
-under `docs/` is in Spanish; the code is in English.
+signed self-update are in. What is next is polishing with real use. Contributor guides are available in English. The detailed design record is currently
+in Spanish; code and user-facing source strings are in English.
 
 ---
+
+## Download
+
+Linux x86_64 builds are available from [GitHub Releases](https://github.com/Solar2004/Regulus/releases/latest).
+
+| Package | Download |
+|---|---|
+| Desktop AppImage | [Regulus 0.1.0 AppImage](https://github.com/Solar2004/Regulus/releases/download/v0.1.0/Regulus_0.1.0_amd64.AppImage) |
+| Debian / Ubuntu | [Regulus 0.1.0 .deb](https://github.com/Solar2004/Regulus/releases/download/v0.1.0/Regulus_0.1.0_amd64.deb) |
+| CLI and TUI | [Linux executable](https://github.com/Solar2004/Regulus/releases/download/v0.1.0/regulus-linux-x86_64) |
+
+The release includes checksums and a signed update manifest. For AppImage or the CLI,
+make the downloaded file executable with `chmod +x <file>` before running it.
+Agent engines such as Claude Code and opencode are installed separately.
+
+Want to help build Regulus? Start with [CONTRIBUTING.md](CONTRIBUTING.md), the
+[English concept guide](docs/contributing/concepts.md), and the
+[module development guide](docs/contributing/modules.md).
 
 ## The app
 
@@ -137,7 +155,7 @@ as a template and it installs anywhere with holes for the parts that change.
 Each template documents its holes, its risks and the run that was made with a real
 agent in its header.
 
-## Try it
+## Build and run from source
 
 Requirements: Rust stable, `pnpm` for the app, `python3` for a few templates, and the
 CLI of at least one agent engine (`claude` or `opencode`).
@@ -276,3 +294,8 @@ self-contained SVGs under `assets/branding/`; `python3 assets/branding/build_ass
 rebuilds the exports. The design direction, **Regulus Midnight**, with its palette and
 tokens, is in [`docs/08-design-system.md`](docs/08-design-system.md) and
 `assets/design/`.
+
+## License
+
+Regulus is licensed under [Apache-2.0](LICENSE). Third-party code retains its
+applicable licenses and attribution; module origin metadata is kept in manifests.
