@@ -247,14 +247,33 @@ el texto final de cada turno.
   `decisions`, la caja arranca con `reject`, lo dice en el log y deja una entrada
   `system` en el historial.
 - **Historial.** Con `history = yes` (por defecto) la caja guarda la conversación en su
-  store, en la base del proyecto del nodo, bajo `conv/<workflow>/<nodo>`: sobrevive a la
-  ejecución y al reinicio, y la siguiente ejecución del mismo nodo sigue en ella. Entradas
+  store, en la base del proyecto del nodo. **Qué conversación** lo dice el campo
+  `conversation` (2026-11-09):
+  - `execution` (por defecto): una por ejecución y nodo, bajo
+    `chat/exec/<ejecución>/<nodo>`. Dos ejecuciones del mismo workflow (dos trabajadores
+    llamados a la vez con `call`) no ven los turnos, la actividad ni la sesión del motor
+    de la otra. La misma ejecución la vuelve a encontrar al reconectar el cliente y tras
+    reiniciar el core (`[store] resume`).
+  - `named` + `conversation_id` (letras, dígitos, `-` `_` `.` `:`): la conversación
+    `chat/id/<id>` del proyecto, para seguirla a propósito en otra ejecución u otro nodo.
+    Ejemplo en un perfil: `config = { conversation = "named", conversation_id =
+    "revisor", resume = "native" }`; en una plantilla, con un hueco
+    (`conversation_id = "{{conversation}}"` y `regulus template apply … --set
+    conversation=revisor`).
+  - `workflow`: una por nodo de workflow entre ejecuciones, bajo `conv/<workflow>/<nodo>`,
+    como antes de este campo; es la única forma de leer lo grabado entonces. Nada se
+    migra ni se borra.
+
+  Una conversación compartida (`named`, `workflow`) la tiene **un solo nodo en marcha**:
+  otro que la pida mientras tanto no arranca ("conversation `chat/id/x` is in use by agent
+  `a` in execution `exec-3`…"), así que dos agentes nunca escriben en un historial ni
+  reanudan una sesión a la vez. Entradas
   `{seq, at, role: user|agent|system, text, turn, execution_id}` (`turn` = `t-<n>`) y
   actividad `{seq, at, turn, event}`; las dos comparten un solo `seq`, así que un cursor
   las pagina juntas sin perder ni repetir nada. Se queda con las últimas `history_max`
   (2000) de cada lista. Durante el turno la caja lee los eventos cada `events_poll_ms`
-  (200) en el hilo del turno, y una vez más al acabar. Sin store vive en memoria; sin
-  directorio de datos la clave va por ejecución.
+  (200) en el hilo del turno, y una vez más al acabar. Sin store vive en memoria, también
+  la `named`, mientras dure el core; sin directorio de datos `workflow` va por ejecución.
 - **Salida `activity`** (`agent.event@1`, "luego"): cada evento leído, su JSON tal cual, si
   `activity_emit = yes` (por defecto). Un motor sin eventos (`UnknownMethod`) deja la caja
   con solo el texto final, como antes.
@@ -268,9 +287,12 @@ el texto final de cada turno.
   conversar, `regulus talk <ejecución> [--node N] [--once TEXTO]`, un REPL sobre esos tres
   que contesta permisos con `/<opción>` por `human.answer` (`04-client.md` §7, que también
   cuenta la vista de conversación de la TUI).
-- **Reanudar.** `resume = native` (por defecto `no`; nunca con `fresh_context = yes`): si
-  el motor dice `load_session`, la caja guarda el `native_session_id` en la conversación y
-  la siguiente ejecución lo pasa en `StartArgs.resume`; `regulus-acp` lo carga con
+- **Reanudar.** `resume = native` (por defecto `no`; nunca con `fresh_context = yes` ni
+  `history = no`): si el motor dice `load_session`, la caja guarda el `native_session_id`
+  en la conversación y el siguiente arranque **de esa conversación** lo pasa en
+  `StartArgs.resume`: con `execution`, la misma ejecución tras reiniciar el core; con
+  `named` o `workflow`, la siguiente ejecución que la continúe. Una ejecución nueva con
+  `execution` no tiene sesión que reanudar y abre una nueva; `regulus-acp` lo carga con
   `session/load` y descarta lo que el agente reproduce al cargar (es historia, no
   novedad: no entra en los eventos). Si el motor no puede o la carga falla, abre una
   sesión nueva, lo avisa, y el historial dice que no se reanudó. **Reproducir el
@@ -281,7 +303,10 @@ el texto final de cada turno.
 
 Probado con un motor falso en proceso (`crates/modules/agent/tests/events.rs`: historial
 y `activity`, paginado en dos páginas, la petición contestada con `human answer`, `ask`
-sin decisor, `agent.cancel`, reanudar con y sin `load_session`) y por ACP con el agente de
+sin decisor, `agent.cancel`, reanudar con y sin `load_session`; dos ejecuciones a la vez
+del mismo workflow con turnos, actividad y sesión propios; la misma ejecución tras
+reiniciar el core; `named` que sigue tras parar y se niega a un segundo nodo; `workflow`
+que lee lo de antes y que una ejecución por defecto no ve; `named` sin store) y por ACP con el agente de
 prueba (`crates/regulus-acp/tests/events.rs` y `agent_events.rs`: eventos con cursor y
 búfer acotado, `ask` → `decide`, plazo, cancelar, `session/load` sin repetir lo cargado; y
 la caja con `human` de punta a punta). Límites: el orden entre una `permission_request` y
