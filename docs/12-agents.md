@@ -288,6 +288,27 @@ la caja con `human` de punta a punta). Límites: el orden entre una `permission_
 las updates que la preceden en el mismo instante no está garantizado; un hilo por petición
 pendiente sondea al decisor hasta que decide, el motor la resuelve o el nodo para.
 
+### 5.1 Trabajadores de Regulus y subagentes del CLI
+
+✅ *Construido* (2026-11-09, módulo `delegation`, `13-blocks.md` §3.3). Son dos cosas
+distintas y conviven:
+
+| | Subagentes del CLI (ranura `subagent`, `slot::SUBAGENT`) | Trabajadores de Regulus (`delegation.delegate`) |
+|---|---|---|
+| Qué son | Agentes internos de Claude Code u opencode, dentro de su proceso | Ejecuciones hijas que Regulus mantiene vivas (`ChildMode::Keep`), una por trabajador, con id `w-<n>` |
+| Qué elige Regulus | Solo su modelo (la ranura, §6.5) | El workflow (`workers`: tipo → workflow), el motor (cada nodo cableado en `engine`, por id) y todo lo que cuelga de sus entradas "usa" |
+| Quién los ve | Nadie fuera del CLI | `regulus exec tree`, `regulus workers ls`, el bus, la app |
+| Cómo se habla con ellos | El CLI decide | Herramientas `worker_create/status/result/send/close/list` (`tool@1`), un canal (`participant@1`: `@w-1`) o `regulus workers create/send/result/close` |
+| Vida | La del turno del CLI | Hasta `worker_close`, que fallen o que pare el padre; tras reiniciar el core salen `interrupted` |
+
+El trabajador es un workflow cualquiera con una entrada "luego" `prompt_port` (`prompt`) y
+una salida `result_port` (`reply`): lo normal es una caja Agente cuya entrada `engine` sale
+de `self.engine`, y el `delegate` le enlaza el motor elegido. Con dos motores cableados
+(p. ej. opencode y Claude Code) el coordinador elige por id en `worker_create`. Probado
+con el agente ACP de prueba (`crates/regulus-acp/tests/delegation.rs`): dos trabajadores en
+dos motores distintos, sus resultados por separado, cerrar uno, seguir con el otro y parar
+al padre. Plantilla `templates/delegation.toml` (`13-blocks.md` §5 fila 11).
+
 ## 6. Proveedores
 
 ✅ **DECIDIDO** (Alexander, 2026-10-17: *"lo más flexible"*). Ese mismo día se amplió: el
@@ -699,8 +720,11 @@ que el modelo falso llame a `search_documents` sobre lo ingerido y conteste.
 - El historial vive en memoria de la sesión: no sobrevive al reinicio y no hay
   `load_session`. El historial de la caja (§5) sí.
 - Sin reintentos ante errores del proveedor: el turno falla con el error (sin secretos).
-- Delegación (`delegation.delegate`) y workflow como herramienta (`flow.tool`) aún no
-  están en la plantilla: sus módulos no estaban en la rama; queda un TODO en su cabecera.
+- Delegación y workflow como herramienta ya están en la plantilla (2026-11-09): el nodo
+  `workers` (`delegation.delegate`) da `worker_*` y sus trabajadores corren en el mismo
+  motor nativo (entrada `engine` perezosa, para que no haya bucle de arranque); el nodo
+  `add_docs` (`flow.tool`) ofrece `ingest_folder`. Ninguna está en `allow_tools`: cada
+  llamada la aprueba una persona. Un trabajador contesta `reject` a todo lo que pida.
 - Montajes: solo `mcp-stdio` y solo herramientas (ni recursos, ni prompts, ni sampling;
   una petición del servidor que no es `ping` recibe "method not found"). Sin
   `notifications/tools/list_changed`: se vuelve a listar en cada turno. Un montaje que muere
