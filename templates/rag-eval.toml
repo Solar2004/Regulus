@@ -1,43 +1,43 @@
 # RAG evaluation (docs/13-blocks.md §5): how well retrieval finds what a dataset says
 # it should, with a deterministic gate and, optionally, a model judging the evidence.
 #
-# TODO batch: the dataset is spread with `fanout` (mode split) and gathered with a
-# `join` that waits for `count` results; `flow.batch` (map-collect, no fixed count) will
-# replace both when it lands.
-#
 #   self.go → start ─docs─→ docs_path → ingest (every file of docs_dir matching glob)
-#                   └data─→ read dataset → lines (split) → items (fanout split)
-#                           → nonempty (switch) → parse (text_to_json) → retrieve
-#   retrieve.hits → gather (join, count) → recall ─score→ self.score
-#                                                 ├pass→ self.passed
-#                                                 └fail→ self.failed
-#   retrieve.hits → context → to_{{judge_by}} → judge ⇢ provider → self.relevant | irrelevant
+#                   └data─→ read dataset → lines (split) → batch (flow, one child each)
+#   batch.values → recall ─score→ self.score     batch.item → is_hits ─hits→ pick → unpick
+#                         ├pass→ self.passed             └error→ pick_error → self.error
+#                         └fail→ self.failed     unpick → context → to_{{judge_by}} → judge
+#                                                  ⇢ provider → self.relevant | irrelevant
+#   query (child workflow, one per line): self.in → nonempty ─item→ parse → retrieve
+#     retrieve.hits → self.hits · retrieve.error → self.error · blank → self.skip
 #
 # The dataset is JSONL, one item per line: `{"query": "…", "expect_source_ids": ["…"]}`.
 # An expected id matches a hit when it is the start of the hit's source_id, doc_id or
 # chunk_id, or the end of its location: a file name (`rust.md`) works without knowing
 # the hashes. recall@k is the share of items with at least one expected id among their
-# k hits; `passed` when it reaches `threshold`. Lines that are blank are skipped; items
-# without expected ids are counted in `skipped`, not in the score.
+# k hits; `passed` when it reaches `threshold`. Blank lines and items without expected
+# ids are counted in `skipped`, not in the score; so is a query that fails (an empty
+# one), whose error also leaves on `error`.
+#
+# The batch (`flow.batch`) runs the child workflow `query` once per line, at most
+# `max_in_flight` at a time, and hands the answers to `recall` in line order (`values`)
+# once every child is over: no count to keep in step with the dataset. Past `timeout_ms`
+# from the first query, the children still running are stopped and recall scores what
+# came (`partial` goes out with the same `values`).
 #
 # Order: the bus delivers in order, so the documents are ingested before the first query
 # runs (`docs` leaves `start` before `data`). Ingesting again with the same bytes changes
 # nothing; the collection is the project's.
 #
-# `count` must be the number of items (non-blank lines): the join waits for that many
-# results, or `timeout_ms` after the first one, and then scores what came (`timeout`
-# goes to the recall node too). A query that fails (an empty one) goes to `error` and is
-# not counted.
-#
 # judge_by: `none` (default) sends the evidence nowhere: no model, no key. `judge` sends
-# each item's evidence (the context text) to a judge on the provider below, which says
-# whether it answers the question: per item on `relevant`/`irrelevant`, not aggregated.
-# The answers themselves (`expect_answer_contains`) and their citations are not
-# evaluated: that needs an answerer (see rag-chat) and is left for `flow.batch`.
+# each item's evidence (the context text of its hits, from `batch.item`) to a judge on the
+# provider below, which says whether it answers the question: per item on
+# `relevant`/`irrelevant`, not aggregated. The answers themselves
+# (`expect_answer_contains`) and their citations are not evaluated: that needs an
+# answerer (see rag-chat) in the child workflow.
 #
 # Tested (crates/regulus-cli/tests/template_rag.rs): both judge_by values pass
-# profile.check; a run with judge_by=none over two files and a three-item dataset gives
-# recall 2/3 below a threshold of 0.9 (`failed`) and passes at 0.6.
+# profile.check; a run with judge_by=none over two files and a three-item dataset (and
+# a blank line) gives recall 2/3 below a threshold of 0.9 (`failed`) and passes at 0.6.
 id = "rag-eval"
 name = "RAG evaluation of {{docs_dir}}"
 main_workflow_id = "eval"
@@ -56,7 +56,6 @@ requires = [
 [template.vars]
 docs_dir = { description = "absolute folder of the documents to evaluate; they are ingested from it" }
 dataset = { description = "the JSONL dataset, absolute or relative to docs_dir" }
-count = { description = "items in the dataset (non-blank lines): results the join waits for" }
 glob = { description = "files of docs_dir ingested, relative to it", default = "**/*.md" }
 collection = { description = "name of the document collection", default = "rag-eval" }
 chunker = { description = "how documents are cut: markdown, paragraph or fixed", default = "markdown" }
@@ -64,7 +63,8 @@ chunk_chars = { description = "characters per chunk at most", default = 1200 }
 overlap_chars = { description = "characters a chunk repeats of the one before", default = 150 }
 k = { description = "hits per query: the k of recall@k", default = 6 }
 threshold = { description = "recall@k from which the evaluation passes, 0 to 1", default = 0.8 }
-timeout_ms = { description = "milliseconds the join waits after the first result before scoring what came; 0: forever", default = 120000 }
+timeout_ms = { description = "milliseconds from the first query to scoring what came, stopping the rest; 0: no limit", default = 120000 }
+max_in_flight = { description = "queries run at once", default = 4 }
 judge_by = { description = "none: no model; judge: a judge says per item whether the evidence answers the question", default = "none" }
 criteria = { description = "what the judge checks in each item's evidence", default = "The evidence answers the question." }
 judge_preset = { description = "provider template of the judge (presets.toml)", default = "ollama" }
@@ -150,67 +150,70 @@ ports = [
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
   ]
 
+  # One child of `query` per line, the answers in line order on `values`.
   [[workflows.nodes]]
-  id = "items"
-  name = "Items"
-  type = "fanout"
+  id = "batch"
+  name = "Each item"
+  type = "batch"
   module_id = "regulus/flow@0.1.0"
   position = { x = 650, y = 250 }
-  config = { mode = "split" }
+  config = { workflow = "query", input = "in", max_in_flight = {{max_in_flight}}, timeout_ms = {{timeout_ms}} }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "item", capability = "json@1", direction = "output", kind = "then" },
+    { id = "values", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # Each item's hits, for the evidence path: `{ batch, index, port, value }` → the hits.
+  [[workflows.nodes]]
+  id = "is_hits"
+  name = "Hits only"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 450 }
+  config = { mode = "rules", cases = [{ port = "hits", op = "equals", path = "/port", value = "hits" }, { port = "error", op = "equals", path = "/port", value = "error" }], fallback = "other" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "json@1", direction = "output", kind = "then" },
+    { id = "other", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # A query that failed: its error text goes out on `self.error`.
+  [[workflows.nodes]]
+  id = "pick_error"
+  name = "Query error"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1450, y = 650 }
+  config = { conversion = "template", template = "{{/value}}" }
   ports = [
     { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
-  id = "nonempty"
-  name = "Skip blank lines"
-  type = "switch"
+  id = "pick"
+  name = "Pick the hits"
+  type = "convert"
   module_id = "regulus/flow@0.1.0"
-  position = { x = 850, y = 250 }
-  config = { mode = "rules", cases = [{ port = "blank", op = "regex", value = "^\\s*$" }], fallback = "item" }
+  position = { x = 1250, y = 550 }
+  config = { conversion = "template", template = "{{/value}}" }
   ports = [
-    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
-    { id = "blank", capability = "text@1", direction = "output", kind = "then" },
-    { id = "item", capability = "text@1", direction = "output", kind = "then" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
-  id = "parse"
-  name = "Parse item"
+  id = "unpick"
+  name = "Hits as JSON"
   type = "convert"
   module_id = "regulus/flow@0.1.0"
-  position = { x = 1050, y = 250 }
+  position = { x = 1250, y = 650 }
   config = { conversion = "text_to_json" }
   ports = [
     { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "out", capability = "json@1", direction = "output", kind = "then" },
-  ]
-
-  [[workflows.nodes]]
-  id = "retrieve"
-  name = "Retrieve"
-  type = "retrieve"
-  module_id = "regulus/documents@0.1.0"
-  position = { x = 1250, y = 250 }
-  config = { collection = "{{collection}}", k = {{k}} }
-  ports = [
-    { id = "query", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
-    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
-    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
-  ]
-
-  [[workflows.nodes]]
-  id = "gather"
-  name = "Gather"
-  type = "join"
-  module_id = "regulus/flow@0.1.0"
-  position = { x = 1450, y = 250 }
-  config = { mode = "barrier", count = "{{count}}", timeout_ms = {{timeout_ms}} }
-  ports = [
-    { id = "hits", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
-    { id = "out", capability = "json@1", direction = "output", kind = "then" },
-    { id = "timeout", capability = "json@1", direction = "output", kind = "then" },
   ]
 
   [[workflows.nodes]]
@@ -337,54 +340,6 @@ ports = [
   to = { node_id = "lines", port_id = "in" }
 
   [[workflows.wires]]
-  id = "lines-out-items-in"
-  kind = "then"
-  from = { node_id = "lines", port_id = "out" }
-  to = { node_id = "items", port_id = "in" }
-
-  [[workflows.wires]]
-  id = "items-out-nonempty-in"
-  kind = "then"
-  from = { node_id = "items", port_id = "out" }
-  to = { node_id = "nonempty", port_id = "in" }
-
-  [[workflows.wires]]
-  id = "nonempty-item-parse-in"
-  kind = "then"
-  from = { node_id = "nonempty", port_id = "item" }
-  to = { node_id = "parse", port_id = "in" }
-
-  [[workflows.wires]]
-  id = "parse-out-retrieve-query"
-  kind = "then"
-  from = { node_id = "parse", port_id = "out" }
-  to = { node_id = "retrieve", port_id = "query" }
-
-  [[workflows.wires]]
-  id = "retrieve-error-self-error"
-  kind = "then"
-  from = { node_id = "retrieve", port_id = "error" }
-  to = { node_id = "self", port_id = "error" }
-
-  [[workflows.wires]]
-  id = "retrieve-hits-gather-hits"
-  kind = "then"
-  from = { node_id = "retrieve", port_id = "hits" }
-  to = { node_id = "gather", port_id = "hits" }
-
-  [[workflows.wires]]
-  id = "gather-out-recall-in"
-  kind = "then"
-  from = { node_id = "gather", port_id = "out" }
-  to = { node_id = "recall", port_id = "in" }
-
-  [[workflows.wires]]
-  id = "gather-timeout-recall-in"
-  kind = "then"
-  from = { node_id = "gather", port_id = "timeout" }
-  to = { node_id = "recall", port_id = "in" }
-
-  [[workflows.wires]]
   id = "recall-score-self-score"
   kind = "then"
   from = { node_id = "recall", port_id = "score" }
@@ -401,12 +356,6 @@ ports = [
   kind = "then"
   from = { node_id = "recall", port_id = "fail" }
   to = { node_id = "self", port_id = "failed" }
-
-  [[workflows.wires]]
-  id = "retrieve-hits-context-hits"
-  kind = "then"
-  from = { node_id = "retrieve", port_id = "hits" }
-  to = { node_id = "context", port_id = "hits" }
 
   [[workflows.wires]]
   id = "context-out-to-judge-by-in"
@@ -436,4 +385,141 @@ ports = [
   id = "judge-error-self-error"
   kind = "then"
   from = { node_id = "judge", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "lines-out-batch-in"
+  kind = "then"
+  from = { node_id = "lines", port_id = "out" }
+  to = { node_id = "batch", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "batch-values-recall-in"
+  kind = "then"
+  from = { node_id = "batch", port_id = "values" }
+  to = { node_id = "recall", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "batch-item-is-hits-in"
+  kind = "then"
+  from = { node_id = "batch", port_id = "item" }
+  to = { node_id = "is_hits", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "is-hits-hits-pick-in"
+  kind = "then"
+  from = { node_id = "is_hits", port_id = "hits" }
+  to = { node_id = "pick", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "is-hits-error-pick-error-in"
+  kind = "then"
+  from = { node_id = "is_hits", port_id = "error" }
+  to = { node_id = "pick_error", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "pick-error-out-self-error"
+  kind = "then"
+  from = { node_id = "pick_error", port_id = "out" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "pick-out-unpick-in"
+  kind = "then"
+  from = { node_id = "pick", port_id = "out" }
+  to = { node_id = "unpick", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "unpick-out-context-hits"
+  kind = "then"
+  from = { node_id = "unpick", port_id = "out" }
+  to = { node_id = "context", port_id = "hits" }
+
+# One dataset line: blank lines go out on `skip`, the others are parsed and queried.
+[[workflows]]
+id = "query"
+name = "One query"
+kind = "extra"
+ports = [
+  { id = "in", capability = "text@1", direction = "input", kind = "then" },
+  { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+  { id = "skip", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "nonempty"
+  name = "Skip blank lines"
+  type = "switch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 250 }
+  config = { mode = "rules", cases = [{ port = "blank", op = "regex", value = "^\\s*$" }], fallback = "item" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "blank", capability = "text@1", direction = "output", kind = "then" },
+    { id = "item", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+
+  [[workflows.nodes]]
+  id = "parse"
+  name = "Parse item"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 250, y = 250 }
+  config = { conversion = "text_to_json" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Retrieve"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 450, y = 250 }
+  config = { collection = "{{collection}}", k = {{k}} }
+  ports = [
+    { id = "query", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+
+  [[workflows.wires]]
+  id = "self-in-nonempty-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "nonempty", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "nonempty-blank-self-skip"
+  kind = "then"
+  from = { node_id = "nonempty", port_id = "blank" }
+  to = { node_id = "self", port_id = "skip" }
+
+  [[workflows.wires]]
+  id = "nonempty-item-parse-in"
+  kind = "then"
+  from = { node_id = "nonempty", port_id = "item" }
+  to = { node_id = "parse", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "parse-out-retrieve-query"
+  kind = "then"
+  from = { node_id = "parse", port_id = "out" }
+  to = { node_id = "retrieve", port_id = "query" }
+
+  [[workflows.wires]]
+  id = "retrieve-hits-self-hits"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "hits" }
+  to = { node_id = "self", port_id = "hits" }
+
+  [[workflows.wires]]
+  id = "retrieve-error-self-error"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "error" }
   to = { node_id = "self", port_id = "error" }

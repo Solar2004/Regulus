@@ -297,14 +297,7 @@ fn rag_eval_scores_recall_against_its_threshold_without_a_model() {
         )
         .unwrap();
         let dir = format!("docs_dir={}", docs.display());
-        let common = [
-            "--set",
-            &dir,
-            "--set",
-            "dataset=eval.jsonl",
-            "--set",
-            "count=3",
-        ];
+        let common = ["--set", &dir, "--set", "dataset=eval.jsonl"];
         let apply = |id: &str, extra: &[&str]| {
             let mut args = vec!["template", "apply", "rag-eval", "--id", id];
             args.extend_from_slice(&common);
