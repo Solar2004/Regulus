@@ -21,6 +21,9 @@ fn options(permissions: Permissions) -> SessionOptions {
         setup: Vec::new(),
         startup: Duration::from_secs(10),
         mcp_servers: Vec::new(),
+        events_keep: regulus_acp::DEFAULT_EVENTS_KEEP,
+        permission_timeout: regulus_acp::DEFAULT_PERMISSION_TIMEOUT,
+        resume: None,
     }
 }
 

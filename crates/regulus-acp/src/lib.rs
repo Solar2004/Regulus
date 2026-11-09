@@ -4,21 +4,26 @@
 //! One [`Session`] is one agent process with one ACP session. The protocol is async; a
 //! session runs it on a thread of its own, so modules, whose calls are synchronous, can
 //! use it without a runtime. Dropping a session kills the agent's whole process group.
+//!
+//! Each session keeps what happens in it as [`SessionEvent`]s in a bounded buffer
+//! (`SessionOptions::events_keep`): streamed text and reasoning, tool calls and their
+//! updates, plans, permission requests and how they were answered, turn boundaries and
+//! state changes. Updates of a kind it does not map are left out of the buffer.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod engine;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, ContentChunk, EnvVariable, InitializeRequest, McpServer,
-    McpServerStdio, NewSessionRequest, PermissionOptionKind, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, SessionUpdate,
+    CancelNotification, ContentBlock, ContentChunk, EnvVariable, InitializeRequest,
+    LoadSessionRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
@@ -27,7 +32,10 @@ use agent_client_protocol::{
     SessionMessage, UntypedMessage,
 };
 use futures::channel::{mpsc as async_mpsc, oneshot};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
+pub use regulus_contract_agent_engine::{
+    PermissionOption, SessionEvent, SessionEventKind, SessionState,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -45,14 +53,30 @@ pub struct Launch {
     pub env_remove: Vec<String>,
 }
 
-/// What the session answers when the agent asks for permission. Asking a person needs
-/// the bus to reach a client; until then a node chooses one of these.
+/// What the session answers when the agent asks for permission.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Permissions {
     Allow,
     #[default]
     Reject,
+    /// The request waits as a `permission_request` event until [`Session::decide`]
+    /// answers it, a cancel ends the turn or `permission_timeout` runs out (then the
+    /// reject option is chosen, or the request is cancelled if it offers none).
+    Ask,
+}
+
+/// How many events a session keeps when its options do not say.
+pub const DEFAULT_EVENTS_KEEP: usize = 2000;
+/// How long an asked permission waits when the options do not say.
+pub const DEFAULT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn default_events_keep() -> usize {
+    DEFAULT_EVENTS_KEEP
+}
+
+fn default_permission_timeout() -> Duration {
+    DEFAULT_PERMISSION_TIMEOUT
 }
 
 /// A request sent after `initialize` and before `session/new`, for agent-specific setup
@@ -80,6 +104,18 @@ pub struct SessionOptions {
     /// MCP servers over stdio, passed in `session/new`; every ACP agent accepts them.
     #[serde(default)]
     pub mcp_servers: Vec<StdioServer>,
+    /// How many events the session keeps; the oldest go first.
+    #[serde(default = "default_events_keep")]
+    pub events_keep: usize,
+    /// How long a permission request waits for [`Session::decide`] with
+    /// [`Permissions::Ask`].
+    #[serde(default = "default_permission_timeout")]
+    pub permission_timeout: Duration,
+    /// A native session id to load (`session/load`) instead of opening a new session.
+    /// Done only when the agent advertises `loadSession`; otherwise, or if loading fails,
+    /// a new session opens and [`Session::warnings`] says why.
+    #[serde(default)]
+    pub resume: Option<String>,
 }
 
 /// An MCP server the agent starts as a process and talks to over stdio.
@@ -98,6 +134,16 @@ pub struct StdioServer {
 pub struct AgentInfo {
     pub name: String,
     pub version: String,
+}
+
+/// How the session opened: what the agent can do and whether it loaded an old session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Opened {
+    id: String,
+    agent: AgentInfo,
+    load_session: bool,
+    resumed: bool,
+    warnings: Vec<String>,
 }
 
 /// The result of one prompt: the agent's text and why it stopped (`end_turn`,
@@ -135,6 +181,206 @@ pub enum State {
 
 type Reply = mpsc::Sender<Result<Turn, Error>>;
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The session's events, bounded, and the turn they belong to.
+struct Events {
+    keep: usize,
+    state: Mutex<EventsState>,
+}
+
+#[derive(Default)]
+struct EventsState {
+    kept: VecDeque<SessionEvent>,
+    seq: u64,
+    turns: u64,
+    turn: Option<u64>,
+}
+
+impl Events {
+    fn new(keep: usize) -> Self {
+        Self {
+            keep: keep.max(1),
+            state: Mutex::default(),
+        }
+    }
+
+    fn push(&self, kind: SessionEventKind) {
+        let mut state = lock(&self.state);
+        state.seq += 1;
+        let event = SessionEvent {
+            seq: state.seq,
+            at: now_ms(),
+            turn: state.turn,
+            kind,
+        };
+        state.kept.push_back(event);
+        while state.kept.len() > self.keep {
+            state.kept.pop_front();
+        }
+    }
+
+    fn begin_turn(&self) {
+        {
+            let mut state = lock(&self.state);
+            state.turns += 1;
+            state.turn = Some(state.turns);
+        }
+        self.push(SessionEventKind::TurnStarted);
+        self.push(SessionEventKind::State {
+            state: SessionState::Busy,
+        });
+    }
+
+    fn end_turn(&self, stop_reason: Option<&str>) {
+        if let Some(stop_reason) = stop_reason {
+            self.push(SessionEventKind::TurnEnded {
+                stop_reason: stop_reason.to_string(),
+            });
+        }
+        lock(&self.state).turn = None;
+        self.push(SessionEventKind::State {
+            state: SessionState::Idle,
+        });
+    }
+
+    /// The events after `since`, and the cursor for the next call.
+    fn since(&self, since: u64) -> (Vec<SessionEvent>, u64) {
+        let state = lock(&self.state);
+        let events: Vec<SessionEvent> = state
+            .kept
+            .iter()
+            .filter(|e| e.seq > since)
+            .cloned()
+            .collect();
+        let next = events.last().map_or(since, |e| e.seq);
+        (events, next)
+    }
+}
+
+/// A permission request waiting for [`Session::decide`].
+struct Parked {
+    answer: oneshot::Sender<Option<String>>,
+    options: Vec<PermissionOption>,
+    /// Dropped with the entry: wakes the request's timer, which then has nothing to do.
+    _alive: mpsc::Sender<()>,
+}
+
+/// The permission requests waiting in a session, and its events to report them in.
+struct Asks {
+    events: Arc<Events>,
+    parked: Mutex<HashMap<String, Parked>>,
+    next: AtomicU64,
+    timeout: Duration,
+}
+
+impl Asks {
+    /// Parks `request`, says so in the events and returns where its answer will arrive.
+    fn park(
+        self: &Arc<Self>,
+        request: &RequestPermissionRequest,
+    ) -> oneshot::Receiver<Option<String>> {
+        let id = format!("p{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
+        let options: Vec<PermissionOption> = request
+            .options
+            .iter()
+            .map(|o| PermissionOption {
+                id: o.option_id.0.to_string(),
+                kind: serde_json::to_value(o.kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default(),
+                name: o.name.clone(),
+            })
+            .collect();
+        let call = serde_json::to_value(&request.tool_call).unwrap_or_default();
+        let text = |key: &str| call.get(key).and_then(Value::as_str).map(String::from);
+        let (answer, answered) = oneshot::channel();
+        let (alive, gone) = mpsc::channel::<()>();
+        lock(&self.parked).insert(
+            id.clone(),
+            Parked {
+                answer,
+                options: options.clone(),
+                _alive: alive,
+            },
+        );
+        self.events.push(SessionEventKind::PermissionRequest {
+            id: id.clone(),
+            tool: text("name").or_else(|| text("kind")),
+            title: text("title").unwrap_or_else(|| "permission".into()),
+            options,
+        });
+        let asks = Arc::downgrade(self);
+        let timeout = self.timeout;
+        let spawned = std::thread::Builder::new()
+            .name("regulus-acp-ask".into())
+            .spawn(move || {
+                if gone.recv_timeout(timeout) == Err(mpsc::RecvTimeoutError::Timeout) {
+                    if let Some(asks) = asks.upgrade() {
+                        asks.expire(&id);
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("regulus: acp: no timer for a permission request: {error}");
+        }
+        answered
+    }
+
+    /// Answers request `id` with `option` (`None`: cancelled). An option it did not offer
+    /// is refused and the request keeps waiting.
+    fn resolve(&self, id: &str, option: Option<String>) -> Result<(), String> {
+        let parked = {
+            let mut parked = lock(&self.parked);
+            let found = parked
+                .get(id)
+                .ok_or_else(|| format!("no pending permission request `{id}`"))?;
+            if let Some(chosen) = &option {
+                if !found.options.iter().any(|o| &o.id == chosen) {
+                    return Err(format!("request `{id}` has no option `{chosen}`"));
+                }
+            }
+            parked.remove(id)
+        };
+        if let Some(parked) = parked {
+            self.events.push(SessionEventKind::PermissionResolved {
+                id: id.to_string(),
+                option: option.clone(),
+            });
+            let _ = parked.answer.send(option);
+        }
+        Ok(())
+    }
+
+    /// Nobody answered in time: the reject option, else cancelled.
+    fn expire(&self, id: &str) {
+        let reject = lock(&self.parked).get(id).and_then(|p| {
+            ["reject_once", "reject_always"]
+                .iter()
+                .find_map(|kind| p.options.iter().find(|o| o.kind == *kind))
+                .map(|o| o.id.clone())
+        });
+        let _ = self.resolve(id, reject);
+    }
+
+    /// Every waiting request is cancelled, as ACP asks of a client that cancels a turn.
+    fn cancel_all(&self) {
+        let ids: Vec<String> = lock(&self.parked).keys().cloned().collect();
+        for id in ids {
+            let _ = self.resolve(&id, None);
+        }
+    }
+}
+
 /// Why the session's thread finished, set before it is marked done. A prompt that loses
 /// its agent waits for it, so the agent's last words are not lost to a race.
 #[derive(Default)]
@@ -167,6 +413,11 @@ impl Outcome {
 pub struct Session {
     id: String,
     agent: AgentInfo,
+    load_session: bool,
+    resumed: bool,
+    warnings: Vec<String>,
+    events: Arc<Events>,
+    asks: Arc<Asks>,
     prompts: async_mpsc::UnboundedSender<(String, Reply)>,
     /// Asks the turn in flight to end (`session/cancel`).
     cancels: async_mpsc::UnboundedSender<()>,
@@ -188,11 +439,25 @@ impl Session {
         let agent = AcpAgent::new(config(&launch));
         let outcome = Arc::new(Outcome::default());
         let finished = outcome.clone();
+        let events = Arc::new(Events::new(options.events_keep));
+        let asks = Arc::new(Asks {
+            events: events.clone(),
+            parked: Mutex::default(),
+            next: AtomicU64::new(0),
+            timeout: options.permission_timeout,
+        });
+        let (ended, asked) = (events.clone(), asks.clone());
         let thread = std::thread::Builder::new()
             .name("regulus-acp".into())
             .spawn(move || {
                 let failed = ready_tx.clone();
-                let run = Box::pin(run(agent, options, ready_tx, prompt_rx, cancels_rx));
+                let channels = Channels {
+                    ready: ready_tx,
+                    prompts: prompt_rx,
+                    cancels: cancels_rx,
+                    asks: asked.clone(),
+                };
+                let run = Box::pin(run(agent, options, channels));
                 // Losing the race to `cancel` drops the connection, which kills the agent.
                 let result = futures::executor::block_on(futures::future::select(run, cancel_rx));
                 let reason = match result {
@@ -202,12 +467,21 @@ impl Session {
                     }
                     _ => None,
                 };
+                asked.cancel_all();
+                ended.push(SessionEventKind::State {
+                    state: SessionState::Ended,
+                });
                 finished.finish(reason);
             })
             .map_err(|e| Error::Protocol(format!("cannot start the session thread: {e}")))?;
         let mut session = Session {
             id: String::new(),
             agent: AgentInfo::default(),
+            load_session: false,
+            resumed: false,
+            warnings: Vec::new(),
+            events,
+            asks,
             prompts,
             cancels,
             cancel: Mutex::new(Some(cancel)),
@@ -216,9 +490,12 @@ impl Session {
             thread: Some(thread),
         };
         match ready_rx.recv_timeout(startup) {
-            Ok(Ok((id, agent))) => {
-                session.id = id;
-                session.agent = agent;
+            Ok(Ok(opened)) => {
+                session.id = opened.id;
+                session.agent = opened.agent;
+                session.load_session = opened.load_session;
+                session.resumed = opened.resumed;
+                session.warnings = opened.warnings;
                 Ok(session)
             }
             Ok(Err(error)) => Err(error),
@@ -233,6 +510,31 @@ impl Session {
 
     pub fn agent(&self) -> &AgentInfo {
         &self.agent
+    }
+
+    /// Whether the agent said it can load sessions (`agentCapabilities.loadSession`).
+    pub fn load_session(&self) -> bool {
+        self.load_session
+    }
+
+    /// Whether this session is the one `SessionOptions::resume` named, loaded by the agent.
+    pub fn resumed(&self) -> bool {
+        self.resumed
+    }
+
+    /// What was asked at start and could not be done (a resume, mostly).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The events after `since` (0: from the oldest kept) and the cursor for the next call.
+    pub fn events(&self, since: u64) -> (Vec<SessionEvent>, u64) {
+        self.events.since(since)
+    }
+
+    /// Answers a pending permission request with one of its options; `None` cancels it.
+    pub fn decide(&self, request_id: &str, option: Option<String>) -> Result<(), String> {
+        self.asks.resolve(request_id, option)
     }
 
     /// Sends a prompt and waits for the end of the turn. Prompts to one session queue up.
@@ -263,7 +565,12 @@ impl Session {
     /// on it returns when the agent answers, usually with stop reason `cancelled`. With no
     /// turn in flight it does nothing. False if the session is gone.
     pub fn cancel(&self) -> bool {
-        !self.outcome.is_done() && self.cancels.unbounded_send(()).is_ok()
+        if self.outcome.is_done() {
+            return false;
+        }
+        // A request waiting for an answer belongs to the turn being cancelled.
+        self.asks.cancel_all();
+        self.cancels.unbounded_send(()).is_ok()
     }
 
     /// Kills the agent. A prompt waiting on it returns `Closed`.
@@ -314,7 +621,7 @@ fn answer(
             PermissionOptionKind::AllowOnce,
             PermissionOptionKind::AllowAlways,
         ],
-        Permissions::Reject => &[
+        Permissions::Reject | Permissions::Ask => &[
             PermissionOptionKind::RejectOnce,
             PermissionOptionKind::RejectAlways,
         ],
@@ -331,19 +638,49 @@ fn answer(
     RequestPermissionResponse::new(outcome)
 }
 
+fn chosen(option: Option<String>) -> RequestPermissionResponse {
+    let outcome = match option {
+        Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
+        None => RequestPermissionOutcome::Cancelled,
+    };
+    RequestPermissionResponse::new(outcome)
+}
+
+/// What the session's thread talks to the [`Session`] through.
+struct Channels {
+    ready: mpsc::Sender<Result<Opened, Error>>,
+    prompts: async_mpsc::UnboundedReceiver<(String, Reply)>,
+    cancels: async_mpsc::UnboundedReceiver<()>,
+    asks: Arc<Asks>,
+}
+
 async fn run(
     agent: AcpAgent,
     options: SessionOptions,
-    ready: mpsc::Sender<Result<(String, AgentInfo), Error>>,
-    mut prompts: async_mpsc::UnboundedReceiver<(String, Reply)>,
-    mut cancels: async_mpsc::UnboundedReceiver<()>,
+    channels: Channels,
 ) -> Result<(), agent_client_protocol::Error> {
+    let Channels {
+        ready,
+        mut prompts,
+        mut cancels,
+        asks,
+    } = channels;
     let permissions = options.permissions;
+    let events = asks.events.clone();
     Client
         .builder()
         .on_receive_request(
-            async move |request: RequestPermissionRequest, responder, _connection| {
-                responder.respond(answer(permissions, &request))
+            async move |request: RequestPermissionRequest, responder, connection| {
+                if permissions != Permissions::Ask {
+                    return responder.respond(answer(permissions, &request));
+                }
+                // The answer comes from another thread, later: the connection goes on
+                // meanwhile.
+                let answered = asks.park(&request);
+                connection.spawn(async move {
+                    let option = answered.await.unwrap_or(None);
+                    responder.respond(chosen(option))
+                })
             },
             on_receive_request!(),
         )
@@ -352,6 +689,7 @@ async fn run(
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
+            let load_session = init.agent_capabilities.load_session;
             let info = init
                 .agent_info
                 .map(|i| AgentInfo {
@@ -363,7 +701,7 @@ async fn run(
                 let request = UntypedMessage::new(&setup.method, &setup.params)?;
                 connection.send_request(request).block_task().await?;
             }
-            let servers = options
+            let servers: Vec<McpServer> = options
                 .mcp_servers
                 .iter()
                 .map(|s| {
@@ -375,28 +713,118 @@ async fn run(
                     )
                 })
                 .collect();
-            let request = NewSessionRequest::new(options.cwd.clone())
-                .meta(options.meta.clone())
-                .mcp_servers(servers);
-            let mut session = connection
-                .build_session_from(request)
-                .block_task()
-                .start_session()
-                .await?;
-            let _ = ready.send(Ok((session.session_id().to_string(), info)));
+            let mut warnings = Vec::new();
+            let mut loaded = None;
+            match &options.resume {
+                Some(id) if load_session => {
+                    let request = LoadSessionRequest::new(id.clone(), options.cwd.clone())
+                        .meta(options.meta.clone())
+                        .mcp_servers(servers.clone());
+                    let restored = connection
+                        .load_session_from(request)
+                        .block_task()
+                        .start_session()
+                        .await;
+                    match restored {
+                        Ok(restored) => loaded = Some(restored.into_session()),
+                        Err(error) => warnings.push(format!(
+                            "could not load session `{id}` ({error}): a new one was opened"
+                        )),
+                    }
+                }
+                Some(id) => warnings.push(format!(
+                    "the agent cannot load sessions: `{id}` was not resumed, a new one was opened"
+                )),
+                None => {}
+            }
+            let resumed = loaded.is_some();
+            let mut session = match loaded {
+                Some(mut session) => {
+                    // The agent replays the loaded conversation before answering
+                    // `session/load`: that history is not news, so it stays out of the
+                    // events. What is queued now is all of it.
+                    while let Some(Ok(_)) = session.read_update().now_or_never() {}
+                    session
+                }
+                None => {
+                    let request = NewSessionRequest::new(options.cwd.clone())
+                        .meta(options.meta.clone())
+                        .mcp_servers(servers);
+                    connection
+                        .build_session_from(request)
+                        .block_task()
+                        .start_session()
+                        .await?
+                }
+            };
+            let _ = ready.send(Ok(Opened {
+                id: session.session_id().to_string(),
+                agent: info,
+                load_session,
+                resumed,
+                warnings,
+            }));
+            events.push(SessionEventKind::State {
+                state: SessionState::Idle,
+            });
             while let Some((text, reply)) = prompts.next().await {
                 // A cancel asked between turns is for a turn that already ended.
                 while cancels.try_recv().is_ok() {}
-                let _ = reply.send(turn(&mut session, &mut cancels, text).await);
+                events.begin_turn();
+                let answer = turn(&mut session, &mut cancels, &events, text).await;
+                events.end_turn(answer.as_ref().ok().map(|t| t.stop_reason.as_str()));
+                let _ = reply.send(answer);
             }
             Ok(())
         })
         .await
 }
 
+/// The event an update of the session stands for, if it is a kind the buffer keeps.
+/// Read from the update's wire form, so a field the typed schema hides is still seen.
+fn event_of(update: &SessionUpdate) -> Option<SessionEventKind> {
+    let wire = serde_json::to_value(update).ok()?;
+    let text = |key: &str| wire.get(key).and_then(Value::as_str).map(String::from);
+    let chunk = || {
+        let content = wire.get("content")?;
+        (content.get("type").and_then(Value::as_str) == Some("text"))
+            .then(|| {
+                content
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .flatten()
+    };
+    Some(match wire.get("sessionUpdate")?.as_str()? {
+        "agent_message_chunk" => SessionEventKind::Text { text: chunk()? },
+        "agent_thought_chunk" => SessionEventKind::Thought { text: chunk()? },
+        "tool_call" => SessionEventKind::ToolCall {
+            id: text("toolCallId")?,
+            title: text("title").unwrap_or_default(),
+            kind: text("kind"),
+            status: text("status").unwrap_or_else(|| "pending".into()),
+        },
+        "tool_call_update" => SessionEventKind::ToolUpdate {
+            id: text("toolCallId")?,
+            status: text("status").unwrap_or_default(),
+            content: wire
+                .get("content")
+                .or_else(|| wire.get("rawOutput"))
+                .filter(|c| !c.is_null())
+                .cloned(),
+        },
+        "plan" => SessionEventKind::Plan {
+            entries: wire.get("entries").cloned().unwrap_or(Value::Null),
+        },
+        _ => return None,
+    })
+}
+
 async fn turn(
     session: &mut ActiveSession<'static, Agent>,
     cancels: &mut async_mpsc::UnboundedReceiver<()>,
+    events: &Events,
     text: String,
 ) -> Result<Turn, Error> {
     let failed = |e: agent_client_protocol::Error| Error::Protocol(e.to_string());
@@ -434,6 +862,9 @@ async fn turn(
         match update.map_err(failed)? {
             SessionMessage::SessionMessage(dispatch) => MatchDispatch::new(dispatch)
                 .if_notification(async |note: SessionNotification| {
+                    if let Some(event) = event_of(&note.update) {
+                        events.push(event);
+                    }
                     if let SessionUpdate::AgentMessageChunk(ContentChunk {
                         content: ContentBlock::Text(text),
                         ..
@@ -474,17 +905,36 @@ impl Sessions {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts a session and returns its key with who answered.
+    /// Starts a session and returns its key with the session itself.
     pub fn start(
         &self,
         launch: Launch,
         options: SessionOptions,
-    ) -> Result<(String, AgentInfo), Error> {
-        let session = Session::start(launch, options)?;
+    ) -> Result<(String, Arc<Session>), Error> {
+        let session = Arc::new(Session::start(launch, options)?);
         let key = format!("s{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
-        let agent = session.agent().clone();
-        self.live().insert(key.clone(), Arc::new(session));
-        Ok((key, agent))
+        self.live().insert(key.clone(), session.clone());
+        Ok((key, session))
+    }
+
+    /// The events of a session after `since`; `None` if the session is unknown.
+    pub fn events(&self, key: &str, since: u64) -> Option<(Vec<SessionEvent>, u64)> {
+        self.live().get(key).map(|s| s.events(since))
+    }
+
+    /// Answers a pending permission request of a session.
+    pub fn decide(
+        &self,
+        key: &str,
+        request_id: &str,
+        option: Option<String>,
+    ) -> Result<(), String> {
+        let session = self
+            .live()
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("no live session `{key}`"))?;
+        session.decide(request_id, option)
     }
 
     pub fn prompt(&self, key: &str, text: &str) -> Result<Turn, Error> {

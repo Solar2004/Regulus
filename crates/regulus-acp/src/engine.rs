@@ -17,7 +17,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{Launch, Permissions, SessionOptions, Sessions, SetupRequest, State, StdioServer};
+use crate::{
+    Launch, Permissions, SessionOptions, Sessions, SetupRequest, State, StdioServer,
+    DEFAULT_EVENTS_KEEP, DEFAULT_PERMISSION_TIMEOUT,
+};
 
 /// The tool protocol every ACP agent accepts (`session/new` takes MCP servers over stdio).
 const MCP_STDIO: &str = "mcp-stdio";
@@ -28,6 +31,10 @@ pub const STARTUP_FIELD: &str = "startup_seconds";
 /// that only has what is wired in (docs/12-agents.md §6.3).
 pub const PROFILE_FIELD: &str = "profile";
 pub const CONFIG_DIR_FIELD: &str = "config_dir";
+/// How many events each session keeps (`engine.session.events`). Absent: the default.
+pub const EVENTS_KEEP_FIELD: &str = "events_keep";
+/// Seconds an asked permission waits for `engine.session.decide`. Absent: the default.
+pub const PERMISSION_TIMEOUT_FIELD: &str = "permission_timeout_seconds";
 const ISOLATED: &str = "isolated";
 /// Inside the node's own directory, where an isolated profile lives by default.
 const PROFILE_DIR: &str = "profile";
@@ -390,15 +397,26 @@ impl<E: AcpEngine> EngineModule<E> {
             cwd: args.cwd,
             permissions: match args.permissions {
                 contract::Permissions::Allow => Permissions::Allow,
-                // Asking lands with the session's event buffer; until then it rejects.
-                contract::Permissions::Reject | contract::Permissions::Ask => Permissions::Reject,
+                contract::Permissions::Reject => Permissions::Reject,
+                contract::Permissions::Ask => Permissions::Ask,
             },
             meta: prepared.meta,
             setup: prepared.setup,
             startup: Duration::from_secs_f64(startup.max(1.0)),
             mcp_servers,
+            events_keep: settings
+                .value(EVENTS_KEEP_FIELD)
+                .and_then(Value::as_f64)
+                .map_or(DEFAULT_EVENTS_KEEP, |n| n.max(1.0) as usize),
+            permission_timeout: settings
+                .value(PERMISSION_TIMEOUT_FIELD)
+                .and_then(Value::as_f64)
+                .map_or(DEFAULT_PERMISSION_TIMEOUT, |n| {
+                    Duration::from_secs_f64(n.max(0.0))
+                }),
+            resume: args.resume,
         };
-        let (session_id, agent) = self
+        let (session_id, session) = self
             .sessions
             .start(prepared.launch, options)
             .map_err(failed)?;
@@ -408,16 +426,24 @@ impl<E: AcpEngine> EngineModule<E> {
             .entry(Self::owner(&call))
             .or_default()
             .push(session_id.clone());
+        for warning in session.warnings() {
+            eprintln!("regulus: node `{}`: {warning}", call.node.id);
+            warnings.push(warning.clone());
+        }
+        let agent = session.agent();
         json(contract::Started {
             session_id,
             agent: contract::Agent {
-                name: agent.name,
-                version: agent.version,
+                name: agent.name.clone(),
+                version: agent.version.clone(),
             },
             warnings,
-            capabilities: contract::EngineCapabilities::default(),
-            native_session_id: None,
-            resumed: false,
+            capabilities: contract::EngineCapabilities {
+                load_session: session.load_session(),
+                events: true,
+            },
+            native_session_id: Some(session.id().to_string()),
+            resumed: session.resumed(),
         })
     }
 
@@ -511,6 +537,23 @@ impl<E: AcpEngine> Module for EngineModule<E> {
                 } else {
                     Err(failed(format!("no live session `{}`", args.session_id)))
                 }
+            }
+            contract::SESSION_EVENTS => {
+                let call: NodeCall = parse(params)?;
+                let args: contract::EventsArgs = parse(call.args)?;
+                let (events, next) = self
+                    .sessions
+                    .events(&args.session_id, args.since)
+                    .ok_or_else(|| failed(format!("no live session `{}`", args.session_id)))?;
+                json(contract::Events { events, next })
+            }
+            contract::SESSION_DECIDE => {
+                let call: NodeCall = parse(params)?;
+                let args: contract::DecideArgs = parse(call.args)?;
+                self.sessions
+                    .decide(&args.session_id, &args.request_id, args.option)
+                    .map_err(ModuleError::InvalidParams)?;
+                Ok(Value::Null)
             }
             contract::SESSION_STOP => {
                 let call: NodeCall = parse(params)?;

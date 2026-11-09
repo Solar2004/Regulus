@@ -47,3 +47,17 @@ name = "opencode"
   id      = "startup_seconds"
   type    = "number"
   default = 60
+
+  # How many session events (text, tool calls, permission requests…) each session keeps
+  # for `engine.session.events`; the oldest go first.
+  [[node.field]]
+  id      = "events_keep"
+  type    = "number"
+  default = 2000
+
+  # Seconds a permission request waits for a decision when the box asks
+  # (`permissions = "ask"`); then the reject option is chosen.
+  [[node.field]]
+  id      = "permission_timeout_seconds"
+  type    = "number"
+  default = 600
