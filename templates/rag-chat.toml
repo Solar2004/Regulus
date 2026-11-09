@@ -1,0 +1,448 @@
+# RAG chat (docs/13-blocks.md §5): a chat that answers from your documents and shows
+# where each answer comes from. Every message is a query; the hits become numbered
+# evidence; a model answers citing it as [n]; a deterministic gate checks that every [n]
+# exists among the evidence shown, and the reply carries the sources it cites.
+#
+#   self.ingest → ingest ─ingested→ self.ingested          (files or folders under docs_dir)
+#   self.chat → chat ─message→ retrieve ─hits→ context ─out→ to_{{answerer}} → answerer
+#                                                       └refs→ join.refs
+#     answerer: `agent` (Agent box ⇢ opencode, with search_documents/read_chunk as tools:
+#               retrieve.tools ⇢ tools ⇢ tools-mcp ⇢ agent.tools) or `complete`
+#               (inference ⇢ provider, one model call, no tools)
+#   agent.reply | agent.failed | complete.out | complete.error → join.answer
+#   join {answer, refs} → cite ─pass→ text (answer + Sources:) → chat.reply → self.reply
+#                              └fail→ ungrounded (answer + why) → chat.reply
+#
+# The hole `answerer` names which convert the context feeds (`to_agent` or `to_complete`):
+# a template cannot leave nodes out, so the branch it does not pick stays on the canvas
+# with no input. Failures of the answerer go into the join too, as the answer: the join
+# pairs answers and refs in order, and a lost answer would pair the next one with old
+# refs. They come back to the person through the citation gate's `fail` branch.
+#
+# What the gate proves: the answer cites evidence that exists and was shown (provenance).
+# It does not prove the answer is true or that it says what its source says.
+#
+# Ingest: `regulus send <exec> ingest <path>`; a relative path hangs from docs_dir, and a
+# path outside it is refused. A folder ingests its files matching `glob`. The same bytes
+# again change nothing; other bytes replace the old version. The collection is the
+# project's: it outlives the execution (`regulus docs ls|query|rm <exec> ingest`).
+#
+# Risks: with `answerer = agent` and `permissions = allow` the agent says yes to whatever
+# its tools ask, in docs_dir; the documents reach the model's provider (with the default
+# opencode model, a remote free service). Text in a document can instruct the model
+# (prompt injection): the gate catches made-up citations, not obeyed instructions.
+#
+# Tested (crates/regulus-cli/tests/template_rag.rs): both answerers apply and pass
+# profile.check; with `answerer = complete` against a fake OpenAI server, a run ingests
+# two files, answers a chat message citing [1] and replies with its source, and an answer
+# citing [9] comes back through the ungrounded branch. Not run with a real model here.
+id = "rag-chat"
+name = "RAG chat over {{docs_dir}}"
+main_workflow_id = "rag"
+
+[template]
+name = "rag-chat"
+description = "Chat with your documents: retrieval, cited answers and a citation gate"
+requires = [
+  { module = "regulus/triggers", version = ">=0.1" },
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/documents", version = ">=0.1" },
+  { module = "regulus/inference", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+  { module = "regulus/tools", version = ">=0.1" },
+  { module = "regulus/tools-mcp", version = ">=0.1" },
+]
+
+[template.vars]
+docs_dir = { description = "absolute folder of the documents: paths sent to ingest hang from it and must stay under it; the agent works there" }
+collection = { description = "name of the document collection; profiles that name the same share it", default = "rag" }
+glob = { description = "files of a folder sent to ingest, relative to it", default = "**/*.md" }
+chunker = { description = "how documents are cut: markdown (by heading, then paragraph), paragraph or fixed", default = "markdown" }
+chunk_chars = { description = "characters per chunk at most", default = 1200 }
+overlap_chars = { description = "characters a chunk repeats of the one before (whole paragraphs)", default = 150 }
+k = { description = "passages retrieved per message", default = 6 }
+max_chars = { description = "characters of evidence the answerer gets at most", default = 6000 }
+min_refs = { description = "distinct sources an answer must cite to pass the gate", default = 1 }
+require_all = { description = "yes: an answer must cite every passage shown", default = "no" }
+answerer = { description = "who answers: agent (Agent box over opencode, with the documents as tools) or complete (one model call through the inference module and the provider below)", default = "agent" }
+model = { description = "the agent's model, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+profile = { description = "the agent's engine profile: isolated (only what is wired in) or user", default = "isolated" }
+permissions = { description = "what the agent answers when asked for permission: reject or allow", default = "reject" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take; 0: no limit", default = 0 }
+system = { description = "what the complete answerer is told before the evidence", default = "You answer questions using only the evidence you are given, and you cite it by number in brackets, like [1]." }
+inference_preset = { description = "provider template of the complete answerer (crates/modules/providers/presets.toml)", default = "ollama" }
+inference_base_url = { description = "its endpoint, over the preset's; empty keeps the preset's", default = "" }
+inference_credential = { description = "secret:<name> with its key; empty for a keyless endpoint", default = "" }
+inference_model = { description = "its model id on that endpoint", default = "qwen3:4b" }
+max_tokens = { description = "most tokens of one complete answer", default = 1024 }
+history_turns = { description = "earlier turns the chat box puts before every message (they also reach retrieval)", default = 0 }
+
+[[workflows]]
+id = "rag"
+name = "RAG chat"
+kind = "main"
+ports = [
+  { id = "chat", capability = "text@1", direction = "input", kind = "then" },
+  { id = "ingest", capability = "path@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "chat"
+  name = "Chat"
+  type = "chat"
+  module_id = "regulus/triggers@0.1.0"
+  position = { x = 50, y = 250 }
+  config = { history_turns = {{history_turns}} }
+  ports = [
+    { id = "user", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "message", capability = "text@1", direction = "output", kind = "then" },
+    { id = "reply", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "ingest"
+  name = "Ingest"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { collection = "{{collection}}", dir = "{{docs_dir}}", glob = "{{glob}}", chunker = "{{chunker}}", chunk_chars = {{chunk_chars}}, overlap_chars = {{overlap_chars}} }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Retrieve"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 250, y = 250 }
+  config = { collection = "{{collection}}", k = {{k}} }
+  ports = [
+    { id = "query", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "context"
+  name = "Context"
+  type = "context"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 450, y = 250 }
+  config = { max_chars = {{max_chars}} }
+  ports = [
+    { id = "hits", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "refs", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The two doors of the answerer: the hole `answerer` picks which one the context feeds.
+  [[workflows.nodes]]
+  id = "to_agent"
+  name = "To the agent"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { conversion = "same" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "to_complete"
+  name = "To the model"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 400 }
+  config = { conversion = "same" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 850, y = 150 }
+  config = { workdir = "{{docs_dir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 850, y = 20 }
+  config = { model = "{{model}}", profile = "{{profile}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  # RAG as a tool: search_documents and read_chunk, over MCP.
+  [[workflows.nodes]]
+  id = "tools"
+  name = "Tools"
+  type = "tools"
+  module_id = "regulus/tools@0.1.0"
+  position = { x = 650, y = 20 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "engine", capability = "tools.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "toolset", capability = "toolset@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mcp"
+  name = "MCP"
+  type = "tools-mcp"
+  module_id = "regulus/tools-mcp@0.1.0"
+  position = { x = 450, y = 20 }
+  ports = [{ id = "engine", capability = "tools.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "provider"
+  name = "Model"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 850, y = 550 }
+  config = { preset = "{{inference_preset}}", base_url = "{{inference_base_url}}", credential = "{{inference_credential}}", model = "{{inference_model}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "complete"
+  name = "Complete"
+  type = "complete"
+  module_id = "regulus/inference@0.1.0"
+  position = { x = 850, y = 400 }
+  config = { system = "{{system}}", model = "{{inference_model}}", max_tokens = {{max_tokens}} }
+  ports = [
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses", required = true },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "error@1", direction = "output", kind = "then" },
+  ]
+
+  # A model failure, as the answer the gate sees: it cites nothing, so it fails, and the
+  # person reads why.
+  [[workflows.nodes]]
+  id = "complete_failed"
+  name = "Model failed"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1050, y = 500 }
+  config = { conversion = "template", template = "model failed: {{/message}}" }
+  ports = [
+    { id = "in", capability = "error@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "join"
+  name = "Answer + refs"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1250, y = 250 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "answer", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "refs", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "cite"
+  name = "Citation check"
+  type = "cite_check"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 1450, y = 250 }
+  config = { min_refs = {{min_refs}}, require_all = "{{require_all}}" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "json@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "json@1", direction = "output", kind = "then" },
+    { id = "text", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "ungrounded"
+  name = "Ungrounded"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1650, y = 350 }
+  config = { conversion = "template", template = "{{/answer}}\n\n(Not grounded in the documents: {{/reason}}.)" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "engine-engine-agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "retrieve-tools-tools-tools"
+  kind = "uses"
+  from = { node_id = "retrieve", port_id = "tools" }
+  to = { node_id = "tools", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "mcp-engine-tools-engine"
+  kind = "uses"
+  from = { node_id = "mcp", port_id = "engine" }
+  to = { node_id = "tools", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "tools-toolset-agent-tools"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "agent", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "provider-endpoint-complete-model"
+  kind = "uses"
+  from = { node_id = "provider", port_id = "endpoint" }
+  to = { node_id = "complete", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "self-chat-chat-user"
+  kind = "then"
+  from = { node_id = "self", port_id = "chat" }
+  to = { node_id = "chat", port_id = "user" }
+
+  [[workflows.wires]]
+  id = "chat-out-self-reply"
+  kind = "then"
+  from = { node_id = "chat", port_id = "out" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "self-ingest-ingest-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "ingest" }
+  to = { node_id = "ingest", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ingest-ingested-self-ingested"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "ingested" }
+  to = { node_id = "self", port_id = "ingested" }
+
+  [[workflows.wires]]
+  id = "ingest-error-self-error"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "chat-message-retrieve-query"
+  kind = "then"
+  from = { node_id = "chat", port_id = "message" }
+  to = { node_id = "retrieve", port_id = "query" }
+
+  [[workflows.wires]]
+  id = "retrieve-error-self-error"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "retrieve-hits-context-hits"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "hits" }
+  to = { node_id = "context", port_id = "hits" }
+
+  [[workflows.wires]]
+  id = "context-out-to-answerer-in"
+  kind = "then"
+  from = { node_id = "context", port_id = "out" }
+  to = { node_id = "to_{{answerer}}", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "context-refs-join-refs"
+  kind = "then"
+  from = { node_id = "context", port_id = "refs" }
+  to = { node_id = "join", port_id = "refs" }
+
+  [[workflows.wires]]
+  id = "to-agent-out-agent-prompt"
+  kind = "then"
+  from = { node_id = "to_agent", port_id = "out" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "to-complete-out-complete-in"
+  kind = "then"
+  from = { node_id = "to_complete", port_id = "out" }
+  to = { node_id = "complete", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-reply-join-answer"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "join", port_id = "answer" }
+
+  [[workflows.wires]]
+  id = "agent-failed-join-answer"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "join", port_id = "answer" }
+
+  [[workflows.wires]]
+  id = "complete-out-join-answer"
+  kind = "then"
+  from = { node_id = "complete", port_id = "out" }
+  to = { node_id = "join", port_id = "answer" }
+
+  [[workflows.wires]]
+  id = "complete-error-complete-failed-in"
+  kind = "then"
+  from = { node_id = "complete", port_id = "error" }
+  to = { node_id = "complete_failed", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "complete-failed-out-join-answer"
+  kind = "then"
+  from = { node_id = "complete_failed", port_id = "out" }
+  to = { node_id = "join", port_id = "answer" }
+
+  [[workflows.wires]]
+  id = "join-out-cite-in"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "cite", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "cite-text-chat-reply"
+  kind = "then"
+  from = { node_id = "cite", port_id = "text" }
+  to = { node_id = "chat", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "cite-fail-ungrounded-in"
+  kind = "then"
+  from = { node_id = "cite", port_id = "fail" }
+  to = { node_id = "ungrounded", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ungrounded-out-chat-reply"
+  kind = "then"
+  from = { node_id = "ungrounded", port_id = "out" }
+  to = { node_id = "chat", port_id = "reply" }
