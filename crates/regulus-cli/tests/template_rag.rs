@@ -251,6 +251,33 @@ fn rag_chat_applies_checks_and_answers_with_sources_through_a_fake_model() {
         );
         assert_check_is_clean(home, "rag-model");
 
+        // An inactive agent route must not require a coding CLI. Force an invalid
+        // installation even on developer machines where opencode is available.
+        let path = home.join("profiles/rag-model.toml");
+        let mut profile: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let child = profile["workflows"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|w| w["id"].as_str() == Some("answer_agent"))
+            .unwrap();
+        let engine = child["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|n| n["id"].as_str() == Some("engine"))
+            .unwrap();
+        engine["config"].as_table_mut().unwrap().insert(
+            "installation".into(),
+            toml::Value::String("/nonexistent/regulus-test-opencode".into()),
+        );
+        std::fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
+        ok(
+            home,
+            &["profile", "save", path.to_str().unwrap(), "--force"],
+        );
+
         let exec = run(home, "rag-model");
         ok(home, &["send", &exec, "ingest", "."]);
         let ingested = until(home, &exec, "ingested", 2);

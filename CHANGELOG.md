@@ -59,6 +59,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Corregido
 
+- `rag-chat` con inferencia directa no arranca un agente de programación no seleccionado;
+  la rama de agente se invoca como workflow y solo requiere su CLI al recibir una consulta.
 - ACP conserva el diagnóstico de salida del agente cuando el cierre del transporte
   llega antes que la recogida de stderr; la sesión termina y los siguientes turnos fallan.
 - **Historial independiente por ejecución** (`docs/12-agents.md` §5): dos trabajadores

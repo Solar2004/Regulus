@@ -15,7 +15,9 @@
 #
 # The hole `answerer` names which convert the context feeds (`to_agent` or `to_complete`):
 # a template cannot leave nodes out, so the branch it does not pick stays on the canvas
-# with no input. Failures of the answerer go into the join too, as the answer: the join
+# with no input. The agent engine lives in a called workflow and starts only on that
+# route; direct inference does not require opencode. Agent turns use fresh sessions,
+# with history_turns supplying any desired prior conversation. Failures of the answerer go into the join too, as the answer: the join
 # pairs answers and refs in order, and a lost answer would pair the next one with old
 # refs. They come back to the person through the citation gate's `fail` branch.
 #
@@ -170,29 +172,21 @@ ports = [
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
+
+
   [[workflows.nodes]]
   id = "agent"
-  name = "Agent"
-  type = "agent"
-  module_id = "regulus/agent@0.1.0"
+  name = "Agent turn"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
   position = { x = 850, y = 150 }
-  config = { workdir = "{{docs_dir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  config = { workflow = "answer_agent" }
   ports = [
-    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
     { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
     { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "reply", capability = "text@1", direction = "output", kind = "then" },
     { id = "failed", capability = "text@1", direction = "output", kind = "then" },
   ]
-
-  [[workflows.nodes]]
-  id = "engine"
-  name = "opencode"
-  type = "engine-opencode"
-  module_id = "regulus/engine-opencode@0.1.0"
-  position = { x = 850, y = 20 }
-  config = { model = "{{model}}", profile = "{{profile}}" }
-  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
 
   # RAG as a tool: search_documents and read_chunk, over MCP.
   [[workflows.nodes]]
@@ -291,11 +285,6 @@ ports = [
     { id = "out", capability = "text@1", direction = "output", kind = "then" },
   ]
 
-  [[workflows.wires]]
-  id = "engine-engine-agent-engine"
-  kind = "uses"
-  from = { node_id = "engine", port_id = "engine" }
-  to = { node_id = "agent", port_id = "engine" }
 
   [[workflows.wires]]
   id = "retrieve-tools-tools-tools"
@@ -446,3 +435,75 @@ ports = [
   kind = "then"
   from = { node_id = "ungrounded", port_id = "out" }
   to = { node_id = "chat", port_id = "reply" }
+
+
+# Only started when the agent answer route receives a message. Direct inference
+# therefore needs no installed coding CLI. Each call has a fresh agent session;
+# history_turns controls the conversation text supplied by the parent Chat node.
+[[workflows]]
+id = "answer_agent"
+name = "Agent answer"
+kind = "extra"
+ports = [
+  { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+  { id = "prompt", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 850, y = 150 }
+  config = { workdir = "{{docs_dir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+
+  [[workflows.nodes]]
+  id = "engine"
+  name = "opencode"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 850, y = 20 }
+  config = { model = "{{model}}", profile = "{{profile}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+
+  [[workflows.wires]]
+  id = "engine-engine-agent-engine"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+
+  [[workflows.wires]]
+  id = "self-tools-agent-tools"
+  kind = "uses"
+  from = { node_id = "self", port_id = "tools" }
+  to = { node_id = "agent", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "self-prompt-agent-prompt"
+  kind = "then"
+  from = { node_id = "self", port_id = "prompt" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-reply-self-reply"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "agent-failed-self-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
