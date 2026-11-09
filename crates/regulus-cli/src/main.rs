@@ -135,6 +135,30 @@ enum Command {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Talk with a running execution: a direct agent node (`agent.send`/`history`), or the
+    /// workflow through one of its own text inputs and one of its own text outputs, bound
+    /// once and remembered (docs/04-client.md §7). Without `--once`, a REPL: `/help`.
+    Talk {
+        execution: String,
+        /// The agent node to talk to. Without it: the binding chosen before, else the only
+        /// agent of the workflow.
+        #[arg(long, conflicts_with_all = ["input", "output"])]
+        node: Option<String>,
+        /// The workflow's own then input `text@` a message goes to.
+        #[arg(long = "in", value_name = "PORT")]
+        input: Option<String>,
+        /// The workflow's own then output `text@` replies come from.
+        #[arg(long = "out", value_name = "PORT")]
+        output: Option<String>,
+        /// Accept the binding proposed when the workflow has one text input and one text
+        /// output, without asking.
+        #[arg(long)]
+        yes: bool,
+        /// Send this, print the reply and exit; non-zero on a failure or no reply within
+        /// --timeout.
+        #[arg(long, value_name = "TEXT")]
+        once: Option<String>,
+    },
     /// Messages through a channel node of a running execution.
     Msg {
         #[command(subcommand)]
@@ -800,6 +824,28 @@ async fn main() -> Result<()> {
                 eprintln!("regulus: the turn ended with `{reason}`");
             }
             Ok(())
+        }
+        Command::Talk {
+            execution,
+            node,
+            input,
+            output,
+            yes,
+            once,
+        } => {
+            let table = regulus_cli::tui::client_table(&config.client);
+            let options = regulus_cli::tui::options(&config, Some(&table))?;
+            let settings = regulus_cli::talk::Settings::new(&config, &options, client.timeout);
+            let talk = regulus_cli::talk::Talk {
+                execution,
+                node,
+                input,
+                output,
+                yes,
+                once,
+            };
+            let ws = client.connect().await?;
+            regulus_cli::talk::run(&ws, &config, &settings, talk).await
         }
         Command::Msg { command } => match command {
             MsgCommand::Send {
