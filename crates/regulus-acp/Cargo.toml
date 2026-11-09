@@ -25,3 +25,4 @@ test = false
 regulus-module-agent = { path = "../modules/agent" }
 regulus-module-providers = { path = "../modules/providers" }
 regulus-module-engine-claude = { path = "../modules/engine-claude" }
+regulus-module-human = { path = "../modules/human" }

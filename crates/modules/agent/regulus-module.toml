@@ -2,7 +2,11 @@
 id             = "regulus/agent@0.1.0"
 name           = "Agent"
 requires_proto = "^1.9"
-methods        = ["agent.prompt"]
+# `agent.prompt` { execution_id, node_id, text } → the turn (blocks until it ends);
+# `agent.send` { execution_id, node_id, text } → { turn } (queued like `prompt`, at once);
+# `agent.history` { execution_id, node_id, since?, limit? } → { entries, activity, next,
+# session }; `agent.cancel` { execution_id, node_id } → null. CLI: `regulus agent …`.
+methods        = ["agent.prompt", "agent.send", "agent.history", "agent.cancel"]
 
 [[node]]
 type = "agent"
@@ -62,6 +66,15 @@ name = "Agent"
   direction   = "input"
   kind        = "uses"
   cardinality = "many"
+
+  # Who answers the engine's permission requests when `permissions = "ask"`: a Decider
+  # of `human`, or any node offering decision@1. Optional: without it, `ask` rejects.
+  [[node.port]]
+  id         = "decisions"
+  name       = "decisions"
+  capability = "decision@1"
+  direction  = "input"
+  kind       = "uses"
 
   # The name channels know the agent by (`@name`). Empty: the node id.
   [[node.field]]
@@ -139,6 +152,17 @@ name = "Agent"
   direction  = "output"
   kind       = "then"
 
+  # Each event of the engine's session as the box reads it during a turn: text and
+  # reasoning as they stream, tool calls and their updates, plans, permission requests
+  # and their answers, turn boundaries, state. The value is the event's JSON
+  # (`{ seq, at, turn?, kind, … }`). Nothing from an engine without events.
+  [[node.port]]
+  id         = "activity"
+  name       = "activity"
+  capability = "agent.event@1"
+  direction  = "output"
+  kind       = "then"
+
   # yes: the box ends its engine session and opens a new one before each prompt (from
   # `prompt`, `agent.prompt` or a channel), so nothing carries over between turns.
   [[node.field]]
@@ -185,9 +209,55 @@ name = "Agent"
   type    = "text"
   default = ""
 
-  # What to answer when the agent asks for permission. Asking a person arrives with the bus.
+  # What to answer when the agent asks for permission. `ask`: the request goes to what is
+  # wired into `decisions` and waits for its choice (the engine's own time limit picks the
+  # reject option); with nothing wired there it rejects, and the history says so.
   [[node.field]]
   id      = "permissions"
   type    = "select"
   default = "reject"
-  options = ["reject", "allow"]
+  options = ["reject", "allow", "ask"]
+
+  # yes: the box records the conversation (prompts, replies, failures and the session's
+  # events) in its store, per workflow node, across executions: `agent.history`.
+  [[node.field]]
+  id      = "history"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]
+
+  # How many entries, and how many events, the history keeps; the oldest go first.
+  [[node.field]]
+  id      = "history_max"
+  type    = "number"
+  default = 2000
+
+  # native: a new execution loads the engine's last session by its own id (ACP
+  # `session/load`), so the agent keeps its context, when the engine can; otherwise it
+  # starts a new session and the history says so. Never with `fresh_context = yes`. no:
+  # every execution starts a new session; the history is Regulus' record, not the
+  # agent's context.
+  [[node.field]]
+  id      = "resume"
+  type    = "select"
+  default = "no"
+  options = ["no", "native"]
+
+  # Milliseconds between reads of the session's events during a turn.
+  [[node.field]]
+  id      = "events_poll_ms"
+  type    = "number"
+  default = 200
+
+  # Milliseconds between reads of a pending decision.
+  [[node.field]]
+  id      = "decision_poll_ms"
+  type    = "number"
+  default = 500
+
+  # yes: each session event leaves on `activity`.
+  [[node.field]]
+  id      = "activity_emit"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]

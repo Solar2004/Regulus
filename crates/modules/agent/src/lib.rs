@@ -10,14 +10,22 @@
 //! The "then" input `workdir` moves the agent: the next turn runs in a session opened
 //! there (ACP fixes the working directory when a session opens), and so does every turn
 //! after it until another value comes. The `workdir` field is where it starts.
+//!
+//! During a turn the box reads its engine's session events (`engine.session.events`),
+//! keeps them with the conversation in its own history ([`history`]), puts each one on
+//! the "then" output `activity` and, with `permissions = "ask"`, hands each permission
+//! request to whatever decides over its `decisions` input (`decision@1`).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+mod history;
+
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use regulus_contract_agent_engine as engine;
+use regulus_contract_decision as decision;
 use regulus_contract_llm_endpoint as llm;
 use regulus_contract_participant as participant;
 use regulus_contract_skill as skill;
@@ -28,8 +36,40 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use history::{Conversation, AGENT, SYSTEM, USER};
+
 const MANIFEST: &str = include_str!("../regulus-module.toml");
 const PROMPT: &str = "agent.prompt";
+/// Queues a prompt like the `prompt` input and answers its turn id at once.
+const SEND: &str = "agent.send";
+/// The conversation the box recorded, after a cursor, and where its session stands.
+const HISTORY: &str = "agent.history";
+/// Asks the engine to end the turn in flight.
+const CANCEL: &str = "agent.cancel";
+/// Who answers the engine's permission requests with `permissions = "ask"`.
+const DECISIONS_PORT: &str = "decisions";
+/// Each session event, as it is read.
+const ACTIVITY_PORT: &str = "activity";
+const PERMISSIONS_FIELD: &str = "permissions";
+/// `yes`: the box records the conversation in its store.
+const HISTORY_FIELD: &str = "history";
+/// How many entries, and how many activity events, the history keeps.
+const HISTORY_MAX_FIELD: &str = "history_max";
+/// `native`: a new execution loads the engine's last session, if the engine can.
+const RESUME_FIELD: &str = "resume";
+const NATIVE: &str = "native";
+/// Milliseconds between reads of the session's events during a turn.
+const EVENTS_POLL_FIELD: &str = "events_poll_ms";
+/// Milliseconds between reads of a pending decision.
+const DECISION_POLL_FIELD: &str = "decision_poll_ms";
+/// `yes`: each session event leaves on `activity`.
+const ACTIVITY_EMIT_FIELD: &str = "activity_emit";
+/// The threads that wait on a decision for a permission request.
+const DECISION_THREAD: &str = "regulus-agent-decision";
+/// The store prefix of conversations: `conv/<workflow>/<node>`.
+const CONVERSATIONS: &str = "conv";
+/// The kind prefix of the option that refuses a permission request.
+const REJECT_KIND: &str = "reject";
 const ENGINE_PORT: &str = "engine";
 const PROVIDER_PORT: &str = "provider";
 const SKILLS_PORT: &str = "skills";
@@ -96,6 +136,48 @@ struct Running {
     dropped: bool,
     /// Held for a whole prompt: one turn at a time per node, whoever sends it.
     turn: Arc<Mutex<()>>,
+    /// The conversation the box records; none with `history = "no"`.
+    conv: Option<Arc<Mutex<Conversation>>>,
+    /// Where the box is in the session's events.
+    feed: Arc<Mutex<Feed>>,
+    /// What the session answers permission requests with, after the downgrade of `ask`
+    /// when nothing decides.
+    permissions: engine::Permissions,
+    decisions: Option<Endpoint>,
+    /// The engine's own id of the session, and whether it is a loaded earlier one.
+    native_session_id: Option<String>,
+    native_resume: bool,
+    /// The turn in flight, `t-<n>`.
+    turn_id: Option<String>,
+    /// Turn numbers when there is no conversation to count them.
+    turns: u64,
+}
+
+/// The box's cursor in one session's events.
+#[derive(Default)]
+struct Feed {
+    session_id: String,
+    cursor: u64,
+    /// False once the engine answered that it has no events.
+    unsupported: bool,
+    /// Permission requests handed to the decider, and those already answered.
+    handled: HashSet<String>,
+    resolved: HashSet<String>,
+}
+
+/// What `agent.history` still answers about a node that stopped.
+struct Finished {
+    conv: Option<Arc<Mutex<Conversation>>>,
+    native_session_id: Option<String>,
+    native_resume: bool,
+}
+
+/// A permission request on its way to the decider.
+struct Request {
+    id: String,
+    tool: Option<String>,
+    title: String,
+    options: Vec<engine::PermissionOption>,
 }
 
 /// The values waiting on a node's `prompt` input.
@@ -103,7 +185,8 @@ struct Running {
 struct Inbox {
     /// A thread is prompting this node's values.
     busy: bool,
-    queue: VecDeque<String>,
+    /// Each value with its turn id, if one was given when it was queued.
+    queue: VecDeque<(String, Option<String>)>,
     /// Set by `node/stop` and shutdown: the thread emits nothing more and ends.
     stop: Arc<AtomicBool>,
 }
@@ -127,6 +210,9 @@ struct Inner {
     running: Mutex<HashMap<NodeRef, Running>>,
     inboxes: Mutex<HashMap<NodeRef, Inbox>>,
     bridge: HookBridge,
+    /// Every conversation loaded, by its key, so two executions of a node share one.
+    conversations: Mutex<HashMap<String, Arc<Mutex<Conversation>>>>,
+    finished: Mutex<HashMap<NodeRef, Finished>>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +220,25 @@ struct PromptParams {
     execution_id: String,
     node_id: String,
     text: String,
+    /// Given when the value was queued; else the turn takes the next id.
+    #[serde(skip)]
+    turn: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NodeParams {
+    execution_id: String,
+    node_id: String,
+}
+
+#[derive(Deserialize)]
+struct HistoryParams {
+    execution_id: String,
+    node_id: String,
+    #[serde(default)]
+    since: u64,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, ModuleError> {
@@ -268,6 +373,8 @@ impl Agent {
                 running: Mutex::default(),
                 inboxes: Mutex::default(),
                 bridge,
+                conversations: Mutex::default(),
+                finished: Mutex::default(),
             }),
         }
     }
@@ -347,23 +454,125 @@ impl Inner {
             execution_id: call.execution_id.clone(),
             node_id: call.node.id.clone(),
         };
-        let cwd = self.cwd(&call.node, None)?;
-        let (engine, started) = self.open(&me, &call.node, &cwd)?;
+        let node = call.node;
+        let cwd = self.cwd(&node, None)?;
+        let conv = (self.text(&node, HISTORY_FIELD) == YES).then(|| self.conversation(&me, &node));
+        let decisions = self.ctx.resolve(&me, DECISIONS_PORT).into_iter().next();
+        let mut notes = Vec::new();
+        let permissions = match self.text(&node, PERMISSIONS_FIELD).as_str() {
+            "allow" => engine::Permissions::Allow,
+            "ask" if decisions.is_some() => engine::Permissions::Ask,
+            "ask" => {
+                notes.push(format!(
+                    "permissions = ask but nothing is wired into `{DECISIONS_PORT}`: \
+                     permission requests are rejected"
+                ));
+                engine::Permissions::Reject
+            }
+            _ => engine::Permissions::Reject,
+        };
+        // A native resume carries the engine's context over; a fresh context wants none.
+        let native =
+            self.text(&node, RESUME_FIELD) == NATIVE && self.text(&node, FRESH_FIELD) != YES;
+        let resume = if native {
+            conv.as_ref().and_then(|c| lock(c).native_session_id())
+        } else {
+            None
+        };
+        let (engine, started) = self.open(&me, &node, &cwd, permissions, resume.clone())?;
+        if let Some(asked) = resume.as_ref().filter(|_| !started.resumed) {
+            notes.push(format!(
+                "the engine did not resume its session `{asked}`: this is a new session, and \
+                 the history here is Regulus' record, not the agent's context"
+            ));
+        }
+        if native && started.capabilities.load_session {
+            if let Some(conv) = &conv {
+                lock(conv).set_native_session_id(started.native_session_id.clone());
+            }
+        }
+        for note in &notes {
+            eprintln!("regulus: agent `{}`: {note}", me.node_id);
+            if let Some(conv) = &conv {
+                lock(conv).add_entry(SYSTEM, note, None, &me.execution_id);
+            }
+        }
         let answer = json(&started)?;
         self.running().insert(
             me,
             Running {
                 engine,
                 session_id: started.session_id,
-                node: call.node,
+                node,
                 used: false,
                 cwd,
                 workdir: None,
                 dropped: false,
                 turn: Arc::default(),
+                conv,
+                feed: Arc::default(),
+                permissions,
+                decisions,
+                native_session_id: started.native_session_id,
+                native_resume: started.resumed,
+                turn_id: None,
+                turns: 0,
             },
         );
         Ok(answer)
+    }
+
+    /// A text field: the node's value, else the manifest default, trimmed.
+    fn text(&self, node: &Node, field: &str) -> String {
+        self.manifest
+            .setting(node, field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The node's conversation, loaded once per key: `conv/<workflow>/<node>`, in the
+    /// store of the node's project. A core without a data directory keys it by
+    /// execution, and one without a store keeps it in memory.
+    fn conversation(&self, me: &NodeRef, node: &Node) -> Arc<Mutex<Conversation>> {
+        let depth = me.node_id.split(regulus_proto::BOX_SEPARATOR).count();
+        let workflow = self.ctx.node_dir(me).ok().and_then(|dir| {
+            dir.ancestors()
+                .nth(depth)
+                .and_then(|d| d.file_name())
+                .and_then(|d| d.to_str())
+                .map(String::from)
+        });
+        let scope = workflow.unwrap_or_else(|| me.execution_id.clone());
+        let key = format!("{CONVERSATIONS}/{scope}/{}", me.node_id);
+        let max = usize::try_from(self.count(node, HISTORY_MAX_FIELD)).unwrap_or(usize::MAX);
+        let store = self.ctx.store(Some(me)).ok();
+        lock(&self.conversations)
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(Conversation::load(key, store, max))))
+            .clone()
+    }
+
+    /// The next turn id of a running node.
+    fn next_turn(&self, me: &NodeRef) -> Result<String, ModuleError> {
+        let mut running = self.running();
+        let found = running.get_mut(me).ok_or_else(|| Self::not_running(me))?;
+        Ok(match &found.conv {
+            Some(conv) => lock(conv).next_turn(),
+            None => {
+                found.turns += 1;
+                format!("t-{}", found.turns)
+            }
+        })
+    }
+
+    /// Writes into the node's conversation, if it keeps one.
+    fn record(&self, me: &NodeRef, role: &str, text: &str, turn: Option<&str>) {
+        let conv = self.running().get(me).and_then(|r| r.conv.clone());
+        if let Some(conv) = conv {
+            lock(&conv).add_entry(role, text, turn, &me.execution_id);
+        }
     }
 
     /// Where the node's turns run: the last value of its `workdir` input, else its field.
@@ -381,6 +590,8 @@ impl Inner {
         me: &NodeRef,
         node: &Node,
         cwd: &std::path::Path,
+        permissions: engine::Permissions,
+        resume: Option<String>,
     ) -> Result<(Endpoint, engine::Started), ModuleError> {
         let engine = self
             .ctx
@@ -392,14 +603,6 @@ impl Inner {
                     "no engine wired into `{ENGINE_PORT}`: connect Claude Code, opencode…"
                 ))
             })?;
-        let permissions = match self
-            .manifest
-            .setting(node, "permissions")
-            .and_then(Value::as_str)
-        {
-            Some("allow") => engine::Permissions::Allow,
-            _ => engine::Permissions::Reject,
-        };
         let describe = |port: &str| -> Result<Option<llm::LlmEndpoint>, ModuleError> {
             match self.ctx.resolve(me, port).first() {
                 None => Ok(None),
@@ -445,7 +648,7 @@ impl Inner {
             skills,
             tools,
             hooks,
-            resume: None,
+            resume,
         };
         let started: engine::Started =
             parse(self.ctx.call(&engine, engine::SESSION_START, json(args)?)?)?;
@@ -464,6 +667,16 @@ impl Inner {
         // Out of the map before the engine is called: a slow engine must not hold the lock
         // every other node needs.
         let removed = self.running().remove(&me);
+        if let Some(running) = &removed {
+            lock(&self.finished).insert(
+                me.clone(),
+                Finished {
+                    conv: running.conv.clone(),
+                    native_session_id: running.native_session_id.clone(),
+                    native_resume: running.native_resume,
+                },
+            );
+        }
         if let Some(running) = removed {
             let args = engine::StopArgs {
                 session_id: running.session_id,
@@ -520,7 +733,7 @@ impl Inner {
     }
 
     /// A message from a channel, prompted into the session as the user would type it.
-    fn deliver(&self, call: NodeCall) -> Result<Value, ModuleError> {
+    fn deliver(self: &Arc<Self>, call: NodeCall) -> Result<Value, ModuleError> {
         let delivery: participant::Delivery = parse(call.args)?;
         let text = format!(
             "[message from @{} in channel `{}`]\n{}",
@@ -530,6 +743,7 @@ impl Inner {
             execution_id: call.execution_id,
             node_id: call.node.id,
             text,
+            turn: None,
         })?)?;
         json(participant::Reply { text: turn.text })
     }
@@ -560,7 +774,7 @@ impl Inner {
 
     /// One turn, whoever sends it. Turns of one node go one at a time; with
     /// `fresh_context`, each one in a session of its own.
-    fn prompt(&self, params: PromptParams) -> Result<Value, ModuleError> {
+    fn prompt(self: &Arc<Self>, params: PromptParams) -> Result<Value, ModuleError> {
         let me = NodeRef {
             execution_id: params.execution_id,
             node_id: params.node_id,
@@ -571,6 +785,34 @@ impl Inner {
             .map(|r| r.turn.clone())
             .ok_or_else(|| Self::not_running(&me))?;
         let _turn = lock(&turn);
+        let turn_id = match params.turn {
+            Some(id) => id,
+            None => self.next_turn(&me)?,
+        };
+        self.record(&me, USER, &params.text, Some(&turn_id));
+        if let Some(found) = self.running().get_mut(&me) {
+            found.turn_id = Some(turn_id.clone());
+        }
+        let outcome = self.run_turn(&me, params.text);
+        if let Some(found) = self.running().get_mut(&me) {
+            found.turn_id = None;
+        }
+        match &outcome {
+            Ok(answer) => {
+                let text = answer
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.record(&me, AGENT, text, Some(&turn_id));
+            }
+            Err(error) => self.record(&me, SYSTEM, &error.to_string(), Some(&turn_id)),
+        }
+        outcome
+    }
+
+    /// The turn itself, in the node's session or in a new one when it must move.
+    fn run_turn(self: &Arc<Self>, me: &NodeRef, text: String) -> Result<Value, ModuleError> {
+        let me = me.clone();
         let renewed = {
             let mut running = self.running();
             let found = running.get_mut(&me).ok_or_else(|| Self::not_running(&me))?;
@@ -590,14 +832,222 @@ impl Inner {
                 found.session_id.clone(),
                 found.node.clone(),
                 renew,
+                found.permissions,
             )
         };
-        let (engine, session_id, node, renew) = renewed;
+        let (engine, session_id, node, renew, permissions) = renewed;
         let (engine, session_id) = match renew {
-            Some((node, cwd)) => self.renew(&me, &node, &cwd, engine, session_id)?,
+            Some((node, cwd)) => self.renew(&me, &node, &cwd, engine, session_id, permissions)?,
             None => (engine, session_id),
         };
-        self.timed_turn(&me, &node, engine, session_id, params.text)
+        self.timed_turn(&me, &node, engine, session_id, text)
+    }
+
+    /// Whether the box reads the session's events during a turn: it records them, puts
+    /// them on `activity` or answers permission requests through a decider.
+    fn watching(&self, me: &NodeRef, node: &Node) -> bool {
+        let running = self.running();
+        let Some(found) = running.get(me) else {
+            return false;
+        };
+        let emits =
+            self.text(node, ACTIVITY_EMIT_FIELD) == YES && node.port(ACTIVITY_PORT).is_some();
+        let asks = found.permissions == engine::Permissions::Ask && found.decisions.is_some();
+        (found.conv.is_some() || emits || asks) && !lock(&found.feed).unsupported
+    }
+
+    /// Reads what happened in the node's session since the last read: records it, puts
+    /// it on `activity` and hands new permission requests to the decider.
+    fn sync(self: &Arc<Self>, me: &NodeRef) {
+        let found = self.running().get(me).map(|r| {
+            (
+                r.engine.clone(),
+                r.session_id.clone(),
+                r.feed.clone(),
+                r.conv.clone(),
+                r.turn_id.clone(),
+                r.node.clone(),
+                r.permissions,
+                r.decisions.clone(),
+            )
+        });
+        let Some((engine, session_id, feed, conv, turn, node, permissions, decisions)) = found
+        else {
+            return;
+        };
+        let mut feed_now = lock(&feed);
+        if feed_now.session_id != session_id {
+            // A new session numbers its events from the start.
+            *feed_now = Feed {
+                session_id: session_id.clone(),
+                unsupported: feed_now.unsupported,
+                ..Feed::default()
+            };
+        }
+        if feed_now.unsupported {
+            return;
+        }
+        let args = engine::EventsArgs {
+            session_id: session_id.clone(),
+            since: feed_now.cursor,
+        };
+        let answer =
+            json(args).and_then(|args| self.ctx.call(&engine, engine::SESSION_EVENTS, args));
+        let events: engine::Events = match answer.and_then(parse) {
+            Ok(events) => events,
+            Err(ModuleError::UnknownMethod(_)) => {
+                feed_now.unsupported = true;
+                return;
+            }
+            // The session may be gone; the next read tries again.
+            Err(_) => return,
+        };
+        feed_now.cursor = events.next;
+        let emit = self.text(&node, ACTIVITY_EMIT_FIELD) == YES;
+        for event in events.events {
+            match &event.kind {
+                engine::SessionEventKind::PermissionResolved { id, .. } => {
+                    feed_now.resolved.insert(id.clone());
+                }
+                engine::SessionEventKind::PermissionRequest {
+                    id,
+                    tool,
+                    title,
+                    options,
+                } if permissions == engine::Permissions::Ask => {
+                    if let Some(decider) = decisions
+                        .as_ref()
+                        .filter(|_| feed_now.handled.insert(id.clone()))
+                    {
+                        let request = Request {
+                            id: id.clone(),
+                            tool: tool.clone(),
+                            title: title.clone(),
+                            options: options.clone(),
+                        };
+                        self.hand_over(me, &node, &engine, &session_id, decider, &feed, request);
+                    }
+                }
+                _ => {}
+            }
+            if let Some(conv) = &conv {
+                lock(conv).add_activity(turn.as_deref(), event.clone());
+            }
+            if emit {
+                match serde_json::to_value(&event) {
+                    Ok(value) => self.emit(me, &node, ACTIVITY_PORT, value),
+                    Err(error) => eprintln!("regulus: agent `{}`: {error}", me.node_id),
+                }
+            }
+        }
+    }
+
+    /// Asks the decider about a permission request on a thread of its own, polls until it
+    /// decides and answers the engine with the choice. A refusal with no option, or a
+    /// decider that fails, answers with the request's reject option.
+    #[allow(clippy::too_many_arguments)]
+    fn hand_over(
+        self: &Arc<Self>,
+        me: &NodeRef,
+        node: &Node,
+        engine: &Endpoint,
+        session_id: &str,
+        decider: &Endpoint,
+        feed: &Arc<Mutex<Feed>>,
+        request: Request,
+    ) {
+        let inner = self.clone();
+        let (me, engine, decider, feed) =
+            (me.clone(), engine.clone(), decider.clone(), feed.clone());
+        let session_id = session_id.to_string();
+        let name = self.name(node);
+        let poll = Duration::from_millis(self.count(node, DECISION_POLL_FIELD).max(1));
+        let spawned = std::thread::Builder::new()
+            .name(DECISION_THREAD.into())
+            .spawn(move || {
+                let reject = request
+                    .options
+                    .iter()
+                    .find(|o| o.kind.starts_with(REJECT_KIND))
+                    .map(|o| o.id.clone());
+                let decide = |option: Option<String>| {
+                    let args = engine::DecideArgs {
+                        session_id: session_id.clone(),
+                        request_id: request.id.clone(),
+                        option,
+                    };
+                    let answered = json(args)
+                        .and_then(|args| inner.ctx.call(&engine, engine::SESSION_DECIDE, args));
+                    if let Err(error) = answered {
+                        eprintln!(
+                            "regulus: agent `{}`: cannot answer `{}`: {error}",
+                            me.node_id, request.id
+                        );
+                    }
+                };
+                let args = decision::AskArgs {
+                    prompt: format!("Agent `{name}` asks permission: {}", request.title),
+                    options: request
+                        .options
+                        .iter()
+                        .map(|o| decision::Choice {
+                            id: o.id.clone(),
+                            name: o.name.clone(),
+                            kind: Some(o.kind.clone()),
+                        })
+                        .collect(),
+                    context: json!({ "tool": request.tool, "title": request.title,
+                        "execution_id": me.execution_id, "node_id": me.node_id,
+                        "request_id": request.id }),
+                    timeout_ms: None,
+                };
+                let asked = json(args)
+                    .and_then(|args| inner.ctx.call(&decider, decision::ASK, args))
+                    .and_then(parse::<decision::Asked>);
+                let asked = match asked {
+                    Ok(asked) => asked,
+                    Err(error) => {
+                        let note = format!(
+                            "could not ask `{DECISIONS_PORT}` ({error}): the request was rejected"
+                        );
+                        eprintln!("regulus: agent `{}`: {note}", me.node_id);
+                        inner.record(&me, SYSTEM, &note, None);
+                        decide(reject);
+                        return;
+                    }
+                };
+                loop {
+                    std::thread::sleep(poll);
+                    // Answered elsewhere (a cancel, the engine's own limit) or gone.
+                    let live = inner
+                        .running()
+                        .get(&me)
+                        .is_some_and(|r| r.session_id == session_id);
+                    if !live || lock(&feed).resolved.contains(&request.id) {
+                        return;
+                    }
+                    let args = json(decision::PollArgs {
+                        id: asked.id.clone(),
+                    });
+                    let polled = args
+                        .and_then(|args| inner.ctx.call(&decider, decision::POLL, args))
+                        .and_then(parse::<decision::Poll>);
+                    match polled {
+                        Ok(poll) if poll.pending => {}
+                        Ok(poll) => return decide(poll.option.or(reject)),
+                        Err(error) => {
+                            eprintln!(
+                                "regulus: agent `{}`: the decision failed ({error}): rejected",
+                                me.node_id
+                            );
+                            return decide(reject);
+                        }
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("regulus: agent: cannot start a decision thread: {error}");
+        }
     }
 
     /// The engine's turn, bounded by `turn_timeout_ms`. When it runs out, the turn is
@@ -605,7 +1055,7 @@ impl Inner {
     /// without cancel, or a turn that still does not end, loses its session, and the next
     /// turn opens another. Either way the turn fails.
     fn timed_turn(
-        &self,
+        self: &Arc<Self>,
         me: &NodeRef,
         node: &Node,
         engine: Endpoint,
@@ -617,7 +1067,8 @@ impl Inner {
             text,
         })?;
         let limit = self.count(node, TURN_TIMEOUT_FIELD);
-        if limit == 0 {
+        let watching = self.watching(me, node);
+        if limit == 0 && !watching {
             return self.ctx.call(&engine, engine::SESSION_PROMPT, args);
         }
         // The engine's call blocks until the turn ends, so it waits on a thread of its own.
@@ -629,44 +1080,66 @@ impl Inner {
                 let _ = answer.send(ctx.call(&to, engine::SESSION_PROMPT, args));
             })
             .map_err(|e| ModuleError::Failed(format!("cannot start a turn thread: {e}")))?;
-        match answered.recv_timeout(Duration::from_millis(limit)) {
-            Ok(outcome) => outcome,
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ModuleError::Failed(
-                "the turn ended without an answer".into(),
-            )),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // The answer may have come just as the time ran out: it is the turn's.
-                if let Ok(outcome) = answered.try_recv() {
-                    return outcome;
+        let began = std::time::Instant::now();
+        let every = Duration::from_millis(self.count(node, EVENTS_POLL_FIELD).max(1));
+        loop {
+            let left =
+                (limit > 0).then(|| Duration::from_millis(limit).saturating_sub(began.elapsed()));
+            let wait = match (watching, left) {
+                (true, Some(left)) => every.min(left),
+                (true, None) => every,
+                (false, Some(left)) => left,
+                (false, None) => Duration::MAX,
+            };
+            let outcome = match answered.recv_timeout(wait) {
+                Ok(outcome) => Some(outcome),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Some(Err(ModuleError::Failed(
+                    "the turn ended without an answer".into(),
+                ))),
+                Err(mpsc::RecvTimeoutError::Timeout) if left.is_some_and(|l| l <= wait) => None,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.sync(me);
+                    continue;
                 }
-                let grace = self.count(node, CANCEL_GRACE_FIELD);
-                let cancel = json(engine::CancelArgs {
-                    session_id: session_id.clone(),
-                })?;
-                // Only a turn that ends well after the cancel keeps its session; an engine
-                // that cannot cancel, or a session that died meanwhile, loses it.
-                let how = match self.ctx.call(&engine, engine::SESSION_CANCEL, cancel) {
-                    Err(error) => format!("the engine could not cancel it ({error})"),
-                    Ok(_) => match answered.recv_timeout(Duration::from_millis(grace)) {
-                        Ok(Ok(_)) => {
-                            return Err(ModuleError::Failed(format!(
-                                "turn timed out after {limit} ms (it was cancelled)"
-                            )))
-                        }
-                        Ok(Err(error)) => {
-                            format!("it ended with an error once cancelled ({error})")
-                        }
-                        Err(_) => {
-                            format!("it did not end within `{CANCEL_GRACE_FIELD}` ({grace} ms)")
-                        }
-                    },
-                };
-                self.drop_session(me, &engine, session_id);
-                Err(ModuleError::Failed(format!(
-                    "turn timed out after {limit} ms; {how}: its session was dropped"
-                )))
+            };
+            if watching {
+                self.sync(me);
             }
+            if let Some(outcome) = outcome {
+                return outcome;
+            }
+            break;
         }
+        // The answer may have come just as the time ran out: it is the turn's.
+        if let Ok(outcome) = answered.try_recv() {
+            return outcome;
+        }
+        let grace = self.count(node, CANCEL_GRACE_FIELD);
+        let cancel = json(engine::CancelArgs {
+            session_id: session_id.clone(),
+        })?;
+        // Only a turn that ends well after the cancel keeps its session; an engine
+        // that cannot cancel, or a session that died meanwhile, loses it.
+        let how = match self.ctx.call(&engine, engine::SESSION_CANCEL, cancel) {
+            Err(error) => format!("the engine could not cancel it ({error})"),
+            Ok(_) => match answered.recv_timeout(Duration::from_millis(grace)) {
+                Ok(Ok(_)) => {
+                    return Err(ModuleError::Failed(format!(
+                        "turn timed out after {limit} ms (it was cancelled)"
+                    )))
+                }
+                Ok(Err(error)) => {
+                    format!("it ended with an error once cancelled ({error})")
+                }
+                Err(_) => {
+                    format!("it did not end within `{CANCEL_GRACE_FIELD}` ({grace} ms)")
+                }
+            },
+        };
+        self.drop_session(me, &engine, session_id);
+        Err(ModuleError::Failed(format!(
+            "turn timed out after {limit} ms; {how}: its session was dropped"
+        )))
     }
 
     /// Ends a session whose turn would not end; the node's next turn opens another.
@@ -698,17 +1171,25 @@ impl Inner {
         cwd: &std::path::Path,
         engine: Endpoint,
         session_id: String,
+        permissions: engine::Permissions,
     ) -> Result<(Endpoint, String), ModuleError> {
         self.ctx.call(
             &engine,
             engine::SESSION_STOP,
             json(engine::StopArgs { session_id })?,
         )?;
-        let (engine, started) = self.open(me, node, cwd)?;
+        let (engine, started) = self.open(me, node, cwd, permissions, None)?;
         let session_id = started.session_id;
+        let native = self.text(node, RESUME_FIELD) == NATIVE && started.capabilities.load_session;
         let mut running = self.running();
         match running.get_mut(me) {
             Some(found) => {
+                // The newest session is the one a later execution would resume.
+                if let Some(conv) = found.conv.as_ref().filter(|_| native) {
+                    lock(conv).set_native_session_id(started.native_session_id.clone());
+                }
+                found.native_session_id = started.native_session_id;
+                found.native_resume = false;
                 found.engine = engine.clone();
                 found.session_id = session_id.clone();
                 found.used = true;
@@ -742,20 +1223,53 @@ impl Inner {
             execution_id: call.execution_id,
             node_id: call.node.id.clone(),
         };
-        let text = as_text(&event.value);
-        let max_queue = self.count(&call.node, MAX_QUEUE_FIELD);
+        let turn = self.next_turn(&me).ok();
+        self.enqueue(me, call.node, as_text(&event.value), turn)
+            .map(|(answer, _)| answer)
+    }
+
+    /// `agent.send`: queued like a value on `prompt`, with its turn id given back at once.
+    fn send(self: &Arc<Self>, params: PromptParams) -> Result<Value, ModuleError> {
+        let me = NodeRef {
+            execution_id: params.execution_id,
+            node_id: params.node_id,
+        };
+        let node = self
+            .running()
+            .get(&me)
+            .map(|r| r.node.clone())
+            .ok_or_else(|| Self::not_running(&me))?;
+        let turn = self.next_turn(&me)?;
+        let (_, dropped) = self.enqueue(me, node, params.text, Some(turn.clone()))?;
+        if let Some(error) = dropped {
+            return Err(ModuleError::Failed(error));
+        }
+        Ok(json!({ "turn": turn }))
+    }
+
+    /// Queues `text` behind the turn in flight, or prompts it now on a thread of its own
+    /// that then takes the queue in order. Also answers why it was dropped, if it was.
+    fn enqueue(
+        self: &Arc<Self>,
+        me: NodeRef,
+        node: Node,
+        text: String,
+        turn: Option<String>,
+    ) -> Result<(Value, Option<String>), ModuleError> {
+        let call_node = node;
+        let max_queue = self.count(&call_node, MAX_QUEUE_FIELD);
         let stop = {
             let mut inboxes = lock(&self.inboxes);
             let inbox = inboxes.entry(me.clone()).or_default();
             if inbox.busy {
                 if (inbox.queue.len() as u64) < max_queue {
-                    inbox.queue.push_back(text);
-                    return Ok(json!({ "queued": inbox.queue.len() }));
+                    inbox.queue.push_back((text, turn));
+                    return Ok((json!({ "queued": inbox.queue.len() }), None));
                 }
                 drop(inboxes);
                 // One signal, with the value, so whoever listens on `failed` can resend it.
                 let echo =
-                    usize::try_from(self.count(&call.node, ECHO_FIELD)).unwrap_or(usize::MAX);
+                    usize::try_from(self.count(&call_node, ECHO_FIELD)).unwrap_or(usize::MAX);
                 let error = format!(
                     "agent `{}`: a prompt is running and {max_queue} wait (`{MAX_QUEUE_FIELD}`): \
                      this one is dropped: {}",
@@ -763,19 +1277,20 @@ impl Inner {
                     truncated(&text, echo)
                 );
                 eprintln!("regulus: {error}");
-                self.emit(&me, &call.node, FAILED_PORT, json!(error));
-                return Ok(json!({ "dropped": true }));
+                self.record(&me, SYSTEM, &error, turn.as_deref());
+                self.emit(&me, &call_node, FAILED_PORT, json!(error));
+                return Ok((json!({ "dropped": true }), Some(error)));
             }
             inbox.busy = true;
             inbox.stop.clone()
         };
         let inner = self.clone();
-        let node = call.node;
+        let node = call_node;
         std::thread::Builder::new()
             .name(THREAD.into())
-            .spawn(move || inner.drain(me, node, stop, text))
+            .spawn(move || inner.drain(me, node, stop, (text, turn)))
             .map_err(|e| ModuleError::Failed(format!("cannot start an agent thread: {e}")))?;
-        Ok(json!({ "prompting": true }))
+        Ok((json!({ "prompting": true }), None))
     }
 
     /// A value on `workdir`: the turns that start from now on run there. Kept even when it
@@ -802,7 +1317,14 @@ impl Inner {
     }
 
     /// Prompts `text`, then every value that queued meanwhile, emitting each answer.
-    fn drain(&self, me: NodeRef, node: Node, stop: Arc<AtomicBool>, mut text: String) {
+    fn drain(
+        self: &Arc<Self>,
+        me: NodeRef,
+        node: Node,
+        stop: Arc<AtomicBool>,
+        first: (String, Option<String>),
+    ) {
+        let (mut text, mut turn) = first;
         let mut busy = Busy {
             inner: self,
             me: &me,
@@ -817,6 +1339,7 @@ impl Inner {
                 execution_id: me.execution_id.clone(),
                 node_id: me.node_id.clone(),
                 text,
+                turn: turn.take(),
             };
             // A panic in the turn is that turn's failure, not the end of the box.
             let outcome =
@@ -839,7 +1362,7 @@ impl Inner {
                 return;
             };
             match inbox.queue.pop_front() {
-                Some(next) => text = next,
+                Some(next) => (text, turn) = next,
                 None => {
                     // Under the same lock as the check: a value arriving now starts a
                     // thread of its own instead of waiting in a queue nobody drains.
@@ -881,6 +1404,76 @@ impl Inner {
         }
     }
 
+    /// `agent.history`: the recorded conversation after `since`, the session's events
+    /// read first, and where the session stands.
+    fn history(self: &Arc<Self>, params: HistoryParams) -> Result<Value, ModuleError> {
+        let me = NodeRef {
+            execution_id: params.execution_id,
+            node_id: params.node_id,
+        };
+        let live = self.running().get(&me).map(|r| {
+            (
+                r.conv.clone(),
+                r.native_session_id.clone(),
+                r.native_resume,
+                r.engine.clone(),
+                r.session_id.clone(),
+            )
+        });
+        let (conv, native_session_id, native_resume, state) = match live {
+            Some((conv, native, resumed, engine, session_id)) => {
+                self.sync(&me);
+                let args = json(engine::StatusArgs { session_id })?;
+                let state = match self.ctx.call(&engine, engine::SESSION_STATUS, args) {
+                    Ok(answer) => parse::<engine::Status>(answer)
+                        .ok()
+                        .and_then(|s| serde_json::to_value(s.state).ok())
+                        .unwrap_or_else(|| json!("unknown")),
+                    Err(_) => json!("unknown"),
+                };
+                (conv, native, resumed, state)
+            }
+            None => {
+                let finished = lock(&self.finished);
+                let found = finished.get(&me).ok_or_else(|| Self::not_running(&me))?;
+                (
+                    found.conv.clone(),
+                    found.native_session_id.clone(),
+                    found.native_resume,
+                    json!("stopped"),
+                )
+            }
+        };
+        let (entries, activity, next) = match conv {
+            Some(conv) => {
+                let page = lock(&conv).page(params.since, params.limit);
+                (json(page.entries)?, json(page.activity)?, page.next)
+            }
+            None => (json!([]), json!([]), params.since),
+        };
+        Ok(json!({
+            "entries": entries, "activity": activity, "next": next,
+            "session": { "engine_session_id": native_session_id,
+                         "native_resume": native_resume, "state": state },
+        }))
+    }
+
+    /// `agent.cancel`: asks the engine to end the turn in flight.
+    fn cancel(&self, params: NodeParams) -> Result<Value, ModuleError> {
+        let me = NodeRef {
+            execution_id: params.execution_id,
+            node_id: params.node_id,
+        };
+        let (engine, session_id) = self
+            .running()
+            .get(&me)
+            .map(|r| (r.engine.clone(), r.session_id.clone()))
+            .ok_or_else(|| Self::not_running(&me))?;
+        let args = json(engine::CancelArgs { session_id })?;
+        self.ctx.call(&engine, engine::SESSION_CANCEL, args)?;
+        Ok(Value::Null)
+    }
+
     /// Nothing more leaves the box: waiting values are dropped, threads end after the
     /// turn they are in, which ends with the engine's sessions.
     fn shutdown(&self) {
@@ -915,6 +1508,9 @@ impl Module for Agent {
             method::NODE_STOP => inner.stop(parse(params)?),
             method::NODE_EVENT => inner.event(parse(params)?),
             PROMPT => inner.prompt(parse(params)?),
+            SEND => inner.send(parse(params)?),
+            HISTORY => inner.history(parse(params)?),
+            CANCEL => inner.cancel(parse(params)?),
             participant::DESCRIBE => inner.describe(parse(params)?),
             participant::DELIVER => inner.deliver(parse(params)?),
             other => Err(ModuleError::UnknownMethod(other.into())),

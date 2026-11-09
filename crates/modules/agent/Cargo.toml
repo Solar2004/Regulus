@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 regulus-contract-agent-engine.workspace = true
+regulus-contract-decision.workspace = true
 regulus-contract-llm-endpoint.workspace = true
 regulus-contract-skill.workspace = true
 regulus-contract-toolset.workspace = true
@@ -15,3 +16,6 @@ regulus-core.workspace = true
 regulus-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+regulus-module-human = { path = "../human" }

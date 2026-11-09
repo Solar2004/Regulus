@@ -4517,6 +4517,7 @@ dependencies = [
  "regulus-core",
  "regulus-module-agent",
  "regulus-module-engine-claude",
+ "regulus-module-human",
  "regulus-module-providers",
  "regulus-proto",
  "serde",
@@ -4652,11 +4653,13 @@ name = "regulus-module-agent"
 version = "0.1.0"
 dependencies = [
  "regulus-contract-agent-engine",
+ "regulus-contract-decision",
  "regulus-contract-llm-endpoint",
  "regulus-contract-participant",
  "regulus-contract-skill",
  "regulus-contract-toolset",
  "regulus-core",
+ "regulus-module-human",
  "regulus-proto",
  "serde",
  "serde_json",
