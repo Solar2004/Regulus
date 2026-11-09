@@ -173,8 +173,8 @@ los mismos métodos; ninguno es nuevo.
   filtro por nodo y el valor compacto (texto como texto, JSON en una línea; "mostrar más"
   o JSON con sangría al abrirlo); un formulario para las entradas propias del workflow
   (`workflow.send`; la respuesta sale en los eventos como `self.<salida>`). Un nodo con
-  entrada `agent.engine` abre una conversación (`agent.prompt`, turnos de esta sesión);
-  uno con entrada `participant`, el canal (`comm.history`, `comm.participants`,
+  entrada `agent.engine` se habla en el panel *Conversación* (abajo); uno con entrada
+  `participant`, el canal (`comm.history`, `comm.participants`,
   `comm.send` como `user`). Las decisiones pendientes del módulo `human` (`human.list`,
   `human.answer`) se aprueban o rechazan ahí. Sin el módulo, el panel dice *no instalado*
   (`-32601`) o *no disponible* con la razón del core (`-32002`), nunca un error genérico.
@@ -192,19 +192,70 @@ los mismos métodos; ninguno es nuevo.
   la vista abierta y la pestaña visible), `eventPageSize` 200 (`limit` de `event.list`),
   `eventKeep` 1000 (eventos que quedan en pantalla), `maxValueLength` 240,
   `startTimeoutMs` 120000 (un motor arranca su CLI antes de que `execution.start`
-  responda) y `agentTimeoutMs` 600000 (un turno de agente). `RpcClient.request` acepta
+  responda), `agentTimeoutMs` 600000 (un turno de `agent.prompt`; la conversación ya no lo
+  usa) y `conversationKeep` 5000 (registros que una conversación guarda en pantalla). `RpcClient.request` acepta
   ese tiempo por llamada y sus errores llevan `code`.
 - **Paneles de una ejecución como registro** (2026-11-09, `src/operate/panels.ts`): un
   array tipado con `id`, título, columna por defecto (`main` | `aside`) y una regla
   `isAvailable` (*Enviar* solo si el workflow tiene entradas propias; *Árbol* solo si la
-  ejecución tiene padre o hijos). Son `nodes`, `send`, `events`, `tree`, `node` (el nodo
-  elegido: conversación o canal) y `decisions`. El orden, la columna y qué se ve se
+  ejecución tiene padre o hijos; *Conversación* solo si hay con quién hablar). Son `nodes`,
+  `conversation`, `send`, `events`, `tree`, `node` (el nodo elegido: su estado y su canal;
+  un agente remite a *Conversación* si ese panel se ve, y si no la enseña ahí) y
+  `decisions`. El orden, la columna y qué se ve se
   cambian en *View settings* (subir, bajar, columna, casilla) y se guardan en el
   dispositivo como los números; *Reset my changes* los quita. Si `config.client` trae
   `operate.panels` (`[client.operate] panels = ["tree", "events", { id = "node", place =
   "main" }]`), es el valor por defecto: lo que nombra se ve en ese orden, lo demás queda
   oculto, y el ajuste dice de qué fichero viene; el cambio de la persona gana. Sin
   framework de plugins: un panel nuevo es una entrada más del array.
+- **Conversación** (2026-11-09, `src/operate/Conversation.tsx`; lógica pura con tests en
+  `conversation.ts`). Panel `conversation` (columna principal por defecto) con un selector
+  *Hablar con* cuando hay más de un sujeto. Se elige por capacidad, nunca por módulo:
+  - **Agente directo**: un nodo con entrada "usa" `agent.engine`. Siempre se puede hablar
+    con él, sin enlazar nada. El historial es `agent.history` (`12-agents.md` §5): al abrir
+    el panel, y tras una reconexión o una recarga, se lee desde `since` 0 y se rehace; luego
+    se sigue con `next` cada `refreshMs`, en páginas de `eventPageSize` (hasta 10 por
+    vuelta), y se funde por `seq`, así que releer no duplica nada. Enviar es `agent.send`
+    (no espera al turno): el texto sale *En cola* hasta que el historial trae la entrada
+    `user` con ese `turn`. *Cancelar turno* (`agent.cancel`) aparece mientras la sesión está
+    `busy`, hay algo en cola o un turno sin respuesta. Arriba, la línea de sesión:
+    `engine_session_id`, si el CLI la reanudó (`native_resume`) y el estado con icono y
+    texto. De un nodo parado se lee el historial (`stopped`) y no se escribe.
+  - **Workflow enlazado**: un workflow es candidato si tiene al menos una entrada propia
+    "luego" `text@` y una salida propia "luego" `text@`. **Nunca se presenta como
+    conversación por tener esos puertos**: el panel enseña los candidatos y la persona
+    elige entrada y salida una vez por perfil + workflow (*Talk to this workflow*); se
+    guarda en el dispositivo (`ownConversations`, como los números) y se cambia u olvida
+    desde el panel; *Reset my changes* no lo toca. También puede venir, de solo lectura, de
+    `config.client`: `[[client.operate.conversations]]` con `profile`, `workflow`, `input`
+    y `output`; lo elegido en el dispositivo gana, y un enlace cuyos puertos ya no existen
+    no cuenta. Con el enlace, la transcripción sale de `event.list` de la ejecución
+    (cursor `since`/`next`, sin persistir nada más que el enlace): lo emitido desde
+    `self.<entrada>` es un turno de la persona (lo que registra `workflow.send`), lo
+    emitido desde `self.<salida>` una respuesta, y lo emitido con capacidad
+    `agent.event@1` (la salida `activity` de las cajas Agente de dentro) es actividad de
+    ese nodo. La actividad cuelga del último turno de la persona anterior por `seq`.
+    Enviar es `workflow.send` en la entrada enlazada. Debajo, las decisiones de `human.list`
+    de la ejecución que no están detrás de una tarjeta.
+  - **Tarjetas**, iguales en los dos modos: los `text` de un turno se juntan en una burbuja
+    viva por nodo (*Writing*) hasta que llega la respuesta (`agent` o `system`, o la
+    salida enlazada), que la sustituye; `thought` plegado (los seguidos, juntos);
+    `tool_call` + sus `tool_update` en una tarjeta con título, `tool_kind`, estado (icono +
+    texto) y el contenido desplegable; `plan` (el último sustituye al anterior);
+    `permission_request` con `permission_resolved` (opción elegida o *Cancelled*);
+    `turn_ended` con su `stop_reason`; `state`; un `kind` desconocido sale con su JSON.
+  - **Permisos**: si `human.list` tiene una decisión de tipo `decision` cuyo
+    `value.context` coincide en `execution_id`, `node_id` y `request_id`, la tarjeta ofrece
+    cada opción (`human.answer {id, decision: "approve", fields: {option}}`) y, si ninguna
+    es de rechazo, *Reject* (`decision: "reject"`). Sin esa decisión dice que espera
+    respuesta. `human.list` se pide sin filtro de ejecución (el decisor puede estar en otra)
+    y, en un agente directo, solo mientras hay una petición sin resolver.
+  - El panel *Waiting for you* rellena el campo `option` con un selector (lo que el
+    formulario limita con `enum`).
+  - **Límites:** la caché del cliente (`session.ts`) solo dibuja lo último al volver; la
+    verdad es el core. En un workflow con varios agentes, sus textos vivos desaparecen al
+    llegar la respuesta del workflow (quedan en *Events*). Los turnos de un workflow se
+    agrupan por orden, no por correlación: una respuesta tardía cae en el turno siguiente.
 - **Árbol de invocaciones** (2026-11-09, `src/operate/tree.ts`): de la ejecución elegida,
   `execution.tree {execution_id}` (lee la raíz en `execution` o en `root`) cada
   `refreshMs`; contra un core sin el método (`-32601`) se arma con el campo `parent` de
@@ -216,7 +267,12 @@ los mismos métodos; ninguno es nuevo.
 - **Pruebas:** `pnpm test` (vitest) cubre la lógica pura; `src/operate/live.test.ts`
   corre las mismas llamadas contra un core real si hay `REGULUS_RPC_URL` (greeting,
   Ralph hasta `self.done`, `agent.prompt` → `pong`). El mock imita los métodos con datos
-  de `mock/operate.json`.
+  de `mock/operate.json`; `agent.send`, `agent.history` y `agent.cancel` llevan un turno
+  guionizado que avanza un paso por cada `agent.history` del nodo o `event.list` de su
+  ejecución (pensamiento, texto, `tool_call` + `tool_update`, plan, una petición de permiso
+  que espera en `human.list` como decisión si la plantilla `chat` cablea su decisor, más
+  texto, `turn_ended`), y un `workflow.send` que llega al `prompt` de un agente es un turno
+  suyo, con `activity` y la respuesta en el bus.
 
 ---
 
