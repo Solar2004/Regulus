@@ -1,0 +1,267 @@
+# Native harness (docs/12-agents.md §8): an agent whose loop Regulus runs itself, built
+# from boxes. The Agent box drives the `native` engine; the engine asks a provider, calls
+# the tools wired into it directly (no MCP, no CLI) and lets hooks steer the loop.
+#
+#   self.chat → agent ─reply→ self.reply        agent ─failed→ self.error
+#                 engine ⇢ native ⇢ model ⇢ provider            decisions ⇢ decider
+#                          native.context ⇢ rules (files.document, on session_start)
+#                                         ⇢ recall (memory.inject, on every prompt)
+#                          native.tools   ⇢ memory (memory.store: memory_*)
+#                                         ⇢ retrieve (documents: search_documents, read_chunk)
+#   self.ingest → ingest ─ingested→ self.ingested                (files under docs_dir)
+#
+# Context, tool policy and the end of a turn are decided by what is wired, the engine's
+# fields are only the defaults: `rules` is added to the system prompt once per session,
+# `recall` adds the memory to every prompt; a `hook@1` node wired into `context` on
+# `pre_tool` can veto a tool or (with `pre_tool_context`) allow or ask it, and one on
+# `stop` keeps a turn going (a judge, a gate, a rule). Swap any of them for another box
+# with the same capability without touching the engine.
+#
+# Tools: memory and document search are allowed without asking (`allow_tools`); any
+# other tool wired in later asks, as `tool_policy = ask` says: the request shows in
+# `regulus human list` and is answered with
+# `regulus human answer <id> approve --field option=allow_once` (or `allow_always`,
+# `reject_once`). With nothing to decide in time it is refused.
+#
+# TODO (C4/C3, not on this branch yet): add `delegation.delegate` (its `tools` output,
+# `tool@1`: worker_create, worker_status, worker_result, worker_send, worker_close,
+# worker_list) and any `flow.tool` (a workflow as a tool) into `native.tools`, and their
+# modules to `requires`. The template loader refuses a template whose `requires` names a
+# module that is not installed, and `profile.check` refuses nodes of a missing module, so
+# they cannot be listed here until `regulus/delegation` and the `flow` `tool` node land.
+#
+# Risks: the documents, the memory and every prompt reach the provider; text inside a
+# document can instruct the model (prompt injection). Writes to memory are made in the
+# agent's name.
+#
+# Tested (crates/regulus-cli/tests/template_native_harness.rs): it applies, passes
+# profile.check with no diagnostic, and against a fake OpenAI server a chat message makes
+# the model call search_documents over ingested files and answer, with the rules in its
+# system prompt. Not run against a real model here.
+id = "native-harness"
+name = "Native harness over {{docs_dir}}"
+main_workflow_id = "harness"
+
+[template]
+name = "native-harness"
+description = "An agent run by Regulus itself: provider, tools and hooks wired as boxes"
+requires = [
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-native", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/memory", version = ">=0.1" },
+  { module = "regulus/documents", version = ">=0.1" },
+  { module = "regulus/human", version = ">=0.1" },
+]
+
+[template.vars]
+docs_dir = { description = "absolute folder of the documents: paths sent to ingest hang from it; the agent works there" }
+preset = { description = "provider template (crates/modules/providers/presets.toml)", default = "ollama" }
+base_url = { description = "the provider's endpoint, over the preset's; empty keeps the preset's", default = "" }
+credential = { description = "secret:<name> with the provider's key; empty for a keyless endpoint", default = "" }
+model = { description = "model id on that endpoint", default = "qwen3:4b" }
+system = { description = "the system prompt, before what the hooks add", default = "You are a careful assistant. Use the tools to look things up before you answer, and say which document you used." }
+rules = { description = "house rules added to the system prompt at the start of every session", default = "Answer in the language of the question. Say so when the documents do not cover it." }
+tool_policy = { description = "what a tool call outside allow_tools gets: allow, ask (a human decides) or deny", default = "ask" }
+max_steps = { description = "model calls per turn at most", default = 16 }
+max_tool_calls = { description = "tool calls per turn at most", default = 32 }
+history_turns = { description = "earlier turns of the session the model sees", default = 20 }
+collection = { description = "name of the document collection; profiles that name the same share it", default = "harness" }
+glob = { description = "files of a folder sent to ingest, relative to it", default = "**/*.md" }
+memory = { description = "name of the memory the agent reads and writes", default = "harness" }
+decision_timeout_ms = { description = "milliseconds a permission request waits for a human before it is refused", default = 600000 }
+
+[[workflows]]
+id = "harness"
+name = "Native harness"
+kind = "main"
+ports = [
+  { id = "chat", capability = "text@1", direction = "input", kind = "then" },
+  { id = "ingest", capability = "path@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+]
+
+  # The Agent box: the same box as for Claude Code or opencode, with the native engine.
+  # `ask` sends permission requests to the decider below.
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 450, y = 250 }
+  config = { workdir = "{{docs_dir}}", permissions = "ask" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "decisions", capability = "decision@1", direction = "input", kind = "uses" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The engine: the loop, its limits and its defaults.
+  [[workflows.nodes]]
+  id = "native"
+  name = "Native engine"
+  type = "native"
+  module_id = "regulus/engine-native@0.1.0"
+  position = { x = 450, y = 50 }
+  config = { system = "{{system}}", tool_policy = "{{tool_policy}}", allow_tools = ["memory_list", "memory_read", "memory_search", "search_documents", "read_chunk"], max_steps = {{max_steps}}, max_tool_calls = {{max_tool_calls}}, history_turns = {{history_turns}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" },
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "context", capability = "hook@1", direction = "input", kind = "uses", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "provider"
+  name = "Provider"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 700, y = 50 }
+  config = { preset = "{{preset}}", base_url = "{{base_url}}", credential = "{{credential}}", model = "{{model}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  # House rules, once per session, in the system prompt.
+  [[workflows.nodes]]
+  id = "rules"
+  name = "House rules"
+  type = "document"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 200, y = 0 }
+  config = { text = "{{rules}}", event = "session_start" }
+  ports = [{ id = "hook", capability = "hook@1", direction = "output", kind = "uses" }]
+
+  # The memory, with every prompt.
+  [[workflows.nodes]]
+  id = "recall"
+  name = "Recall"
+  type = "inject"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 200, y = 100 }
+  config = { memory = "{{memory}}", event = "prompt", select = "match" }
+  ports = [{ id = "hook", capability = "hook@1", direction = "output", kind = "uses" }]
+
+  # The memory as tools: memory_list, memory_read, memory_search, memory_write, memory_delete.
+  [[workflows.nodes]]
+  id = "memory"
+  name = "Memory"
+  type = "store"
+  module_id = "regulus/memory@0.1.0"
+  position = { x = 700, y = 200 }
+  config = { memory = "{{memory}}" }
+  ports = [{ id = "tools", capability = "tool@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "ingest"
+  name = "Ingest"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 200, y = 400 }
+  config = { collection = "{{collection}}", dir = "{{docs_dir}}", glob = "{{glob}}" }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  # The documents as tools: search_documents, read_chunk.
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Documents"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 700, y = 300 }
+  config = { collection = "{{collection}}" }
+  ports = [{ id = "tools", capability = "tool@1", direction = "output", kind = "uses" }]
+
+  # Who decides the permission requests: a person, through `regulus human`.
+  [[workflows.nodes]]
+  id = "decider"
+  name = "Decider"
+  type = "decider"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 450, y = 450 }
+  config = { timeout_ms = {{decision_timeout_ms}} }
+  ports = [{ id = "decisions", capability = "decision@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "native-engine"
+  kind = "uses"
+  from = { node_id = "native", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "provider-model"
+  kind = "uses"
+  from = { node_id = "provider", port_id = "endpoint" }
+  to = { node_id = "native", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "rules-context"
+  kind = "uses"
+  from = { node_id = "rules", port_id = "hook" }
+  to = { node_id = "native", port_id = "context" }
+
+  [[workflows.wires]]
+  id = "recall-context"
+  kind = "uses"
+  from = { node_id = "recall", port_id = "hook" }
+  to = { node_id = "native", port_id = "context" }
+
+  [[workflows.wires]]
+  id = "memory-tools"
+  kind = "uses"
+  from = { node_id = "memory", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "retrieve-tools"
+  kind = "uses"
+  from = { node_id = "retrieve", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "decider-decisions"
+  kind = "uses"
+  from = { node_id = "decider", port_id = "decisions" }
+  to = { node_id = "agent", port_id = "decisions" }
+
+  [[workflows.wires]]
+  id = "chat-agent"
+  kind = "then"
+  from = { node_id = "self", port_id = "chat" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-reply"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "agent-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "ingest-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "ingest" }
+  to = { node_id = "ingest", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ingest-out"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "ingested" }
+  to = { node_id = "self", port_id = "ingested" }
+
+  [[workflows.wires]]
+  id = "ingest-error"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
