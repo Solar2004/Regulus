@@ -556,3 +556,111 @@ Sustituye a las dos ramas de `plan.md` §2:
 
 Precedente más cercano: vibe-kanban (Rust) mezcla canales por agente (stream-json,
 `app-server`, `serve`, ACP) y anuncia su cierre. No absorber sin la matriz de ablación.
+
+## 8. El motor nativo
+
+✅ *Construido* (2026-11-09, contrato C10). Un motor más de la caja Agente, pero sin CLI
+detrás: el bucle lo corre Regulus. Módulo `regulus/engine-native` (`crates/modules/
+engine-native`), nodo `native`, ofrece `agent.engine@1` entero: `start`, `prompt`,
+`status`, `cancel`, `stop`, `events` y `decide`, con `capabilities = {events: true,
+load_session: false}`. La caja, su historial, `activity` y el Decisor funcionan igual
+que con Claude Code u opencode.
+
+```
+ [Agente] ⇢ engine ⇢ [native] ⇢ model   ⇢ Proveedor (openai | anthropic)
+                               ⇢ tools   ⇢ memory.store · documents.retrieve · …  (tool@1)
+                               ⇢ context ⇢ files.document · memory.inject · rule …  (hook@1)
+```
+
+**Entradas.** `model` (`llm.endpoint@1`, obligatoria: sin ella el nodo queda
+desactivado), `tools` (`tool@1`, varias: se llaman **directamente** con `tool.call`, sin
+MCP ni puente; se vuelven a listar al empezar cada turno, y un nombre repetido entre dos
+nodos se queda con el primero y lo dice en el log) y `context` (`hook@1`, varias).
+
+**El bucle.** Mensajes = sistema (campo `system` + contexto de `session_start` + contexto
+de `prompt` de este turno) + los últimos `history_turns` turnos (con sus llamadas y
+resultados) + el prompt. Se pide al modelo; por cada llamada a herramienta: la política
+decide, se llama, el resultado vuelve como observación (cortado a
+`observation_max_chars`); y otra vez, hasta que el modelo responde sin herramientas o se
+gastan `max_steps` llamadas al modelo (`stop_reason = max_steps`). Pasadas
+`max_tool_calls` llamadas en el turno, cada llamada más recibe un error. Formatos: OpenAI
+Chat Completions (`tools`/`tool_calls`, `role: tool`) y Anthropic Messages (`tool_use`/
+`tool_result`, con `anthropic-version` del protocolo); `llm.endpoint@1` dice cuál con
+`protocol`. `anthropic-oauth` no se acepta: la suscripción de Claude es solo para sus
+apps (§6.6). El uso de tokens se suma por turno y sale en `Turn.usage`, así que la salida
+`usage` de la caja sí sale con este motor cuando el proveedor da uso.
+
+**Campos** (todos con valor por defecto): `model` (vacío: el primero del proveedor),
+`system`, `name` (quién llama a las herramientas; vacío: el id del nodo), `max_steps`
+(16), `max_tool_calls` (32), `tool_policy` (`allow` | `ask` | `deny`, `ask`),
+`allow_tools` y `deny_tools` (listas; `deny` gana), `pre_tool_context` (`note` | `allow`
+| `ask`, `note`), `stop_when` (`no_tool_call` | `text`), `temperature` (por debajo de 0:
+no se manda), `max_tokens` (4096), `history_turns` (20; 0: ninguno),
+`observation_max_chars` (20000; 0: sin corte), `request_timeout_ms` (120000),
+`hook_timeout_ms` (10000), `events_keep` (2000) y `permission_timeout_seconds` (600).
+
+**Lo cableado manda; los campos son lo que pasa si nada dice otra cosa.** Los hooks de
+`context` se preguntan como pregunta el puente de un CLI (§3.1, `13-blocks.md` §4): el
+mismo `HookRequest`, cada hook en su hilo con su tiempo (`timeout_ms` del hook, si no
+`hook_timeout_ms`), una respuesta tarde, fallida o no declarada en `returns` cuenta como
+nada (o como veto con `fail = closed`), cualquier veto gana y los contextos se suman. El
+motor llama a `node/hook` de cada nodo cableado él mismo, con `ModuleCtx::call`: no pasa
+por `hook.dispatch` porque eso es del socket, y el core sigue sin saber qué es un hook.
+
+| Evento | Contexto | Veto |
+|---|---|---|
+| `session_start` | va al sistema durante toda la sesión | la sesión no arranca |
+| `prompt` | va al sistema durante este turno | el turno falla (`failed` en la caja) y el prompt no entra en el historial |
+| `pre_tool` | según `pre_tool_context`: `note` deja decidir a la política y el texto acompaña al resultado; `allow` la deja pasar; `ask` pregunta aunque la política diga otra cosa | la llamada no se hace; el modelo recibe `refused: <motivo>` |
+| `post_tool` | se añade al resultado | ídem: el motivo se añade al resultado (ya se hizo) |
+| `stop` | el turno sigue, con el texto como siguiente mensaje del usuario | igual que el contexto |
+
+Un hook en un evento que el bucle no tiene (`pre_compact`: no compacta) se deja fuera con
+aviso en `Started.warnings`.
+
+**Permisos.** Sin hook que decida: `deny_tools` → no; `allow_tools` o un "permitir
+siempre" anterior → sí; si no, `tool_policy`. Con `ask`, cada llamada sale como
+`permission_request` (opciones `allow_once`, `allow_always`, `reject_once`) y espera a
+`engine.session.decide`; un `cancel` del turno la cancela; pasado
+`permission_timeout_seconds`, se rechaza. **Si la caja no puede preguntar** (su
+`permissions` no es `ask`, p. ej. sin Decisor), `ask` toma la respuesta de la caja:
+`allow` deja pasar y `reject` rechaza, con un aviso al arrancar. `cancel` corta también la
+espera al modelo (la petición sigue en su hilo y su respuesta se tira); una herramienta o
+un hook en curso acaban antes de que se note.
+
+**Lo que se deja fuera, con aviso en `Started.warnings`:** el `provider` y las ranuras de
+la caja (el motor pregunta a su propia entrada `model`), las skills, los montajes MCP de
+`StartArgs.tools` (cablea nodos `tool@1` a `tools`), los hooks de la caja (son comandos de
+puente para un CLI: cablea los nodos `hook@1` a `context`) y `resume`.
+
+**Plantilla `templates/native-harness.toml`:** Agente ⇢ `native` ⇢ Proveedor (plantilla
+`ollama` por defecto), `context` desde `files.document` (reglas de la casa, en
+`session_start`) y `memory.inject` (en cada prompt), `tools` desde `memory.store` y
+`documents.retrieve` (`search_documents`, `read_chunk`), y el Decisor de `human` para lo
+que pregunta. Las herramientas de lectura están en `allow_tools`; el resto pregunta.
+
+**Probado** contra un servidor falso con forma de OpenAI (y otro de Anthropic) en
+`crates/modules/engine-native/tests/native.rs`: la herramienta corre por `tool.call` con
+el nombre de quien llama y los eventos lo cuentan en orden; `ask` espera a `decide` y no
+llama antes; `cancel` corta la espera; `deny` responde con un rechazo; `max_steps` y
+`max_tool_calls` cortan; un hook `stop` mantiene el turno con su motivo; `prompt` y
+`session_start` inyectan contexto; un veto `pre_tool` gana a `allow` y un contexto con
+`pre_tool_context = allow` gana a `deny`; `history_turns` recorta; y la caja Agente lo
+usa con `agent.prompt`. La plantilla, por CLI (`crates/regulus-cli/tests/
+template_native_harness.rs`): aplica, `profile.check` sin diagnósticos, y un mensaje hace
+que el modelo falso llame a `search_documents` sobre lo ingerido y conteste.
+
+**Límites honestos:**
+
+- `hook@1` no tiene respuesta "pregunta" ni "termina ya": un hook pide preguntar solo vía
+  `pre_tool_context = ask` (un campo, no el hook), y un hook `stop` solo puede **seguir**
+  (veto o contexto) o dejar acabar (nada); terminar antes de que el modelo acabe no se
+  puede pedir desde un hook. Cambiarlo es `hook@2` o un campo opcional nuevo de `hook@1`.
+- Sin streaming: el texto llega entero al final de cada llamada al modelo (un evento
+  `text` por paso). Sin compactación: el contexto crece hasta `history_turns`.
+- El historial vive en memoria de la sesión: no sobrevive al reinicio y no hay
+  `load_session`. El historial de la caja (§5) sí.
+- Sin reintentos ante errores del proveedor: el turno falla con el error (sin secretos).
+- Delegación (`delegation.delegate`) y workflow como herramienta (`flow.tool`) aún no
+  están en la plantilla: sus módulos no estaban en la rama; queda un TODO en su cabecera.
+- No probado contra un modelo real.
