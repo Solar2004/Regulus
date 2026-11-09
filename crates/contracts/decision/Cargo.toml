@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-contract-decision"
 description = "The decision@1 capability: ask someone to choose among options, then read the choice"
 version.workspace = true
