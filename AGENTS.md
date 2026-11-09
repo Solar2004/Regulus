@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-11-08 · documentación vigente: ~48k tokens. Lo antiguo está en `docs/old/`.
+> Actualizado: 2026-11-09 · documentación vigente: ~48k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -52,8 +52,20 @@ actualización** (2026-11-08, `52d6bfe`, `06-stack.md` §5.4): `scripts/release.
 binario, AppImage y deb con manifiesto firmado (minisign); `regulus update` y Ajustes →
 Updates instalan solo lo que esa firma avala; **se publica en GitHub Releases** con
 `.github/workflows/release.yml` en cada tag `v*`, y `[update]` apunta ahí por defecto
-(2026-11-08). **Lo siguiente:** pulir con uso real. La
-pasarela de proveedores queda aplazada. Plan y orden en
+(2026-11-08). **El harness es líquido** (2026-11-09, protocolo 1.16, un día, cinco ramas en
+paralelo): un cable "usa" cruza cajas y workflows (`02-architecture.md` §4), una caja mantiene
+hijas vivas con sus enlaces y `execution.tree` las enseña, y cualquier perfil se guarda como
+plantilla (`template.save`, `regulus template save`); la caja Agente emite su actividad (texto,
+herramientas, permisos), pregunta los permisos a un Decisor (`decision@1`, `human.decider`),
+guarda la conversación (`agent.send|history|cancel`) y se habla con ella desde la app (panel
+Conversación, `04-client.md` §8), la TUI y `regulus talk` (`04-client.md` §7); un workflow es
+herramienta (`flow.tool`), lote (`flow.batch`) o trabajador vivo (`delegation.delegate`,
+`regulus workers`, `12-agents.md` §5.1); `documents` e `inference` dan RAG editable (`regulus
+docs`, plantillas `rag-chat` · `rag-eval` · `delegation`, `13-blocks.md` §5); y el **motor
+nativo** corre el bucle del agente dentro de Regulus con herramientas y hooks cableados
+(`12-agents.md` §8, `templates/native-harness.toml`). Nada de lo nuevo se ha corrido aún con un
+agente o un modelo real: solo con motores y servidores falsos. **Lo siguiente:** correr las
+plantillas nuevas con agentes y modelos reales. La pasarela de proveedores queda aplazada. Plan y orden en
 [`docs/plan.md`](docs/plan.md).
 
 ---
@@ -95,11 +107,11 @@ construir todas las habitaciones hoy.**
 | **`docs/concept.md`** | ~1k | Qué es Regulus en llano: piezas (módulo, nodo, cable, workflow, perfil, ejecución) y las dos vistas. |
 | **`docs/00-principles.md`** | ~2k | **Manda sobre todos los demás.** "Como el agua", **la caja líquida**, los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
 | **`docs/11-composition.md`** | ~5.5k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). **Proyectos** como carpetas con `regulus.toml` (§13). |
-| **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido. |
-| **`docs/13-blocks.md`** | ~8.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom), límites honestos y fuentes. |
-| **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), bus y store. |
+| **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido, **trabajadores vs subagentes** (§5.1), **el motor nativo** (§8). |
+| **`docs/13-blocks.md`** | ~8.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, `documents` · `inference` · `delegation`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom, RAG chat, RAG eval, delegación), límites honestos y fuentes. |
+| **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), "usa" que cruza cajas, hijas vivas y `execution.tree`, bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
-| **`docs/04-client.md`** | ~4k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11). |
+| **`docs/04-client.md`** | ~4k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11), **conversación** en app, TUI y `regulus talk` (§7-8). |
 | **`docs/composition-preview.md`** | ~0.8k | Contrato actual del mock (métodos JSON-RPC) y límites del canvas A'/B'. |
 | **`docs/06-stack.md`** | ~2.2k | Dependencias con versiones verificadas (único sitio), terminal, transporte, versionado. |
 | **`docs/08-design-system.md`** | ~1.8k | Diseño de la app: Regulus Midnight, paleta y tokens (`assets/design/`), iconos de estado. Recetas en `centaury-recipes.md`. |
@@ -199,6 +211,7 @@ Refs: docs/plan.md §3
 | Prioridad | Qué | Bloqueado por |
 |---|---|---|
 | 1 | **Pulir con uso real**: ~~mostrar el estado `blocked` con su acción "confiar" en Ajustes~~ (2026-11-08); publicar `v0.1.0` con `release.yml` (falta el secreto `REGULUS_SIGNING_KEY` y el tag) y, con una segunda versión, instalar la actualización con la app abierta | el secreto y el tag los pone Alexander |
+| 1c | **Harness líquido con uso real** (2026-11-09): correr `rag-chat`, `delegation`, `native-harness` y `research` (lote) con un agente y un modelo reales; `hook@1` no tiene respuesta "pregunta" ni "termina" (`12-agents.md` §8); `profile.check` no revisa los workflows del mapa `workers` del delegado (`13-blocks.md` §3.3) | nada |
 | 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~, ~~pxl~~. **Las ocho hechas** (2026-11-08) | — |
 | 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); ~~release + `regulus update` + Ajustes → Updates~~ (`06-stack.md` §5.4); lo que queda está en la fila 1 | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |

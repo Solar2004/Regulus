@@ -15,6 +15,38 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Cajas que se cruzan** (`docs/02-architecture.md` §4, `docs/11-composition.md` §6-7,
+  protocolo `1.16`): un cable "usa" entra o sale de una caja o workflow (se colapsa al
+  aplanar; avisos `wire.uses_cycle` y `wire.boundary_cardinality`); un nodo mantiene
+  ejecuciones hijas vivas con enlaces a lo que tiene cableado (`execution.tree`, `regulus
+  exec tree`); un perfil se guarda como plantilla (`template.save`, `regulus template save`).
+- **El agente cuenta lo que hace** (`docs/12-agents.md` §5): eventos de sesión (texto,
+  pensamiento, herramientas, plan, permisos), permisos `ask` resueltos por un Decisor
+  (`decision@1`, nodo `human.decider`, `regulus human answer`), conversación guardada
+  (`agent.send`, `agent.history`, `agent.cancel`, salida `activity`, `regulus agent
+  send|history|cancel`) y sesión nativa reanudable (`resume = native`).
+- **Conversación en los tres clientes** (`docs/04-client.md` §7-8): panel Conversación en
+  la app, vista en la TUI (`c`, `a`, Ctrl+X) y `regulus talk <ejecución> [--node | --in/--out]
+  [--once]`. Un agente directo no pide nada; un workflow se enlaza una vez, a mano, y el
+  enlace se guarda (`conversations.json`, `[client] operate.conversations`).
+- **Workflows como herramienta, lote y trabajador** (`docs/13-blocks.md` §3,
+  `docs/12-agents.md` §5.1): `flow.tool` (un workflow como `tool@1`, modos call y job),
+  `flow.batch` (una hija por valor, recoge los resultados), módulo `delegation`
+  (`delegate`: trabajadores vivos con su propio motor, `regulus workers
+  ls|create|send|result|close`, plantilla `delegation`). `call`, `batch` y `tool` pasan a la
+  hija lo que tienen cableado.
+- **Documentos y RAG** (`docs/13-blocks.md` §3, §5): módulo `documents` (ingesta, troceo,
+  recuperación léxica con motor intercambiable, contexto y puerta de citas: comprueba
+  procedencia, no verdad), módulo `inference` (una llamada al modelo por valor), `regulus
+  docs ls|query|rm`, plantillas `rag-chat` y `rag-eval`; `research` corre por lotes y busca
+  en una colección de documentos.
+- **Motor nativo** (`docs/12-agents.md` §8): el bucle del agente lo corre Regulus sin CLI
+  detrás: módulo `engine-native`, nodo `native`, proveedor openai o anthropic, herramientas
+  `tool@1` directas y hooks `hook@1` cableados que ponen contexto, deciden la política de
+  herramientas y cuándo acaba el turno; plantilla `native-harness`.
+- **Cajas en la app** (`docs/04-client.md` §8-9): abrir una caja, crear una desde la
+  selección, puertos "usa" del workflow, sustituir una dependencia, guardar como plantilla;
+  Operar enseña el árbol de llamadas.
 - **Lógica de IA, el core** (`docs/13-blocks.md` §2, protocolo `1.5` → `1.8`): el cable
   "luego" lleva dato por un bus por ejecución (`event.list`, `regulus events --follow`,
   límites `[bus]`); un store SQLite global y por proyecto guarda ejecuciones, checkpoints

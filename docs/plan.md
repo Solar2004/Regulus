@@ -65,6 +65,7 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 5 | Canvas editable: crear nodos, tirar cables, guardar (`04-client.md` §9) | ~1 sem | ✅ hecho (2026-11-08, medio día; antes el core ganó `module.manifest`, `profile.save` y `profile.delete`) |
 | 6 | Vista Operar con ejecuciones reales, instalar plantillas (`04-client.md` §8) | ~1 sem | ✅ hecho (2026-11-08, medio día) |
 | 7 | **App completa**: Ajustes, TUI que edita como la app y `[client]` de `config.toml` para app y TUI (`04-client.md` §10, §7, §11); proyectos con `regulus.toml` (`11-composition.md` §13) | — | ✅ hecho (2026-11-08, un día); `ProcessModule` para `[[modules.local]]` hecho (2026-11-08, `94e5aa3`); release + `regulus update` + Ajustes → Updates hechos (2026-11-08, `52d6bfe`); `blocked` con su botón de confiar en Ajustes y `release.yml` que publica en GitHub Releases (2026-11-08) |
+| 8 | **Harness líquido** (contratos C1-C10): "usa" cruza cajas, hijas vivas y `execution.tree`, `template.save`; eventos, permisos e historial del agente; conversación en app, TUI y `regulus talk`; `flow.tool` · `flow.batch` · `delegation`; `documents` · `inference`; motor nativo (`12-agents.md` §5, §8; `13-blocks.md` §3, §5; `04-client.md` §7-8) | 1 día | ✅ hecho (2026-11-09, cinco ramas en paralelo); falta correrlo con agentes y modelos reales |
 
 **Prueba de la base (paso 3):** la UI apunta al core real con `VITE_RPC_URL` y funciona
 sin cambiar una línea.
