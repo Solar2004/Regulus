@@ -194,6 +194,25 @@ los mismos métodos; ninguno es nuevo.
   `startTimeoutMs` 120000 (un motor arranca su CLI antes de que `execution.start`
   responda) y `agentTimeoutMs` 600000 (un turno de agente). `RpcClient.request` acepta
   ese tiempo por llamada y sus errores llevan `code`.
+- **Paneles de una ejecución como registro** (2026-11-09, `src/operate/panels.ts`): un
+  array tipado con `id`, título, columna por defecto (`main` | `aside`) y una regla
+  `isAvailable` (*Enviar* solo si el workflow tiene entradas propias; *Árbol* solo si la
+  ejecución tiene padre o hijos). Son `nodes`, `send`, `events`, `tree`, `node` (el nodo
+  elegido: conversación o canal) y `decisions`. El orden, la columna y qué se ve se
+  cambian en *View settings* (subir, bajar, columna, casilla) y se guardan en el
+  dispositivo como los números; *Reset my changes* los quita. Si `config.client` trae
+  `operate.panels` (`[client.operate] panels = ["tree", "events", { id = "node", place =
+  "main" }]`), es el valor por defecto: lo que nombra se ve en ese orden, lo demás queda
+  oculto, y el ajuste dice de qué fichero viene; el cambio de la persona gana. Sin
+  framework de plugins: un panel nuevo es una entrada más del array.
+- **Árbol de invocaciones** (2026-11-09, `src/operate/tree.ts`): de la ejecución elegida,
+  `execution.tree {execution_id}` (lee la raíz en `execution` o en `root`) cada
+  `refreshMs`; contra un core sin el método (`-32601`) se arma con el campo `parent` de
+  `execution.list` y lo dice. Cada fila: id, workflow, estado (icono + texto), nodo que la
+  llamó (`caller`) y `tag`; los hijos llevan *Select* y, vivos, *Stop*. Los hijos siguen
+  saliendo también, planos, en la lista de ejecuciones. El mock arranca como hijo el
+  workflow que nombra un campo de tipo `workflow` de un nodo, y parar el padre para los
+  hijos.
 - **Pruebas:** `pnpm test` (vitest) cubre la lógica pura; `src/operate/live.test.ts`
   corre las mismas llamadas contra un core real si hay `REGULUS_RPC_URL` (greeting,
   Ralph hasta `self.done`, `agent.prompt` → `pong`). El mock imita los métodos con datos
@@ -225,6 +244,43 @@ ancho de nodo (250), separación al añadir (40), agrupación de la paleta (por 
 autoguardado (apagado, 30 000 ms tras el último cambio), teclas de borrar (`Delete`,
 `Backspace`) y de guardar (`s`). La vista "Todos los workflows" es de solo lectura: pulsar
 un nodo abre su workflow.
+
+**Cajas en el canvas** (2026-11-09, `composition/editor/document.ts`, funciones puras con
+tests):
+
+- **Abrir caja.** Doble clic en una caja, *Open box* en el inspector o en el menú del
+  botón derecho entra en su workflow; una miga de pan (workflow de la pestaña → cajas
+  abiertas) vuelve a cualquier nivel. Cambiar de pestaña empieza la miga de cero; si el
+  workflow en pantalla desaparece, se vuelve por la miga.
+- **Crear caja desde la selección.** Con uno o más nodos elegidos (inspector de selección,
+  inspector de nodo o menú del botón derecho) se pide un nombre (enseña el id que tendrá).
+  Los nodos y los cables entre ellos pasan a un workflow nuevo; cada cable que cruzaba la
+  selección se vuelve un puerto del workflow con el tipo del cable (`then` o `uses`) y la
+  capacidad del puerto de dentro: entrada si venía de fuera, salida si salía. Un puerto
+  por extremo interior (nodo, puerto): varios cables de fuera a la misma entrada la
+  comparten (`many`), y una salida de dentro que iba a varios nodos es una salida cableada
+  a todos. Dentro, los cables cortados van a `self.<puerto>`; fuera, a `<caja>.<puerto>`
+  con su id de antes. Una caja dentro de la selección se mueve tal cual. Los ids que
+  chocan (workflow, nodo caja, puertos) toman el siguiente libre.
+- **Puertos de un workflow con los dos tipos.** El inspector del workflow añade entradas
+  y salidas `then` o `uses` y edita id, capacidad (sugiere las que ya usan manifiestos y
+  perfil), dirección, tipo, cuántos cables, `required` y `lazy` (solo `uses`). Cambiar
+  dirección o tipo quita los cables que llegaban, y se avisa. El canvas acepta cables
+  `uses` de una entrada `self` a entradas de dentro y de salidas de dentro a una salida
+  `self` (dentro, una entrada del workflow hace de salida). La paleta sigue listando como
+  caja todo workflow con puertos, también los `uses`.
+- **Reemplazar dependencia.** El inspector de un nodo lista sus entradas `uses` con quién
+  las sirve; un selector ofrece cada nodo del workflow con una salida `uses` de la misma
+  capacidad y las entradas `uses` propias del workflow. Elegir uno quita ese cable y pone
+  el nuevo; una entrada sin cable (o de `many`) se conecta igual.
+- **Guardar como plantilla.** Botón de la barra (perfil ya guardado) → nombre,
+  descripción, *solo este workflow* (el de la pestaña, como principal), variables
+  (nombre, descripción, valor por defecto; sin defecto es obligatoria), fichero opcional y
+  *reemplazar* (`force`) → `template.save`. Enseña la ruta escrita o el error por código
+  (`-32005` inválida, `-32007` ya existe, `-32601` core sin el método, `-32602`) con el
+  mensaje del core, y enlaza a la vista Plantillas. Con cambios sin guardar avisa de que
+  la plantilla sale de la versión del core. El mock lo imita (con *solo este workflow*,
+  el perfil lleva ese workflow como principal y los que coloca como cajas).
 
 ---
 
