@@ -3,7 +3,8 @@
 //! child's "then" input `input`, at most `max_in_flight` children live at once. Each
 //! answer leaves on `item` as `{batch, index, port, value}`; when every child is over,
 //! `done` says `{batch, total, returned, failed, cancelled, results}`, the results in
-//! the order of the elements. `timeout_ms` after the first start, what is still running is
+//! the order of the elements, and just before it `values` (if the node declares it) the
+//! answers alone, in that order. `timeout_ms` after the first start, what is still running is
 //! stopped and the same summary leaves on `partial`. A value on `cancel` stops every
 //! batch the node has going, and `on_failure = cancel` does so after the first child that
 //! ends without an answer.
@@ -26,6 +27,7 @@ const CANCEL: &str = "cancel";
 const ITEM: &str = "item";
 const DONE: &str = "done";
 const PARTIAL: &str = "partial";
+const VALUES: &str = "values";
 const THREAD_NAME: &str = "regulus-flow-batch";
 
 /// One batch of one node.
@@ -36,6 +38,8 @@ struct Run {
     /// 0: as many as `[call] max_children` lets live.
     max_in_flight: usize,
     cancel_on_failure: bool,
+    /// The node declares `values`: the answers alone, in element order, at the end.
+    values: bool,
     /// The bindings each child gets, narrowed to what the workflow takes after the first.
     opts: ChildOptions,
     waiting: VecDeque<(usize, Value)>,
@@ -53,6 +57,17 @@ impl Run {
         let results: Vec<&Value> = self.results.iter().flatten().collect();
         json!({ "batch": self.id, "total": self.results.len(), "returned": self.returned,
                 "failed": self.failed, "cancelled": self.cancelled, "results": results })
+    }
+
+    /// What came back, in element order, without the failed or cancelled elements.
+    fn values(&self) -> Value {
+        let values: Vec<&Value> = self
+            .results
+            .iter()
+            .flatten()
+            .filter_map(|r| r.get("value"))
+            .collect();
+        json!(values)
     }
 
     fn room(&self) -> bool {
@@ -185,7 +200,7 @@ impl Owner {
                 return;
             }
             run.over = true;
-            run.summary()
+            (run.summary(), run.values.then(|| run.values()))
         };
         self.end(shared, DONE, summary);
     }
@@ -211,7 +226,7 @@ impl Owner {
                     run.cancelled += 1;
                 }
             }
-            (children, run.summary())
+            (children, (run.summary(), run.values.then(|| run.values())))
         };
         for child in children {
             let _ = self.ctx.stop_child(&self.me, &child);
@@ -219,10 +234,13 @@ impl Owner {
         self.end(shared, port, summary);
     }
 
-    fn end(&self, shared: &Arc<Shared>, port: &str, summary: Value) {
+    fn end(&self, shared: &Arc<Shared>, port: &str, (summary, values): (Value, Option<Value>)) {
         shared.wake.notify_all();
         if let Some(id) = summary["batch"].as_str() {
             self.batches.remove(&self.me, id);
+        }
+        if let Some(values) = values {
+            self.emit(VALUES, values);
         }
         self.emit(port, summary);
     }
@@ -320,6 +338,7 @@ pub(crate) fn event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError>
             input,
             max_in_flight: usize::try_from(here.number("max_in_flight")).unwrap_or(usize::MAX),
             cancel_on_failure: on_failure == "cancel",
+            values: here.has_output(VALUES),
             opts: ChildOptions {
                 bindings: bound::of(here.ctx(), &here.me, &here.call.node),
                 ..ChildOptions::default()

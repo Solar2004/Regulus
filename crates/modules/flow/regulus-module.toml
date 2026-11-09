@@ -52,7 +52,9 @@ name = "Call"
 # most `max_in_flight` children live at once. Every answer leaves on `item` as
 # `{ batch, index, port, value }`; when all children are over, `done` carries `{ batch,
 # total, returned, failed, cancelled, results: [{ index, port?, value?, error? }] }`
-# in element order. `timeout_ms` after the batch starts, the children still running are
+# in element order; a node that declares the optional output `values` (`json@1`) also
+# gets the answers alone, `[value…]` in element order, just before `done` or `partial`.
+# `timeout_ms` after the batch starts, the children still running are
 # stopped and that summary leaves on `partial` instead. Any value on `cancel` stops the
 # node's batches (summary on `done`). Children are tagged `<batch>/<index>`
 # (`regulus exec tree`). The node's ports are its own, not the workflow's; whatever is
@@ -95,6 +97,13 @@ name = "Batch"
   [[node.port]]
   id         = "partial"
   name       = "partial"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "values"
+  name       = "values"
   capability = "json@1"
   direction  = "output"
   kind       = "then"

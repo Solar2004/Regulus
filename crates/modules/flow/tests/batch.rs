@@ -99,6 +99,7 @@ fn profile(config: Value, expose_model: bool) -> Profile {
         json_port("item", "output"),
         json_port("done", "output"),
         json_port("partial", "output"),
+        json_port("values", "output"),
     ];
     let mut main_wires = vec![
         wire("w-in", "then", ("self", "items"), ("batch", "in")),
@@ -111,6 +112,7 @@ fn profile(config: Value, expose_model: bool) -> Profile {
             ("batch", "partial"),
             ("self", "partial"),
         ),
+        wire("w-values", "then", ("batch", "values"), ("self", "values")),
     ];
     if expose_model {
         batch_ports.push(model_port("input"));
@@ -133,7 +135,7 @@ fn profile(config: Value, expose_model: bool) -> Profile {
             { "id": "main", "kind": "main",
               "ports": [json_port("items", "input"), json_port("stop", "input"),
                         json_port("item", "output"), json_port("done", "output"),
-                        json_port("partial", "output")],
+                        json_port("partial", "output"), json_port("values", "output")],
               "nodes": [
                 flow_node("batch", "batch", config, batch_ports),
                 { "id": "prov", "type": "prov", "module_id": "t/probe@1.0.0",
@@ -265,6 +267,8 @@ fn five_elements_two_at_a_time_one_failing() {
         .collect();
     items.sort();
     assert_eq!(items, ["a", "b", "d", "e"]);
+    // The answers alone, in element order, without the failed one.
+    assert_eq!(emitted(&core, &id, "values"), [json!(["a", "b", "d", "e"])]);
     // Children carry `<batch>/<index>`.
     let all: Vec<Execution> =
         serde_json::from_value(core.dispatch(method::EXECUTION_LIST, json!({})).unwrap()).unwrap();
