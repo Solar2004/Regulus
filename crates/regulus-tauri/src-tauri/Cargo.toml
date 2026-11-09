@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-tauri"
 version.workspace = true
 description = "Regulus desktop shell (Tauri client)"
