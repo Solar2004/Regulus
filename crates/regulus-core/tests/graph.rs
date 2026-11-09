@@ -872,3 +872,85 @@ fn every_template_still_checks_and_flattens() {
     }
     assert!(seen >= 8, "only {seen} templates in {}", dir.display());
 }
+
+/// `main` places `pass` (whose "uses" input `in` goes straight to its output `out`) as
+/// the box `a`, and wires `a.out` back into `a.in`: nothing ever serves the loop.
+fn pass_through_loop(consumer: bool) -> Value {
+    let mut nodes = vec![json!({ "id": "a", "type": "workflow", "internal_workflow_id": "pass" })];
+    let mut wires = vec![uses_wire("round", ("a", "out"), ("a", "in"))];
+    if consumer {
+        nodes.push(json!({ "id": "user", "type": "t", "module_id": "t/x@1.0.0",
+                           "ports": [uses_port("tools", TOOLS, "input")] }));
+        wires.push(uses_wire("use", ("a", "out"), ("user", "tools")));
+    }
+    json!({
+        "id": "p", "main_workflow_id": "main",
+        "workflows": [
+            { "id": "main", "kind": "main", "nodes": nodes, "wires": wires },
+            { "id": "pass", "kind": "extra",
+              "ports": [uses_port("in", TOOLS, "input"), uses_port("out", TOOLS, "output")],
+              "wires": [uses_wire("pt", ("self", "in"), ("self", "out"))] },
+        ]
+    })
+}
+
+#[test]
+fn a_loop_of_uses_wires_through_boxes_is_an_error_not_an_empty_wire() {
+    for consumer in [true, false] {
+        let value = pass_through_loop(consumer);
+        let profile: Profile = serde_json::from_value(value.clone()).unwrap();
+        let error = flatten(&profile, profile.workflow("main").unwrap()).unwrap_err();
+        assert!(error.contains("go round"), "{error}");
+        assert!(
+            error.contains("`a/pt`") && error.contains("`round`"),
+            "{error}"
+        );
+        let diagnostics = checked(value);
+        let found: Vec<(&str, Option<&str>)> = diagnostics
+            .iter()
+            .map(|d| (d.code.as_str(), d.workflow_id.as_deref()))
+            .collect();
+        assert_eq!(
+            found,
+            [("wire.uses_cycle", Some("main"))],
+            "{diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_wire_id_twice_in_a_box_fails_before_collapsing() {
+    let mut value = nested_uses();
+    // Both wires of `leaf` touch its ports and would be folded away.
+    value["workflows"][2]["wires"][1]["id"] = json!("use");
+    let profile: Profile = serde_json::from_value(value.clone()).unwrap();
+    let error = flatten(&profile, profile.workflow("main").unwrap()).unwrap_err();
+    assert_eq!(error, "wire id `outer/inner/use` is used more than once");
+    assert!(codes(&checked(value)).contains(&"wire.duplicate"));
+}
+
+#[test]
+fn a_service_outside_starts_before_its_user_inside_unless_the_input_is_lazy() {
+    // The provider is declared after the box, so only the collapsed wire puts it first.
+    let mut value = nested_uses();
+    value["workflows"][0]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .rotate_left(1);
+    let order = |value: &Value| {
+        let profile: Profile = serde_json::from_value(value.clone()).unwrap();
+        let plan = flatten(&profile, profile.workflow("main").unwrap()).unwrap();
+        ids(&plan).into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let before = |order: &[String], a: &str, b: &str| {
+        let at = |id: &str| order.iter().position(|n| n == id).unwrap();
+        at(a) < at(b)
+    };
+    let eager = order(&value);
+    assert!(before(&eager, "provider", "outer/inner/agent"), "{eager:?}");
+    assert!(before(&eager, "outer/inner/tools", "user"), "{eager:?}");
+
+    value["workflows"][2]["nodes"][0]["ports"][0]["lazy"] = json!(true);
+    let lazy = order(&value);
+    assert!(before(&lazy, "outer/inner/agent", "provider"), "{lazy:?}");
+}

@@ -61,6 +61,12 @@ pub fn check_profile(profile: &Profile, is_installed: impl Fn(&str) -> bool) -> 
     for workflow in &profile.workflows {
         report.workflow = Some(&workflow.id);
         check_workflow(profile, workflow, &is_installed, &mut report);
+        // A loop of "uses" wires shows only once boxes are opened: the running copy finds it.
+        if let Err(error) = flatten(profile, workflow) {
+            if error.starts_with(USES_CYCLE) {
+                report.push(Severity::Error, "wire.uses_cycle", error, None, None);
+            }
+        }
     }
     report.list
 }
@@ -559,7 +565,10 @@ pub fn flatten(profile: &Profile, workflow: &Workflow) -> Result<Workflow, Strin
     };
     let mut path = vec![workflow.id.as_str()];
     inline(profile, workflow, None, &mut path, &mut plan)?;
-    collapse_uses(&mut plan);
+    // Collapsing follows wires by id: a wire id given twice must fail here, before it can
+    // be folded away.
+    unique_wire_ids(&plan)?;
+    collapse_uses(&mut plan)?;
     // An id given twice in the copy is ambiguous: lookups find the first and the other
     // would start twice or take its events. Inlining can make one (`a/b` next to box `a`
     // with node `b`), and so can a plain duplicate.
@@ -567,12 +576,21 @@ pub fn flatten(profile: &Profile, workflow: &Workflow) -> Result<Workflow, Strin
     if let Some(node) = plan.nodes.iter().find(|n| !nodes.insert(n.id.as_str())) {
         return Err(format!("node id `{}` is used more than once", node.id));
     }
-    let mut wires = HashSet::new();
-    if let Some(wire) = plan.wires.iter().find(|w| !wires.insert(w.id.as_str())) {
-        return Err(format!("wire id `{}` is used more than once", wire.id));
-    }
+    unique_wire_ids(&plan)?;
     Ok(plan)
 }
+
+fn unique_wire_ids(plan: &Workflow) -> Result<(), String> {
+    let mut wires = HashSet::new();
+    match plan.wires.iter().find(|w| !wires.insert(w.id.as_str())) {
+        Some(wire) => Err(format!("wire id `{}` is used more than once", wire.id)),
+        None => Ok(()),
+    }
+}
+
+/// How the error of a loop of "uses" wires through box ports begins: `check_profile`
+/// reports it as `wire.uses_cycle`.
+const USES_CYCLE: &str = "\"uses\" wires go round through box ports";
 
 fn inline<'a>(
     profile: &'a Profile,
@@ -661,20 +679,22 @@ fn touches_box(plan: &Workflow, wire: &Wire) -> bool {
 /// node's, or an output of the top workflow) becomes one wire per real output that feeds
 /// it through the boxes, with the id of that last wire (`#<n>` added when there are
 /// several); the rest go. An input whose box port nothing feeds is left unwired. The top
-/// workflow's own `self` ports stay as they are: they are bound from outside.
-fn collapse_uses(plan: &mut Workflow) {
+/// workflow's own `self` ports stay as they are: they are bound from outside. Wires that
+/// go round through box ports without reaching a service are an error, never dropped.
+fn collapse_uses(plan: &mut Workflow) -> Result<(), String> {
     let mut wires = Vec::with_capacity(plan.wires.len());
     for wire in &plan.wires {
         if wire.kind != WireKind::Uses || !touches_box(plan, wire) {
             wires.push(wire.clone());
             continue;
         }
-        let consumer = plan.node(&wire.to.node_id);
-        if consumer.is_some_and(Node::is_box) {
+        let mut path = vec![wire.id.as_str()];
+        let sources = uses_sources(plan, &wire.from, wire_owner(wire), &mut path)?;
+        // A wire into a box port is followed only to find loops: the wires inside, which
+        // end in real inputs, carry it.
+        if plan.node(&wire.to.node_id).is_some_and(Node::is_box) {
             continue;
         }
-        let mut seen = HashSet::from([wire.id.as_str()]);
-        let sources = uses_sources(plan, &wire.from, wire_owner(wire), &mut seen);
         let several = sources.len() > 1;
         for (n, from) in sources.into_iter().enumerate() {
             wires.push(Wire {
@@ -690,29 +710,31 @@ fn collapse_uses(plan: &mut Workflow) {
         }
     }
     plan.wires = wires;
+    Ok(())
 }
 
 /// The real outputs behind `from`, the start of a "uses" wire of the box `owner` (or of
 /// the top workflow): `from` itself when it is a node's or the top workflow's own input,
-/// else what is wired into that box port on its other side, followed the same way. `seen`
-/// keeps a loop of pass-through wires from going round forever.
+/// else what is wired into that box port on its other side, followed the same way.
+/// `path` holds the wires followed so far: coming back to one is a loop of pass-through
+/// wires, an error naming them.
 fn uses_sources<'a>(
     plan: &'a Workflow,
     from: &PortRef,
     owner: Option<&str>,
-    seen: &mut HashSet<&'a str>,
-) -> Vec<PortRef> {
+    path: &mut Vec<&'a str>,
+) -> Result<Vec<PortRef>, String> {
     if from.node_id == WORKFLOW_SELF {
-        return vec![from.clone()];
+        return Ok(vec![from.clone()]);
     }
     let Some(node) = plan.node(&from.node_id) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     if !node.is_box() {
-        return vec![from.clone()];
+        return Ok(vec![from.clone()]);
     }
     let Some(port) = node.port(&from.port_id) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     // From inside, a box input feeds: what feeds it comes from outside. From outside, a
     // box output gives: what gives it comes from inside.
@@ -723,7 +745,7 @@ fn uses_sources<'a>(
         Direction::Output
     };
     if port.direction != wanted {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut found = Vec::new();
     for feeder in plan.wires.iter().filter(|w| {
@@ -731,11 +753,28 @@ fn uses_sources<'a>(
             && w.to == *from
             && (wire_owner(w) == Some(node.id.as_str())) != inside
     }) {
-        if seen.insert(feeder.id.as_str()) {
-            found.extend(uses_sources(plan, &feeder.from, wire_owner(feeder), seen));
+        if let Some(start) = path.iter().position(|id| *id == feeder.id) {
+            let mut round: Vec<&str> = path[start..].to_vec();
+            round.push(&feeder.id);
+            return Err(format!(
+                "{USES_CYCLE} without reaching a service: {}",
+                round
+                    .iter()
+                    .map(|id| format!("`{id}`"))
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            ));
+        }
+        path.push(&feeder.id);
+        let more = uses_sources(plan, &feeder.from, wire_owner(feeder), path);
+        path.pop();
+        for source in more? {
+            if !found.contains(&source) {
+                found.push(source);
+            }
         }
     }
-    found
+    Ok(found)
 }
 
 /// The boundary port at `end` of a running copy: a port of the workflow itself (`self`)

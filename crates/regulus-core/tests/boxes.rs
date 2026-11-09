@@ -89,6 +89,10 @@ fn uses_wire(id: &str, from: (&str, &str), to: (&str, &str)) -> Value {
 /// `inner` (workflow `leaf`), whose agent uses the provider and whose `tools` node serves
 /// the user outside, through both boxes.
 fn profile(wired: bool) -> Profile {
+    serde_json::from_value(profile_value(wired)).unwrap()
+}
+
+fn profile_value(wired: bool) -> Value {
     let main_wires = if wired {
         json!([
             uses_wire("feed", ("provider", "chat"), ("outer", "model")),
@@ -97,7 +101,7 @@ fn profile(wired: bool) -> Profile {
     } else {
         json!([uses_wire("out", ("outer", "toolset"), ("user", "tools"))])
     };
-    serde_json::from_value(json!({
+    json!({
         "id": "p", "main_workflow_id": "main",
         "workflows": [
             { "id": "main", "kind": "main",
@@ -129,14 +133,17 @@ fn profile(wired: bool) -> Profile {
               "wires": [uses_wire("use", ("self", "model"), ("agent", "provider")),
                         uses_wire("give", ("tools", "toolset"), ("self", "toolset"))] },
         ]
-    }))
-    .unwrap()
+    })
 }
 
 fn start(wired: bool, workflow: &str) -> (Execution, Log) {
+    start_profile(profile(wired), workflow)
+}
+
+fn start_profile(profile: Profile, workflow: &str) -> (Execution, Log) {
     let log = Log::default();
     let mut profiles = ProfileStore::default();
-    profiles.insert(profile(wired)).unwrap();
+    profiles.insert(profile).unwrap();
     let core = Core::build(vec![prober(&log)], &[], profiles);
     let execution = core
         .dispatch(
@@ -191,4 +198,35 @@ fn a_workflow_run_on_its_own_leaves_its_uses_input_unbound() {
         .map(|d| d.node_id.as_str())
         .collect();
     assert_eq!(disabled, ["inner/agent"]);
+}
+
+#[test]
+fn two_services_outside_reach_a_many_input_two_boxes_down() {
+    let mut value = profile_value(true);
+    let main = &mut value["workflows"][0];
+    main["nodes"].as_array_mut().unwrap().push(json!({
+        "id": "backup", "type": "t", "module_id": MODULE,
+        "ports": [uses_port("chat", "llm.endpoint@1", "output")]
+    }));
+    main["wires"].as_array_mut().unwrap().push(uses_wire(
+        "feed2",
+        ("backup", "chat"),
+        ("outer", "model"),
+    ));
+    for workflow in [1, 2] {
+        value["workflows"][workflow]["ports"][0]["cardinality"] = json!("many");
+    }
+    value["workflows"][2]["nodes"][0]["ports"][0]["cardinality"] = json!("many");
+    let (execution, log) = start_profile(serde_json::from_value(value).unwrap(), "main");
+    assert!(execution.disabled.is_empty(), "{execution:?}");
+    let mut lines = log.lock().unwrap().clone();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            r#"outer/inner/agent got "backup""#,
+            r#"outer/inner/agent got "provider""#,
+            r#"user got "outer/inner/tools""#,
+        ]
+    );
 }
