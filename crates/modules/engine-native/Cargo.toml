@@ -1,0 +1,22 @@
+[package]
+license.workspace = true
+name = "regulus-module-engine-native"
+description = "Agent engine run by Regulus itself: a model, tools called directly and hooks that steer the loop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-contract-agent-engine.workspace = true
+regulus-contract-llm-endpoint.workspace = true
+regulus-contract-tool.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+regulus-module-agent = { path = "../agent" }
+regulus-module-hooks = { path = "../hooks" }
+regulus-module-providers = { path = "../providers" }

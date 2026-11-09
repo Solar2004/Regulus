@@ -4544,6 +4544,7 @@ dependencies = [
  "regulus-module-communication",
  "regulus-module-documents",
  "regulus-module-engine-claude",
+ "regulus-module-engine-native",
  "regulus-module-engine-opencode",
  "regulus-module-files",
  "regulus-module-flow",
@@ -4722,6 +4723,23 @@ dependencies = [
  "regulus-core",
  "regulus-proto",
  "serde_json",
+]
+
+[[package]]
+name = "regulus-module-engine-native"
+version = "0.1.0"
+dependencies = [
+ "regulus-contract-agent-engine",
+ "regulus-contract-llm-endpoint",
+ "regulus-contract-tool",
+ "regulus-core",
+ "regulus-module-agent",
+ "regulus-module-hooks",
+ "regulus-module-providers",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

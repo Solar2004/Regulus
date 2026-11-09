@@ -1,0 +1,166 @@
+[module]
+id             = "regulus/engine-native@0.1.0"
+name           = "Native engine"
+requires_proto = "^1.9"
+
+# An agent engine that Regulus runs itself, with no CLI behind it (docs/12-agents.md §8):
+# the loop asks the model wired into `model`, calls the tools wired into `tools` directly
+# (no MCP) and lets the hooks wired into `context` steer it: what the model sees
+# (`session_start`, `prompt`), whether a tool call goes ahead (`pre_tool`), what it is
+# told after (`post_tool`) and whether the turn ends (`stop`). The fields are the
+# defaults for when nothing wired says otherwise.
+[[node]]
+type = "native"
+name = "Native engine"
+
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "agent.engine@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The model the loop asks: OpenAI Chat Completions (`openai`) or Anthropic Messages
+  # (`anthropic`), tools in each one's own format.
+  [[node.port]]
+  id         = "model"
+  name       = "model"
+  capability = "llm.endpoint@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  # Operations the model may call, listed again at the start of every turn.
+  [[node.port]]
+  id          = "tools"
+  name        = "tools"
+  capability  = "tool@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
+  # Hooks asked at each point of the loop, as the Agent box's `hooks` are asked by a
+  # CLI: context to add, a veto, or nothing.
+  [[node.port]]
+  id          = "context"
+  name        = "context"
+  capability  = "hook@1"
+  direction   = "input"
+  kind        = "uses"
+  cardinality = "many"
+
+  # Model id. Empty: the first model of the provider.
+  [[node.field]]
+  id      = "model"
+  type    = "text"
+  default = ""
+
+  # The system prompt, before the context the hooks add. Empty: only that context.
+  [[node.field]]
+  id      = "system"
+  type    = "text"
+  default = ""
+
+  # Who calls the tools (`tool@1` caller), as channels show it. Empty: the node id.
+  [[node.field]]
+  id      = "name"
+  type    = "text"
+  default = ""
+
+  # Model calls per turn; the turn ends with `max_steps` past it.
+  [[node.field]]
+  id      = "max_steps"
+  type    = "number"
+  default = 16
+
+  # Tool calls per turn; past it, each call is answered with an error.
+  [[node.field]]
+  id      = "max_tool_calls"
+  type    = "number"
+  default = 32
+
+  # What a tool call gets when no list below and no hook decides it. ask: a permission
+  # request that waits for `engine.session.decide`; if the box cannot ask (its
+  # `permissions` is not `ask`), the box's own answer: allow or reject.
+  [[node.field]]
+  id      = "tool_policy"
+  type    = "select"
+  default = "ask"
+  options = ["allow", "ask", "deny"]
+
+  # Tools that always go ahead without asking.
+  [[node.field]]
+  id      = "allow_tools"
+  type    = "list"
+  default = []
+
+  # Tools that are always refused. Wins over `allow_tools`.
+  [[node.field]]
+  id      = "deny_tools"
+  type    = "list"
+  default = []
+
+  # What a `pre_tool` hook's context means. note: the policy above still decides, and the
+  # text reaches the model with the result. allow: the call goes ahead. ask: the call
+  # asks permission whatever the policy. A veto always refuses the call.
+  [[node.field]]
+  id      = "pre_tool_context"
+  type    = "select"
+  default = "note"
+  options = ["note", "allow", "ask"]
+
+  # When a turn ends. no_tool_call: when the model answers without calling a tool.
+  # text: as soon as an answer has text, even if it also calls tools (those do not run).
+  # Either way a `stop` hook can keep it going.
+  [[node.field]]
+  id      = "stop_when"
+  type    = "select"
+  default = "no_tool_call"
+  options = ["no_tool_call", "text"]
+
+  # Below 0: not sent, the model's own default.
+  [[node.field]]
+  id      = "temperature"
+  type    = "number"
+  default = -1
+
+  [[node.field]]
+  id      = "max_tokens"
+  type    = "number"
+  default = 4096
+
+  # Earlier turns of the session the model sees, tool calls included. 0: none.
+  [[node.field]]
+  id      = "history_turns"
+  type    = "number"
+  default = 20
+
+  # Longest tool result the model sees, in characters; the rest is cut. 0: no limit.
+  [[node.field]]
+  id      = "observation_max_chars"
+  type    = "number"
+  default = 20000
+
+  # How long one model request may take.
+  [[node.field]]
+  id      = "request_timeout_ms"
+  type    = "number"
+  default = 120000
+
+  # How long a hook may take when it names no time of its own.
+  [[node.field]]
+  id      = "hook_timeout_ms"
+  type    = "number"
+  default = 10000
+
+  # How many session events each session keeps for `engine.session.events`.
+  [[node.field]]
+  id      = "events_keep"
+  type    = "number"
+  default = 2000
+
+  # Seconds a permission request waits for a decision; then the call is refused.
+  [[node.field]]
+  id      = "permission_timeout_seconds"
+  type    = "number"
+  default = 600

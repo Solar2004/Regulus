@@ -39,6 +39,7 @@ members = [
     "crates/modules/workspace",
     "crates/modules/documents",
     "crates/modules/inference",
+    "crates/modules/engine-native",
 ]
 resolver = "2"
 
