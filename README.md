@@ -12,11 +12,12 @@ The product is not the feature list. It is being able to add and remove features
 without anything breaking. Every module can be taken out and the rest keeps working,
 and that is verified by a test on every push, not promised.
 
-**Status (2026-11-08):** the core, the CLI, the desktop app and the TUI work end to
-end. Agents run through Claude Code and opencode, twenty-two modules ship with the
-program, and eight ready-made agent systems install as templates. Release builds and
-signed self-update are in. What is next is polishing with real use. Contributor guides are available in English. The detailed design record is currently
-in Spanish; code and user-facing source strings are in English.
+**Development status (2026-11-09):** the core, CLI, desktop app and TUI work end to
+end. The current checkout adds reusable boxes with capability inputs, workflow
+conversation, managed workers, document retrieval, evaluation and a native agent
+engine alongside Claude Code and opencode. These additions are in development;
+the published release below may not include them yet. Contributor guides are in
+English; the detailed design record is currently in Spanish.
 
 ---
 
@@ -70,7 +71,7 @@ and installs from a form.
 
 **Settings.** Modules, secrets, the service endpoint, provider presets and updates.
 
-![Settings view: the twenty-two modules, which are in use and which are not](assets/screenshots/settings.png)
+![Settings view: module states and usage](assets/screenshots/settings.png)
 
 The same operations exist in the TUI (`regulus` with no subcommand) and as CLI
 commands. The app is a client like the other two: it never does anything the core
@@ -199,7 +200,7 @@ self-update. Every value has a default and nothing requires recompiling.
 ## Tests
 
 ```bash
-cargo test --workspace                      # ~500 tests, the ablation matrix included
+cargo test --workspace                      # Rust suite, including the ablation matrix
 cargo test -p regulus-cli --test ablation   # start without each module in turn
 cargo clippy --workspace --all-targets      # zero warnings is the bar
 cd crates/regulus-tauri/frontend && pnpm test   # vitest, the frontend
@@ -282,7 +283,7 @@ it wins over every other document.
 
 | If you want to… | Read |
 |---|---|
-| Understand the model in plain words | [`docs/concept.md`](docs/concept.md) |
+| Understand the model in plain words | [English concepts](docs/contributing/concepts.md) |
 | Know what is decided and what comes next | [`docs/plan.md`](docs/plan.md) |
 | Nodes, wires, workflows, profiles, projects | [`docs/11-composition.md`](docs/11-composition.md) |
 | Agents, engines and providers | [`docs/12-agents.md`](docs/12-agents.md) |
