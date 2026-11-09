@@ -1,5 +1,6 @@
 //! Flow logic (docs/13-blocks.md §3.2): the nodes that decide where a value goes next.
-//! `call` runs a workflow as a child execution per value; `switch` routes by rules;
+//! `call` runs a workflow as a child execution per value; `batch` runs one per element
+//! of an array, a few at a time, and collects the answers; `switch` routes by rules;
 //! `loop` repeats a body until a rule or a cap; `join` waits for several branches;
 //! `fanout` copies or splits; `wait` delays without holding the bus; `variable` keeps a
 //! value in the store; `convert` changes what a value is between capabilities.
@@ -8,6 +9,8 @@
 //! outputs, and the bus does the rest. Ports are declared on each node in the profile;
 //! nothing here assumes a capability except `convert`, whose job it is.
 
+mod batch;
+mod bound;
 mod convert;
 mod join;
 mod repeat;
@@ -37,6 +40,7 @@ type OnEvent = fn(&Here, NodeEvent) -> Result<Value, ModuleError>;
 /// Every node type that takes values, by type. A new node is a row here.
 const EVENTS: &[(&str, OnEvent)] = &[
     ("call", call_event),
+    ("batch", batch::event),
     ("switch", route::switch),
     ("fanout", route::fanout),
     ("loop", repeat::event),
@@ -59,6 +63,8 @@ pub struct Flow {
     regexes: rule::Regexes,
     /// `variable`s of a core without a store live here, for as long as the core does.
     memory: Mutex<HashMap<String, Value>>,
+    /// The batches each `batch` node has going.
+    batches: batch::Batches,
 }
 
 pub(crate) fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ModuleError> {
@@ -158,7 +164,8 @@ impl Here<'_> {
     }
 }
 
-/// One value in, one child: the workflow gets it on its input of the same id.
+/// One value in, one child: the workflow gets it on its input of the same id, and what
+/// is wired into the node's "uses" inputs on its "uses" inputs of the same id.
 fn call_event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
     let workflow = here
         .setting(WORKFLOW_FIELD)
@@ -171,9 +178,17 @@ fn call_event(here: &Here, event: NodeEvent) -> Result<Value, ModuleError> {
             ))
         })?
         .to_string();
-    let child = here
-        .ctx()
-        .call_workflow(&here.me, &workflow, vec![(event.port, event.value)])?;
+    let mut opts = regulus_core::ChildOptions {
+        bindings: bound::of(here.ctx(), &here.me, &here.call.node),
+        ..regulus_core::ChildOptions::default()
+    };
+    let child = bound::start(
+        here.ctx(),
+        &here.me,
+        &workflow,
+        vec![(event.port, event.value)],
+        &mut opts,
+    )?;
     Ok(json!({ "execution_id": child }))
 }
 
@@ -187,6 +202,7 @@ impl Flow {
             timers: wait::Timers::default(),
             memory: Mutex::default(),
             regexes: rule::Regexes::default(),
+            batches: batch::Batches::default(),
         }
     }
 
@@ -233,6 +249,7 @@ impl Flow {
         lock(&self.loops).remove(&me);
         lock(&self.joins).remove(&me);
         self.timers.cancel(&me);
+        self.batches.stop(&me);
         Ok(Value::Null)
     }
 
@@ -241,6 +258,9 @@ impl Flow {
     fn child(&self, call: NodeCall) -> Result<Value, ModuleError> {
         let child: ChildEvent = parse(call.args.clone())?;
         let here = self.here(call);
+        if here.call.node.node_type == "batch" {
+            return batch::child(&here, child);
+        }
         match child.kind {
             // This node only calls; a kept child's output would be handled the same.
             ChildEventKind::Returned { port, value, .. }
