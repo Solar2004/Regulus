@@ -570,12 +570,36 @@ que con Claude Code u opencode.
  [Agente] ⇢ engine ⇢ [native] ⇢ model   ⇢ Proveedor (openai | anthropic)
                                ⇢ tools   ⇢ memory.store · documents.retrieve · …  (tool@1)
                                ⇢ context ⇢ files.document · memory.inject · rule …  (hook@1)
+ [Agente] ⇢ tools ⇢ [tools] ⇢ engine ⇢ [tools-mcp]   (toolset@1: los montajes de la caja,
+                                                      los mismos que reciben Claude y opencode)
 ```
 
 **Entradas.** `model` (`llm.endpoint@1`, obligatoria: sin ella el nodo queda
 desactivado), `tools` (`tool@1`, varias: se llaman **directamente** con `tool.call`, sin
 MCP ni puente; se vuelven a listar al empezar cada turno, y un nombre repetido entre dos
-nodos se queda con el primero y lo dice en el log) y `context` (`hook@1`, varias).
+nodos se queda con el primero y lo dice en el log) y `context` (`hook@1`, varias). Además,
+los **montajes de la caja** (`StartArgs.tools`, ver abajo).
+
+**Montajes de la caja** (2026-11-09). Lo que la caja Agente tiene cableado en su `tools`
+(`toolset@1`: caja `tools` + `tools-mcp`) llega al motor como `Mount`s, igual que a Claude
+Code u opencode; cambiar de motor no pierde herramientas. El motor arranca cada montaje
+`mcp-stdio` como proceso propio (su `command`, `args` y `env` tal cual: el `env` lleva el
+binding con el nombre de quien llama, así que las llamadas van en nombre de la caja), habla
+el MCP justo para herramientas (`initialize`, `tools/list` con páginas, `tools/call`,
+`notifications/cancelled`; el cliente está en `engine-native/src/mcp.rs`, sin dependencias
+nuevas) y vuelve a listar al empezar cada turno. Sus herramientas pasan por **lo mismo** que
+las cableadas: política, `allow_tools`/`deny_tools`, permisos, hooks `pre_tool`/`post_tool`,
+eventos y `max_tool_calls`. **Nombres:** primero las de `tools`, en orden de cables; luego
+las de cada montaje, en el orden de la caja. Una de montaje con nombre ya usado va como
+`<montaje>__<nombre>` (con aviso); si también está usado, se deja fuera con aviso. Un
+montaje de otro protocolo, uno que no arranca o no contesta a `initialize` en
+`mount_start_timeout_ms`, y un `tools/list` que falla al arrancar salen en
+`Started.warnings` (durante la sesión, en el log); los valores del `env` de 8 caracteres o
+más se ocultan (`[hidden]`) en esos mensajes y en los errores que ve el modelo. Una llamada
+espera como mucho `mount_call_timeout_ms` (pasado, se cancela en el servidor y el modelo
+recibe un error); `cancel` corta la espera al momento y avisa al servidor; `stop`, `node/stop`
+o un arranque fallido matan los procesos. La espera no bloquea el bus: cada proceso tiene su
+hilo lector y el turno espera en su propio canal.
 
 **El bucle.** Mensajes = sistema (campo `system` + contexto de `session_start` + contexto
 de `prompt` de este turno) + los últimos `history_turns` turnos (con sus llamadas y
@@ -597,7 +621,8 @@ apps (§6.6). El uso de tokens se suma por turno y sale en `Turn.usage`, así qu
 | `ask`, `note`), `stop_when` (`no_tool_call` | `text`), `temperature` (por debajo de 0:
 no se manda), `max_tokens` (4096), `history_turns` (20; 0: ninguno),
 `observation_max_chars` (20000; 0: sin corte), `request_timeout_ms` (120000),
-`hook_timeout_ms` (10000), `events_keep` (2000) y `permission_timeout_seconds` (600).
+`hook_timeout_ms` (10000), `events_keep` (2000), `permission_timeout_seconds` (600),
+`mount_start_timeout_ms` (30000) y `mount_call_timeout_ms` (300000).
 
 **Lo cableado manda; los campos son lo que pasa si nada dice otra cosa.** Los hooks de
 `context` se preguntan como pregunta el puente de un CLI (§3.1, `13-blocks.md` §4): el
@@ -629,9 +654,9 @@ espera al modelo (la petición sigue en su hilo y su respuesta se tira); una her
 un hook en curso acaban antes de que se note.
 
 **Lo que se deja fuera, con aviso en `Started.warnings`:** el `provider` y las ranuras de
-la caja (el motor pregunta a su propia entrada `model`), las skills, los montajes MCP de
-`StartArgs.tools` (cablea nodos `tool@1` a `tools`), los hooks de la caja (son comandos de
-puente para un CLI: cablea los nodos `hook@1` a `context`) y `resume`.
+la caja (el motor pregunta a su propia entrada `model`), las skills, los montajes que no son
+`mcp-stdio` o no arrancan (arriba), los hooks de la caja (son comandos de puente para un
+CLI: cablea los nodos `hook@1` a `context`) y `resume`.
 
 **Plantilla `templates/native-harness.toml`:** Agente ⇢ `native` ⇢ Proveedor (plantilla
 `ollama` por defecto), `context` desde `files.document` (reglas de la casa, en
@@ -646,7 +671,17 @@ llama antes; `cancel` corta la espera; `deny` responde con un rechazo; `max_step
 `max_tool_calls` cortan; un hook `stop` mantiene el turno con su motivo; `prompt` y
 `session_start` inyectan contexto; un veto `pre_tool` gana a `allow` y un contexto con
 `pre_tool_context = allow` gana a `deny`; `history_turns` recorta; y la caja Agente lo
-usa con `agent.prompt`. La plantilla, por CLI (`crates/regulus-cli/tests/
+usa con `agent.prompt`. Montajes, contra un servidor MCP falso (el propio binario de test
+sirviendo el servidor de `tools-mcp`): la herramienta montada sale en la lista, corre y su
+respuesta vuelve al modelo con el binding del `env`; un nombre repetido va como
+`box__echo`; `deny_tools` y un veto `pre_tool` la paran; `cancel` corta una llamada colgada y
+`stop` mata el proceso; pasado `mount_call_timeout_ms` el modelo recibe un error; un montaje
+que sale, uno que lista con error (con el binding oculto), uno `mcp-sse` y uno sin binario
+quedan fuera con aviso y lo cableado sigue; y la caja Agente con un `toolset@1` cableado se
+lo pasa al motor en su nombre. De punta a punta (`crates/regulus-cli/tests/
+native_tools_mount.rs`): el binario real, caja `tools` + `tools-mcp` + `memory` en el
+`tools` de la caja, motor nativo: el modelo falso escribe y lee la memoria por el puente
+`regulus tools-mcp` y, al parar la ejecución, el puente termina. La plantilla, por CLI (`crates/regulus-cli/tests/
 template_native_harness.rs`): aplica, `profile.check` sin diagnósticos, y un mensaje hace
 que el modelo falso llame a `search_documents` sobre lo ingerido y conteste.
 
@@ -663,4 +698,10 @@ que el modelo falso llame a `search_documents` sobre lo ingerido y conteste.
 - Sin reintentos ante errores del proveedor: el turno falla con el error (sin secretos).
 - Delegación (`delegation.delegate`) y workflow como herramienta (`flow.tool`) aún no
   están en la plantilla: sus módulos no estaban en la rama; queda un TODO en su cabecera.
+- Montajes: solo `mcp-stdio` y solo herramientas (ni recursos, ni prompts, ni sampling;
+  una petición del servidor que no es `ping` recibe "method not found"). Sin
+  `notifications/tools/list_changed`: se vuelve a listar en cada turno. Un montaje que muere
+  a mitad de sesión no se rearranca: sus llamadas fallan con error para el modelo hasta la
+  sesión siguiente. Las notificaciones de progreso se ignoran. El `stderr` del servidor se
+  descarta, como el de los CLI.
 - No probado contra un modelo real.
