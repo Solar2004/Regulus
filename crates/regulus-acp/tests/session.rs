@@ -59,12 +59,17 @@ fn permission_requests_follow_the_policy() {
 
 #[test]
 fn an_agent_that_dies_mid_turn_closes_the_session() {
-    let session = Session::start(launch(), options(Permissions::Reject)).unwrap();
-    match session.prompt("exit") {
-        Err(Error::Ended(reason)) => assert!(reason.contains("told to exit"), "{reason}"),
-        other => panic!("expected the agent's last words, got {other:?}"),
+    // Exercise both orderings: the prompt transport can close before the process
+    // watcher has collected stderr, or the process watcher can finish first.
+    for _ in 0..32 {
+        let session = Session::start(launch(), options(Permissions::Reject)).unwrap();
+        match session.prompt("exit") {
+            Err(Error::Ended(reason)) => assert!(reason.contains("told to exit"), "{reason}"),
+            other => panic!("expected the agent's last words, got {other:?}"),
+        }
+        assert_eq!(session.state(), regulus_acp::State::Ended);
+        assert!(session.prompt("hello").is_err());
     }
-    assert!(session.prompt("hello").is_err());
 }
 
 #[test]

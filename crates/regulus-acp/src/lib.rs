@@ -773,6 +773,13 @@ async fn run(
                 events.begin_turn();
                 let answer = turn(&mut session, &mut cancels, &events, text).await;
                 events.end_turn(answer.as_ref().ok().map(|t| t.stop_reason.as_str()));
+                if matches!(answer, Err(Error::Closed)) {
+                    // Let the process transport finish collecting its exit diagnostics.
+                    // Dropping this reply makes the caller wait for Outcome instead of
+                    // returning the earlier, less useful transport-closed notification.
+                    drop(reply);
+                    break;
+                }
                 let _ = reply.send(answer);
             }
             Ok(())
@@ -827,7 +834,13 @@ async fn turn(
     events: &Events,
     text: String,
 ) -> Result<Turn, Error> {
-    let failed = |e: agent_client_protocol::Error| Error::Protocol(e.to_string());
+    let failed = |e: agent_client_protocol::Error| {
+        if agent_client_protocol::is_incoming_transport_closed(&e) {
+            Error::Closed
+        } else {
+            Error::Protocol(e.to_string())
+        }
+    };
     session.send_prompt(text).map_err(failed)?;
     let mut output = String::new();
     let mut cancellable = true;
