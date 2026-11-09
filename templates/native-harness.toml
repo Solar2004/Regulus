@@ -8,6 +8,8 @@
 #                                         ⇢ recall (memory.inject, on every prompt)
 #                          native.tools   ⇢ memory (memory.store: memory_*)
 #                                         ⇢ retrieve (documents: search_documents, read_chunk)
+#                                         ⇢ workers (delegation: worker_*) ⇠ native.engine
+#                                         ⇢ add_docs (flow.tool: ingest_folder → add_docs)
 #   self.ingest → ingest ─ingested→ self.ingested                (files under docs_dir)
 #
 # Context, tool policy and the end of a turn are decided by what is wired, the engine's
@@ -23,12 +25,17 @@
 # `regulus human answer <id> approve --field option=allow_once` (or `allow_always`,
 # `reject_once`). With nothing to decide in time it is refused.
 #
-# TODO (C4/C3, not on this branch yet): add `delegation.delegate` (its `tools` output,
-# `tool@1`: worker_create, worker_status, worker_result, worker_send, worker_close,
-# worker_list) and any `flow.tool` (a workflow as a tool) into `native.tools`, and their
-# modules to `requires`. The template loader refuses a template whose `requires` names a
-# module that is not installed, and `profile.check` refuses nodes of a missing module, so
-# they cannot be listed here until `regulus/delegation` and the `flow` `tool` node land.
+# Workers (`delegation.delegate`, node `workers`): `worker_create`, `worker_status`,
+# `worker_result`, `worker_send`, `worker_close`, `worker_list` start and follow up to
+# `max_workers` sub-agents of its own; each is the workflow `worker`, an Agent box on the
+# same native engine (bound through `workers.engine`), kept alive as a child execution
+# (`regulus exec tree`, `regulus workers ls <exec> workers`). A worker has the same tools
+# and answers no permission request (`permissions = reject`): what is not in
+# `allow_tools` is refused to it.
+#
+# A workflow as a tool (`flow.tool`, node `add_docs`): `ingest_folder { path }` runs the
+# workflow `add_docs`, which ingests a folder of docs_dir into the collection. Like the
+# worker tools, it is not in `allow_tools`, so the agent's calls to it ask a person.
 #
 # Risks: the documents, the memory and every prompt reach the provider; text inside a
 # document can instruct the model (prompt injection). Writes to memory are made in the
@@ -53,6 +60,8 @@ requires = [
   { module = "regulus/memory", version = ">=0.1" },
   { module = "regulus/documents", version = ">=0.1" },
   { module = "regulus/human", version = ">=0.1" },
+  { module = "regulus/delegation", version = ">=0.1" },
+  { module = "regulus/flow", version = ">=0.1" },
 ]
 
 [template.vars]
@@ -70,6 +79,7 @@ history_turns = { description = "earlier turns of the session the model sees", d
 collection = { description = "name of the document collection; profiles that name the same share it", default = "harness" }
 glob = { description = "files of a folder sent to ingest, relative to it", default = "**/*.md" }
 memory = { description = "name of the memory the agent reads and writes", default = "harness" }
+max_workers = { description = "sub-agents (workers) live at once", default = 2 }
 decision_timeout_ms = { description = "milliseconds a permission request waits for a human before it is refused", default = 600000 }
 
 [[workflows]]
@@ -262,6 +272,144 @@ ports = [
 
   [[workflows.wires]]
   id = "ingest-error"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  # Sub-agents: each worker runs the workflow `worker` on the engine wired into `engine`.
+  [[workflows.nodes]]
+  id = "workers"
+  name = "Workers"
+  type = "delegate"
+  module_id = "regulus/delegation@0.1.0"
+  position = { x = 950, y = 200 }
+  config = { workers = { worker = "worker" }, max_workers = {{max_workers}} }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  # The workflow `add_docs` as the tool `ingest_folder`.
+  [[workflows.nodes]]
+  id = "add_docs"
+  name = "Ingest a folder (tool)"
+  type = "tool"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 950, y = 350 }
+  config = { workflow = "add_docs", name = "ingest_folder", description = "Adds the files of a folder, relative to the documents folder, to the documents the search tools read." }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "path", capability = "path@1", direction = "input", kind = "then" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "workers-tools"
+  kind = "uses"
+  from = { node_id = "workers", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "native-workers"
+  kind = "uses"
+  from = { node_id = "native", port_id = "engine" }
+  to = { node_id = "workers", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "add-docs-tools"
+  kind = "uses"
+  from = { node_id = "add_docs", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+# One worker: an Agent box on whatever engine `workers` binds to `self.engine`.
+[[workflows]]
+id = "worker"
+name = "Worker"
+kind = "extra"
+ports = [
+  { id = "prompt", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses" },
+]
+
+  [[workflows.nodes]]
+  id = "worker"
+  name = "Worker"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { workdir = "{{docs_dir}}", permissions = "reject" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "worker-engine"
+  kind = "uses"
+  from = { node_id = "self", port_id = "engine" }
+  to = { node_id = "worker", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "worker-prompt"
+  kind = "then"
+  from = { node_id = "self", port_id = "prompt" }
+  to = { node_id = "worker", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "worker-reply"
+  kind = "then"
+  from = { node_id = "worker", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "worker-failed"
+  kind = "then"
+  from = { node_id = "worker", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+# The tool `ingest_folder`: a folder in, what was ingested out.
+[[workflows]]
+id = "add_docs"
+name = "Add documents"
+kind = "extra"
+ports = [
+  { id = "path", capability = "path@1", direction = "input", kind = "then" },
+  { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "ingest"
+  name = "Ingest"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { collection = "{{collection}}", dir = "{{docs_dir}}", glob = "{{glob}}" }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  ]
+
+  [[workflows.wires]]
+  id = "add-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "path" }
+  to = { node_id = "ingest", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "add-out"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "ingested" }
+  to = { node_id = "self", port_id = "ingested" }
+
+  [[workflows.wires]]
+  id = "add-error"
   kind = "then"
   from = { node_id = "ingest", port_id = "error" }
   to = { node_id = "self", port_id = "error" }
