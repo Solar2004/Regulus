@@ -351,3 +351,16 @@ fn a_checkpoint_brings_the_workers_back_as_interrupted() {
     assert_eq!(list[1]["state"], "interrupted");
     assert_eq!(list[1]["execution"], "exec-3");
 }
+
+#[test]
+fn the_example_is_a_profile_with_a_coordinator_and_a_worker() {
+    let example: Profile = toml::from_str(include_str!("../examples/delegate.toml")).unwrap();
+    let ids: Vec<&str> = example.workflows.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(ids, ["main", "worker"]);
+    let team = example.workflows[0]
+        .nodes
+        .iter()
+        .find(|n| n.id == "team")
+        .unwrap();
+    assert_eq!(team.config["workers"], json!({ "worker": "worker" }));
+}

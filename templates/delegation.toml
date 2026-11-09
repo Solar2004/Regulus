@@ -1,0 +1,275 @@
+# Delegation (docs/13-blocks.md §5 row 9): a coordinator agent splits a goal and hands each
+# part to a worker it starts, follows and closes itself, through tools. Each worker is a
+# workflow Regulus keeps alive (module `delegation`, node `delegate`): its own Agent box,
+# its own session, on the engine the coordinator names. Rebuilds the orchestrator-workers
+# pattern (anthropic.com/engineering/building-effective-agents) with workers that are
+# executions Regulus sees, not the CLI's own subagents.
+#
+#   self.goal → prompt → coordinator ─reply→ self.reply
+#                          ⇅ tools
+#   team.tools ⇢ tools ⇢ mcp       team ─result→ self.result   self.tasks → team.create
+#   opencode ⇢ team.engine                  └ closed → self.closed
+#
+#   worker (one execution per worker, kept alive, tag w-<n>):
+#   self.prompt → worker ─reply→ self.reply   └ failed → self.failed
+#   self.engine ⇢ worker.engine   (whatever engine `team.engine` hands it)
+#
+# The coordinator's tools: `worker_create { brief, kind?, name?, engine? }` starts a
+# worker and answers its id, `worker_result { worker, wait_ms? }` reads its next reply,
+# `worker_send` follows up, `worker_status`, `worker_list`, `worker_close`. At most
+# `max_workers` live at once. Every reply also leaves on `self.result` as `{ worker, port,
+# value }`; `regulus exec tree <execution>` shows the workers under the run.
+#
+# Engines: every engine node wired into `team.engine` is one a worker may run on, chosen
+# by node id in `worker_create`; the first is the default. This template wires one,
+# `opencode` (free model). To offer Claude Code too, add an `engine-claude` node and a
+# "uses" wire from it into `team.engine`, and say so in the `engines` var.
+#
+# Without the coordinator (it is optional composition): delete the nodes `prompt`,
+# `coordinator`, `engine_coordinator`, `tools` and `mcp` and their wires; `team` still
+# runs. Then drive it by hand:
+#
+#   regulus template apply delegation --set workdir=$PWD
+#   regulus run delegation --detach                      # exec-1
+#   regulus workers create exec-1 team "Summarise README.md"     # w-1
+#   regulus workers result exec-1 team w-1 --wait-ms 600000
+#   regulus workers send exec-1 team w-1 "Now in Spanish"
+#   regulus workers ls exec-1 team · regulus workers close exec-1 team w-1
+#
+# or send briefs on `tasks` (a text, or an array of texts or `{ brief, kind?, name?,
+# engine? }`): `regulus send exec-1 tasks '["one", "two"]'`.
+#
+# Risks: `permissions = "allow"` says yes to everything the agents ask, unattended, with
+# the user's own opencode setup; every worker runs in `workdir`, all of them at once.
+
+name = "Delegation on {{workdir}}"
+id = "delegation"
+main_workflow_id = "main"
+
+[template]
+name = "delegation"
+description = "Delegation: a coordinator agent that starts, follows and closes worker agents through tools"
+requires = [
+  { module = "regulus/delegation", version = ">=0.1" },
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-opencode", version = ">=0.1" },
+  { module = "regulus/tools", version = ">=0.1" },
+  { module = "regulus/tools-mcp", version = ">=0.1" },
+  { module = "regulus/flow", version = ">=0.1" },
+]
+
+[template.vars]
+workdir = { description = "absolute path of an existing folder: the coordinator and every worker run there" }
+model = { description = "model of the engine nodes, as opencode names it (provider/model)", default = "opencode/glm-5.3-flash-free" }
+engines = { description = "what the coordinator is told about the engines wired into `team.engine`, by node id", default = "`opencode` (the default)" }
+max_workers = { description = "most workers live at once; 0: as many as [call] max_children lets", default = 3 }
+briefs = { description = "how the coordinator should brief a worker (added to its prompt)", default = "Give each worker one self-contained task, the files it may touch and what its reply must say." }
+permissions = { description = "what the agents answer when their tools ask for permission: allow or reject", default = "allow" }
+turn_timeout_ms = { description = "milliseconds one agent turn may take before it is cancelled and fails; 0: no limit", default = 0 }
+
+[[workflows]]
+id = "main"
+name = "Delegation"
+kind = "main"
+ports = [
+  { id = "goal", capability = "text@1", direction = "input", kind = "then" },
+  { id = "tasks", capability = "json@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "result", capability = "json@1", direction = "output", kind = "then" },
+  { id = "closed", capability = "json@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "prompt"
+  name = "Coordinator's prompt"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { conversion = "template", template = "You are @coordinator. You do not do the work yourself: you split the goal below into parts and give each part to a worker with your tools (worker_create, worker_result, worker_send, worker_status, worker_list, worker_close). At most {{max_workers}} workers may be live at once; close a worker when its part is done. Engines a worker can run on: {{engines}}. {{briefs}}\n\nWhen every part is back, reply with the combined answer.\n\n# Goal\n\n{{.}}\n" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "coordinator"
+  name = "Coordinator"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { name = "coordinator", workdir = "{{workdir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "toolset@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_coordinator"
+  name = "opencode (coordinator)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 250, y = -80 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "team"
+  name = "Workers"
+  type = "delegate"
+  module_id = "regulus/delegation@0.1.0"
+  position = { x = 450, y = 250 }
+  config = { workers = { worker = "worker" }, max_workers = {{max_workers}} }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "create", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "result", capability = "json@1", direction = "output", kind = "then" },
+    { id = "closed", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "opencode"
+  name = "opencode (workers)"
+  type = "engine-opencode"
+  module_id = "regulus/engine-opencode@0.1.0"
+  position = { x = 650, y = 250 }
+  config = { model = "{{model}}" }
+  ports = [{ id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.nodes]]
+  id = "tools"
+  name = "Tools"
+  type = "tools"
+  module_id = "regulus/tools@0.1.0"
+  position = { x = 250, y = 250 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "engine", capability = "tools.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "toolset", capability = "toolset@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "mcp"
+  name = "MCP"
+  type = "tools-mcp"
+  module_id = "regulus/tools-mcp@0.1.0"
+  position = { x = 250, y = 400 }
+  ports = [{ id = "engine", capability = "tools.engine@1", direction = "output", kind = "uses" }]
+
+  [[workflows.wires]]
+  id = "goal-prompt"
+  kind = "then"
+  from = { node_id = "self", port_id = "goal" }
+  to = { node_id = "prompt", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "prompt-coordinator"
+  kind = "then"
+  from = { node_id = "prompt", port_id = "out" }
+  to = { node_id = "coordinator", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "coordinator-reply"
+  kind = "then"
+  from = { node_id = "coordinator", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "engine-coordinator"
+  kind = "uses"
+  from = { node_id = "engine_coordinator", port_id = "engine" }
+  to = { node_id = "coordinator", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "tools-coordinator"
+  kind = "uses"
+  from = { node_id = "tools", port_id = "toolset" }
+  to = { node_id = "coordinator", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "mcp-tools"
+  kind = "uses"
+  from = { node_id = "mcp", port_id = "engine" }
+  to = { node_id = "tools", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "team-tools"
+  kind = "uses"
+  from = { node_id = "team", port_id = "tools" }
+  to = { node_id = "tools", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "opencode-team"
+  kind = "uses"
+  from = { node_id = "opencode", port_id = "engine" }
+  to = { node_id = "team", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "tasks-team"
+  kind = "then"
+  from = { node_id = "self", port_id = "tasks" }
+  to = { node_id = "team", port_id = "create" }
+
+  [[workflows.wires]]
+  id = "team-result"
+  kind = "then"
+  from = { node_id = "team", port_id = "result" }
+  to = { node_id = "self", port_id = "result" }
+
+  [[workflows.wires]]
+  id = "team-closed"
+  kind = "then"
+  from = { node_id = "team", port_id = "closed" }
+  to = { node_id = "self", port_id = "closed" }
+
+# One worker: an Agent box on whatever engine the delegate binds to `self.engine`.
+[[workflows]]
+id = "worker"
+name = "Worker"
+kind = "extra"
+ports = [
+  { id = "prompt", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses" },
+]
+
+  [[workflows.nodes]]
+  id = "worker"
+  name = "Worker"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { name = "worker", workdir = "{{workdir}}", permissions = "{{permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "prompt-worker"
+  kind = "then"
+  from = { node_id = "self", port_id = "prompt" }
+  to = { node_id = "worker", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "worker-reply"
+  kind = "then"
+  from = { node_id = "worker", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "worker-failed"
+  kind = "then"
+  from = { node_id = "worker", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "engine-worker"
+  kind = "uses"
+  from = { node_id = "self", port_id = "engine" }
+  to = { node_id = "worker", port_id = "engine" }
