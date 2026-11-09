@@ -641,6 +641,129 @@ pub fn write(dir: &Path, id: &str, text: &str, force: bool) -> Result<PathBuf, T
     Ok(dest)
 }
 
+/// The text of a template made from a profile (`template.save`): `profile`, the profile's
+/// TOML, then the `[template]` table with `name`, `description`, `requires` and `vars`.
+/// The table goes last so the profile's top-level keys stay outside it.
+pub fn compose(
+    origin: &str,
+    name: &str,
+    description: &str,
+    requires: &[TemplateRequire],
+    vars: &[TemplateVar],
+    profile: &str,
+) -> Result<String, TemplateError> {
+    let mut meta = toml::Table::new();
+    meta.insert("name".into(), name.into());
+    if !description.is_empty() {
+        meta.insert("description".into(), description.into());
+    }
+    if !requires.is_empty() {
+        let list = requires
+            .iter()
+            .map(|r| {
+                let mut entry = toml::Table::new();
+                entry.insert("module".into(), r.module.clone().into());
+                entry.insert("version".into(), r.version.clone().into());
+                toml::Value::Table(entry)
+            })
+            .collect();
+        meta.insert("requires".into(), toml::Value::Array(list));
+    }
+    if !vars.is_empty() {
+        let mut table = toml::Table::new();
+        for var in vars {
+            let mut spec = toml::Table::new();
+            spec.insert("description".into(), var.description.clone().into());
+            if let Some(default) = &var.default {
+                spec.insert("default".into(), default.clone().into());
+            }
+            table.insert(var.name.clone(), toml::Value::Table(spec));
+        }
+        meta.insert("vars".into(), toml::Value::Table(table));
+    }
+    let mut file = toml::Table::new();
+    file.insert(TABLE.into(), toml::Value::Table(meta));
+    let meta = toml::to_string(&file)
+        .map_err(|e| TemplateError::Invalid(format!("cannot write [{TABLE}]: {e}")))?;
+    let mut text = format!("# Saved as a template from {origin} (template.save).\n");
+    text.push_str(profile);
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push('\n');
+    text.push_str(&meta);
+    Ok(text)
+}
+
+/// Checks that `text`, about to be written at `path`, reads back as a template and renders
+/// to a profile with each var's default, or a placeholder for one without: a hole the
+/// profile has but does not declare would make it unusable.
+pub fn check_saved(path: &Path, text: &str) -> Result<Template, TemplateError> {
+    let template = parse(path, text)?;
+    let values = template
+        .vars
+        .iter()
+        .filter(|var| var.default.is_none())
+        .map(|var| (var.name.clone(), "x".to_string()))
+        .collect();
+    let rendered = render(&template, &values).map_err(|e| match e {
+        TemplateError::Invalid(why) => TemplateError::Invalid(format!(
+            "{why}; declare them as vars, or change that text, before saving"
+        )),
+        TemplateError::Params(why) => TemplateError::Invalid(why),
+        other => other,
+    })?;
+    profile_of(&template, &rendered)?;
+    Ok(template)
+}
+
+/// Writes a template file at `dest` through a temporary file, like [`write`]: without
+/// `force` it fails if anything is there; with it, it replaces only a file that reads as a
+/// template.
+pub fn write_template(dest: &Path, text: &str, force: bool) -> Result<PathBuf, TemplateError> {
+    let io = |what: &str, path: &Path, e: io::Error| {
+        TemplateError::Io(format!("cannot {what} {}: {e}", path.display()))
+    };
+    let exists = dest.exists() || dest.is_symlink();
+    if exists && !force {
+        return Err(TemplateError::Exists(format!(
+            "{} already exists; use force to replace it",
+            dest.display()
+        )));
+    }
+    if exists && read(dest).is_err() {
+        return Err(TemplateError::Exists(format!(
+            "{} is not a template, so it is left as it is",
+            dest.display()
+        )));
+    }
+    let dir = dest
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .ok_or_else(|| TemplateError::Params(format!("{} has no folder", dest.display())))?;
+    let name = dest
+        .file_name()
+        .ok_or_else(|| TemplateError::Params(format!("{} names no file", dest.display())))?
+        .to_string_lossy();
+    fs::create_dir_all(dir).map_err(|e| io("create", dir, e))?;
+    let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    fs::write(&temp, text).map_err(|e| io("write", &temp, e))?;
+    let placed = if force {
+        fs::rename(&temp, dest)
+    } else {
+        fs::hard_link(&temp, dest)
+    };
+    let _ = fs::remove_file(&temp);
+    placed.map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => TemplateError::Exists(format!(
+            "{} already exists; use force to replace it",
+            dest.display()
+        )),
+        _ => io("write", dest, e),
+    })?;
+    Ok(dest.to_path_buf())
+}
+
 /// The first lines of an applied copy: where it came from.
 pub fn provenance(template: &Template) -> String {
     format!(

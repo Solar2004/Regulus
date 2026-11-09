@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// templates and `template.apply`; 1.13 adds `config.client`; 1.14 adds `project.trust`
 /// and the `blocked` module state; 1.15 adds `project` to the entries of `module.list`;
 /// 1.16 adds children a node keeps (`ChildEventKind::Output`, `ChildEvent.tag`,
-/// `Execution.caller` and `Execution.tag`) and `execution.tree`.
+/// `Execution.caller` and `Execution.tag`), `execution.tree` and `template.save`.
 pub const PROTOCOL: &str = "1.16";
 
 pub mod method {
@@ -45,6 +45,9 @@ pub mod method {
     /// Renders a template into a profile file and loads it (`TemplateApplyParams` →
     /// `TemplateApplied`).
     pub const TEMPLATE_APPLY: &str = "template.apply";
+    /// Writes a profile, or one workflow of it with the workflows it places as boxes, as
+    /// a template file (`TemplateSaveParams` → `TemplateSaved`, 1.16).
+    pub const TEMPLATE_SAVE: &str = "template.save";
     /// The manifest of one loaded module, or of all of them (`ModuleManifestParams` →
     /// `Manifest` or `Vec<Manifest>`), whatever their state.
     pub const MODULE_MANIFEST: &str = "module.manifest";
@@ -91,6 +94,7 @@ pub mod method {
         TEMPLATE_LIST,
         TEMPLATE_GET,
         TEMPLATE_APPLY,
+        TEMPLATE_SAVE,
         MODULE_MANIFEST,
         PROFILE_SAVE,
         PROFILE_DELETE,
@@ -367,6 +371,44 @@ pub struct TemplateApplyParams {
     pub force: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+}
+
+/// `template.save`: writes the profile `profile_id` as the template `name`. With
+/// `workflow_id`, only that workflow, as the main one, and the workflows it runs (placed
+/// as boxes or named by a node's `workflow` field), as deep as they go. `vars` declares
+/// holes (`{{name}}`) the profile's text already has. The file goes to `path` (a file, or
+/// a folder for `<name>.toml`; relative to the core's home) or to the first templates
+/// path of the profile's project, else of `[templates] paths`. An existing file is only
+/// replaced with `force`, and only if it is a template.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateSaveParams {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars: Option<std::collections::BTreeMap<String, TemplateSaveVar>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// A hole `template.save` declares.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateSaveVar {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+/// The answer of `template.save`: where the template was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateSaved {
+    pub path: String,
 }
 
 /// The answer of `template.apply`: the profile now loaded, where it was written, and what

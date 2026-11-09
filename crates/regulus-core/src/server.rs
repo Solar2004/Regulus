@@ -216,11 +216,13 @@ fn methods(core: Arc<Core>) -> Result<RpcModule<Core>, jsonrpsee::server::Regist
     })?;
     // Module code may block; whatever reaches a module runs on the blocking pool, never on
     // the reactor. That is every module method plus starting and stopping executions, and
-    // the methods that write profile files, which wait for each other.
+    // the methods that write profile or template files, which wait for each other or for
+    // the disk.
     let reaches_modules = [
         method::EXECUTION_START,
         method::EXECUTION_STOP,
         method::TEMPLATE_APPLY,
+        method::TEMPLATE_SAVE,
         method::PROFILE_SAVE,
         method::PROFILE_DELETE,
     ];

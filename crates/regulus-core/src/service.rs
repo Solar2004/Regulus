@@ -13,8 +13,10 @@ use regulus_proto::{
     IdParams, ModuleManifestParams, NameParams, Node, NodeCall, NodeEvent, NodeStart, PortRef,
     Profile, ProfileDeleted, ProfileSaveParams, ProfileSaved, ProjectDetails, ProjectFilter,
     ProjectOpenParams, ProjectSummary, ProjectTrustParams, ProjectTrusted, SecretSetParams,
-    Severity, TemplateApplied, TemplateApplyParams, TemplateParams, TemplateText, WireKind,
-    Workflow, WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, HOOK_CAPABILITY, WORKFLOW_SELF,
+    Severity, TemplateApplied, TemplateApplyParams, TemplateParams, TemplateRequire,
+    TemplateSaveParams, TemplateSaved, TemplateText, TemplateVar, WireKind, Workflow, WorkflowKind,
+    WorkflowSendParams, WorkflowSent, BOX_SEPARATOR, FIELD_WORKFLOW, HOOK_CAPABILITY,
+    WORKFLOW_SELF,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -839,6 +841,181 @@ impl Core {
         })
     }
 
+    /// `template.save`: writes a profile, or one workflow of it and the workflows it runs,
+    /// as a template. Bad input is `TEMPLATE_INVALID`; an existing file without `force`,
+    /// or one that is not a template, `PROFILE_EXISTS`.
+    fn save_template(&self, params: TemplateSaveParams) -> Result<TemplateSaved, RpcError> {
+        let invalid = |why: String| RpcError::from(TemplateError::Invalid(why));
+        templates::file_name(&params.name)
+            .map_err(|_| invalid(format!("`{}` cannot name a template file", params.name)))?;
+        let profile = self
+            .profile_store()
+            .get(&params.profile_id)
+            .ok_or_else(|| invalid(format!("unknown profile `{}`", params.profile_id)))?;
+        let mut copy = Profile::clone(&profile);
+        let origin = match &params.workflow_id {
+            None => format!("profile `{}`", profile.id),
+            Some(main) => {
+                let keep = self.workflows_run_by(&profile, main).ok_or_else(|| {
+                    invalid(format!("profile `{}` has no workflow `{main}`", profile.id))
+                })?;
+                copy.workflows.retain(|w| keep.contains(&w.id));
+                for workflow in &mut copy.workflows {
+                    if workflow.id == *main {
+                        workflow.kind = WorkflowKind::Main;
+                    } else if workflow.kind == WorkflowKind::Main {
+                        workflow.kind = WorkflowKind::Extra;
+                    }
+                }
+                copy.main_workflow_id = main.clone();
+                format!("workflow `{main}` of profile `{}`", profile.id)
+            }
+        };
+        // The template belongs to no project and its profile takes the template's name:
+        // applying it decides where it goes.
+        copy.id = params.name.clone();
+        copy.project_id = None;
+        let requires = self.requires_of(&copy);
+        let vars: Vec<TemplateVar> = params
+            .vars
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, spec)| TemplateVar {
+                name,
+                description: spec.description,
+                default: spec.default,
+            })
+            .collect();
+        let body = crate::profiles::to_toml(&copy).map_err(invalid)?;
+        let text = templates::compose(
+            &origin,
+            &params.name,
+            params.description.as_deref().unwrap_or_default(),
+            &requires,
+            &vars,
+            &body,
+        )?;
+        let dest = self.template_dest(
+            &params.name,
+            params.path.as_deref(),
+            profile.project_id.as_deref(),
+        )?;
+        templates::check_saved(&dest, &text)?;
+        let written = templates::write_template(&dest, &text, params.force)?;
+        Ok(TemplateSaved {
+            path: written.display().to_string(),
+        })
+    }
+
+    /// `main` and every workflow it runs, as deep as they go: those it places as boxes and
+    /// those a node of it names in a field of type `workflow`. `None` if `main` is missing.
+    fn workflows_run_by(&self, profile: &Profile, main: &str) -> Option<HashSet<String>> {
+        profile.workflow(main)?;
+        let mut keep = HashSet::from([main.to_string()]);
+        let mut todo = vec![main.to_string()];
+        while let Some(id) = todo.pop() {
+            let Some(workflow) = profile.workflow(&id) else {
+                continue;
+            };
+            for node in &workflow.nodes {
+                let mut runs: Vec<String> = Vec::new();
+                if node.is_box() {
+                    runs.extend(node.internal_workflow_id.clone());
+                }
+                if let Some(manifest) = node
+                    .module_id
+                    .as_deref()
+                    .and_then(|m| self.registry.manifest(m))
+                {
+                    let fields = manifest
+                        .node_type(&node.node_type)
+                        .map(|t| t.fields.clone())
+                        .unwrap_or_default();
+                    for field in fields.iter().filter(|f| f.field_type == FIELD_WORKFLOW) {
+                        if let Some(target) =
+                            manifest.setting(node, &field.id).and_then(|v| v.as_str())
+                        {
+                            runs.push(target.to_string());
+                        }
+                    }
+                }
+                for target in runs {
+                    if profile.workflow(&target).is_some() && keep.insert(target.clone()) {
+                        todo.push(target);
+                    }
+                }
+            }
+        }
+        Some(keep)
+    }
+
+    /// The modules a profile's nodes need, each at least at the minor version its nodes
+    /// name (or, without one, the installed one).
+    fn requires_of(&self, profile: &Profile) -> Vec<TemplateRequire> {
+        let installed = self.registry.ids();
+        let version_of = |id: &str| id.split_once('@').map(|(_, v)| v.to_string());
+        let mut found: std::collections::BTreeMap<String, String> = Default::default();
+        for module in profile
+            .workflows
+            .iter()
+            .flat_map(|w| &w.nodes)
+            .filter_map(|n| n.module_id.as_deref())
+        {
+            let base = base_id(module).to_string();
+            let version = version_of(module).or_else(|| {
+                installed
+                    .iter()
+                    .find(|id| base_id(id) == base)
+                    .and_then(|id| version_of(id))
+            });
+            let Some(version) = version.and_then(|v| semver::Version::parse(&v).ok()) else {
+                continue;
+            };
+            found
+                .entry(base)
+                .or_insert_with(|| format!(">={}.{}", version.major, version.minor));
+        }
+        found
+            .into_iter()
+            .map(|(module, version)| TemplateRequire { module, version })
+            .collect()
+    }
+
+    /// Where `template.save` writes the template `name`: `path` (a folder gets
+    /// `<name>.toml`; relative to the core's home), else the first templates path of the
+    /// open project `project_id`, else the first `[templates] paths` entry.
+    fn template_dest(
+        &self,
+        name: &str,
+        path: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<PathBuf, RpcError> {
+        let file = format!("{name}.toml");
+        let places = self.template_places();
+        if let Some(path) = path {
+            let path = Path::new(path);
+            let place = match &places.home {
+                Some(home) if path.is_relative() => home.join(path),
+                _ => path.to_path_buf(),
+            };
+            let is_file = place.is_file()
+                || (!place.is_dir() && place.extension().is_some_and(|e| e == "toml"));
+            return Ok(if is_file { place } else { place.join(file) });
+        }
+        let place = project_id
+            .and_then(|id| self.projects().get(id))
+            .and_then(|p| p.templates.first().cloned())
+            .or_else(|| places.templates.first().cloned())
+            .ok_or_else(|| {
+                TemplateError::Io("no [templates] paths entry to write the template to".into())
+            })?;
+        // A file listed as a templates path holds one template: its folder takes more.
+        Ok(match place.is_file() {
+            true => place.parent().map_or(place.clone(), |dir| dir.join(&file)),
+            false => place.join(file),
+        })
+    }
+
     /// Everything `profile.check` reports: the wiring rules, the fields the core
     /// understands and the nodes the profile's project keeps from running.
     fn check(&self, profile: &Profile) -> Vec<regulus_proto::Diagnostic> {
@@ -1112,6 +1289,7 @@ impl Core {
                 })
             }
             method::TEMPLATE_APPLY => json(self.apply_template(parse(params)?)?),
+            method::TEMPLATE_SAVE => json(self.save_template(parse(params)?)?),
             method::MODULE_LIST => json(self.registry.summaries()),
             method::MODULE_MANIFEST => {
                 let params: ModuleManifestParams = parse(params)?;
