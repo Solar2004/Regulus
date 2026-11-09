@@ -43,9 +43,9 @@ Versiones verificadas el **2026-10-02**. Actualizar con fecha si cambian.
 | Agentes | **`agent-client-protocol`** (feature `process`) | `3.4.0` (upd 2026-10-16) | Canal de los motores ([`12-agents.md`](12-agents.md) §4). 43 agentes sin escribir integraciones. |
 | Async sin runtime | **`futures`** | `0.3` | Cada sesión ACP corre en un hilo propio con `futures::executor`: los módulos son síncronos y no necesitan tokio. |
 | Adaptador ACP de Claude | **`@agentclientprotocol/claude-agent-acp`** (npm) | lo fija el campo `adapter` de `crates/modules/engine-claude/regulus-module.toml` | Se ejecuta con `npx`; necesita Node. Ver [`12-agents.md`](12-agents.md) §4. |
-| MCP | **`rmcp`** | `3.5.0` (upd 2026-09-28) · 31M descargas | SDK oficial de MCP para Rust. Sirve UC-4 y UC-5. |
+| MCP | **JSON-RPC por stdio, implementación propia** | — | Servidor `tools-mcp` y cliente del motor nativo; herramientas, no todo MCP (`12-agents.md` §8). `rmcp` estaba elegido en el diseño, pero no se incorporó a Cargo. |
 | Store | **`rusqlite`** | `0.39` (bundled) | Lo mismo que ya usa hcom, así el código absorbido encaja. |
-| Async | **`tokio`** | `1.x` | Lo exigen `jsonrpsee` y `rmcp`. |
+| Async | **`tokio`** | `1.x` | Lo exige `jsonrpsee` en el servidor. |
 | Serialización | **`serde`** + **`serde_json`** | `1.x` | Obvio. |
 | Errores | **`thiserror`** (libs) + **`anyhow`** (bins) | `2` / `1` | Convención estándar; hcom ya la sigue. |
 | CLI | **`clap`** `derive` | `4` | Lo mismo que hcom. |
