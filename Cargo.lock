@@ -4509,7 +4509,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regulus-acp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -4532,7 +4532,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4584,7 +4584,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-agent-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-contract-skill",
@@ -4596,7 +4596,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-chunker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4604,7 +4604,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-decision"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4612,21 +4612,21 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-llm-endpoint"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "regulus-contract-participant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "regulus-contract-retrieval-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4634,14 +4634,14 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-skill"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "regulus-contract-tool"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4649,14 +4649,14 @@ dependencies = [
 
 [[package]]
 name = "regulus-contract-toolset"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "regulus-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -4675,7 +4675,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-agent-engine",
  "regulus-contract-decision",
@@ -4692,7 +4692,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-communication"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-participant",
  "regulus-contract-tool",
@@ -4704,7 +4704,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-delegation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-participant",
  "regulus-contract-tool",
@@ -4719,7 +4719,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-documents"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake2",
  "glob",
@@ -4736,7 +4736,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-engine-claude"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-acp",
  "regulus-contract-agent-engine",
@@ -4748,7 +4748,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-engine-native"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-agent-engine",
  "regulus-contract-llm-endpoint",
@@ -4767,7 +4767,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-engine-opencode"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-acp",
  "regulus-contract-agent-engine",
@@ -4779,7 +4779,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-files"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glob",
  "notify",
@@ -4793,7 +4793,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-flow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
  "regulus-contract-tool",
@@ -4807,7 +4807,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-guards"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-core",
  "regulus-module-process",
@@ -4819,7 +4819,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-hello"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-core",
  "regulus-proto",
@@ -4829,7 +4829,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-hooks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-core",
  "regulus-proto",
@@ -4839,7 +4839,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-human"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "regulus-contract-decision",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-inference"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-core",
@@ -4865,7 +4865,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-judge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-core",
@@ -4879,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-skill",
  "regulus-contract-tool",
@@ -4893,7 +4893,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-process"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "portable-pty",
@@ -4906,7 +4906,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-llm-endpoint",
  "regulus-core",
@@ -4918,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "httparse",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-skills"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-skill",
  "regulus-core",
@@ -4943,7 +4943,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-tasks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-core",
  "regulus-proto",
@@ -4954,7 +4954,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "regulus-contract-tool",
@@ -4967,7 +4967,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-tools-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-contract-tool",
  "regulus-contract-toolset",
@@ -4979,7 +4979,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-triggers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "croner",
@@ -4994,7 +4994,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lopdf",
  "regulus-core",
@@ -5008,7 +5008,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-module-workspace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glob",
  "regulus-core",
@@ -5021,7 +5021,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5029,7 +5029,7 @@ dependencies = [
 
 [[package]]
 name = "regulus-tauri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regulus-core",
  "serde",

@@ -13,6 +13,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
+## [0.2.0] - 2026-11-09
+
 ### Añadido
 
 - **Contribuir al proyecto:** licencia Apache-2.0 en `LICENSE` y metadatos de los paquetes,
@@ -54,6 +56,20 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - **Cajas en la app** (`docs/04-client.md` §8-9): abrir una caja, crear una desde la
   selección, puertos "usa" del workflow, sustituir una dependencia, guardar como plantilla;
   Operar enseña el árbol de llamadas.
+
+### Corregido
+
+- **Historial independiente por ejecución** (`docs/12-agents.md` §5): dos trabajadores
+  del mismo workflow no mezclan transcript, actividad ni referencia de sesión nativa.
+  `conversation = named` permite continuar una conversación elegida; `workflow` accede
+  al formato anterior. Un único nodo vivo puede poseer cada conversación reutilizable.
+- `flow` declara el protocolo mínimo que necesitan sus nuevos nodos de lote y herramienta.
+
+## [0.1.0] - 2026-11-08
+
+
+### Añadido
+
 - **Lógica de IA, el core** (`docs/13-blocks.md` §2, protocolo `1.5` → `1.8`): el cable
   "luego" lleva dato por un bus por ejecución (`event.list`, `regulus events --follow`,
   límites `[bus]`); un store SQLite global y por proyecto guarda ejecuciones, checkpoints
@@ -191,10 +207,3 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   del canvas (zoom, rejilla, ancho de nodo, agrupación, autoguardado) en el dispositivo. El
   mock suma `profile.check` y los diagnósticos de `profile.save`; `pnpm test` (vitest)
   prueba la lógica.
-
-### Corregido
-
-- **Historial independiente por ejecución** (`docs/12-agents.md` §5): dos trabajadores
-  del mismo workflow no mezclan transcript, actividad ni referencia de sesión nativa.
-  `conversation = named` permite continuar una conversación elegida; `workflow` accede
-  al formato anterior. Un único nodo vivo puede poseer cada conversación reutilizable.

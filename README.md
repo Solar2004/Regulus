@@ -27,9 +27,9 @@ Linux x86_64 builds are available from [GitHub Releases](https://github.com/Sola
 
 | Package | Download |
 |---|---|
-| Desktop AppImage | [Regulus 0.1.0 AppImage](https://github.com/Solar2004/Regulus/releases/download/v0.1.0/Regulus_0.1.0_amd64.AppImage) |
-| Debian / Ubuntu | [Regulus 0.1.0 .deb](https://github.com/Solar2004/Regulus/releases/download/v0.1.0/Regulus_0.1.0_amd64.deb) |
-| CLI and TUI | [Linux executable](https://github.com/Solar2004/Regulus/releases/download/v0.1.0/regulus-linux-x86_64) |
+| Desktop AppImage | [Regulus 0.2.0 AppImage](https://github.com/Solar2004/Regulus/releases/download/v0.2.0/Regulus_0.2.0_amd64.AppImage) |
+| Debian / Ubuntu | [Regulus 0.2.0 .deb](https://github.com/Solar2004/Regulus/releases/download/v0.2.0/Regulus_0.2.0_amd64.deb) |
+| CLI and TUI | [Linux executable](https://github.com/Solar2004/Regulus/releases/download/v0.2.0/regulus-linux-x86_64) |
 
 The release includes checksums and a signed update manifest. For AppImage or the CLI,
 make the downloaded file executable with `chmod +x <file>` before running it.
