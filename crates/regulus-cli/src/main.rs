@@ -294,7 +294,9 @@ enum HumanCommand {
     /// One pending decision in full: what waits (raw, to edit for a review) and the form.
     Show { id: String },
     /// Decide: `approve` or `reject`. With --file or --text a review sends that text on;
-    /// the decision may then be left out (approve).
+    /// the decision may then be left out (approve). A `decision` (a Decider's question) is
+    /// approved with the option chosen, `--field option=<id>`; `reject` picks its reject
+    /// option.
     Answer {
         id: String,
         decision: Option<String>,
@@ -330,6 +332,27 @@ enum AgentCommand {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
+    /// Queue a prompt and print its turn id at once; the answer shows in `agent history`.
+    Send {
+        execution: String,
+        node: String,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// The conversation the agent box recorded: prompts, replies and what happened in its
+    /// session (tool calls, permission requests…), oldest first.
+    History {
+        execution: String,
+        node: String,
+        /// Only what came after this cursor (the `next` a previous call printed).
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        /// Keep printing what comes, until Ctrl-C.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Ask the agent to end the turn in flight.
+    Cancel { execution: String, node: String },
 }
 
 #[derive(Subcommand)]
@@ -655,6 +678,35 @@ async fn main() -> Result<()> {
             for execution in executions {
                 print_execution(&execution);
             }
+            Ok(())
+        }
+        Command::Agent {
+            command:
+                AgentCommand::Send {
+                    execution,
+                    node,
+                    text,
+                },
+        } => {
+            let params = serde_json::json!({ "execution_id": execution, "node_id": node, "text": text.join(" ") });
+            let sent: Value = client.request("agent.send", params).await?;
+            println!("{}", sent["turn"].as_str().unwrap_or_default());
+            Ok(())
+        }
+        Command::Agent {
+            command:
+                AgentCommand::History {
+                    execution,
+                    node,
+                    since,
+                    follow,
+                },
+        } => agent_history(&client, &execution, &node, since, follow).await,
+        Command::Agent {
+            command: AgentCommand::Cancel { execution, node },
+        } => {
+            let params = serde_json::json!({ "execution_id": execution, "node_id": node });
+            let _: Value = client.request("agent.cancel", params).await?;
             Ok(())
         }
         Command::Agent {
@@ -1112,6 +1164,109 @@ const EXPOSE_TOML: &str = r#"# Paste into the main workflow of the profile that 
   from = { node_id = "service-http", port_id = "engine" }
   to = { node_id = "service-{workflow}", port_id = "engine" }
 "#;
+
+/// `regulus agent history`: prints the recorded conversation after `since`, page after
+/// page; with `follow`, polls every `client.refresh_ms` for more until Ctrl-C.
+async fn agent_history(
+    client: &Client<'_>,
+    execution: &str,
+    node: &str,
+    mut since: u64,
+    follow: bool,
+) -> Result<()> {
+    let poll = Duration::from_millis(client.config.client.refresh_ms);
+    let mut printed_session = false;
+    loop {
+        let params =
+            serde_json::json!({ "execution_id": execution, "node_id": node, "since": since });
+        let page: Value = client.request("agent.history", params).await?;
+        if !printed_session {
+            let session = &page["session"];
+            let resume = if session["native_resume"].as_bool() == Some(true) {
+                "resumed natively"
+            } else {
+                "not resumed: the history is Regulus' record"
+            };
+            eprintln!(
+                "session {} · {} · {resume}",
+                session["engine_session_id"].as_str().unwrap_or("-"),
+                session["state"].as_str().unwrap_or("unknown"),
+            );
+            printed_session = true;
+        }
+        let mut lines: Vec<(u64, String)> = Vec::new();
+        for entry in page["entries"].as_array().into_iter().flatten() {
+            lines.push((
+                entry["seq"].as_u64().unwrap_or_default(),
+                format!(
+                    "{:<6} {}: {}",
+                    entry["turn"].as_str().unwrap_or("-"),
+                    entry["role"].as_str().unwrap_or_default(),
+                    entry["text"].as_str().unwrap_or_default()
+                ),
+            ));
+        }
+        for activity in page["activity"].as_array().into_iter().flatten() {
+            lines.push((
+                activity["seq"].as_u64().unwrap_or_default(),
+                format!(
+                    "{:<6} · {}",
+                    activity["turn"].as_str().unwrap_or("-"),
+                    describe_event(&activity["event"])
+                ),
+            ));
+        }
+        lines.sort_by_key(|(seq, _)| *seq);
+        for (seq, line) in &lines {
+            println!("#{seq:<6} {line}");
+        }
+        let next = page["next"].as_u64().unwrap_or(since);
+        let caught_up = next == since;
+        since = next;
+        if caught_up {
+            if !follow {
+                eprintln!("next {since}");
+                return Ok(());
+            }
+            tokio::time::sleep(poll).await;
+        }
+    }
+}
+
+/// One session event (`agent.engine@1`) in a line.
+fn describe_event(event: &Value) -> String {
+    let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
+    match event["kind"].as_str().unwrap_or_default() {
+        "text" => format!("text {:?}", text("text")),
+        "thought" => format!("thought {:?}", text("text")),
+        "tool_call" => format!("tool {} {} ({})", text("id"), text("title"), text("status")),
+        "tool_update" => format!("tool {} {}", text("id"), text("status")),
+        "plan" => format!("plan {}", event["entries"]),
+        "permission_request" => {
+            let options: Vec<String> = event["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|o| o["id"].as_str().unwrap_or_default().to_string())
+                .collect();
+            format!(
+                "permission {} asked: {} [{}]",
+                text("id"),
+                text("title"),
+                options.join(" | ")
+            )
+        }
+        "permission_resolved" => format!(
+            "permission {} answered: {}",
+            text("id"),
+            event["option"].as_str().unwrap_or("cancelled")
+        ),
+        "turn_started" => "turn started".into(),
+        "turn_ended" => format!("turn ended ({})", text("stop_reason")),
+        "state" => format!("state {}", text("state")),
+        other => format!("{other} {event}"),
+    }
+}
 
 /// `regulus human`: talks to the `human.*` methods of the running core.
 async fn human(client: &Client<'_>, command: HumanCommand) -> Result<()> {

@@ -533,3 +533,51 @@ fn resume_native_loads_the_last_session_only_when_the_engine_can() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn paging_with_the_cursor_gives_every_entry_and_event_exactly_once() {
+    let home = home("pages");
+    let (core, _) = core(fast(), false, &home, false);
+    let id = start(&core);
+    for text in ["tool", "tool", "hello"] {
+        core.dispatch(
+            "agent.prompt",
+            json!({ "execution_id": id, "node_id": "a", "text": text }),
+        )
+        .unwrap();
+    }
+    let all = history(&core, &id, 0);
+    let seqs = |page: &Value| -> Vec<u64> {
+        let mut seqs: Vec<u64> = ["entries", "activity"]
+            .iter()
+            .flat_map(|list| page[*list].as_array().unwrap().clone())
+            .map(|item| item["seq"].as_u64().unwrap())
+            .collect();
+        seqs.sort_unstable();
+        seqs
+    };
+    let full = seqs(&all);
+    assert!(full.len() > 6, "{full:?}");
+    // Entries and activity share one sequence: no seq is used twice.
+    assert!(full.windows(2).all(|w| w[0] < w[1]), "{full:?}");
+    let page = |since: u64, limit: usize| {
+        core.dispatch(
+            "agent.history",
+            json!({ "execution_id": id, "node_id": "a", "since": since, "limit": limit }),
+        )
+        .unwrap()
+    };
+    let half = full.len() / 2;
+    let first = page(0, half);
+    let next = first["next"].as_u64().unwrap();
+    let second = page(next, full.len());
+    let mut read = seqs(&first);
+    assert_eq!(read.len(), half);
+    read.extend(seqs(&second));
+    assert_eq!(read, full, "two pages give the whole set, once");
+    let last = second["next"].as_u64().unwrap();
+    assert_eq!(last, *full.last().unwrap());
+    let empty = page(last, full.len());
+    assert!(seqs(&empty).is_empty() && empty["next"] == json!(last));
+    let _ = std::fs::remove_dir_all(&home);
+}
