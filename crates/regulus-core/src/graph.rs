@@ -110,7 +110,10 @@ pub fn check_vetoed(
 /// is a warning: the node has nothing to run. So is a node whose "then" ports do not line
 /// up with that workflow's: the node feeds its inputs by id and gives back on the output
 /// of the same id, so each of its "then" inputs must be one of the workflow's and each of
-/// the workflow's "then" outputs one of its own, with the same capability.
+/// the workflow's "then" outputs one of its own, with the same capability; a field with
+/// `own_ports` skips that. And so is a workflow with a "uses" input the node has no "uses"
+/// input of the same id for: the node hands on what is wired into its own (C2 bindings),
+/// so without one that input of the child stays empty.
 pub fn check_fields<M: Deref<Target = Manifest>>(
     profile: &Profile,
     manifest_of: impl Fn(&str) -> Option<M>,
@@ -190,6 +193,31 @@ fn field_findings<M: Deref<Target = Manifest>>(
                 field.id
             );
             found.push((Severity::Error, "field.workflow_no_output", message));
+            continue;
+        }
+        let uses_inputs = |ports: &[Port]| -> Vec<String> {
+            ports
+                .iter()
+                .filter(|p| p.direction == Direction::Input && p.kind == WireKind::Uses)
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        let exposed = uses_inputs(&node.ports);
+        let unbound: Vec<String> = uses_inputs(&called.ports)
+            .into_iter()
+            .filter(|port| !exposed.contains(port))
+            .map(|port| format!("`{port}`"))
+            .collect();
+        if !unbound.is_empty() {
+            let message = format!(
+                "`{}`: workflow `{target}` uses {} from whoever runs it, and the node has \
+                 no \"uses\" input of that id to hand on",
+                field.id,
+                unbound.join(", ")
+            );
+            found.push((Severity::Warning, "field.workflow_uses_unbound", message));
+        }
+        if field.own_ports {
             continue;
         }
         let inputs = then(&called.ports, Direction::Input);

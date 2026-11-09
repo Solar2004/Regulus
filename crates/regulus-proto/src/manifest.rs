@@ -71,6 +71,10 @@ pub struct Field {
     /// Allowed values, for `select`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<Value>,
+    /// For a [`FIELD_WORKFLOW`] field: the node's "then" ports are its own (a batch, a
+    /// tool), not a mirror of the workflow's, so the core does not line them up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_ports: bool,
 }
 
 impl NodeType {

@@ -828,6 +828,63 @@ fn a_workflow_field_must_name_a_workflow_with_an_output() {
     );
 }
 
+/// A field with `own_ports` (a batch, a tool) is not lined up with the workflow's "then"
+/// ports; any workflow field warns when the workflow uses something from its caller that
+/// the node has no "uses" input of the same id for.
+#[test]
+fn own_ports_skip_the_line_up_and_unhanded_uses_inputs_warn() {
+    let manifest = |own: bool| -> regulus_proto::Manifest {
+        serde_json::from_value(json!({
+            "module": { "id": "t/caller@1.0.0", "name": "caller" },
+            "node": [{ "type": "caller", "name": "Caller",
+                       "field": [{ "id": "workflow", "type": "workflow", "own_ports": own }] }]
+        }))
+        .unwrap()
+    };
+    let check = |own: bool, node_ports: Value, model_input: bool| {
+        let mut profile = boxed();
+        profile["workflows"][0]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({ "id": "c", "type": "caller", "module_id": "t/caller@1.0.0",
+                        "config": { "workflow": "greeter" }, "ports": node_ports }),
+            );
+        if model_input {
+            profile["workflows"][1]["ports"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "id": "model", "capability": "llm.endpoint@1", "direction": "input",
+                    "kind": "uses"
+                }));
+        }
+        let profile: Profile = serde_json::from_value(profile).unwrap();
+        let manifest = manifest(own);
+        regulus_core::graph::check_fields(&profile, |id| {
+            (id == manifest.module.id).then_some(&manifest)
+        })
+        .into_iter()
+        .map(|d| d.code)
+        .collect::<Vec<_>>()
+    };
+    let own = json!([text_port("items", "input"), text_port("done", "output")]);
+    assert_eq!(
+        check(false, own.clone(), false),
+        ["field.workflow_ports_mismatch"]
+    );
+    assert_eq!(check(true, own.clone(), false), Vec::<String>::new());
+    assert_eq!(
+        check(true, own.clone(), true),
+        ["field.workflow_uses_unbound"]
+    );
+    let mut exposed = own;
+    exposed.as_array_mut().unwrap().push(json!({
+        "id": "model", "capability": "llm.endpoint@1", "direction": "input", "kind": "uses"
+    }));
+    assert_eq!(check(true, exposed, true), Vec::<String>::new());
+}
+
 /// Every template of the repo, rendered with a placeholder for each var without a default:
 /// it checks without errors and every workflow flattens, with no "uses" wire left on a box
 /// port. Before "uses" crossed boxes none of them could have one, so collapsing changes
