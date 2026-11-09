@@ -264,7 +264,10 @@ el texto final de cada turno.
   activity, next, session: {engine_session_id, native_resume, state}}` (lee antes los
   eventos pendientes; de un nodo parado responde con `state: "stopped"`) y `agent.cancel`
   `{execution_id, node_id}` → `null` (`engine.session.cancel`). CLI: `regulus agent send`,
-  `regulus agent history [--since N] [--follow]` y `regulus agent cancel`.
+  `regulus agent history [--since N] [--follow]` y `regulus agent cancel`; y, para
+  conversar, `regulus talk <ejecución> [--node N] [--once TEXTO]`, un REPL sobre esos tres
+  que contesta permisos con `/<opción>` por `human.answer` (`04-client.md` §7, que también
+  cuenta la vista de conversación de la TUI).
 - **Reanudar.** `resume = native` (por defecto `no`; nunca con `fresh_context = yes`): si
   el motor dice `load_session`, la caja guarda el `native_session_id` en la conversación y
   la siguiente ejecución lo pasa en `StartArgs.resume`; `regulus-acp` lo carga con

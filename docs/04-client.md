@@ -115,8 +115,9 @@ código 2, como antes; los comandos (`run`, `msg send`…) no cambian.
   terminal no hay SVG, así que el símbolo es un glifo.
 - **Textos en inglés en el código**, como los de la CLI. Si llega la traducción a la
   terminal, se sacan a un fichero.
-- La conversación con un agente es de la sesión de la TUI: el core aún no guarda los
-  turnos. Las ejecuciones necesitan `profile_id` (protocolo 1.4) para saber sus nodos.
+- La conversación con un agente la guarda la caja Agente (`agent.history`, 2026-11-09;
+  abajo, *Conversación*). Las ejecuciones necesitan `profile_id` (protocolo 1.4) para
+  saber sus nodos.
 
 **Segunda versión (2026-11-08).** La TUI hace lo que la app (§8, §9), con los mismos
 métodos; ninguno nuevo en el core.
@@ -153,8 +154,61 @@ métodos; ninguno nuevo en el core.
   volver (y `Ctrl+C` con cambios pregunta). Dos acciones del mismo contexto en la misma
   tecla es un error al arrancar; `n` rechaza solo si hay algo que rechazar.
   Números: `event_page` 200, `event_keep` 1000, `value_max` 240, `cascade_step` 40,
-  `node_width` 250, `node_height` 160. Se cambian en `[client.keys]` y `[client.tui]` de
-  `config.toml` (§11).
+  `node_width` 250, `node_height` 160, `conversation_keep` 5000. Se cambian en
+  `[client.keys]` y `[client.tui]` de `config.toml` (§11).
+
+**Conversación (2026-11-09).** Lo que el panel *Conversación* de la app (§8) hace, en
+Operar y en la CLI, con las mismas reglas y la lógica pura en un solo sitio
+(`crates/regulus-cli/src/conversation.rs`, con tests); ningún método nuevo en el core.
+
+- **Agente directo** (un nodo con entrada "usa" `agent.engine`): al elegirlo en *Nodes*, el
+  panel de la derecha es su historial (`agent.history` desde `since` 0 y luego con `next`,
+  páginas de `event_page`, fundido por `seq`; se lee también con el nodo parado). Enter
+  escribe; enviar es `agent.send`, y el texto sale *queued* hasta que el historial trae la
+  entrada `user` de ese turno. Arriba, la línea de sesión (`engine_session_id`, si se
+  reanudó, estado).
+- **Workflow enlazado**: `c` (`talk`) sobre una ejecución cuyo workflow tiene entradas y
+  salidas propias "luego" `text@` abre el selector (↑↓ en una columna, ←→ entre entradas y
+  salidas, Enter enlaza, `x` olvida, Esc). **Nunca se enlaza solo**, ni con un único par. El
+  enlace se guarda por perfil + workflow en `<home>/conversations.json` (la forma de
+  `ownConversations` de la app: `{"perfil/workflow": {input, output}}`), el mismo fichero
+  que usa `regulus talk`; `[[client.operate.conversations]]` del `config.toml` global da
+  valores de solo lectura y lo elegido aquí gana. Con enlace, `c` lo muestra y, mostrado,
+  `c` vuelve al selector. La transcripción son los eventos del bus que Operar ya pide:
+  `self.<entrada>` es la persona, `self.<salida>` la respuesta, `agent.event@1` actividad
+  del nodo que la emitió.
+- **Tarjetas**, como en la app: `text` en una burbuja viva (*writing*) que la respuesta
+  sustituye, `thought`, `tool_call` + `tool_update` (estado con icono y texto), `plan`,
+  `permission_request` con cómo se resolvió, `turn_ended`, `state`, lo desconocido con su
+  JSON compacto (`value_max`).
+- **Permisos**: `a` (`answer`) toma la petición abierta más vieja, busca en `human.list`
+  (sin filtro de ejecución: el decisor puede estar en otra; se pide solo mientras hay una
+  abierta) la decisión cuyo `value.context` coincide en ejecución, nodo y `request_id`, y
+  abre las opciones (más *Reject* si ninguna es de rechazo) → `human.answer`. Sin esa
+  decisión lo dice. **Cancelar**: `Ctrl+X` (`cancel_turn`), también escribiendo:
+  `agent.cancel` del agente, o de cada agente con actividad en el turno abierto del
+  workflow.
+- **`regulus talk <ejecución> [--node N | --in P --out P] [--yes] [--once TEXTO]`**: lo
+  mismo en la línea de órdenes. Elige, por orden: los flags (y recuerda el enlace de
+  `--in/--out`), el enlace guardado o de `config.client` (el del proyecto de la ejecución
+  encima del global), el único agente, y, sin agentes, propone el único par de texto, que
+  se confirma en la terminal o con `--yes`; con más de un candidato sale con error y la
+  lista (`--node a, --node b`, `--in …`, `--out …`). Sin `--once` es un REPL: el texto del
+  agente sale en una línea que crece, la actividad en líneas `·`, y una petición de permiso
+  dice cómo contestarla: `/<opción>`, `/allow`, `/reject` (opcionalmente con el id de la
+  petición). `/cancel`, `/history`, `/help`, `/quit`; `//texto` manda `/texto`. Ctrl-C
+  cancela el turno en curso y el segundo sale; al acabar la entrada espera al turno en
+  curso hasta `--timeout`. Con `--once` manda un mensaje, imprime solo la respuesta en
+  stdout (la actividad en stderr) y sale con error si el turno falla (entrada `system`),
+  si la ejecución para, si una entrega falla con el bus ya parado, o pasado `--timeout`.
+  Números: `client.refresh_ms` para preguntar, `tui.event_page`, `tui.value_max` y
+  `tui.conversation_keep`, del mismo `[client]` que la TUI.
+- **Límites:** la TUI usa el `[client]` global y no el del proyecto. Una caja con
+  `history = no` no guarda nada: su conversación sale vacía y `--once` espera hasta
+  `--timeout`. En un workflow, los turnos se agrupan por orden, no por correlación (como en
+  la app), y cancelar llega a los agentes que emitieron actividad desde el último turno.
+  Los comandos `/…` del REPL son fijos, no configurables. Un agente dentro de una caja no
+  sale en la lista de *Nodes*; `regulus talk --node caja/agente` sí lo alcanza.
 
 ---
 
@@ -395,7 +449,8 @@ core, la leen del fichero.
 | `refresh_ms` | 1000 | TUI, app | Cada cuánto se pregunta al core qué corre |
 | `start_view` | la página de inicio de la app | app | La vista con la que abre: `home`, `canvas`, `operate`, `templates` o `settings`; otro valor no cambia nada |
 | `keys.*` | §7 | TUI | Teclas por acción: `save = "ctrl+w"` o una lista |
-| `tui.*` | §7 | TUI; `event_page`, `event_keep` y `value_max` también la app | Números: `event_page`, `event_keep`, `value_max`, `cascade_step`, `node_width`, `node_height` |
+| `tui.*` | §7 | TUI y `regulus talk`; `event_page`, `event_keep` y `value_max` también la app | Números: `event_page`, `event_keep`, `value_max`, `cascade_step`, `node_width`, `node_height`, `conversation_keep` |
+| `operate.conversations` | ninguno | app, TUI, `regulus talk` | Enlaces de solo lectura de un workflow como conversación: `[[client.operate.conversations]]` con `profile`, `workflow`, `input`, `output` (§7, §8) |
 
 - **`[update]`** no es de `[client]`: lo leen la CLI (`regulus update`) y el shell de la app
   del mismo `config.toml`. Sus claves (`url`, `channel`, `check_on_start`, `public_key`,
