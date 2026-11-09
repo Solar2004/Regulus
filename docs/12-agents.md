@@ -157,7 +157,7 @@ nada más. El código ACP es una librería compartida por los motores, no un mó
 
 **El contrato `agent.engine@1`:** `engine.detect` (instalaciones del PC),
 `engine.session.start` (`cwd`, `permissions`), `engine.session.prompt` (`text` →
-`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional), `engine.session.cancel` (pide que acabe el turno en curso, `session/cancel` de ACP; el turno responde, normalmente con `cancelled`; opcional, 2026-11-08) y `engine.session.stop`. `StartArgs.tools` lleva los montajes de herramientas (`11-composition.md` §3.0). Cambiar su forma es `agent.engine@2`. Los
+`stop_reason` + `text`), `engine.session.status` (`idle`, `busy`, `ended`, lo que ACP sabe del turno; opcional), `engine.session.cancel` (pide que acabe el turno en curso, `session/cancel` de ACP; el turno responde, normalmente con `cancelled`; opcional, 2026-11-08), `engine.session.events` y `engine.session.decide` (opcionales, 2026-11-09, más abajo) y `engine.session.stop`. `StartArgs.tools` lleva los montajes de herramientas (`11-composition.md` §3.0). Cambiar su forma es `agent.engine@2`. Los
 contratos de capacidad viven en `crates/contracts/<capacidad>`, no dentro de ningún módulo.
 
 **Cada motor anuncia además su propio método de detección** (`claude.detect`,
@@ -165,8 +165,8 @@ contratos de capacidad viven en `crates/contracts/<capacidad>`, no dentro de nin
 la máquina de Alexander: `claude`, `claude-sub-bin` y `claude-ultra-bin` (cada uno con su
 versión), y los dos `opencode`.
 
-**Permisos:** cada caja elige `reject` (por defecto) o `allow`. Preguntar a una persona
-llega con el bus, que es quien puede llevar la pregunta hasta un cliente.
+**Permisos:** cada caja elige `reject` (por defecto), `allow` o `ask` (2026-11-09: la
+petición espera a quien decida, más abajo).
 
 **Probado de punta a punta** con `regulus run agents` (`crates/modules/agent/examples/`):
 las dos cajas arrancan, responden, conservan el contexto entre prompts y, al parar,
@@ -214,6 +214,76 @@ turno: sale por `reply`. Al comparar directorios para decidir si se mueve, la ca
 prompt (`prompt`, `agent.prompt`, canal). `regulus-acp` lo sirve: el turno escucha la
 cancelación mientras lee y manda `session/cancel` al agente. Probado contra un motor
 falso y contra el agente ACP de prueba (`hang` responde a la cancelación, `deaf` no).
+
+✅ **Eventos, historial, permisos `ask` y reanudar (2026-11-09).** Antes la caja solo veía
+el texto final de cada turno.
+
+- **Eventos de sesión.** `agent.engine@1` gana, sin romper `@1`, `engine.session.events`
+  `{session_id, since}` → `{events, next}` (`since` 0: desde el más viejo guardado; `next`
+  es el `seq` del último dado). Cada evento es `{seq, at, turn?, kind, …}`: `turn_started`,
+  `text`, `thought`, `tool_call` (`id`, `title`, `tool_kind?`, `status`; `tool_kind` y no
+  `kind` porque `kind` es la etiqueta), `tool_update` (`id`, `status`, `content?`), `plan`
+  (`entries`), `permission_request` (`id`, `tool?`, `title`, `options: [{id, kind, name}]`),
+  `permission_resolved` (`id`, `option`; `null` = cancelada), `turn_ended` (`stop_reason`)
+  y `state` (`idle`/`busy`/`ended`). `regulus-acp` guarda por sesión los últimos
+  `events_keep` (campo de los motores, 2000) a partir de las updates de ACP que sabe leer
+  (chunks de texto y de razonamiento, `tool_call`, `tool_call_update`, `plan`); el resto
+  se ignora. `Started` gana `capabilities: {load_session, events}`, `native_session_id`
+  (el id de la sesión en el CLI) y `resumed`; `Turn` gana `usage?`, que `regulus-acp` no
+  rellena: el uso por turno de ACP v1 es inestable y el crate no lo da.
+- **Permisos `ask`.** Con `ask` cada petición del agente sale como `permission_request` y
+  espera a `engine.session.decide` `{session_id, request_id, option}` (`option` `null`:
+  cancelarla). Un `cancel` del turno la cancela, como pide ACP; pasado
+  `permission_timeout_seconds` (campo de los motores, 600) se elige la opción `reject…`, o
+  se cancela si no la hay. `allow` y `reject` siguen contestando solos. La caja tiene la
+  entrada "usa" `decisions` (`decision@1`, opcional): por cada petición llama a
+  `decision.ask` (prompt "Agent `<nombre>` asks permission: <título>", las opciones con su
+  `kind` y el contexto `{tool, title, execution_id, node_id, request_id}`), sondea
+  `decision.poll` cada `decision_poll_ms` (500) y contesta al motor con lo elegido; sin
+  opción (rechazo sin opción de rechazo, plazo sin `default_option`) o si el decisor
+  falla, la opción `reject…`. Lo de serie es el **Decisor** de `human`
+  (`13-blocks.md` §3.3): la petición sale en `regulus human list` y se contesta con
+  `regulus human answer <id> approve --field option=<id>`. Con `ask` y nada en
+  `decisions`, la caja arranca con `reject`, lo dice en el log y deja una entrada
+  `system` en el historial.
+- **Historial.** Con `history = yes` (por defecto) la caja guarda la conversación en su
+  store, en la base del proyecto del nodo, bajo `conv/<workflow>/<nodo>`: sobrevive a la
+  ejecución y al reinicio, y la siguiente ejecución del mismo nodo sigue en ella. Entradas
+  `{seq, at, role: user|agent|system, text, turn, execution_id}` (`turn` = `t-<n>`) y
+  actividad `{seq, at, turn, event}`; las dos comparten un solo `seq`, así que un cursor
+  las pagina juntas sin perder ni repetir nada. Se queda con las últimas `history_max`
+  (2000) de cada lista. Durante el turno la caja lee los eventos cada `events_poll_ms`
+  (200) en el hilo del turno, y una vez más al acabar. Sin store vive en memoria; sin
+  directorio de datos la clave va por ejecución.
+- **Salida `activity`** (`agent.event@1`, "luego"): cada evento leído, su JSON tal cual, si
+  `activity_emit = yes` (por defecto). Un motor sin eventos (`UnknownMethod`) deja la caja
+  con solo el texto final, como antes.
+- **Métodos nuevos** (además de `agent.prompt`, que sigue bloqueando): `agent.send`
+  `{execution_id, node_id, text}` → `{turn}` (a la misma cola que la entrada `prompt`, sin
+  esperar), `agent.history` `{execution_id, node_id, since?, limit?}` → `{entries,
+  activity, next, session: {engine_session_id, native_resume, state}}` (lee antes los
+  eventos pendientes; de un nodo parado responde con `state: "stopped"`) y `agent.cancel`
+  `{execution_id, node_id}` → `null` (`engine.session.cancel`). CLI: `regulus agent send`,
+  `regulus agent history [--since N] [--follow]` y `regulus agent cancel`.
+- **Reanudar.** `resume = native` (por defecto `no`; nunca con `fresh_context = yes`): si
+  el motor dice `load_session`, la caja guarda el `native_session_id` en la conversación y
+  la siguiente ejecución lo pasa en `StartArgs.resume`; `regulus-acp` lo carga con
+  `session/load` y descarta lo que el agente reproduce al cargar (es historia, no
+  novedad: no entra en los eventos). Si el motor no puede o la carga falla, abre una
+  sesión nueva, lo avisa, y el historial dice que no se reanudó. **Reproducir el
+  historial nunca cuenta como reanudar**: `native_resume` solo es `true` si el CLI cargó
+  su sesión. Comprobado en local el `initialize` (2026-11-09): anuncian `loadSession: true`
+  opencode 1.19.5 (`opencode acp`) y `@agentclientprotocol/claude-agent-acp` 0.93.0; la
+  carga real con un CLI de verdad no está verificada, solo contra el agente de prueba.
+
+Probado con un motor falso en proceso (`crates/modules/agent/tests/events.rs`: historial
+y `activity`, paginado en dos páginas, la petición contestada con `human answer`, `ask`
+sin decisor, `agent.cancel`, reanudar con y sin `load_session`) y por ACP con el agente de
+prueba (`crates/regulus-acp/tests/events.rs` y `agent_events.rs`: eventos con cursor y
+búfer acotado, `ask` → `decide`, plazo, cancelar, `session/load` sin repetir lo cargado; y
+la caja con `human` de punta a punta). Límites: el orden entre una `permission_request` y
+las updates que la preceden en el mismo instante no está garantizado; un hilo por petición
+pendiente sondea al decisor hasta que decide, el motor la resuelve o el nodo para.
 
 ## 6. Proveedores
 
