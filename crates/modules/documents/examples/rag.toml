@@ -1,0 +1,202 @@
+# Documents (docs/13-blocks.md §3.3), no model needed: files sent to `ingest` are chunked
+# and indexed (BM25) in the collection `docs` of the project; a question sent to `ask`
+# comes back as hits (`hits`) and as numbered evidence with its sources (`context`), the
+# text a model would answer from. Whatever answers (here: you, on `answer`) is checked
+# against the refs of the last context: `passed` and `reply` (the answer and the sources it
+# cites) when every `[n]` it cites exists in those refs, `failed` otherwise. The check
+# proves provenance (the cited evidence exists and was shown), never that the answer is
+# true.
+#
+# `dir` is where paths sent to `ingest` must be (relative paths hang from it): set it to
+# your documents folder, or leave it empty for the node's own folder under the Regulus home.
+#
+# Run (debug build, a temporary --home with this file in its profiles/, `dir` set to a
+# folder holding rust.md and python.md):
+#
+#   regulus run rag --detach                                # exec-1  rag  running
+#   regulus send exec-1 ingest rust.md
+#   regulus send exec-1 ingest python.md                    # self.ingested ×2
+#   regulus docs ls exec-1 ingest                           # two sources, versions, chunks
+#   regulus send exec-1 ask "Who checks borrowing in Rust?"
+#     … self.context "Question: … [1] The borrow checker … Sources: [1] <dir>/rust.md#0-…"
+#   regulus send exec-1 answer "The borrow checker does [1]."
+#     … self.passed, self.reply "The borrow checker does [1].\n\nSources:\n[1] <dir>/rust.md"
+#   regulus send exec-1 answer "Guido did [7]."             # self.failed: [7] does not exist
+#   regulus docs query exec-1 retrieve pip packages --k 1
+#   regulus docs rm exec-1 ingest <source_id>
+id = "rag"
+name = "Documents"
+main_workflow_id = "rag"
+
+[[workflows]]
+id = "rag"
+name = "Documents"
+kind = "main"
+ports = [
+  { id = "ingest", capability = "path@1", direction = "input", kind = "then" },
+  { id = "ask", capability = "text@1", direction = "input", kind = "then" },
+  { id = "answer", capability = "text@1", direction = "input", kind = "then" },
+  { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+  { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+  { id = "context", capability = "text@1", direction = "output", kind = "then" },
+  { id = "passed", capability = "json@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "json@1", direction = "output", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "ingest"
+  name = "Ingest"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 300, y = 50 }
+  config = { collection = "docs", dir = "", chunker = "markdown", chunk_chars = 400, overlap_chars = 0 }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+    { id = "chunker", capability = "chunker@1", direction = "input", kind = "uses" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses" },
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Retrieve"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 300, y = 250 }
+  config = { collection = "docs", k = 3 }
+  ports = [
+    { id = "query", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses" },
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "context"
+  name = "Context"
+  type = "context"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 600, y = 250 }
+  config = {}
+  ports = [
+    { id = "hits", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "refs", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The refs of the context and the answer, together: { answer, refs }.
+  [[workflows.nodes]]
+  id = "join"
+  name = "Answer + refs"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 900, y = 250 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "answer", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "refs", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "cite"
+  name = "Citation check"
+  type = "cite_check"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 1200, y = 250 }
+  config = { min_refs = 1 }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "pass", capability = "json@1", direction = "output", kind = "then" },
+    { id = "fail", capability = "json@1", direction = "output", kind = "then" },
+    { id = "text", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "self-ingest-ingest-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "ingest" }
+  to = { node_id = "ingest", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ingest-ingested-self-ingested"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "ingested" }
+  to = { node_id = "self", port_id = "ingested" }
+
+  [[workflows.wires]]
+  id = "ingest-error-self-error"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "self-ask-retrieve-query"
+  kind = "then"
+  from = { node_id = "self", port_id = "ask" }
+  to = { node_id = "retrieve", port_id = "query" }
+
+  [[workflows.wires]]
+  id = "retrieve-hits-self-hits"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "hits" }
+  to = { node_id = "self", port_id = "hits" }
+
+  [[workflows.wires]]
+  id = "retrieve-error-self-error"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "retrieve-hits-context-hits"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "hits" }
+  to = { node_id = "context", port_id = "hits" }
+
+  [[workflows.wires]]
+  id = "context-out-self-context"
+  kind = "then"
+  from = { node_id = "context", port_id = "out" }
+  to = { node_id = "self", port_id = "context" }
+
+  [[workflows.wires]]
+  id = "context-refs-join-refs"
+  kind = "then"
+  from = { node_id = "context", port_id = "refs" }
+  to = { node_id = "join", port_id = "refs" }
+
+  [[workflows.wires]]
+  id = "self-answer-join-answer"
+  kind = "then"
+  from = { node_id = "self", port_id = "answer" }
+  to = { node_id = "join", port_id = "answer" }
+
+  [[workflows.wires]]
+  id = "join-out-cite-in"
+  kind = "then"
+  from = { node_id = "join", port_id = "out" }
+  to = { node_id = "cite", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "cite-pass-self-passed"
+  kind = "then"
+  from = { node_id = "cite", port_id = "pass" }
+  to = { node_id = "self", port_id = "passed" }
+
+  [[workflows.wires]]
+  id = "cite-fail-self-failed"
+  kind = "then"
+  from = { node_id = "cite", port_id = "fail" }
+  to = { node_id = "self", port_id = "failed" }
+
+  [[workflows.wires]]
+  id = "cite-text-self-reply"
+  kind = "then"
+  from = { node_id = "cite", port_id = "text" }
+  to = { node_id = "self", port_id = "reply" }

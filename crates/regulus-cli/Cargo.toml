@@ -35,6 +35,7 @@ regulus-module-human = { path = "../modules/human" }
 regulus-module-service = { path = "../modules/service" }
 regulus-module-tasks = { path = "../modules/tasks" }
 regulus-module-workspace = { path = "../modules/workspace" }
+regulus-module-documents = { path = "../modules/documents" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true

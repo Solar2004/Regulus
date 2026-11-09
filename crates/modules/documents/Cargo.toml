@@ -1,0 +1,21 @@
+[package]
+name = "regulus-module-documents"
+description = "Regulus documents: ingest, retrieve, context with refs and citation checks over a swappable index (BM25 by default)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+regulus-contract-tool.workspace = true
+regulus-contract-chunker.workspace = true
+regulus-contract-retrieval-engine.workspace = true
+blake2.workspace = true
+glob.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+regulus-module-flow = { path = "../flow" }
+toml.workspace = true

@@ -1,0 +1,395 @@
+[module]
+id             = "regulus/documents@0.1.0"
+name           = "Documents"
+requires_proto = "^1.9"
+# What the CLI (`regulus docs ls|query|rm`) and the app read a live node's collection
+# with, all `{ execution_id, node_id }` of any node of this module: the sources with
+# their versions and chunk counts; a query (`query`, `k?`); a source deleted
+# (`source_id`) with its chunks, from the index too.
+methods        = ["documents.list", "documents.query", "documents.delete"]
+
+# Documents as a box (docs/13-blocks.md §3.3): retrieval with evidence a gate can check.
+# Sources, documents and chunks live in the module's space of the store of the node's
+# project, per `collection`: nodes that name the same collection share it. Ids are
+# stable: a source is `s` and a hash of its location; a document is the source and the
+# first characters of the hash (blake2) of its bytes; a chunk is the document and its
+# index (`s1a2b…#9f8e7d6c:0`). The built-in index is lexical (BM25 over lowercase word
+# tokens); a `retrieval.engine@1` wired into `engine` (on `ingest` and on `retrieve`:
+# wire the same one into both) replaces it, and a `chunker@1` wired into `chunker`
+# replaces the built-in chunkers.
+
+# Ingest: a value on `in` is a path (a file, a folder or a glob) or `{ path | text,
+# title?, metadata? }`. Each source goes out on `ingested` as `{ source_id, doc_id,
+# chunks, replaced, unchanged, title, location }`: the same bytes again are `unchanged`
+# and touch nothing; other bytes replace the old version, chunks and index included.
+[[node]]
+type = "ingest"
+name = "Ingest"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "path@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "ingested"
+  name       = "ingested"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Why a value was not ingested.
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "chunker"
+  name       = "chunker"
+  capability = "chunker@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = false
+
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "retrieval.engine@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = false
+
+  # ingest_text, only with `agent_writes = yes`.
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.field]]
+  id      = "collection"
+  type    = "text"
+  default = "documents"
+
+  # The folder relative paths hang from. Empty: the node's own directory under the
+  # Regulus home; relative: under it. A path that arrives on `in` stays under it unless
+  # `allow_outside = yes` (links and `..` resolved first).
+  [[node.field]]
+  id      = "dir"
+  type    = "text"
+  default = ""
+
+  # For a folder: the files under it, by this pattern relative to it.
+  [[node.field]]
+  id      = "glob"
+  type    = "text"
+  default = "**/*"
+
+  [[node.field]]
+  id      = "allow_outside"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # One file (or text), in bytes.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 8388608
+
+  # Files one value may name (a folder or a glob); past it the value is refused.
+  [[node.field]]
+  id      = "max_files"
+  type    = "number"
+  default = 500
+
+  # fixed: windows of `chunk_chars`. paragraph: paragraphs packed up to `chunk_chars`.
+  # markdown: sections by heading, then paragraphs; the heading path stays with each
+  # chunk (`metadata.headings`).
+  [[node.field]]
+  id      = "chunker"
+  type    = "select"
+  default = "paragraph"
+  options = ["fixed", "paragraph", "markdown"]
+
+  [[node.field]]
+  id      = "chunk_chars"
+  type    = "number"
+  default = 1200
+
+  # fixed: characters each window shares with the one before. paragraph and markdown:
+  # whole paragraphs, up to this many characters, are repeated at the start of the next
+  # chunk.
+  [[node.field]]
+  id      = "overlap_chars"
+  type    = "number"
+  default = 150
+
+  # The built-in index: words left out, comma separated (also on `retrieve`; give both
+  # the same).
+  [[node.field]]
+  id      = "stopwords"
+  type    = "text"
+  default = "a,an,and,are,as,at,be,but,by,for,from,has,have,he,her,his,i,if,in,into,is,it,its,me,my,no,not,of,on,or,our,she,so,that,the,their,them,then,there,these,they,this,to,was,we,were,what,when,where,which,who,will,with,you,your"
+
+  # The built-in index: shorter words are left out.
+  [[node.field]]
+  id      = "min_token_chars"
+  type    = "number"
+  default = 2
+
+  # yes: agents may add texts through the tool ingest_text.
+  [[node.field]]
+  id      = "agent_writes"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+# Retrieve: a value on `query` is the query (text) or `{ query, k?, filter? }`; `filter`
+# keeps hits whose `source_id`, `doc_id` or metadata keys equal the given values (a list
+# is any of them). Out on `hits`: `{ query, k, hits: [{ chunk_id, doc_id, source_id,
+# score, text, location, start, end, title, metadata }], request? }`, best first;
+# `request` is the value itself when it was an object, so what it carried (an expected
+# answer, an id) travels with the hits.
+[[node]]
+type = "retrieve"
+name = "Retrieve"
+
+  # A node may declare it `json@1` instead.
+  [[node.port]]
+  id          = "query"
+  name        = "query"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "hits"
+  name       = "hits"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "engine"
+  name       = "engine"
+  capability = "retrieval.engine@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = false
+
+  # search_documents and read_chunk.
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.field]]
+  id      = "collection"
+  type    = "text"
+  default = "documents"
+
+  [[node.field]]
+  id      = "k"
+  type    = "number"
+  default = 6
+
+  # With a `filter`: hits asked of the index before it applies (at least `k`).
+  [[node.field]]
+  id      = "candidates"
+  type    = "number"
+  default = 50
+
+  [[node.field]]
+  id      = "stopwords"
+  type    = "text"
+  default = "a,an,and,are,as,at,be,but,by,for,from,has,have,he,her,his,i,if,in,into,is,it,its,me,my,no,not,of,on,or,our,she,so,that,the,their,them,then,there,these,they,this,to,was,we,were,what,when,where,which,who,will,with,you,your"
+
+  [[node.field]]
+  id      = "min_token_chars"
+  type    = "number"
+  default = 2
+
+  # BM25 term saturation.
+  [[node.field]]
+  id      = "bm25_k1"
+  type    = "number"
+  default = 1.2
+
+  # BM25 length normalisation, 0 to 1.
+  [[node.field]]
+  id      = "bm25_b"
+  type    = "number"
+  default = 0.75
+
+# Context: hits (what `retrieve` sends) become a text for a model on `out`: the evidence
+# numbered `[1] …`, and a `Sources:` list `[n] <location>#<start>-<end> (<chunk_id>)`,
+# placed by `template`. `refs` is the ordered list `[{ n, chunk_id, source_id, location,
+# start, end }]`, for a gate to check citations against real ids.
+[[node]]
+type = "context"
+name = "Context"
+
+  [[node.port]]
+  id          = "hits"
+  name        = "hits"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "refs"
+  name       = "refs"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Characters of evidence at most, whole blocks (the first is cut if it alone is longer).
+  [[node.field]]
+  id      = "max_chars"
+  type    = "number"
+  default = 6000
+
+  # `{{query}}`, `{{evidence}}` and `{{sources}}`.
+  [[node.field]]
+  id      = "template"
+  type    = "text"
+  default = "Question: {{query}}\n\nEvidence:\n{{evidence}}\n\nSources:\n{{sources}}\n\nAnswer the question using only the evidence above. Cite the evidence you use by its number in brackets, like [1]. If the evidence does not answer the question, say so."
+
+  # The evidence when there are no hits.
+  [[node.field]]
+  id      = "empty"
+  type    = "text"
+  default = "(no document matched)"
+
+# Citation check, deterministic: a value on `in` is `{ answer, refs }` (a `join` with
+# inputs `answer` and `refs` and `shape = object` makes one), or an array with the
+# answer text and the refs. It passes when every `[n]` in the answer is in `refs`, at
+# least `min_refs` distinct ones are cited and, with `require_all = yes`, every ref is.
+# `pass` and `fail` carry `{ answer, cited, unknown, uncited, sources, reason }`; on a
+# pass, `text` is the answer followed by the sources it cites. It checks provenance (the
+# cited evidence exists and was shown), never truth: an answer that misreads its source
+# passes; judging that is a model's job (a `judge` after it).
+[[node]]
+type = "cite_check"
+name = "Citation check"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "pass"
+  name       = "pass"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "fail"
+  name       = "fail"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "text"
+  name       = "text"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "min_refs"
+  type    = "number"
+  default = 1
+
+  [[node.field]]
+  id      = "require_all"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # The line before the cited sources in `text`.
+  [[node.field]]
+  id      = "sources_header"
+  type    = "text"
+  default = "Sources:"
+
+# Recall@k, deterministic, for evaluations: a value on `in` is what `retrieve` sent (with
+# the expected sources in its `request`) or an array of those. An item is a hit when any
+# expected id is the start of a hit's `source_id`, `doc_id` or `chunk_id`, or the end of
+# its `location` (a file name). `score` gets `{ recall, total, found, items }`, and the
+# same value goes to `pass` when `recall` reaches `threshold`, else to `fail`.
+[[node]]
+type = "recall"
+name = "Recall@k"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "score"
+  name       = "score"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "pass"
+  name       = "pass"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "fail"
+  name       = "fail"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Where the expected ids are in each item: a JSON Pointer.
+  [[node.field]]
+  id      = "expect_path"
+  type    = "text"
+  default = "/request/expect_source_ids"
+
+  [[node.field]]
+  id      = "threshold"
+  type    = "number"
+  default = 0.8

@@ -12,6 +12,8 @@ members = [
     "crates/contracts/tool",
     "crates/contracts/toolset",
     "crates/contracts/decision",
+    "crates/contracts/chunker",
+    "crates/contracts/retrieval-engine",
     "crates/modules/hello",
     "crates/modules/flow",
     "crates/modules/hooks",
@@ -35,6 +37,7 @@ members = [
     "crates/modules/service",
     "crates/modules/tasks",
     "crates/modules/workspace",
+    "crates/modules/documents",
 ]
 resolver = "2"
 
@@ -56,6 +59,8 @@ regulus-contract-participant = { path = "crates/contracts/participant" }
 regulus-contract-tool = { path = "crates/contracts/tool" }
 regulus-contract-toolset = { path = "crates/contracts/toolset" }
 regulus-contract-decision = { path = "crates/contracts/decision" }
+regulus-contract-chunker = { path = "crates/contracts/chunker" }
+regulus-contract-retrieval-engine = { path = "crates/contracts/retrieval-engine" }
 agent-client-protocol = "3.4.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,10 @@
+[package]
+name = "regulus-contract-retrieval-engine"
+description = "The retrieval.engine@1 capability: an index that finds chunks for a query"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

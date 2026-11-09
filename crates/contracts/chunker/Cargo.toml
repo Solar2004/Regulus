@@ -1,0 +1,10 @@
+[package]
+name = "regulus-contract-chunker"
+description = "The chunker@1 capability: how a text is cut into chunks for retrieval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

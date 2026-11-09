@@ -4542,6 +4542,7 @@ dependencies = [
  "regulus-core",
  "regulus-module-agent",
  "regulus-module-communication",
+ "regulus-module-documents",
  "regulus-module-engine-claude",
  "regulus-module-engine-opencode",
  "regulus-module-files",
@@ -4586,6 +4587,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "regulus-contract-chunker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "regulus-contract-decision"
 version = "0.1.0"
 dependencies = [
@@ -4605,6 +4614,14 @@ name = "regulus-contract-participant"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "regulus-contract-retrieval-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4675,6 +4692,23 @@ dependencies = [
  "regulus-proto",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "regulus-module-documents"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "glob",
+ "regulus-contract-chunker",
+ "regulus-contract-retrieval-engine",
+ "regulus-contract-tool",
+ "regulus-core",
+ "regulus-module-flow",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
