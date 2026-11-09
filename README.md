@@ -38,6 +38,15 @@ Want to help build Regulus? Start with [CONTRIBUTING.md](CONTRIBUTING.md), the
 [English concept guide](docs/contributing/concepts.md), and the
 [module development guide](docs/contributing/modules.md).
 
+## A workflow in 25 seconds
+
+![Open a workflow box, inspect its node, run it and receive a reply in the conversation panel](assets/demos/composition-chat.gif)
+
+Recorded against a real local core using the deterministic Greeter example. This
+shows composition and workflow conversation; it does not use an AI model or show
+an autonomous coding run. The recording shows the development checkout; released
+packages may not yet include these changes.
+
 ## The app
 
 **Composition.** Workflows are drawn on a canvas. The palette on the left lists every
