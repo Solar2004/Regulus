@@ -1,7 +1,7 @@
 [module]
 id             = "regulus/flow@0.1.0"
 name           = "Flow"
-requires_proto = "^1.8"
+requires_proto = "^1.16"
 
 # Runs a workflow of the same profile as a child execution, once per value received, and
 # waits for its answer (docs/13-blocks.md §3.2). Ports match the called workflow's by id:
