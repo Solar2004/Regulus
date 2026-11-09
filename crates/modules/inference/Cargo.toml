@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-inference"
 description = "Regulus inference: one model call per value over an llm.endpoint@1 (OpenAI chat completions or Anthropic messages)"
 version.workspace = true

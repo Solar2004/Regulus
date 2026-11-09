@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-documents"
 description = "Regulus documents: ingest, retrieve, context with refs and citation checks over a swappable index (BM25 by default)"
 version.workspace = true

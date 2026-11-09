@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-module-delegation"
 description = "Regulus delegation: a node that lets an agent create, brief, follow and close worker workflows it keeps alive"
 version.workspace = true

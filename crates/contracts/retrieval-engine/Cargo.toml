@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "regulus-contract-retrieval-engine"
 description = "The retrieval.engine@1 capability: an index that finds chunks for a query"
 version.workspace = true
