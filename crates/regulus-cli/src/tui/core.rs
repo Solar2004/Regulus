@@ -23,7 +23,9 @@ use crate::rpc::{self, CallError};
 pub type Failure = CallError;
 
 const CLIENT_NAME: &str = concat!("regulus-tui/", env!("CARGO_PKG_VERSION"));
-const AGENT_PROMPT: &str = "agent.prompt";
+const AGENT_SEND: &str = "agent.send";
+const AGENT_HISTORY: &str = "agent.history";
+const AGENT_CANCEL: &str = "agent.cancel";
 const COMM_SEND: &str = "comm.send";
 const COMM_HISTORY: &str = "comm.history";
 const COMM_PARTICIPANTS: &str = "comm.participants";
@@ -74,6 +76,13 @@ pub enum Request {
         id: String,
         approve: bool,
     },
+    /// Every decision waiting, whatever its execution: a Decider may live in another.
+    AllDecisions,
+    /// A permission request's decision: approve with `option`, or reject without one.
+    Choose {
+        id: String,
+        option: Option<String>,
+    },
     /// A value for an input of the workflow an execution runs.
     WorkflowSend {
         execution: String,
@@ -83,10 +92,22 @@ pub enum Request {
     Stop {
         execution: String,
     },
-    Prompt {
+    /// A prompt queued for an agent (`agent.send`); the answer shows in its history.
+    AgentSend {
         execution: String,
         node: String,
         text: String,
+    },
+    /// What an agent box recorded after `since`.
+    AgentHistory {
+        execution: String,
+        node: String,
+        since: u64,
+        limit: usize,
+    },
+    AgentCancel {
+        execution: String,
+        node: String,
     },
     Send {
         execution: String,
@@ -173,11 +194,21 @@ pub enum Event {
     },
     Started(Result<Execution, String>),
     Stopped(Result<Execution, String>),
-    Answer {
+    /// `agent.send` answered with the turn id.
+    AgentSent {
         execution: String,
         node: String,
-        answer: Result<String, String>,
+        text: String,
+        result: Result<String, Failure>,
     },
+    AgentHistory {
+        execution: String,
+        node: String,
+        since: u64,
+        result: Result<Value, Failure>,
+    },
+    AgentCancelled(Result<(), Failure>),
+    AllDecisions(Result<Vec<Pending>, Failure>),
     Sent {
         execution: String,
         node: String,
@@ -415,25 +446,52 @@ async fn answer(ws: &WsClient, request: Request) -> Event {
                 rpc::call_coded(ws, method::WORKFLOW_SEND, params).await;
             Event::WorkflowSent(sent.map(|sent| sent.event))
         }
-        Request::Prompt {
+        Request::AllDecisions => {
+            Event::AllDecisions(rpc::call_coded(ws, HUMAN_LIST, json!({})).await)
+        }
+        Request::Choose { id, option } => {
+            let params = match option {
+                Some(option) => json!({ "id": id, "decision": Decision::Approve,
+                                        "fields": { "option": option } }),
+                None => json!({ "id": id, "decision": Decision::Reject }),
+            };
+            let done: Result<Value, Failure> = rpc::call_coded(ws, HUMAN_ANSWER, params).await;
+            Event::Decided(done.map(|_| ()))
+        }
+        Request::AgentSend {
             execution,
             node,
             text: prompt,
         } => {
             let params = json!({ "execution_id": execution, "node_id": node, "text": prompt });
-            let turn: Result<Value> = rpc::call(ws, AGENT_PROMPT, params).await;
-            let answer = turn.map_err(text).map(|turn| {
-                let mut said = turn["text"].as_str().unwrap_or_default().to_string();
-                if let Some(reason) = turn["stop_reason"].as_str().filter(|r| *r != "end_turn") {
-                    said.push_str(&format!("\n(the turn ended with `{reason}`)"));
-                }
-                said
-            });
-            Event::Answer {
+            let sent: Result<Value, Failure> = rpc::call_coded(ws, AGENT_SEND, params).await;
+            Event::AgentSent {
                 execution,
                 node,
-                answer,
+                text: prompt,
+                result: sent.map(|sent| sent["turn"].as_str().unwrap_or_default().to_string()),
             }
+        }
+        Request::AgentHistory {
+            execution,
+            node,
+            since,
+            limit,
+        } => {
+            let params = json!({ "execution_id": execution, "node_id": node, "since": since,
+                                 "limit": limit });
+            let result = rpc::call_coded(ws, AGENT_HISTORY, params).await;
+            Event::AgentHistory {
+                execution,
+                node,
+                since,
+                result,
+            }
+        }
+        Request::AgentCancel { execution, node } => {
+            let params = json!({ "execution_id": execution, "node_id": node });
+            let done: Result<Value, Failure> = rpc::call_coded(ws, AGENT_CANCEL, params).await;
+            Event::AgentCancelled(done.map(|_| ()))
         }
         Request::Send {
             execution,

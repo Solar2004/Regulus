@@ -7,11 +7,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use regulus_proto::ExecutionState;
+use serde_json::Value;
 
-use super::app::{event_line, App, Focus, Mode, NodeKind, NodeState, Prompt, Tone, Turn};
+use super::app::{compact, event_line, App, Focus, Mode, NodeKind, NodeState, Prompt, Tone};
 use super::core::{describe, Connection, Message, SENDER};
 use super::palette::{palette, Palette};
+use super::talk::Choice as PickChoice;
 use super::view_edit;
+use crate::conversation::{reduce, BindingSource, Item, AGENT, SYSTEM, USER};
 
 const SIDEBAR_WIDTH: u16 = 30;
 const NODES_WIDTH: u16 = 34;
@@ -195,6 +198,55 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt) {
                 )));
             }
             ("Send to the workflow", lines, value.clone())
+        }
+        Prompt::Bind(picker) => {
+            let mut lines = vec![Line::styled(
+                "↑↓ choose · ←→ inputs/outputs · Enter talk through them · x forget · Esc",
+                muted,
+            )];
+            let rows = picker.inputs.len().max(picker.outputs.len());
+            for row in 0..rows {
+                let cell = |list: &[String], at: usize, column: usize| match list.get(row) {
+                    Some(id) => {
+                        let mark = match (row == at, picker.column == column) {
+                            (true, true) => "▸ ",
+                            (true, false) => "• ",
+                            _ => "  ",
+                        };
+                        format!("{mark}self.{id}")
+                    }
+                    None => String::new(),
+                };
+                lines.push(Line::raw(format!(
+                    "{:<32}{}",
+                    cell(&picker.inputs, picker.input, 0),
+                    cell(&picker.outputs, picker.output, 1)
+                )));
+            }
+            let title = "Talk to the workflow: text in → text out";
+            frame.render_widget(Paragraph::new(lines).block(pane(title, true, p)), area);
+            return;
+        }
+        Prompt::Permission(picker) => {
+            let mut lines = vec![
+                Line::raw(format!("{} · {}", picker.request, picker.title)),
+                Line::styled("↑↓ choose · Enter answer · Esc", muted),
+            ];
+            for (at, choice) in picker.choices.iter().enumerate() {
+                let mark = if at == picker.index { "▸ " } else { "  " };
+                let label = match choice {
+                    PickChoice::Option(option) => {
+                        format!("{} ({}, {})", option.name, option.id, option.kind)
+                    }
+                    PickChoice::Reject => "Reject".to_string(),
+                };
+                lines.push(Line::raw(format!("{mark}{label}")));
+            }
+            frame.render_widget(
+                Paragraph::new(lines).block(pane("Answer the permission request", true, p)),
+                area,
+            );
+            return;
         }
     };
     lines.push(Line::raw(""));
@@ -484,9 +536,14 @@ fn tail(mut lines: Vec<Line<'static>>, height: usize) -> Vec<Line<'static>> {
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     let p = palette();
-    let target = app.talk_target();
+    let workflow_talk = app.workflow_talk();
+    let target = if workflow_talk.is_some() {
+        None
+    } else {
+        app.talk_target()
+    };
     let typing = app.focus == Focus::Input;
-    let (body, input) = if target.is_some() {
+    let (body, input) = if target.is_some() || workflow_talk.is_some() {
         let [body, input] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(area);
         (body, Some(input))
@@ -498,26 +555,9 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     let muted = Style::default().fg(p.text_muted);
 
     let (title, lines) = match (app.selected_node(), &target) {
-        (Some(node), Some((key, NodeKind::Agent))) => {
-            let mut lines = Vec::new();
-            for turn in app.turns.get(key).into_iter().flatten() {
-                lines.extend(match turn {
-                    Turn::Prompt(text) => said("you", text, p.focus, width),
-                    Turn::Answer(text) => said(&node.name, text, p.info, width),
-                    Turn::Error(error) => said("error", error, p.danger, width),
-                });
-                lines.push(Line::raw(""));
-            }
-            if app.thinking.contains(key) {
-                lines.push(Line::styled(
-                    format!("{} is working…", node.name),
-                    Style::default().fg(p.warning),
-                ));
-            }
-            if lines.is_empty() {
-                lines.push(Line::styled("press Enter and write a prompt", muted));
-            }
-            (format!("@{} · agent", node.name), lines)
+        _ if workflow_talk.is_some() => conversation(app, width),
+        (Some(node), _) if node.kind == NodeKind::Agent && app.agent_shown().is_some() => {
+            conversation(app, width)
         }
         (Some(node), Some((key, NodeKind::Channel))) => {
             let mut lines = Vec::new();
@@ -654,9 +694,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         body,
     );
 
-    if let (Some(input), Some((_, kind))) = (input, target) {
-        let hint = match kind {
-            NodeKind::Agent => "prompt",
+    if let Some(input) = input {
+        let hint = match target {
+            _ if workflow_talk.is_some() => "message to the workflow",
+            Some((_, NodeKind::Agent)) => "prompt",
             _ => "message (@name to address)",
         };
         let shown = if app.input.is_empty() && !typing {
@@ -679,11 +720,193 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// The conversation shown as cards (docs/04-client.md §7): a direct agent's history, or
+/// a bound workflow's bus. The same reduction the app makes.
+fn conversation(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
+    let p = palette();
+    let muted = Style::default().fg(p.text_muted);
+    let max = app.options.tuning.value_max.min(width.max(1) * 4);
+    let Some((records, grouping, agent)) = app.shown_records() else {
+        return (String::new(), Vec::new());
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let (title, speaker, log) = match app.workflow_talk() {
+        Some((_, binding, source)) => {
+            let from = match source {
+                BindingSource::Own => "",
+                BindingSource::Config => " (config.toml)",
+            };
+            (
+                format!(
+                    "self.{} → self.{}{from} · workflow",
+                    binding.input, binding.output
+                ),
+                format!("self.{}", binding.output),
+                None,
+            )
+        }
+        None => {
+            let node = agent.clone().unwrap_or_default();
+            let log = app.agent_shown().and_then(|key| app.agents.get(&key));
+            (format!("@{node} · agent"), node, log)
+        }
+    };
+    if let Some(log) = log {
+        let session = &log.session;
+        let resume = if session["native_resume"].as_bool() == Some(true) {
+            "resumed"
+        } else {
+            "not resumed"
+        };
+        lines.push(Line::styled(
+            format!(
+                "session {} · {} · {resume}",
+                session["engine_session_id"].as_str().unwrap_or("-"),
+                log.state()
+            ),
+            muted,
+        ));
+        if let Some(error) = &log.error {
+            lines.push(Line::styled(describe(error), Style::default().fg(p.danger)));
+        }
+    }
+    let who = |node: &Option<String>| {
+        node.as_deref()
+            .map(|n| format!("[{n}] "))
+            .unwrap_or_default()
+    };
+    for turn in reduce(&records, grouping) {
+        for item in turn.items {
+            match item {
+                Item::Entry { role, text, .. } => {
+                    let (name, color) = match role.as_str() {
+                        USER => ("you".to_string(), p.focus),
+                        AGENT => (speaker.clone(), p.info),
+                        SYSTEM => ("system".to_string(), p.danger),
+                        other => (other.to_string(), p.text_secondary),
+                    };
+                    lines.extend(said(&name, &text, color, width));
+                }
+                Item::Live { node, text, .. } => {
+                    let name = node.clone().unwrap_or_else(|| speaker.clone());
+                    lines.extend(said(&format!("{name} (writing)"), &text, p.warning, width));
+                }
+                Item::Thought { node, text, .. } => lines.push(Line::styled(
+                    format!(
+                        "  {}thinking: {}",
+                        who(&node),
+                        compact(&Value::from(text), max)
+                    ),
+                    muted,
+                )),
+                Item::Tool {
+                    node,
+                    title,
+                    tool_kind,
+                    status,
+                    content,
+                    ..
+                } => {
+                    let (symbol, color) = match status.as_str() {
+                        "completed" => ("✓", p.success),
+                        "failed" => ("✗", p.danger),
+                        _ => ("…", p.warning),
+                    };
+                    let kind = tool_kind.map(|k| format!(" ({k})")).unwrap_or_default();
+                    lines.push(Line::from(vec![
+                        Span::raw(format!("  {}⚙ {title}{kind} ", who(&node))),
+                        state_span(symbol, status, color),
+                    ]));
+                    if let Some(content) = content {
+                        lines.push(Line::styled(
+                            format!("    {}", compact(&content, max)),
+                            muted,
+                        ));
+                    }
+                }
+                Item::Plan { node, entries, .. } => lines.push(Line::styled(
+                    format!("  {}plan: {}", who(&node), compact(&entries, max)),
+                    muted,
+                )),
+                Item::Permission { request, resolved } => {
+                    let options: Vec<&str> =
+                        request.options.iter().map(|o| o.id.as_str()).collect();
+                    let line = match resolved {
+                        None => state_span(
+                            "?",
+                            format!(
+                                "{}permission: {} [{}] · {} answers",
+                                who(&request.node),
+                                request.title,
+                                options.join(" | "),
+                                app.options.keys.answer.label()
+                            ),
+                            p.warning,
+                        ),
+                        Some(Some(option)) => state_span(
+                            "✓",
+                            format!(
+                                "{}permission: {} → {option}",
+                                who(&request.node),
+                                request.title
+                            ),
+                            p.success,
+                        ),
+                        Some(None) => state_span(
+                            "✗",
+                            format!(
+                                "{}permission: {} cancelled",
+                                who(&request.node),
+                                request.title
+                            ),
+                            p.text_muted,
+                        ),
+                    };
+                    lines.push(Line::from(vec![Span::raw("  "), line]));
+                }
+                Item::Ended {
+                    node, stop_reason, ..
+                } => lines.push(Line::styled(
+                    format!("  {}turn ended ({stop_reason})", who(&node)),
+                    muted,
+                )),
+                Item::State { node, state, .. } => lines.push(Line::styled(
+                    format!("  {}state {state}", who(&node)),
+                    muted,
+                )),
+                Item::Other {
+                    node, name, raw, ..
+                } => lines.push(Line::styled(
+                    format!("  {}{name} {}", who(&node), compact(&raw, max)),
+                    muted,
+                )),
+            }
+        }
+        if turn.open {
+            lines.push(Line::styled(
+                format!("{speaker} is working…"),
+                Style::default().fg(p.warning),
+            ));
+        }
+        lines.push(Line::raw(""));
+    }
+    for (_, text) in log.map(|l| l.queued.as_slice()).unwrap_or_default() {
+        lines.extend(said("you (queued)", text, p.text_muted, width));
+    }
+    if records.is_empty() && log.is_none_or(|l| l.queued.is_empty()) {
+        lines.push(Line::styled("press Enter and write", muted));
+    }
+    (title, lines)
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let p = palette();
     let k = &app.options.keys;
     let keys = match app.focus {
-        Focus::Input => "Enter send · Esc back · Ctrl-C quit".to_string(),
+        Focus::Input => format!(
+            "Enter send · {} cancel turn · Esc back · Ctrl-C quit",
+            k.cancel_turn.label()
+        ),
         Focus::Profiles => format!(
             "Enter run · {} edit · {} new · {} templates · Tab next pane · r refresh · q quit",
             k.edit.label(),
@@ -695,7 +918,13 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             k.send.label(),
             k.templates.label()
         ),
-        Focus::Nodes => "Enter write · ↑↓ move · Tab next pane · q quit".to_string(),
+        Focus::Nodes => format!(
+            "Enter write · {} talk to the workflow · {} answer permission · {} cancel turn · \
+             ↑↓ move · Tab next pane · q quit",
+            k.talk.label(),
+            k.answer.label(),
+            k.cancel_turn.label()
+        ),
         Focus::Events => format!(
             "↑↓ scroll · {} filter by node · {} send · Tab next pane · q quit",
             k.filter.label(),
@@ -757,6 +986,58 @@ mod tests {
         let shown = screen(&app);
         assert!(shown.contains("no core"), "{shown}");
         assert!(shown.contains("start one with: regulus serve"), "{shown}");
+    }
+
+    #[test]
+    fn an_agent_conversation_is_drawn_as_cards() {
+        use super::super::core::Event;
+        let mut app = App::default();
+        let profile: regulus_proto::Profile = serde_json::from_value(serde_json::json!({
+            "id": "p", "main_workflow_id": "main", "workflows": [{ "id": "main", "kind": "main",
+            "nodes": [{ "id": "dev", "type": "agent", "module_id": "m/agent@1", "ports": [
+                { "id": "engine", "capability": "agent.engine@1", "direction": "input",
+                  "kind": "uses" }] }] }]
+        }))
+        .unwrap();
+        let execution: regulus_proto::Execution = serde_json::from_value(serde_json::json!({
+            "id": "exec-1", "profile_id": "p", "workflow_id": "main",
+            "state": { "status": "running" }, "disabled": []
+        }))
+        .unwrap();
+        let module: regulus_proto::ModuleSummary = serde_json::from_value(serde_json::json!({
+            "id": "m/agent@1", "name": "agent", "node_types": [],
+            "state": { "status": "active", "since": 0 }
+        }))
+        .unwrap();
+        app.apply(Event::Profiles(vec![profile]));
+        app.apply(Event::Status {
+            executions: vec![execution],
+            modules: vec![module],
+        });
+        app.apply(Event::AgentHistory {
+            execution: "exec-1".into(),
+            node: "dev".into(),
+            since: 0,
+            result: Ok(serde_json::json!({
+                "entries": [{ "seq": 1, "role": "user", "text": "hi", "turn": "t-1" }],
+                "activity": [
+                    { "seq": 2, "turn": "t-1", "event": { "kind": "tool_call", "id": "c1",
+                      "title": "read a file", "status": "pending" } },
+                    { "seq": 3, "turn": "t-1", "event": { "kind": "permission_request",
+                      "id": "p1", "title": "write", "options": [
+                        { "id": "yes", "kind": "allow_once", "name": "Allow" }] } }],
+                "next": 3, "session": { "state": "busy" }
+            })),
+        });
+        let shown = screen(&app);
+        assert!(shown.contains("@dev · agent"), "{shown}");
+        assert!(shown.contains("you › hi"), "{shown}");
+        assert!(shown.contains("⚙ read a file"), "{shown}");
+        assert!(
+            shown.contains("? permission: write [yes] · a answers"),
+            "{shown}"
+        );
+        assert!(shown.contains("dev is working…"), "{shown}");
     }
 
     #[test]

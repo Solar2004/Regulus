@@ -1,7 +1,8 @@
 //! The terminal UI: `regulus` with no command, on a terminal (docs/04-client.md §7). A
 //! client like the app: it finds or starts the core and shows Operate, Edit and Templates.
 //! Every action in it has a command (`run`, `stop`, `ps`, `events`, `send`, `human answer`,
-//! `agent prompt`, `msg send`/`log`/`who`, `profile save`, `template apply`).
+//! `agent send`/`history`/`cancel` and `talk`, `msg send`/`log`/`who`, `profile save`,
+//! `template apply`).
 
 pub mod app;
 pub mod catalog;
@@ -11,6 +12,7 @@ pub mod edit;
 pub mod intro;
 pub mod keys;
 pub mod palette;
+pub mod talk;
 pub mod templates;
 pub mod view;
 mod view_edit;
@@ -48,6 +50,7 @@ pub async fn run_with(
     client: Option<&toml::Table>,
 ) -> Result<()> {
     let options = options(&config, client)?;
+    let home = config.clone();
     let (events, incoming) = mpsc::channel();
     let core = core::spawn(config.clone(), timeout, events);
     core.send(Request::Status);
@@ -55,7 +58,15 @@ pub async fn run_with(
     let intro = config.client.intro;
     tokio::task::block_in_place(|| {
         let mut terminal = ratatui::try_init()?;
-        let result = screen(&mut terminal, &core, &incoming, refresh, intro, options);
+        let result = screen(
+            &mut terminal,
+            &core,
+            &incoming,
+            refresh,
+            intro,
+            options,
+            &home,
+        );
         ratatui::restore();
         result
     })
@@ -76,6 +87,24 @@ pub fn options(config: &Config, client: Option<&toml::Table>) -> Result<Options>
         .map_err(|e| anyhow::anyhow!("{}: [client] {e}", config.config_path().display()))
 }
 
+/// The workflow bindings chosen in this home and those `[[client.operate.conversations]]`
+/// of `config.toml` gives. A file that does not read is left alone: what is chosen then
+/// lasts this session only, and the notice says why.
+pub fn conversations(app: &mut App, config: &Config) {
+    match crate::conversation::Bindings::load(&config.home) {
+        Ok(bindings) => app.bindings = bindings,
+        Err(error) => {
+            app.notice = Some((
+                self::app::Tone::Error,
+                format!("bindings not kept this session: {error}"),
+            ))
+        }
+    }
+    if let Ok(serde_json::Value::Object(client)) = serde_json::to_value(&config.client.written) {
+        app.configured = crate::conversation::read_configured(&client);
+    }
+}
+
 fn intro_status(connection: &Connection) -> &'static str {
     match connection {
         Connection::Connecting => "connecting to the core",
@@ -92,10 +121,12 @@ fn screen(
     refresh: Duration,
     show_intro: bool,
     options: Options,
+    config: &Config,
 ) -> Result<()> {
     let started = Instant::now();
     let mut intro = show_intro.then(Intro::default);
     let mut app = App::new(options);
+    conversations(&mut app, config);
     let mut refreshed = Instant::now();
     let mut watched = None;
     let mut polled = None;

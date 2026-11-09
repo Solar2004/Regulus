@@ -14,7 +14,12 @@ use super::core::{describe, ChannelState, Connection, Event, Failure, Pending, R
 use super::document::unique_id;
 use super::edit::{Ctx, Editor, Step};
 use super::keys::Options;
+use super::talk::{AgentLog, BindPicker, Choice as PickChoice, PermissionPicker};
 use super::templates::{Templates, Then};
+use crate::conversation::{
+    asks_about, binding_for, bus_records, conversation_ports, is_conversable, open_permissions,
+    Binding, BindingSource, Bindings, ConfiguredBinding, Grouping, Record, USER,
+};
 
 /// Capabilities that tell what a node is, never its module (CLAUDE.md, invariant 2).
 const AGENT_ENGINE: &str = "agent.engine";
@@ -52,6 +57,10 @@ pub enum Prompt {
         index: usize,
         value: String,
     },
+    /// The binding a workflow is talked to through.
+    Bind(BindPicker),
+    /// The answer to a permission request.
+    Permission(PermissionPicker),
 }
 
 /// The bus events of one execution seen so far, and where to go on from.
@@ -166,14 +175,6 @@ pub struct NodeRow {
     pub state: NodeState,
 }
 
-/// One exchange with an agent, kept for this session only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Turn {
-    Prompt(String),
-    Answer(String),
-    Error(String),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Info,
@@ -195,9 +196,18 @@ pub struct App {
     pub node: usize,
     pub input: String,
     pub channels: HashMap<NodeKey, Result<ChannelState, String>>,
-    pub turns: HashMap<NodeKey, Vec<Turn>>,
-    /// Agents whose turn is still running.
-    pub thinking: HashSet<NodeKey>,
+    /// What each agent's box recorded (`agent.history`), as far as it was read.
+    pub agents: HashMap<NodeKey, AgentLog>,
+    /// Agents with an `agent.history` call on its way.
+    pub history_asked: HashSet<NodeKey>,
+    /// The execution whose workflow conversation is shown instead of the selected node.
+    pub talking: Option<String>,
+    /// Workflow bindings chosen here, kept in the home like `regulus talk` keeps them.
+    pub bindings: Bindings,
+    /// `[[client.operate.conversations]]`: bindings config.toml gives, read-only.
+    pub configured: Vec<ConfiguredBinding>,
+    /// `human.list` of every execution: a permission's Decider may live in another one.
+    pub all_decisions: Option<Result<Vec<Pending>, Failure>>,
     pub notice: Option<(Tone, String)>,
     pub quit: bool,
     pub mode: Mode,
@@ -238,8 +248,16 @@ impl App {
             node: 0,
             input: String::new(),
             channels: HashMap::new(),
-            turns: HashMap::new(),
-            thinking: HashSet::new(),
+            agents: HashMap::new(),
+            history_asked: HashSet::new(),
+            talking: None,
+            // No file: chosen bindings live in memory until `mod.rs` loads the home's.
+            bindings: Bindings {
+                path: Default::default(),
+                own: Default::default(),
+            },
+            configured: Vec::new(),
+            all_decisions: None,
             notice: None,
             quit: false,
             mode: Mode::Operate,
@@ -369,6 +387,55 @@ impl App {
         }
     }
 
+    /// The workflow conversation shown: the selected execution's, while `talking` names
+    /// it and a binding still fits its ports.
+    pub fn workflow_talk(&self) -> Option<(String, Binding, BindingSource)> {
+        let execution = self.selected_execution()?;
+        if self.talking.as_deref() != Some(execution.id.as_str()) {
+            return None;
+        }
+        let workflow = self.workflow(execution)?;
+        binding_for(
+            &self.bindings.own,
+            &self.configured,
+            &execution.profile_id,
+            workflow,
+        )
+        .map(|(binding, source)| (execution.id.clone(), binding, source))
+    }
+
+    /// The agent conversation shown: the selected node when it is an agent. Its history
+    /// reads after it stops, too.
+    pub fn agent_shown(&self) -> Option<NodeKey> {
+        if self.workflow_talk().is_some() {
+            return None;
+        }
+        let execution = self.selected_execution()?;
+        let node = self.selected_node()?;
+        let readable = !matches!(node.state, NodeState::NotInstalled | NodeState::Resource);
+        (node.kind == NodeKind::Agent && readable).then(|| (execution.id.clone(), node.id))
+    }
+
+    /// The records of the conversation shown, how they group, and the agent a permission
+    /// request belongs to when it does not name its node.
+    pub fn shown_records(&self) -> Option<(Vec<Record>, Grouping, Option<String>)> {
+        if let Some((execution, binding, _)) = self.workflow_talk() {
+            let events = self
+                .events
+                .get(&execution)
+                .map(|log| bus_records(&log.events, &binding))
+                .unwrap_or_default();
+            return Some((events, Grouping::Sequence, None));
+        }
+        let key = self.agent_shown()?;
+        let records = self
+            .agents
+            .get(&key)
+            .map(|log| log.records.clone())
+            .unwrap_or_default();
+        Some((records, Grouping::Turn, Some(key.1)))
+    }
+
     pub fn apply(&mut self, event: Event) -> Vec<Request> {
         let mut requests = Vec::new();
         match event {
@@ -457,19 +524,62 @@ impl App {
             Event::Started(Err(error)) | Event::Stopped(Err(error)) => {
                 self.notice = Some((Tone::Error, error));
             }
-            Event::Answer {
+            Event::AgentSent {
                 execution,
                 node,
-                answer,
+                text,
+                result,
+            } => {
+                let log = self.agents.entry((execution, node)).or_default();
+                let at = log
+                    .queued
+                    .iter()
+                    .position(|(t, q)| t.is_empty() && *q == text);
+                match (result, at) {
+                    (Ok(turn), Some(at)) => log.queued[at].0 = turn,
+                    (Ok(_), None) => {}
+                    (Err(failure), at) => {
+                        if let Some(at) = at {
+                            log.queued.remove(at);
+                        }
+                        self.notice = Some((Tone::Error, describe(&failure)));
+                    }
+                }
+                requests.extend(self.poll());
+            }
+            Event::AgentHistory {
+                execution,
+                node,
+                since,
+                result,
             } => {
                 let key = (execution, node);
-                self.thinking.remove(&key);
-                let turn = match answer {
-                    Ok(text) => Turn::Answer(text),
-                    Err(error) => Turn::Error(error),
-                };
-                self.turns.entry(key).or_default().push(turn);
+                self.history_asked.remove(&key);
+                let keep = self.options.tuning.conversation_keep;
+                let log = self.agents.entry(key.clone()).or_default();
+                match result {
+                    Ok(page) => {
+                        // A full page may have more behind it: ask at once, not next refresh.
+                        if log.page(since, &page, keep) && self.agent_shown() == Some(key.clone()) {
+                            self.history_asked.insert(key.clone());
+                            requests.push(Request::AgentHistory {
+                                since: self.agents[&key].next,
+                                execution: key.0,
+                                node: key.1,
+                                limit: self.options.tuning.event_page,
+                            });
+                        }
+                    }
+                    Err(failure) => log.error = Some(failure),
+                }
             }
+            Event::AgentCancelled(result) => {
+                self.notice = Some(match result {
+                    Ok(()) => (Tone::Info, "asked the agent to cancel its turn".into()),
+                    Err(failure) => (Tone::Error, describe(&failure)),
+                });
+            }
+            Event::AllDecisions(result) => self.all_decisions = Some(result),
             Event::Sent {
                 execution,
                 node,
@@ -567,6 +677,7 @@ impl App {
     /// one means nothing here.
     fn execution_changed(&mut self) {
         self.node = 0;
+        self.talking = None;
         self.event_offset = 0;
         self.decision = None;
         self.settle_decision();
@@ -606,12 +717,33 @@ impl App {
             });
         }
         requests.push(Request::Decisions { execution });
+        if let Some(key) = self.agent_shown() {
+            if self.history_asked.insert(key.clone()) {
+                let since = self.agents.get(&key).map_or(0, |log| log.next);
+                requests.push(Request::AgentHistory {
+                    execution: key.0,
+                    node: key.1,
+                    since,
+                    limit: self.options.tuning.event_page,
+                });
+            }
+        }
+        // Who answers a permission is asked only while one waits.
+        if self
+            .shown_records()
+            .is_some_and(|(records, ..)| !open_permissions(&records).is_empty())
+        {
+            requests.push(Request::AllDecisions);
+        }
         requests
     }
 
     /// Changes when [`App::poll`] should run at once rather than on the next refresh.
     pub fn poll_key(&self) -> Option<String> {
-        self.selected_execution().map(|e| e.id.clone())
+        let execution = self.selected_execution()?;
+        let node = self.selected_node().map(|n| n.id).unwrap_or_default();
+        let talking = self.talking.as_deref().unwrap_or_default();
+        Some(format!("{}/{node}/{talking}", execution.id))
     }
 
     /// The selected execution's events, filtered by node if a filter is set.
@@ -771,8 +903,213 @@ impl App {
                     value,
                 });
             }
+            Prompt::Bind(picker) => return self.bind_key(picker, key),
+            Prompt::Permission(mut picker) => {
+                if keys.up.matches(&key) || keys.down.matches(&key) {
+                    let by = if keys.up.matches(&key) { -1 } else { 1 };
+                    picker.index = step(picker.index, picker.choices.len(), by);
+                } else if keys.open.matches(&key) {
+                    let option = match &picker.choices[picker.index] {
+                        PickChoice::Option(option) => Some(option.id.clone()),
+                        PickChoice::Reject => None,
+                    };
+                    return vec![Request::Choose {
+                        id: picker.decision,
+                        option,
+                    }];
+                }
+                self.prompt = Some(Prompt::Permission(picker));
+            }
         }
         Vec::new()
+    }
+
+    /// The binding picker: ↑↓ in a column, ←→ between them, Enter binds, `remove` forgets.
+    fn bind_key(&mut self, mut picker: BindPicker, key: KeyEvent) -> Vec<Request> {
+        let keys = self.options.keys.clone();
+        if keys.up.matches(&key) || keys.down.matches(&key) {
+            let by = if keys.up.matches(&key) { -1 } else { 1 };
+            if picker.column == 0 {
+                picker.input = step(picker.input, picker.inputs.len(), by);
+            } else {
+                picker.output = step(picker.output, picker.outputs.len(), by);
+            }
+        } else if keys.next_pane.matches(&key) || keys.previous_pane.matches(&key) {
+            picker.column = 1 - picker.column.min(1);
+        } else if keys.open.matches(&key) {
+            let binding = Binding {
+                input: picker.inputs[picker.input].clone(),
+                output: picker.outputs[picker.output].clone(),
+            };
+            let said = format!(
+                "talking through self.{} → self.{}",
+                binding.input, binding.output
+            );
+            self.bindings
+                .set(&picker.profile, &picker.workflow, binding);
+            self.notice = Some(self.keep_bindings(said));
+            self.talking = Some(picker.execution);
+            return self.poll();
+        } else if keys.remove.matches(&key) && picker.bound {
+            self.bindings.forget(&picker.profile, &picker.workflow);
+            self.notice =
+                Some(self.keep_bindings(format!("forgot the binding of {}", picker.workflow)));
+            self.talking = None;
+            return Vec::new();
+        }
+        self.prompt = Some(Prompt::Bind(picker));
+        Vec::new()
+    }
+
+    /// Writes the bindings to the home, when there is one to write to; says what happened.
+    fn keep_bindings(&self, said: String) -> (Tone, String) {
+        if self.bindings.path.as_os_str().is_empty() {
+            return (Tone::Info, format!("{said} (this session only)"));
+        }
+        match self.bindings.save() {
+            Ok(()) => (Tone::Info, said),
+            Err(error) => (Tone::Error, format!("{said}, but not kept: {error}")),
+        }
+    }
+
+    /// `talk`: shows the workflow conversation; with no binding, or pressed while it is
+    /// shown, opens the picker. Never binds on its own.
+    fn talk_key(&mut self) -> Vec<Request> {
+        let Some(execution) = self.selected_execution().cloned() else {
+            self.notice = Some((Tone::Info, "select an execution first".into()));
+            return Vec::new();
+        };
+        let Some(workflow) = self.workflow(&execution).cloned() else {
+            return Vec::new();
+        };
+        if !is_conversable(&workflow) {
+            self.notice = Some((
+                Tone::Info,
+                format!(
+                    "workflow {} has no text input and text output of its own to talk through",
+                    workflow.id
+                ),
+            ));
+            return Vec::new();
+        }
+        let bound = binding_for(
+            &self.bindings.own,
+            &self.configured,
+            &execution.profile_id,
+            &workflow,
+        );
+        if bound.is_some() && self.talking.as_deref() != Some(execution.id.as_str()) {
+            self.talking = Some(execution.id);
+            return Vec::new();
+        }
+        let ports = conversation_ports(&workflow);
+        let ids = |list: &[&Port]| list.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        let (inputs, outputs) = (ids(&ports.inputs), ids(&ports.outputs));
+        let at = |list: &[String], id: Option<&str>| {
+            id.and_then(|id| list.iter().position(|p| p == id))
+                .unwrap_or(0)
+        };
+        let binding = bound.as_ref().map(|(b, _)| b);
+        self.prompt = Some(Prompt::Bind(BindPicker {
+            input: at(&inputs, binding.map(|b| b.input.as_str())),
+            output: at(&outputs, binding.map(|b| b.output.as_str())),
+            execution: execution.id.clone(),
+            profile: execution.profile_id.clone(),
+            workflow: workflow.id.clone(),
+            inputs,
+            outputs,
+            column: 0,
+            bound: matches!(bound, Some((_, BindingSource::Own))),
+        }));
+        Vec::new()
+    }
+
+    /// `answer`: the oldest open permission request of the conversation shown, through the
+    /// decision a Decider opened for it.
+    fn answer_key(&mut self) -> Vec<Request> {
+        let Some((records, _, agent)) = self.shown_records() else {
+            self.notice = Some((Tone::Info, "no conversation is shown".into()));
+            return Vec::new();
+        };
+        let Some(request) = open_permissions(&records).into_iter().next() else {
+            self.notice = Some((Tone::Info, "no permission request waits".into()));
+            return Vec::new();
+        };
+        let Some(execution) = self.selected_execution().map(|e| e.id.clone()) else {
+            return Vec::new();
+        };
+        let node = request.node.clone().or(agent).unwrap_or_default();
+        let mut lists = Vec::new();
+        if let Some(Ok(all)) = &self.all_decisions {
+            lists.extend(all.iter());
+        }
+        lists.extend(self.pending().iter());
+        let found = lists
+            .into_iter()
+            .find(|p| asks_about(&p.kind, &p.value, &execution, &node, &request.id));
+        match found {
+            Some(decision) => {
+                self.prompt = Some(Prompt::Permission(PermissionPicker::new(
+                    decision.id.clone(),
+                    request.id.clone(),
+                    request.title.clone(),
+                    &request.options,
+                )));
+                Vec::new()
+            }
+            None => {
+                self.notice = Some((
+                    Tone::Info,
+                    format!(
+                        "nobody was asked about {} yet: no decision waits in human.list \
+                         (a Decider wired into the agent's decisions asks)",
+                        request.id
+                    ),
+                ));
+                vec![Request::AllDecisions]
+            }
+        }
+    }
+
+    /// `cancel_turn`: the agent shown, or every agent that worked on the workflow's open turn.
+    fn cancel_key(&mut self) -> Vec<Request> {
+        let execution = self.selected_execution().map(|e| e.id.clone());
+        let nodes: Vec<String> = match (self.shown_records(), self.agent_shown()) {
+            (_, Some((_, node))) => vec![node],
+            (Some((records, ..)), None) => {
+                let last = records
+                    .iter()
+                    .rev()
+                    .find(|r| matches!(r, Record::Entry { role, .. } if role == USER))
+                    .map_or(0, Record::seq);
+                let mut nodes: Vec<String> = Vec::new();
+                for record in &records {
+                    if let Record::Activity {
+                        seq,
+                        node: Some(node),
+                        ..
+                    } = record
+                    {
+                        if *seq > last && !nodes.contains(node) {
+                            nodes.push(node.clone());
+                        }
+                    }
+                }
+                nodes
+            }
+            (None, None) => Vec::new(),
+        };
+        let Some(execution) = execution.filter(|_| !nodes.is_empty()) else {
+            self.notice = Some((Tone::Info, "no agent is working on a turn here".into()));
+            return Vec::new();
+        };
+        nodes
+            .into_iter()
+            .map(|node| Request::AgentCancel {
+                execution: execution.clone(),
+                node,
+            })
+            .collect()
     }
 
     /// The new keys of Operate (docs/04-client.md §7, second version). `None`: not one.
@@ -797,6 +1134,15 @@ impl App {
                 self.event_offset.saturating_sub(1)
             };
             return Some(Vec::new());
+        }
+        if keys.talk.matches(&key) {
+            return Some(self.talk_key());
+        }
+        if keys.answer.matches(&key) {
+            return Some(self.answer_key());
+        }
+        if keys.cancel_turn.matches(&key) {
+            return Some(self.cancel_key());
         }
         if keys.edit.matches(&key) {
             return Some(self.open_editor());
@@ -909,7 +1255,7 @@ impl App {
     }
 
     fn start_typing(&mut self) {
-        if self.talk_target().is_some() {
+        if self.workflow_talk().is_some() || self.talk_target().is_some() {
             self.focus = Focus::Input;
         } else if let Some(node) = self.selected_node() {
             self.notice = Some((
@@ -920,6 +1266,9 @@ impl App {
     }
 
     fn type_key(&mut self, key: KeyEvent) -> Vec<Request> {
+        if self.options.keys.cancel_turn.matches(&key) {
+            return self.cancel_key();
+        }
         // Esc and a key pressed right after it reach us as Alt+key: leave, then the key.
         if key.modifiers.contains(KeyModifiers::ALT) {
             self.focus = Focus::Nodes;
@@ -939,6 +1288,17 @@ impl App {
 
     fn submit(&mut self) -> Vec<Request> {
         let text = self.input.trim().to_string();
+        if let Some((execution, binding, _)) = self.workflow_talk() {
+            if text.is_empty() {
+                return Vec::new();
+            }
+            self.input.clear();
+            return vec![Request::WorkflowSend {
+                execution,
+                port: binding.input,
+                value: Value::from(text),
+            }];
+        }
         let Some(((execution, node), kind)) = self.talk_target() else {
             self.focus = Focus::Nodes;
             return Vec::new();
@@ -950,12 +1310,9 @@ impl App {
         let key = (execution.clone(), node.clone());
         match kind {
             NodeKind::Agent => {
-                self.turns
-                    .entry(key.clone())
-                    .or_default()
-                    .push(Turn::Prompt(text.clone()));
-                self.thinking.insert(key);
-                vec![Request::Prompt {
+                let log = self.agents.entry(key).or_default();
+                log.queued.push((String::new(), text.clone()));
+                vec![Request::AgentSend {
                     execution,
                     node,
                     text,
@@ -992,7 +1349,10 @@ impl App {
                     self.execution_changed();
                 }
             }
-            Focus::Nodes => self.node = step(self.node, self.nodes().len(), by),
+            Focus::Nodes => {
+                self.node = step(self.node, self.nodes().len(), by);
+                self.talking = None;
+            }
             Focus::Decisions => {
                 let at = step(self.decision_index().unwrap_or(0), self.pending().len(), by);
                 self.decision = self.pending().get(at).map(|p| p.id.clone());
@@ -1165,36 +1525,233 @@ mod tests {
         );
     }
 
+    fn history(next: u64, entries: serde_json::Value, activity: serde_json::Value) -> Event {
+        Event::AgentHistory {
+            execution: "exec-1".into(),
+            node: "dev".into(),
+            since: 0,
+            result: Ok(serde_json::json!({
+                "entries": entries, "activity": activity, "next": next,
+                "session": { "engine_session_id": "s-1", "native_resume": false, "state": "idle" }
+            })),
+        }
+    }
+
     #[test]
-    fn a_prompt_goes_to_the_agent_and_waits_for_its_answer() {
+    fn a_prompt_is_queued_with_agent_send_and_read_back_from_the_history() {
         let mut app = running_app();
         app.focus = Focus::Nodes;
+        // The agent under the cursor: its history is asked for.
+        assert!(app.poll().contains(&Request::AgentHistory {
+            execution: "exec-1".into(),
+            node: "dev".into(),
+            since: 0,
+            limit: 200
+        }));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.focus, Focus::Input);
-        for c in "hi".chars() {
-            press(&mut app, KeyCode::Char(c));
-        }
+        typing(&mut app, "hi");
         let sent = press(&mut app, KeyCode::Enter);
         assert_eq!(
             sent,
-            vec![Request::Prompt {
+            vec![Request::AgentSend {
                 execution: "exec-1".into(),
                 node: "dev".into(),
                 text: "hi".into()
             }]
         );
         let key = ("exec-1".to_string(), "dev".to_string());
-        assert!(app.thinking.contains(&key));
-        app.apply(Event::Answer {
+        app.apply(Event::AgentSent {
             execution: key.0.clone(),
             node: key.1.clone(),
-            answer: Ok("hello".into()),
+            text: "hi".into(),
+            result: Ok("t-1".into()),
         });
-        assert!(!app.thinking.contains(&key));
+        assert!(app.agents[&key].busy(), "queued until the history has it");
+        let more = app.apply(history(
+            3,
+            serde_json::json!([
+                { "seq": 1, "role": "user", "text": "hi", "turn": "t-1" },
+                { "seq": 3, "role": "agent", "text": "hello", "turn": "t-1" }
+            ]),
+            serde_json::json!([{ "seq": 2, "turn": "t-1",
+                                  "event": { "kind": "tool_call", "id": "c1", "title": "read",
+                                             "status": "completed" } }]),
+        ));
+        let log = &app.agents[&key];
+        assert!(!log.busy());
+        assert_eq!(log.next, 3);
+        assert_eq!(log.records.len(), 3);
+        // A page that moved the cursor asks for the next one at once.
         assert_eq!(
-            app.turns[&key],
-            vec![Turn::Prompt("hi".into()), Turn::Answer("hello".into())]
+            more,
+            vec![Request::AgentHistory {
+                execution: "exec-1".into(),
+                node: "dev".into(),
+                since: 3,
+                limit: 200
+            }]
         );
+    }
+
+    /// The team profile with its workflow's own text ports.
+    fn with_ports(ports: Vec<Port>) -> App {
+        let mut app = running_app();
+        let mut profile = profile();
+        profile.workflows[0].ports = ports;
+        app.apply(Event::Profiles(vec![profile]));
+        app
+    }
+
+    fn then(id: &str, direction: Direction) -> Port {
+        let mut port = port(id, "text@1", direction);
+        port.kind = WireKind::Then;
+        port
+    }
+
+    #[test]
+    fn a_workflow_is_talked_to_only_through_a_binding_chosen_and_kept() {
+        let home = std::env::temp_dir().join(format!("regulus-tui-bind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let mut app = with_ports(vec![
+            then("ask", Direction::Input),
+            then("topic", Direction::Input),
+            then("answer", Direction::Output),
+        ]);
+        app.bindings = Bindings::load(&home).unwrap();
+        app.focus = Focus::Nodes;
+        // Nothing is bound on its own: `talk` opens the picker with every candidate.
+        press(&mut app, KeyCode::Char('c'));
+        let Some(Prompt::Bind(picker)) = &app.prompt else {
+            panic!("{:?}", app.prompt)
+        };
+        assert_eq!(picker.inputs, vec!["ask", "topic"]);
+        assert_eq!(app.workflow_talk(), None);
+        press(&mut app, KeyCode::Down);
+        let polled = press(&mut app, KeyCode::Enter);
+        assert!(polled.iter().any(|r| matches!(r, Request::Events { .. })));
+        let (execution, binding, _) = app.workflow_talk().unwrap();
+        assert_eq!(
+            (execution.as_str(), binding.input.as_str()),
+            ("exec-1", "topic")
+        );
+        assert_eq!(
+            Bindings::load(&home).unwrap().own["team/main"].input,
+            "topic"
+        );
+        // Typing goes to the bound input.
+        press(&mut app, KeyCode::Enter);
+        typing(&mut app, "rust");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Request::WorkflowSend {
+                execution: "exec-1".into(),
+                port: "topic".into(),
+                value: "rust".into()
+            }]
+        );
+        // The bus is the transcript: the turn, an inner agent's activity, the reply.
+        let activity = |seq, value| {
+            let mut event = bus(seq, "dev", value);
+            event.capability = "agent.event@1".into();
+            event
+        };
+        let mut sent = bus(1, "self", "rust".into());
+        sent.from.port_id = "topic".into();
+        let mut reply = bus(3, "self", "a language".into());
+        reply.from.port_id = "answer".into();
+        app.apply(Event::Events {
+            execution: "exec-1".into(),
+            since: 0,
+            result: Ok(regulus_proto::EventPage {
+                events: vec![
+                    sent,
+                    activity(
+                        2,
+                        serde_json::json!({ "kind": "permission_request", "id": "p1",
+                        "title": "write", "options": [
+                            { "id": "yes", "kind": "allow_once", "name": "Allow" }] }),
+                    ),
+                    reply,
+                ],
+                next: 3,
+                pending: 0,
+            }),
+        });
+        let (records, ..) = app.shown_records().unwrap();
+        assert_eq!(records.len(), 3);
+        // The permission waits on a decision in another execution: found, and answered.
+        app.focus = Focus::Nodes;
+        assert_eq!(
+            press(&mut app, KeyCode::Char('a')),
+            vec![Request::AllDecisions]
+        );
+        let decision: Pending = serde_json::from_value(serde_json::json!({
+            "id": "h-9", "kind": "decision", "execution_id": "exec-0", "node_id": "d",
+            "value": { "context": { "execution_id": "exec-1", "node_id": "dev",
+                                    "request_id": "p1" } }
+        }))
+        .unwrap();
+        app.apply(Event::AllDecisions(Ok(vec![decision])));
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Request::Choose {
+                id: "h-9".into(),
+                option: None
+            }],
+            "no reject option: the last choice rejects"
+        );
+        // Cancel reaches the agent that worked on the open turn.
+        assert_eq!(
+            app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            vec![Request::AgentCancel {
+                execution: "exec-1".into(),
+                node: "dev".into()
+            }]
+        );
+        // `talk` again reopens the picker, where `x` forgets the binding.
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.workflow_talk(), None);
+        assert!(Bindings::load(&home).unwrap().own.is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_workflow_without_text_ports_says_so_and_cancel_reaches_the_agent() {
+        let mut app = running_app();
+        app.focus = Focus::Nodes;
+        press(&mut app, KeyCode::Char('c'));
+        assert!(app.prompt.is_none());
+        assert!(app.notice.as_ref().unwrap().1.contains("no text input"));
+        assert_eq!(
+            app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            vec![Request::AgentCancel {
+                execution: "exec-1".into(),
+                node: "dev".into()
+            }]
+        );
+        // A permission of the agent with nobody asked: said, and the decisions are asked.
+        app.apply(history(
+            1,
+            serde_json::json!([]),
+            serde_json::json!([{ "seq": 1, "turn": "t-1", "event": {
+                "kind": "permission_request", "id": "p1", "title": "write",
+                "options": [{ "id": "no", "kind": "reject_once", "name": "No" }] } }]),
+        ));
+        assert!(app.poll().contains(&Request::AllDecisions));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('a')),
+            vec![Request::AllDecisions]
+        );
+        assert!(app
+            .notice
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("nobody was asked about p1"));
     }
 
     #[test]
@@ -1468,8 +2025,8 @@ mod tests {
         let mut app = running_app();
         let polled = app.poll();
         assert_eq!(
-            polled,
-            vec![
+            polled[..2],
+            [
                 Request::Events {
                     execution: "exec-1".into(),
                     since: 0,

@@ -182,7 +182,28 @@ macro_rules! keys {
 const CONTEXTS: &[(&str, &[&str])] = &[
     (
         "operate",
-        &["edit", "new_profile", "templates", "filter", "send"],
+        &[
+            "edit",
+            "new_profile",
+            "templates",
+            "filter",
+            "send",
+            "talk",
+            "answer",
+            "cancel_turn",
+        ],
+    ),
+    (
+        "bind",
+        &[
+            "up",
+            "down",
+            "next_pane",
+            "previous_pane",
+            "open",
+            "remove",
+            "back",
+        ],
     ),
     ("decisions", &["approve", "reject"]),
     (
@@ -254,6 +275,13 @@ keys! {
     reject = ["n"];
     /// Operate: send a value to an input of the running workflow.
     send = ["w"];
+    /// Operate: talk to the selected execution's workflow through its binding; with none,
+    /// or pressed again, choose the binding (docs/04-client.md §7).
+    talk = ["c"];
+    /// Operate: answer the oldest permission request of the conversation shown.
+    answer = ["a"];
+    /// Operate: cancel the turn in flight of the conversation shown, also while typing.
+    cancel_turn = ["ctrl+x"];
     /// Edit: add a node from the palette.
     add_node = ["a"];
     /// Edit: delete the selected node or workflow.
