@@ -146,12 +146,19 @@ describe("workflows", () => {
     expect(kept.workflows[1].ports?.[0]).toMatchObject({ id: "question", capability: "path@1" });
   });
 
-  test("workflow ports are always then: a uses kind is ignored", () => {
-    const added = doc.addWorkflowPort(sample(), "inner", { kind: "uses" });
-    expect(added.profile.workflows[1].ports?.find((p) => p.id === added.id)?.kind).toBe("then");
-    const kept = doc.updateWorkflowPort(sample(), "inner", "q", { kind: "uses", capability: "path@1" });
-    expect(kept.workflows[1].ports?.[0]).toMatchObject({ kind: "then", capability: "path@1" });
-    expect(kept.workflows[1].wires).toHaveLength(2);
+  test("workflow ports take either kind: uses crosses the boundary too", () => {
+    const added = doc.addWorkflowPort(sample(), "inner", { kind: "uses", capability: "llm.endpoint@1" });
+    expect(added.profile.workflows[1].ports?.find((p) => p.id === added.id)).toMatchObject({ kind: "uses", capability: "llm.endpoint@1", direction: "input" });
+    const output = doc.addWorkflowPort(sample(), "inner", { kind: "uses", direction: "output", required: true, lazy: true });
+    expect(output.profile.workflows[1].ports?.find((p) => p.id === output.id)).toMatchObject({ id: "out", kind: "uses", direction: "output", required: true, lazy: true });
+    // A new kind turns the port around: the wires that reached it go.
+    const turned = doc.updateWorkflowPort(sample(), "inner", "q", { kind: "uses", capability: "path@1" });
+    expect(turned.workflows[1].ports?.[0]).toMatchObject({ kind: "uses", capability: "path@1" });
+    expect(turned.workflows[1].wires.map((w) => w.id)).toEqual(["h-out"]);
+    // Required, lazy and cardinality change in place and keep the wires.
+    const flags = doc.updateWorkflowPort(sample(), "inner", "q", { required: true, lazy: true, cardinality: "many" });
+    expect(flags.workflows[1].ports?.[0]).toMatchObject({ required: true, lazy: true, cardinality: "many" });
+    expect(flags.workflows[1].wires).toHaveLength(2);
   });
 
   test("a new direction drops the wires that reached the port, inside and through boxes", () => {
@@ -183,6 +190,149 @@ describe("workflows", () => {
     profile = doc.addWire(profile, "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "own", port_id: "q" });
     const after = doc.removeWorkflowPort(profile, "inner", "q");
     expect(after.workflows[0].wires.some((w) => w.to.node_id === "own")).toBe(true);
+  });
+});
+
+/** `main` with a provider `p`, an agent `ag` that uses it, a writer `w` fed by the agent, and `tools` serving `ag`. */
+function usesSample() {
+  const uses = (id: string, direction: "input" | "output", capability: string, extra = {}) => port(id, direction, "uses", capability, extra);
+  let profile = sample();
+  profile = doc.addNode(profile, "main", node("p", [uses("endpoint", "output", "llm.endpoint@1")], { position: { x: 0, y: 0 } }));
+  profile = doc.addNode(profile, "main", node("p2", [uses("endpoint", "output", "llm.endpoint@1")], { position: { x: 0, y: 200 } }));
+  profile = doc.addNode(profile, "main", node("ag", [uses("provider", "input", "llm.endpoint@1", { required: true }), uses("tools", "input", "tool@1", { cardinality: "many" }), port("prompt", "input"), port("reply", "output")], { position: { x: 300, y: 0 } }));
+  profile = doc.addNode(profile, "main", node("tools", [uses("toolset", "output", "tool@1")], { position: { x: 300, y: 200 } }));
+  profile = doc.addNode(profile, "main", node("w", [port("in", "input"), port("done", "output")], { position: { x: 600, y: 0 } }));
+  profile = doc.addNode(profile, "main", node("w2", [port("in", "input")], { position: { x: 600, y: 200 } }));
+  const wire = (kind: "uses" | "then", from: string, to: string) => {
+    const [fn, fp] = from.split("."); const [tn, tp] = to.split(".");
+    profile = doc.addWire(profile, "main", kind, { node_id: fn, port_id: fp }, { node_id: tn, port_id: tp });
+  };
+  wire("uses", "p.endpoint", "ag.provider");
+  wire("uses", "tools.toolset", "ag.tools");
+  wire("then", "self.ask", "ag.prompt");
+  wire("then", "ag.reply", "w.in");
+  wire("then", "ag.reply", "w2.in");
+  return profile;
+}
+
+describe("create box from selection", () => {
+  test("cut Then wires become ports; inside they reach self, outside the box", () => {
+    const made = doc.createBoxFromSelection(usesSample(), "main", ["ag"], "Agent box")!;
+    expect(made).not.toBeNull();
+    expect(made.workflowId).toBe("agent-box");
+    expect(made.boxId).toBe("agent-box");
+    const inner = doc.workflowOf(made.profile, "agent-box")!;
+    expect(inner).toMatchObject({ name: "Agent box", kind: "extra" });
+    expect(inner.nodes.map((n) => n.id)).toEqual(["ag"]);
+    const byId = Object.fromEntries(inner.ports!.map((p) => [p.id, p]));
+    expect(byId.prompt).toMatchObject({ direction: "input", kind: "then", capability: "text@1" });
+    // One inner output that fed two outside nodes is one port, wired to both.
+    expect(byId.reply).toMatchObject({ direction: "output", kind: "then" });
+    expect(inner.wires.filter((w) => w.to.node_id === "self").map((w) => `${w.from.node_id}.${w.from.port_id}>${w.to.port_id}`)).toEqual(["ag.reply>reply"]);
+    const main = doc.workflowOf(made.profile, "main")!;
+    expect(main.nodes.some((n) => n.id === "ag")).toBe(false);
+    const box = doc.nodeOf(main, "agent-box")!;
+    expect(doc.isBox(box)).toBe(true);
+    expect(box.internal_workflow_id).toBe("agent-box");
+    expect(main.wires.filter((w) => w.from.node_id === "agent-box").map((w) => `${w.from.port_id}>${w.to.node_id}`).sort()).toEqual(["reply>w", "reply>w2"]);
+    expect(main.wires.find((w) => w.to.node_id === "agent-box" && w.kind === "then")?.from).toEqual({ node_id: "self", port_id: "ask" });
+  });
+
+  test("cut Uses wires become Uses ports: a provider in, a toolset out", () => {
+    // The agent stays outside; the provider and the tools go in the box.
+    const made = doc.createBoxFromSelection(usesSample(), "main", ["p", "tools"], "Services")!;
+    const inner = doc.workflowOf(made.profile, made.workflowId)!;
+    expect(inner.ports!.map((p) => [p.id, p.direction, p.kind, p.capability])).toEqual([
+      ["endpoint", "output", "uses", "llm.endpoint@1"], ["toolset", "output", "uses", "tool@1"],
+    ]);
+    const main = doc.workflowOf(made.profile, "main")!;
+    expect(main.wires.filter((w) => w.kind === "uses").map((w) => `${w.from.node_id}.${w.from.port_id}>${w.to.node_id}.${w.to.port_id}`).sort())
+      .toEqual(["services.endpoint>ag.provider", "services.toolset>ag.tools"]);
+    // The agent inside, the provider outside: a Uses input, required like the agent's.
+    const other = doc.createBoxFromSelection(usesSample(), "main", ["ag", "tools"], "Worker")!;
+    const worker = doc.workflowOf(other.profile, "worker")!;
+    expect(worker.ports!.find((p) => p.id === "provider")).toMatchObject({ direction: "input", kind: "uses", capability: "llm.endpoint@1", required: true });
+    expect(worker.wires.find((w) => w.from.node_id === "self" && w.from.port_id === "provider")?.to).toEqual({ node_id: "ag", port_id: "provider" });
+    // tools → ag is now an inner wire, untouched.
+    expect(worker.wires.some((w) => w.from.node_id === "tools" && w.to.node_id === "ag")).toBe(true);
+    // Every wire still fits: the canvas would accept each one.
+    for (const workflow of other.profile.workflows) for (const wire of workflow.wires) {
+      const from = doc.portAt(other.profile, workflow, wire.from);
+      const to = doc.portAt(other.profile, workflow, wire.to);
+      expect(from && to && from.capability === to.capability && from.kind === wire.kind && to.kind === wire.kind).toBe(true);
+    }
+  });
+
+  test("several outside wires into one inner input share a port that takes many", () => {
+    let profile = usesSample();
+    profile = doc.addWire(profile, "main", "uses", { node_id: "p2", port_id: "endpoint" }, { node_id: "a", port_id: "greeting" });
+    // ag.tools takes many: feed it from two outside nodes.
+    profile = doc.addNode(profile, "main", node("tools2", [port("toolset", "output", "uses", "tool@1")]));
+    profile = doc.addWire(profile, "main", "uses", { node_id: "tools2", port_id: "toolset" }, { node_id: "ag", port_id: "tools" });
+    const made = doc.createBoxFromSelection(profile, "main", ["ag"], "x")!;
+    const tools = doc.workflowOf(made.profile, "x")!.ports!.find((p) => p.id === "tools")!;
+    expect(tools.cardinality).toBe("many");
+    expect(doc.workflowOf(made.profile, "x")!.wires.filter((w) => w.to.port_id === "tools")).toHaveLength(1);
+    expect(doc.workflowOf(made.profile, "main")!.wires.filter((w) => w.to.node_id === "x" && w.to.port_id === "tools")).toHaveLength(2);
+  });
+
+  test("a box inside the selection moves with its wires and keeps its workflow", () => {
+    let profile = doc.addWire(sample(), "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "box", port_id: "q" });
+    profile = doc.addWire(profile, "main", "then", { node_id: "box", port_id: "r" }, { node_id: "a", port_id: "echo" });
+    const made = doc.createBoxFromSelection(profile, "main", ["box", "a"], "Outer")!;
+    const outer = doc.workflowOf(made.profile, "outer")!;
+    expect(outer.nodes.map((n) => n.id)).toEqual(["a", "box"]);
+    expect(doc.nodeOf(outer, "box")!.internal_workflow_id).toBe("inner");
+    expect(outer.wires.filter((w) => w.from.node_id !== "self" && w.to.node_id !== "self").map((w) => w.id)).toContain("a-tick-box-q");
+    // a.tick → b.in crossed out: one output port.
+    expect(outer.ports!.map((p) => [p.id, p.direction])).toEqual([["tick", "output"]]);
+    expect(doc.workflowOf(made.profile, "inner")).toEqual(doc.workflowOf(profile, "inner"));
+  });
+
+  test("names that collide get a free id: workflow, box node and ports", () => {
+    let profile = sample();
+    profile = doc.addNode(profile, "main", node("inner-2", []));
+    profile = doc.addNode(profile, "main", node("two", [port("in", "input")]));
+    profile = doc.addNode(profile, "main", node("three", [port("in", "input")]));
+    profile = doc.addWire(profile, "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "two", port_id: "in" });
+    profile = doc.addWire(profile, "main", "then", { node_id: "a", port_id: "tick" }, { node_id: "three", port_id: "in" });
+    const made = doc.createBoxFromSelection(profile, "main", ["two", "three"], "Inner")!;
+    expect(made.workflowId).toBe("inner-2");
+    // `inner-2` is a node that stays in main: the box takes the next id.
+    expect(made.boxId).toBe("inner-2-2");
+    expect(made.ports.map((p) => p.id)).toEqual(["in", "in-2"]);
+    expect(doc.createBoxFromSelection(profile, "main", ["nope"], "x")).toBeNull();
+    expect(doc.createBoxFromSelection(profile, "nope", ["a"], "x")).toBeNull();
+  });
+});
+
+describe("replace dependency", () => {
+  test("candidates offer the same capability as a uses output, other nodes and self inputs", () => {
+    let profile = usesSample();
+    profile = doc.addWorkflowPort(profile, "main", { id: "model", kind: "uses", capability: "llm.endpoint@1" }).profile;
+    const found = doc.dependencyCandidates(profile, "main", { node_id: "ag", port_id: "provider" });
+    expect(found.map((item) => `${item.end.node_id}.${item.end.port_id}`)).toEqual(["self.model", "p.endpoint", "p2.endpoint"]);
+    expect(doc.dependencyCandidates(profile, "main", { node_id: "ag", port_id: "prompt" })).toEqual([]);
+  });
+
+  test("replacing rewires: the old wire goes, a uses wire from the new one comes", () => {
+    const before = usesSample();
+    const after = doc.replaceDependency(before, "main", { node_id: "ag", port_id: "provider" }, { node_id: "p2", port_id: "endpoint" });
+    const into = doc.wiresInto(doc.workflowOf(after, "main")!, { node_id: "ag", port_id: "provider" });
+    expect(into.map((w) => [w.kind, w.from.node_id])).toEqual([["uses", "p2"]]);
+    // The same source again changes nothing.
+    expect(doc.replaceDependency(after, "main", { node_id: "ag", port_id: "provider" }, { node_id: "p2", port_id: "endpoint" })).toBe(after);
+    // An input that takes many: only the named wire is replaced.
+    let many = doc.addNode(before, "main", node("tools2", [port("toolset", "output", "uses", "tool@1")]));
+    many = doc.addNode(many, "main", node("tools3", [port("toolset", "output", "uses", "tool@1")]));
+    many = doc.addWire(many, "main", "uses", { node_id: "tools2", port_id: "toolset" }, { node_id: "ag", port_id: "tools" });
+    const named = doc.wiresInto(doc.workflowOf(many, "main")!, { node_id: "ag", port_id: "tools" }).find((w) => w.from.node_id === "tools")!;
+    const swapped = doc.replaceDependency(many, "main", { node_id: "ag", port_id: "tools" }, { node_id: "tools3", port_id: "toolset" }, named.id);
+    expect(doc.wiresInto(doc.workflowOf(swapped, "main")!, { node_id: "ag", port_id: "tools" }).map((w) => w.from.node_id).sort()).toEqual(["tools2", "tools3"]);
+  });
+
+  test("knownCapabilities lists capabilities of one kind, once", () => {
+    expect(doc.knownCapabilities(usesSample(), [port("x", "input", "uses", "decision@1")], "uses")).toEqual(["agent.engine@1", "decision@1", "llm.endpoint@1", "text@1", "tool@1"]);
   });
 });
 

@@ -1,6 +1,7 @@
 // The core methods the canvas calls, each the same RPC a CLI command uses
 // (`regulus profile save`, `regulus check`, `regulus run`, `regulus profile rm`).
 import type { Diagnostic, Execution, Manifest, Profile, ProfileSaved } from "../model";
+import type { TemplateSaveParams } from "./template";
 
 /** Anything that sends one JSON-RPC request: the shared `RpcClient`, or a test double. */
 export interface Requester {
@@ -15,6 +16,8 @@ export const saveProfile = (rpc: Requester, profile: Profile, isNew: boolean) =>
 export const checkProfile = (rpc: Requester, id: string) => rpc.request<Diagnostic[]>("profile.check", { id });
 export const startExecution = (rpc: Requester, profileId: string, workflowId?: string) =>
   rpc.request<Execution>("execution.start", workflowId ? { profile_id: profileId, workflow_id: workflowId } : { profile_id: profileId });
+/** `regulus template save`: writes the saved profile (or one workflow of it) as a template file. */
+export const saveTemplate = (rpc: Requester, params: TemplateSaveParams) => rpc.request<{ path: string }>("template.save", { ...params });
 export const deleteProfile = (rpc: Requester, id: string) => rpc.request<{ profile_id: string; path: string }>("profile.delete", { id });
 
 /** The message as the core sent it. */

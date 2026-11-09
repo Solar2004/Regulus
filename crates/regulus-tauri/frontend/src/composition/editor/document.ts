@@ -180,15 +180,17 @@ function rewireBoundary(profile: Profile, id: string, portId: string, next: stri
   };
 }
 
-/** Only "then" values cross a workflow's boundary: the core refuses a "uses" workflow port (`workflow.port_uses`). */
-export const WORKFLOW_PORT_KIND: Port["kind"] = "then";
+/** The kind a new workflow port gets when none is asked for. Both kinds cross a boundary (`docs/11-composition.md` §6). */
+export const DEFAULT_PORT_KIND: Port["kind"] = "then";
+/** The capability a new workflow port starts with; the inspector edits it. */
+export const DEFAULT_PORT_CAPABILITY = "text@1";
 
-/** Adds a workflow port (an input by default, always "then") and returns its id. */
+/** Adds a workflow port (a "then" input unless `port` says otherwise) and returns its id. */
 export function addWorkflowPort(profile: Profile, workflowId: string, port: Partial<Port> = {}): { profile: Profile; id: string } {
   const workflow = workflowOf(profile, workflowId);
   if (!workflow) return { profile, id: "" };
   const id = uniqueId(port.id ?? (port.direction === "output" ? "out" : "in"), (workflow.ports ?? []).map((item) => item.id), "port");
-  const added: Port = { name: id, capability: "text@1", direction: "input", required: false, ...port, kind: WORKFLOW_PORT_KIND, id };
+  const added: Port = { name: id, capability: DEFAULT_PORT_CAPABILITY, direction: "input", required: false, kind: DEFAULT_PORT_KIND, ...port, id };
   return { profile: updateWorkflow(profile, workflowId, (item) => ({ ...item, ports: [...(item.ports ?? []), added] })), id };
 }
 
@@ -203,17 +205,15 @@ export function wiresOfPort(profile: Profile, workflowId: string, portId: string
 /**
  * Changes a workflow port. A new id follows into every wire that names it. A new direction
  * or kind turns every wire that reaches the port around, so those wires are dropped (ask
- * `wiresOfPort` first to say how many). A "uses" kind is ignored: the core refuses it.
+ * `wiresOfPort` first to say how many).
  */
 export function updateWorkflowPort(profile: Profile, workflowId: string, portId: string, patch: Partial<Port>): Profile {
   const workflow = workflowOf(profile, workflowId);
   const port = workflow?.ports?.find((item) => item.id === portId);
   if (!workflow || !port) return profile;
-  const { kind, ...rest } = patch;
-  const safe: Partial<Port> = kind === undefined || kind === WORKFLOW_PORT_KIND ? patch : rest;
-  let next = safe.id === undefined ? portId : slugify(safe.id);
+  let next = patch.id === undefined ? portId : slugify(patch.id);
   if (!next || (next !== portId && workflow.ports!.some((item) => item.id === next))) next = portId;
-  const changed: Port = { ...port, ...safe, id: next };
+  const changed: Port = { ...port, ...patch, id: next };
   const updated = updateWorkflow(profile, workflowId, (item) => ({ ...item, ports: item.ports!.map((existing) => existing.id === portId ? changed : existing) }));
   if (changed.direction !== port.direction || changed.kind !== port.kind) return rewireBoundary(updated, workflowId, portId, null);
   return next === portId ? updated : rewireBoundary(updated, workflowId, portId, next);
@@ -243,4 +243,141 @@ export function freePosition(workflow: Workflow, point: Point, size: Point, meas
   };
   for (let tries = 0; tries < 100 && workflow.nodes.some(touches); tries++) x += size.x;
   return { x, y };
+}
+
+/** The port at one end of a wire of `workflow`: a node's (a box's from its workflow) or, for `self`, the workflow's own. */
+export function portAt(profile: Profile, workflow: Workflow, end: End): Port | undefined {
+  if (end.node_id === SELF) return workflow.ports?.find((port) => port.id === end.port_id);
+  const node = nodeOf(workflow, end.node_id);
+  return node && portsOf(profile, node).find((port) => port.id === end.port_id);
+}
+
+export interface BoxCreated {
+  profile: Profile;
+  /** The new workflow that holds the moved nodes. */
+  workflowId: string;
+  /** The box node that replaced them. */
+  boxId: string;
+  /** The workflow ports made from the wires that crossed the selection. */
+  ports: Port[];
+}
+
+/**
+ * Moves the nodes `nodeIds` of `workflowId`, with the wires among them, into a new workflow
+ * named `name`, and puts a box of it where they were. Every wire that crossed the selection
+ * becomes a port of the new workflow, of the wire's kind and the inner port's capability:
+ * an input when the wire came in, an output when it went out. One port per inner end (node,
+ * port): outside wires that reached the same inner input share it (`many` if several), and
+ * one inner output that fed several outside nodes is one output wired to all of them. Inside,
+ * the cut wires start or end at `self.<port>`; outside, at `<box>.<port>` and keep their id.
+ * `null` when no named node is in the workflow.
+ */
+export function createBoxFromSelection(profile: Profile, workflowId: string, nodeIds: string[], name: string): BoxCreated | null {
+  const workflow = workflowOf(profile, workflowId);
+  if (!workflow) return null;
+  const inside = new Set(nodeIds.filter((id) => nodeOf(workflow, id)));
+  if (!inside.size) return null;
+  const moved = workflow.nodes.filter((node) => inside.has(node.id));
+  const staying = workflow.nodes.filter((node) => !inside.has(node.id));
+  const id = uniqueId(name, profile.workflows.map((item) => item.id), "workflow");
+  const boxId = uniqueId(id, staying.map((node) => node.id));
+
+  const ports: Port[] = [];
+  const portByEnd = new Map<string, Port>();
+  const outerCount = new Map<string, number>();
+  const innerWires: Wire[] = [];
+  const outerWires: Wire[] = [];
+  const takenWireIds = workflow.wires.map((wire) => wire.id);
+  const boundary = (wire: Wire, inner: End, outer: End, direction: Port["direction"]): Port => {
+    const key = `${direction}:${inner.node_id}.${inner.port_id}`;
+    const known = portByEnd.get(key);
+    if (known) return known;
+    const own = portAt(profile, workflow, inner) ?? portAt(profile, workflow, outer);
+    const portId = uniqueId(inner.port_id, ports.map((port) => port.id), "port");
+    const port: Port = {
+      id: portId, name: portId, capability: own?.capability ?? DEFAULT_PORT_CAPABILITY, direction, kind: wire.kind,
+      required: direction === "input" ? own?.required ?? false : false,
+      ...(direction === "input" && own?.cardinality ? { cardinality: own.cardinality } : {}),
+      ...(direction === "input" && own?.lazy !== undefined ? { lazy: own.lazy } : {}),
+    };
+    ports.push(port);
+    portByEnd.set(key, port);
+    const self = { node_id: SELF, port_id: portId };
+    const [from, to] = direction === "input" ? [self, inner] : [inner, self];
+    const wireId = uniqueId(`${from.node_id}-${from.port_id}-${to.node_id}-${to.port_id}`, [...takenWireIds, ...innerWires.map((item) => item.id)], "wire");
+    innerWires.push({ id: wireId, kind: wire.kind, from: { ...from }, to: { ...to } });
+    return port;
+  };
+  const kept: Wire[] = [];
+  for (const wire of workflow.wires) {
+    const fromIn = inside.has(wire.from.node_id);
+    const toIn = inside.has(wire.to.node_id);
+    if (fromIn && toIn) innerWires.push(wire);
+    else if (!fromIn && !toIn) kept.push(wire);
+    else if (toIn) {
+      const port = boundary(wire, wire.to, wire.from, "input");
+      outerCount.set(port.id, (outerCount.get(port.id) ?? 0) + 1);
+      outerWires.push({ ...wire, to: { node_id: boxId, port_id: port.id } });
+    } else {
+      const port = boundary(wire, wire.from, wire.to, "output");
+      outerWires.push({ ...wire, from: { node_id: boxId, port_id: port.id } });
+    }
+  }
+  // Several outside wires into one inner input: the box's input takes them all.
+  const finalPorts = ports.map((port) => (outerCount.get(port.id) ?? 0) > 1 ? { ...port, cardinality: "many" as const } : port);
+  const center = {
+    x: Math.round(moved.reduce((sum, node) => sum + node.position.x, 0) / moved.length),
+    y: Math.round(moved.reduce((sum, node) => sum + node.position.y, 0) / moved.length),
+  };
+  const box: CompositionNode = {
+    id: boxId, type: "workflow", name: name.trim() || id, module_id: null, resource: null, ports: [], config: {},
+    position: center, internal_workflow_id: id, exposed_parameters: [],
+  };
+  const created: Workflow = { id, name: name.trim() || id, kind: "extra", module_id: null, ports: finalPorts, nodes: moved, wires: innerWires, layout: { x: 0, y: 0, width: 0, height: 0 } };
+  const workflows = profile.workflows.map((item) => item.id === workflowId ? { ...item, nodes: [...staying, box], wires: [...kept, ...outerWires] } : item);
+  return { profile: { ...profile, workflows: [...workflows, created] }, workflowId: id, boxId, ports: finalPorts };
+}
+
+/** The wires that reach input `to` of a node (or a `self` output) in this workflow. */
+export function wiresInto(workflow: Workflow, to: End): Wire[] {
+  return workflow.wires.filter((wire) => wire.to.node_id === to.node_id && wire.to.port_id === to.port_id);
+}
+
+/**
+ * Who can serve the "uses" input `to`: every other node of the workflow with a "uses"
+ * output of the same capability, and the workflow's own "uses" inputs of that capability
+ * (inside, they act as outputs).
+ */
+export function dependencyCandidates(profile: Profile, workflowId: string, to: End): { end: End; port: Port; label: string }[] {
+  const workflow = workflowOf(profile, workflowId);
+  const target = workflow && portAt(profile, workflow, to);
+  if (!workflow || !target || target.kind !== "uses") return [];
+  const fits = (port: Port) => port.kind === "uses" && port.capability === target.capability;
+  const own = (workflow.ports ?? []).filter((port) => port.direction === "input" && fits(port))
+    .map((port) => ({ end: { node_id: SELF, port_id: port.id }, port, label: `${SELF}.${port.id}` }));
+  const nodes = workflow.nodes.filter((node) => node.id !== to.node_id).flatMap((node) => portsOf(profile, node)
+    .filter((port) => port.direction === "output" && fits(port))
+    .map((port) => ({ end: { node_id: node.id, port_id: port.id }, port, label: `${node.name || node.id}.${port.id}` })));
+  return [...own, ...nodes];
+}
+
+/**
+ * Serves the "uses" input `to` from `from` instead: the wire `replacing` goes (or, with no
+ * wire named, every wire into an input that takes one), and a "uses" wire from `from` comes.
+ */
+export function replaceDependency(profile: Profile, workflowId: string, to: End, from: End, replacing?: string): Profile {
+  const workflow = workflowOf(profile, workflowId);
+  const target = workflow && portAt(profile, workflow, to);
+  if (!workflow || !target) return profile;
+  const into = wiresInto(workflow, to);
+  // Already served from there: nothing to change.
+  if (into.some((wire) => wire.from.node_id === from.node_id && wire.from.port_id === from.port_id)) return profile;
+  const gone = replacing ? into.filter((wire) => wire.id === replacing) : target.cardinality === "many" ? [] : into;
+  return addWire(removeWires(profile, workflowId, gone.map((wire) => wire.id)), workflowId, "uses", from, to);
+}
+
+/** Capabilities of a kind already in use: in the manifests' ports and the profile's, for suggestions. */
+export function knownCapabilities(profile: Profile, manifestPorts: Port[], kind: Port["kind"]): string[] {
+  const all = [...manifestPorts, ...profile.workflows.flatMap((workflow) => [...(workflow.ports ?? []), ...workflow.nodes.flatMap((node) => node.ports)])];
+  return [...new Set(all.filter((port) => port.kind === kind).map((port) => port.capability))].sort();
 }

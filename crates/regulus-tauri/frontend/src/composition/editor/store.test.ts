@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
-import { ALL, useEditor } from "./store";
-import { addWorkflow, moveNodes, renameNode } from "./document";
+import { ALL, enterWorkflow, trailIn, useEditor } from "./store";
+import { addWorkflow, moveNodes, removeWorkflow, renameNode } from "./document";
 import { sample } from "./fixtures.test-util";
 
 describe("editor store", () => {
@@ -36,5 +36,44 @@ describe("editor store", () => {
     expect(useEditor.getState()).toMatchObject({ dirty: false, isNew: false, workflowId: "extra" });
     useEditor.getState().saved(sample(), []);
     expect(useEditor.getState().workflowId).toBe("main");
+  });
+});
+
+describe("breadcrumb", () => {
+  beforeEach(() => useEditor.getState().open(null));
+
+  test("enterWorkflow goes one step deeper, or back to a workflow already on the way", () => {
+    expect(enterWorkflow(["main"], "inner")).toEqual(["main", "inner"]);
+    expect(enterWorkflow(["main", "inner", "deep"], "inner")).toEqual(["main", "inner"]);
+    expect(enterWorkflow([], "inner")).toEqual(["inner"]);
+  });
+
+  test("trailIn cuts the trail at the first workflow the profile no longer has", () => {
+    expect(trailIn(["main", "inner"], sample())).toEqual(["main", "inner"]);
+    expect(trailIn(["main", "gone", "inner"], sample())).toEqual(["main"]);
+  });
+
+  test("opening a box walks in, the trail walks back, a tab starts over", () => {
+    useEditor.getState().open(sample());
+    expect(useEditor.getState().trail).toEqual(["main"]);
+    useEditor.getState().select({ nodes: ["a"], wires: [] });
+    useEditor.getState().openBox("inner");
+    expect(useEditor.getState()).toMatchObject({ workflowId: "inner", trail: ["main", "inner"], selection: { nodes: [] } });
+    useEditor.getState().backTo(0);
+    expect(useEditor.getState()).toMatchObject({ workflowId: "main", trail: ["main"] });
+    useEditor.getState().openBox("inner");
+    useEditor.getState().showWorkflow("main");
+    expect(useEditor.getState().trail).toEqual(["main"]);
+    useEditor.getState().showWorkflow(ALL);
+    expect(useEditor.getState().trail).toEqual([]);
+    useEditor.getState().openBox("inner");
+    expect(useEditor.getState().trail).toEqual(["inner"]);
+  });
+
+  test("removing the workflow on screen goes back along the trail", () => {
+    useEditor.getState().open(sample());
+    useEditor.getState().openBox("inner");
+    useEditor.getState().edit((profile) => removeWorkflow(profile, "inner"));
+    expect(useEditor.getState()).toMatchObject({ workflowId: "main", trail: ["main"] });
   });
 });

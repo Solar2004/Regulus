@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReactFlowProvider, useReactFlow } from "@xyflow/react";
-import { Blocks, CircleCheck, CircleAlert, FilePlus2, GitBranch, Info, ListChecks, Play, Plus, Save, Settings2, Trash2, X } from "lucide-react";
+import { Blocks, ChevronRight, CircleCheck, CircleAlert, FilePlus2, FileStack, GitBranch, Info, ListChecks, Play, Plus, Save, Settings2, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t } from "@/lib/i18n";
 import { useCore } from "@/core/connection";
 import { useRegulusUi } from "@/store/useRegulusUi";
 import { useComposition } from "./client";
 import * as doc from "./editor/document";
-import { bySeverity, checkProfile, deleteProfile, getProfile, messageOf, saveProfile, startExecution } from "./editor/api";
+import { bySeverity, checkProfile, deleteProfile, getProfile, messageOf, saveProfile, saveTemplate, startExecution } from "./editor/api";
 import { EditorCanvas } from "./editor/Canvas";
 import { nodeIdOf } from "./editor/flow";
-import { ConfirmDialog, NewProfileDialog, SettingsDialog, type Confirm } from "./editor/dialogs";
+import { ConfirmDialog, CreateBoxDialog, NewProfileDialog, SaveTemplateDialog, SettingsDialog, type Confirm } from "./editor/dialogs";
 import { NodeInspector, SelectionInspector, WorkflowInspector } from "./editor/Inspector";
 import { SeverityMark } from "./editor/nodes";
 import { Palette, type PieceRef } from "./editor/Palette";
@@ -37,8 +37,10 @@ function Editor({ composition }: { composition: Composition }) {
   const { client, profiles, modules, manifests, reload } = composition;
   const source = useCore((s) => s.source);
   const settings = useCanvasSettings();
-  const { doc: profile, isNew, dirty, workflowId, selection, diagnostics, notice, busy } = useEditor();
-  const { open, edit, saved, showWorkflow, select, setDiagnostics, notify, setBusy } = useEditor.getState();
+  const { doc: profile, isNew, dirty, workflowId, trail, selection, diagnostics, notice, busy } = useEditor();
+  const { open, edit, saved, showWorkflow, openBox, backTo, select, setDiagnostics, notify, setBusy } = useEditor.getState();
+  const [boxing, setBoxing] = useState<string[] | null>(null);
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [creating, setCreating] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -170,6 +172,17 @@ function Editor({ composition }: { composition: Composition }) {
     select({ nodes: [], wires: [] });
   };
 
+  /** Moves the nodes into a new workflow named `name` and puts its box where they were. */
+  const createBox = (nodeIds: string[], name: string) => {
+    const state = useEditor.getState();
+    if (!state.doc || state.workflowId === ALL) return;
+    const made = doc.createBoxFromSelection(state.doc, state.workflowId, nodeIds, name);
+    if (!made) return;
+    edit(() => made.profile);
+    select({ nodes: [made.boxId], wires: [] });
+    notify({ tone: "success", text: t("editor.box.created", { workflow: made.workflowId }), detail: made.ports.length ? made.ports.map((port) => `${port.direction === "input" ? "→" : "←"} ${port.id} (${port.kind} ${port.capability})`).join(" · ") : t("editor.box.noPorts") });
+  };
+
   const addWorkflow = () => {
     let id = "";
     edit((p) => { const added = doc.addWorkflow(p, t("editor.workflow.newName")); id = added.id; return added.profile; });
@@ -225,6 +238,7 @@ function Editor({ composition }: { composition: Composition }) {
         <Button size="sm" onClick={() => void save()} disabled={busy || (!dirty && !isNew)} title={t("editor.action.saveHint")}><Save size={14} />{t("editor.action.save")}</Button>
         <Button variant="outline" size="sm" onClick={() => void check()} disabled={busy || isNew}><ListChecks size={14} />{t("editor.action.check")}</Button>
         <Button variant="outline" size="sm" onClick={() => void run()} disabled={busy || isNew}><Play size={14} />{t("editor.action.run")}</Button>
+        <Button variant="outline" size="sm" onClick={() => setSavingTemplate(true)} disabled={busy || isNew} title={t("editor.template.hint")}><FileStack size={14} />{t("editor.template.action")}</Button>
         <Button variant="ghost" size="sm" onClick={remove} disabled={busy}><Trash2 size={14} />{t("editor.action.delete")}</Button>
         <Button variant="ghost" size="icon-sm" onClick={() => setShowSettings(true)} aria-label={t("editor.settings.title")}><Settings2 size={14} /></Button>
       </div>
@@ -235,10 +249,18 @@ function Editor({ composition }: { composition: Composition }) {
       {profile.workflows.map((item) => <button key={item.id} aria-current={workflowId === item.id ? "page" : undefined} onClick={() => showWorkflow(item.id)}>{item.kind === "module" ? <Blocks size={14} /> : <GitBranch size={14} />}{item.name || item.id}</button>)}
       <button onClick={addWorkflow}><Plus size={14} />{t("editor.workflow.add")}</button>
     </nav>
+    {trail.length > 1 && <nav className="workflow-trail" aria-label={t("editor.box.trail")}>
+      <ol>{trail.map((id, index) => <li key={`${id}:${index}`}>
+        {index > 0 && <ChevronRight size={12} aria-hidden="true" />}
+        {index === trail.length - 1 ? <span aria-current="page">{doc.workflowOf(profile, id)?.name || id}</span>
+          : <button type="button" onClick={() => backTo(index)}>{doc.workflowOf(profile, id)?.name || id}</button>}
+      </li>)}</ol>
+    </nav>}
     <div className="graph-body">
       {workflow && <Palette manifests={manifests} modules={modules} profile={profile} workflowId={workflow.id} onAdd={(piece) => addPiece(piece)} />}
       <div className="editor-center" ref={canvasRef}>
-        <EditorCanvas key={`${profile.id}:${workflowId}`} profile={profile} workflowId={workflowId} modules={modules} diagnostics={diagnostics} selection={selection} onAdd={addPiece} />
+        <EditorCanvas key={`${profile.id}:${workflowId}`} profile={profile} workflowId={workflowId} modules={modules} diagnostics={diagnostics} selection={selection} onAdd={addPiece}
+          onCreateBox={setBoxing} onDeleteSelection={deleteSelection} />
         {sorted.length > 0 && <section className="editor-diagnostics" aria-label={t("editor.diagnostics.title")}>
           <header><h2>{t("editor.diagnostics.title")}</h2><button onClick={() => setDiagnostics([])} aria-label={t("editor.dismiss")}><X size={14} /></button></header>
           <ul>{sorted.map((d, index) => <li key={index}><button disabled={!d.node_id} onClick={() => { if (d.node_id) { showWorkflow(d.workflow_id ?? workflowId); select({ nodes: [d.node_id], wires: [] }); } }}>
@@ -248,16 +270,19 @@ function Editor({ composition }: { composition: Composition }) {
       </div>
       {workflow && (single
         ? <NodeInspector key={single.id} profile={profile} workflowId={workflow.id} node={single} manifests={manifests} modules={modules} diagnostics={diagnostics} edit={edit}
-            onOpenWorkflow={showWorkflow} onDelete={deleteSelection} onClose={() => select({ nodes: [], wires: [] })} />
+            onOpenWorkflow={openBox} onCreateBox={() => setBoxing([single.id])} onDelete={deleteSelection} onClose={() => select({ nodes: [], wires: [] })} />
         : selection.nodes.length + selection.wires.length > 0
-          ? <SelectionInspector nodes={selection.nodes.length} wires={selection.wires.length} onDelete={deleteSelection} />
-          : <WorkflowInspector key={workflow.id} profile={profile} workflow={workflow} edit={edit} onDelete={() => removeWorkflow(workflow.id)} />)}
+          ? <SelectionInspector nodes={selection.nodes.length} wires={selection.wires.length} onCreateBox={() => setBoxing(selection.nodes)} onDelete={deleteSelection} />
+          : <WorkflowInspector key={workflow.id} profile={profile} workflow={workflow} manifests={manifests} edit={edit} onDelete={() => removeWorkflow(workflow.id)} />)}
     </div>
     {notice && <NoticeLine notice={notice} onClose={() => notify(null)} />}
     <footer className="graph-footer"><div><span className="wire-sample uses" />{t("graph.uses")}<span className="wire-sample then" />{t("graph.then")}</div><span>{nodeCount} {t("graph.nodes")} · {wireCount} {t("graph.connections")}</span><span>{t(workflow ? "editor.footer.edit" : "editor.footer.all")}</span></footer>
     <ConfirmDialog confirm={confirm} onClose={() => setConfirm(null)} />
     {newProfileDialog}
     <SettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
+    <CreateBoxDialog nodes={boxing} workflowIds={profile.workflows.map((item) => item.id)} onClose={() => setBoxing(null)} onCreate={(name) => { if (boxing) createBox(boxing, name); }} />
+    {client && <SaveTemplateDialog key={profile.id} open={savingTemplate} profileId={profile.id} workflowId={workflow?.id ?? null} dirty={dirty}
+      onClose={() => setSavingTemplate(false)} onSave={(params) => saveTemplate(client, params)} onOpenTemplates={() => useRegulusUi.getState().setView("templates")} />}
   </>;
 }
 

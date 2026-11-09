@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, ReactFlow, type Connection, type EdgeChange, type FinalConnectionState, type NodeChange } from "@xyflow/react";
-import { PackageOpen } from "lucide-react";
+import { Boxes, GitBranch, PackageOpen, Trash2 } from "lucide-react";
 import { t, type LocaleKey } from "@/lib/i18n";
 import type { Diagnostic, ModuleDefinition, Profile } from "../model";
 import * as doc from "./document";
@@ -21,15 +21,62 @@ const refusalText: Record<Refusal, LocaleKey> = {
   duplicate: "editor.refuse.duplicate",
 };
 
+type Menu = { x: number; y: number };
+
+/** The canvas's right-click menu: what can be done with the selected nodes. */
+function NodeMenu({ menu, box, count, onOpen, onCreateBox, onDelete, onClose }: {
+  menu: Menu; box: string | null; count: number; onOpen: () => void; onCreateBox: () => void; onDelete: () => void; onClose: () => void;
+}) {
+  const first = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    first.current?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const run = (action: () => void) => () => { onClose(); action(); };
+  return <>
+    <div className="canvas-menu-backdrop" onClick={onClose} onContextMenu={(event) => { event.preventDefault(); onClose(); }} />
+    <div className="canvas-menu" role="menu" aria-label={t("editor.menu.title")} style={{ left: menu.x, top: menu.y }}>
+      {box && <button ref={first} role="menuitem" onClick={run(onOpen)}><GitBranch size={14} />{t("editor.box.open")}</button>}
+      <button ref={box ? undefined : first} role="menuitem" onClick={run(onCreateBox)}><Boxes size={14} />{t("editor.box.createCount", { count })}</button>
+      <button role="menuitem" className="is-destructive" onClick={run(onDelete)}><Trash2 size={14} />{t(count > 1 ? "editor.selection.delete" : "editor.node.delete")}</button>
+    </div>
+  </>;
+}
+
 /** One workflow on the canvas (or all of them, to look at). Remounted per workflow, so its view state starts fresh. */
-export function EditorCanvas({ profile, workflowId, modules, diagnostics, selection, onAdd }: {
+export function EditorCanvas({ profile, workflowId, modules, diagnostics, selection, onAdd, onCreateBox, onDeleteSelection }: {
   profile: Profile; workflowId: string; modules: ModuleDefinition[]; diagnostics: Diagnostic[]; selection: Selection;
   onAdd: (piece: PieceRef, screen: { x: number; y: number }) => void;
+  /** Asks to move these nodes into a new workflow placed as a box. */
+  onCreateBox: (nodeIds: string[]) => void;
+  onDeleteSelection: () => void;
 }) {
   const settings = useCanvasSettings();
-  const { edit, select, notify, showWorkflow } = useEditor.getState();
+  const { edit, select, notify, showWorkflow, openBox } = useEditor.getState();
+  const [menu, setMenu] = useState<Menu | null>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  /** The box a node opens, if it is one and its workflow is in the profile. */
+  const boxOf = useCallback((nodeId: string) => {
+    const current = useEditor.getState().doc ?? profile;
+    const item = doc.workflowOf(current, workflowId) && doc.nodeOf(doc.workflowOf(current, workflowId)!, nodeId);
+    return item?.internal_workflow_id && doc.workflowOf(current, item.internal_workflow_id) ? item.internal_workflow_id : null;
+  }, [profile, workflowId]);
+  const openMenu = useCallback((event: React.MouseEvent | MouseEvent, nodeId: string | null) => {
+    if (unifiedRef.current) return;
+    event.preventDefault();
+    const current = useEditor.getState().selection;
+    // A right click on a node outside the selection acts on that node alone.
+    if (nodeId && !current.nodes.includes(nodeId)) select({ nodes: [nodeId], wires: [] });
+    if (!nodeId && !current.nodes.length) return;
+    const rect = frame.current?.getBoundingClientRect();
+    setMenu({ x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) });
+  }, [select]);
   const [measured, setMeasured] = useState(() => new Map<string, { width: number; height: number }>());
   const unified = workflowId === ALL;
+  const unifiedRef = useRef(unified);
+  unifiedRef.current = unified;
   const workflow = unified ? undefined : doc.workflowOf(profile, workflowId);
   // The workflow's own ports stay where they were placed when the tab opened.
   const anchors = useMemo(() => workflow ? selfAnchors(workflow, settings.selfGap) : null, [workflow?.id, settings.selfGap]);
@@ -115,7 +162,9 @@ export function EditorCanvas({ profile, workflowId, modules, diagnostics, select
   const isValidConnection = useCallback((connection: Connection | { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }) => check(connection)?.result.ok ?? false, [check]);
 
   const count = unified ? profile.workflows.reduce((sum, item) => sum + item.nodes.length, 0) : workflow?.nodes.length ?? 0;
-  return <div className="graph-canvas" onDragOver={(event) => { if (!unified && event.dataTransfer.types.includes(PIECE_MIME)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }}
+  const menuNodes = selection.nodes;
+  const menuBox = menuNodes.length === 1 ? boxOf(menuNodes[0]) : null;
+  return <div className="graph-canvas" ref={frame} onDragOver={(event) => { if (!unified && event.dataTransfer.types.includes(PIECE_MIME)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }}
     onDrop={(event) => {
       const raw = event.dataTransfer.getData(PIECE_MIME);
       if (!raw || unified) return;
@@ -125,6 +174,13 @@ export function EditorCanvas({ profile, workflowId, modules, diagnostics, select
     <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes}
       onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection}
       onNodeClick={(_, node) => { if (unified && node.type === "piece") { const { workflowId: target, item } = (node as PieceNode).data; showWorkflow(target); select({ nodes: [item.id], wires: [] }); } }}
+      onNodeDoubleClick={(_, node) => {
+        if (unified || node.type !== "piece") return;
+        const inner = boxOf((node as PieceNode).data.item.id);
+        if (inner) openBox(inner);
+      }}
+      onNodeContextMenu={(event, node) => { if (node.type === "piece") openMenu(event, (node as PieceNode).data.item.id); }}
+      onSelectionContextMenu={(event) => openMenu(event, null)}
       onPaneClick={() => select({ nodes: [], wires: [] })}
       nodesDraggable={!unified} nodesConnectable={!unified} edgesReconnectable={false} elementsSelectable
       deleteKeyCode={unified ? null : settings.deleteKeys} multiSelectionKeyCode={["Meta", "Control", "Shift"]}
@@ -134,6 +190,8 @@ export function EditorCanvas({ profile, workflowId, modules, diagnostics, select
       <Background color="var(--rg-color-border)" gap={settings.snapToGrid ? settings.gridSize : undefined} />
       <Controls showInteractive={false} />
     </ReactFlow>
+    {menu && menuNodes.length > 0 && <NodeMenu menu={menu} box={menuBox} count={menuNodes.length} onClose={() => setMenu(null)}
+      onOpen={() => { if (menuBox) openBox(menuBox); }} onCreateBox={() => onCreateBox(menuNodes)} onDelete={onDeleteSelection} />}
     {count === 0 && !(workflow?.ports?.length) && <div className="graph-empty-overlay"><PackageOpen size={32} /><p>{t(unified ? "graph.emptyWorkflow" : "editor.emptyWorkflow")}</p></div>}
   </div>;
 }

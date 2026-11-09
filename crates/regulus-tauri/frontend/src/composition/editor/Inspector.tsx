@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, GitBranch, LockKeyhole, Minus, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowRight, Boxes, GitBranch, LockKeyhole, Minus, Plus, Replace, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModuleStatus } from "@/components/ui/status";
 import { t } from "@/lib/i18n";
@@ -87,9 +87,44 @@ function FieldControl({ row, workflows, onChange }: { row: FieldRow; workflows: 
   }
 }
 
-export function NodeInspector({ profile, workflowId, node, manifests, modules, diagnostics, edit, onOpenWorkflow, onDelete, onClose }: {
+/** The "uses" inputs of a node and who serves each: pick another node that offers the same capability to rewire. */
+function Dependencies({ profile, workflowId, node, edit }: { profile: Profile; workflowId: string; node: CompositionNode; edit: Edit }) {
+  const workflow = doc.workflowOf(profile, workflowId);
+  const inputs = doc.portsOf(profile, node).filter((port) => port.kind === "uses" && port.direction === "input");
+  if (!workflow || !inputs.length) return null;
+  const label = (end: doc.End) => end.node_id === doc.SELF ? `${doc.SELF}.${end.port_id}` : `${doc.nodeOf(workflow, end.node_id)?.name || end.node_id}.${end.port_id}`;
+  return <>
+    <h3>{t("editor.dependency.title")}</h3>
+    <p className="inspector-hint">{t("editor.dependency.help")}</p>
+    <ul className="dependency-list">{inputs.map((port) => {
+      const to = { node_id: node.id, port_id: port.id };
+      const wires = doc.wiresInto(workflow, to);
+      const candidates = doc.dependencyCandidates(profile, workflowId, to);
+      const keyOf = (end: doc.End) => `${end.node_id}.${end.port_id}`;
+      const pick = (replacing: string | undefined) => (event: React.ChangeEvent<HTMLSelectElement>) => {
+        const chosen = candidates.find((item) => keyOf(item.end) === event.target.value);
+        if (chosen) edit((p) => doc.replaceDependency(p, workflowId, to, chosen.end, replacing));
+      };
+      const picker = (replacing: string | undefined, current: string) => <label className="dependency-pick">
+        <Replace size={12} aria-hidden="true" />
+        <select aria-label={`${t(replacing ? "editor.dependency.replace" : "editor.dependency.connect")} ${port.id}`} value={current} onChange={pick(replacing)} disabled={!candidates.length}>
+          <option value="">{t(candidates.length ? replacing ? "editor.dependency.replace" : "editor.dependency.connect" : "editor.dependency.none")}</option>
+          {candidates.map((item) => <option key={keyOf(item.end)} value={keyOf(item.end)} disabled={wires.some((wire) => keyOf(wire.from) === keyOf(item.end))}>{item.label}</option>)}
+        </select>
+      </label>;
+      return <li key={port.id}>
+        <div className="dependency-head"><span>{port.name || port.id}</span><code>{port.capability}</code>{port.required && <small>{t("graph.required")}</small>}</div>
+        {wires.length === 0 && <small className="dependency-unwired">{t("editor.dependency.unwired")}</small>}
+        {wires.map((wire) => <div className="dependency-row" key={wire.id}><span>{t("editor.dependency.from")} <code>{label(wire.from)}</code></span>{picker(wire.id, "")}</div>)}
+        {(wires.length === 0 || port.cardinality === "many") && picker(undefined, "")}
+      </li>;
+    })}</ul>
+  </>;
+}
+
+export function NodeInspector({ profile, workflowId, node, manifests, modules, diagnostics, edit, onOpenWorkflow, onCreateBox, onDelete, onClose }: {
   profile: Profile; workflowId: string; node: CompositionNode; manifests: Manifest[]; modules: ModuleDefinition[]; diagnostics: Diagnostic[];
-  edit: Edit; onOpenWorkflow: (id: string) => void; onDelete: () => void; onClose: () => void;
+  edit: Edit; onOpenWorkflow: (id: string) => void; onCreateBox: () => void; onDelete: () => void; onClose: () => void;
 }) {
   const nodeType = manifestTypeOf(manifests, node.module_id, node.type);
   const rows = fieldRows(nodeType?.field, node.config);
@@ -120,11 +155,13 @@ export function NodeInspector({ profile, workflowId, node, manifests, modules, d
       </select>
     </label>
     {!node.module_id && <p className="inspector-hint">{t("editor.node.boxHint")}</p>}
-    {internal && <Button variant="outline" className="open-internal" onClick={() => onOpenWorkflow(internal.id)}><GitBranch size={14} />{t("graph.openInternal")}<ArrowRight size={14} /></Button>}
+    {internal && <Button variant="outline" className="open-internal" onClick={() => onOpenWorkflow(internal.id)}><GitBranch size={14} />{t("editor.box.open")}<ArrowRight size={14} /></Button>}
 
     <h3>{t("graph.ports")}</h3>
     {ports.length === 0 && <p>{t("graph.noPorts")}</p>}
     <ul className="inspector-ports">{ports.map((port) => <li key={port.id}><div><span>{port.name || port.id}</span><span>{t(port.direction === "input" ? "graph.input" : "graph.output")}</span></div><code>{port.capability}</code><small>{t(port.kind === "uses" ? "graph.uses" : "graph.then")}{port.direction === "input" && ` · ${t(port.required ? "graph.required" : "graph.optional")} · ${t(port.cardinality === "many" ? "editor.port.many" : "editor.port.one")}`}</small></li>)}</ul>
+
+    <Dependencies profile={profile} workflowId={workflowId} node={node} edit={edit} />
 
     <h3>{t("graph.configuration")}</h3>
     {!nodeType && node.module_id && <p className="inspector-hint">{t("editor.field.noManifest")}</p>}
@@ -140,28 +177,36 @@ export function NodeInspector({ profile, workflowId, node, manifests, modules, d
       {row.defaultValue !== undefined && <small className="config-default">{t("editor.field.default")} <code>{displayValue(row.defaultValue) || t("editor.field.empty")}</code></small>}
     </div>)}</div>}
 
-    <Button variant="destructive" className="inspector-delete" onClick={onDelete}><Trash2 size={14} />{t("editor.node.delete")}</Button>
+    <Button variant="outline" className="inspector-delete" onClick={onCreateBox}><Boxes size={14} />{t("editor.box.create")}</Button>
+    <Button variant="destructive" className="inspector-action" onClick={onDelete}><Trash2 size={14} />{t("editor.node.delete")}</Button>
   </aside>;
 }
 
-function PortRow({ port, onChange, onRemove }: { port: Port; onChange: (patch: Partial<Port>) => void; onRemove: () => void }) {
+function PortRow({ port, capabilities, onChange, onRemove }: { port: Port; capabilities: string; onChange: (patch: Partial<Port>) => void; onRemove: () => void }) {
+  const input = port.direction === "input";
   return <li className="workflow-port">
     <div className="port-line">
       <DraftInput label={t("editor.port.id")} value={port.id} commitOn="blur" parse={(text) => doc.slugify(text) ? { ok: true, value: text } : { ok: false, error: "id" }} onCommit={(value) => onChange({ id: String(value), name: doc.slugify(String(value)) })} />
       <button type="button" aria-label={`${t("editor.port.remove")} ${port.id}`} onClick={onRemove}><Trash2 size={12} /></button>
     </div>
-    <label><span>{t("editor.port.capability")}</span><input value={port.capability} onChange={(event) => onChange({ capability: event.target.value })} /></label>
+    <label><span>{t("editor.port.capability")}</span><input value={port.capability} list={capabilities} onChange={(event) => onChange({ capability: event.target.value })} /></label>
     <div className="port-selects">
       <select aria-label={t("editor.port.direction")} value={port.direction} onChange={(event) => onChange({ direction: event.target.value as Port["direction"] })}><option value="input">{t("graph.input")}</option><option value="output">{t("graph.output")}</option></select>
-      <select aria-label={t("editor.port.kind")} value={port.kind} onChange={(event) => onChange({ kind: event.target.value as Port["kind"] })}><option value={doc.WORKFLOW_PORT_KIND}>{t("graph.then")}</option>{port.kind !== doc.WORKFLOW_PORT_KIND && <option value={port.kind} disabled>{t("graph.uses")}</option>}</select>
-      <select aria-label={t("editor.port.cardinality")} value={port.cardinality ?? "one"} onChange={(event) => onChange({ cardinality: event.target.value as "one" | "many" })}><option value="one">{t("editor.port.one")}</option><option value="many">{t("editor.port.many")}</option></select>
+      <select aria-label={t("editor.port.kind")} value={port.kind} onChange={(event) => onChange({ kind: event.target.value as Port["kind"] })}><option value="then">{t("graph.then")}</option><option value="uses">{t("graph.uses")}</option></select>
+      <select aria-label={t("editor.port.cardinality")} value={port.cardinality ?? "one"} disabled={!input} onChange={(event) => onChange({ cardinality: event.target.value as "one" | "many" })}><option value="one">{t("editor.port.one")}</option><option value="many">{t("editor.port.many")}</option></select>
     </div>
-    {port.kind === "uses" && <small className="field-error">{t("editor.port.usesHint")}</small>}
+    <div className="port-flags">
+      <label className="check-row"><input type="checkbox" checked={port.required} onChange={(event) => onChange({ required: event.target.checked })} /><span>{t("graph.required")}</span></label>
+      {port.kind === "uses" && <label className="check-row"><input type="checkbox" checked={port.lazy ?? false} onChange={(event) => onChange({ lazy: event.target.checked })} /><span>{t("editor.port.lazy")}</span></label>}
+    </div>
   </li>;
 }
 
-export function WorkflowInspector({ profile, workflow, edit, onDelete }: { profile: Profile; workflow: Workflow; edit: Edit; onDelete: () => void }) {
+export function WorkflowInspector({ profile, workflow, manifests, edit, onDelete }: { profile: Profile; workflow: Workflow; manifests: Manifest[]; edit: Edit; onDelete: () => void }) {
   const main = workflow.id === profile.main_workflow_id;
+  const [newKind, setNewKind] = useState<Port["kind"]>("then");
+  const manifestPorts = manifests.flatMap((manifest) => (manifest.node ?? []).flatMap((node) => node.port ?? []));
+  const listId = (kind: Port["kind"]) => `capabilities-${workflow.id}-${kind}`;
   // A new direction or kind turns the port around: its wires go, and the user is told.
   const changePort = (port: Port, patch: Partial<Port>) => {
     const turned = (patch.direction !== undefined && patch.direction !== port.direction) || (patch.kind !== undefined && patch.kind !== port.kind);
@@ -175,21 +220,25 @@ export function WorkflowInspector({ profile, workflow, edit, onDelete }: { profi
     <dl><dt>{t("editor.node.id")}</dt><dd><code>{workflow.id}</code></dd><dt>{t("editor.workflow.kind")}</dt><dd>{t(main ? "editor.workflow.main" : "editor.workflow.extra")}</dd></dl>
     <h3>{t("editor.workflow.ports")}</h3>
     <p>{t("editor.workflow.portsHelp")}</p>
-    <ul className="workflow-ports">{(workflow.ports ?? []).map((port) => <PortRow key={port.id} port={port}
+    {(["then", "uses"] as const).map((kind) => <datalist key={kind} id={listId(kind)}>{doc.knownCapabilities(profile, manifestPorts, kind).map((capability) => <option key={capability} value={capability} />)}</datalist>)}
+    <ul className="workflow-ports">{(workflow.ports ?? []).map((port) => <PortRow key={port.id} port={port} capabilities={listId(port.kind)}
       onChange={(patch) => changePort(port, patch)}
       onRemove={() => edit((p) => doc.removeWorkflowPort(p, workflow.id, port.id))} />)}</ul>
     <div className="port-actions">
-      <Button variant="outline" size="sm" onClick={() => edit((p) => doc.addWorkflowPort(p, workflow.id, { direction: "input" }).profile)}><Plus size={12} />{t("editor.port.addInput")}</Button>
-      <Button variant="outline" size="sm" onClick={() => edit((p) => doc.addWorkflowPort(p, workflow.id, { direction: "output" }).profile)}><Plus size={12} />{t("editor.port.addOutput")}</Button>
+      <select aria-label={t("editor.port.newKind")} value={newKind} onChange={(event) => setNewKind(event.target.value as Port["kind"])}><option value="then">{t("graph.then")}</option><option value="uses">{t("graph.uses")}</option></select>
+      <Button variant="outline" size="sm" onClick={() => edit((p) => doc.addWorkflowPort(p, workflow.id, { direction: "input", kind: newKind }).profile)}><Plus size={12} />{t("editor.port.addInput")}</Button>
+      <Button variant="outline" size="sm" onClick={() => edit((p) => doc.addWorkflowPort(p, workflow.id, { direction: "output", kind: newKind }).profile)}><Plus size={12} />{t("editor.port.addOutput")}</Button>
     </div>
     {main ? <p className="inspector-hint">{t("editor.workflow.mainKept")}</p> : <Button variant="destructive" className="inspector-delete" onClick={onDelete}><Trash2 size={14} />{t("editor.workflow.delete")}</Button>}
   </aside>;
 }
 
-export function SelectionInspector({ nodes, wires, onDelete }: { nodes: number; wires: number; onDelete: () => void }) {
+export function SelectionInspector({ nodes, wires, onCreateBox, onDelete }: { nodes: number; wires: number; onCreateBox: () => void; onDelete: () => void }) {
   return <aside className="node-inspector" aria-label={t("editor.selection.title")}>
     <header><span>{t("editor.selection.title")}</span></header>
     <p>{nodes} {t("graph.nodes")} · {wires} {t("graph.connections")}</p>
+    {nodes > 0 && <><p className="inspector-hint">{t("editor.box.createHelp")}</p>
+      <Button variant="outline" className="inspector-action" onClick={onCreateBox}><Boxes size={14} />{t("editor.box.create")}</Button></>}
     <Button variant="destructive" className="inspector-delete" onClick={onDelete}><Trash2 size={14} />{t("editor.selection.delete")}</Button>
   </aside>;
 }

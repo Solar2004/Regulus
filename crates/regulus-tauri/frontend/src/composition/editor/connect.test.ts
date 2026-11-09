@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { addWire } from "./document";
+import { addWire, addWorkflowPort } from "./document";
 import { canConnect } from "./connect";
 import { sample } from "./fixtures.test-util";
 
@@ -50,5 +50,19 @@ describe("canConnect", () => {
   test("a box offers its workflow's ports", () => {
     expect(canConnect(sample(), "main", end("box", "r"), end("a", "echo"))).toEqual({ ok: true, kind: "then" });
     expect(canConnect(sample(), "main", end("a", "tick"), end("box", "q"))).toEqual({ ok: true, kind: "then" });
+  });
+
+  test("uses ports of a workflow face inward too: an input serves inner nodes, an output takes one inner service", () => {
+    let profile = addWorkflowPort(sample(), "main", { id: "engine", kind: "uses", capability: "agent.engine@1" }).profile;
+    profile = addWorkflowPort(profile, "main", { id: "greeting", kind: "uses", direction: "output" }).profile;
+    expect(canConnect(profile, "main", end("self", "engine"), end("c", "engine"))).toEqual({ ok: true, kind: "uses" });
+    expect(canConnect(profile, "main", end("a", "greeting"), end("self", "greeting"))).toEqual({ ok: true, kind: "uses" });
+    expect(canConnect(profile, "main", end("self", "engine"), end("a", "echo"))).toMatchObject({ ok: false, reason: "kind" });
+    expect(canConnect(profile, "main", end("c", "engine"), end("self", "engine"))).toMatchObject({ ok: false, reason: "direction" });
+    profile = addWire(profile, "main", "uses", end("a", "greeting"), end("self", "greeting"));
+    expect(canConnect(profile, "main", end("box", "r"), end("self", "greeting"))).toMatchObject({ ok: false, reason: "kind" });
+    // A box shows those uses ports outside.
+    profile = addWorkflowPort(profile, "inner", { id: "engine", kind: "uses", capability: "agent.engine@1", direction: "output" }).profile;
+    expect(canConnect(profile, "main", end("box", "engine"), end("c", "engine"))).toEqual({ ok: true, kind: "uses" });
   });
 });

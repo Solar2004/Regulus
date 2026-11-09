@@ -9,6 +9,18 @@ export type Selection = { nodes: string[]; wires: string[] };
 export const ALL = "all";
 const nothing: Selection = { nodes: [], wires: [] };
 
+/** The trail after opening the box of workflow `id`: one step deeper, or back to it if it is already on the way. */
+export function enterWorkflow(trail: string[], id: string): string[] {
+  const at = trail.indexOf(id);
+  return at >= 0 ? trail.slice(0, at + 1) : [...trail, id];
+}
+
+/** The trail without the workflows a profile no longer has, from the first one missing on. */
+export function trailIn(trail: string[], profile: Profile): string[] {
+  const gone = trail.findIndex((id) => !profile.workflows.some((workflow) => workflow.id === id));
+  return gone < 0 ? trail : trail.slice(0, gone);
+}
+
 interface EditorState {
   doc: Profile | null;
   /** Not yet written by the core: the first save goes without `force`. */
@@ -16,6 +28,8 @@ interface EditorState {
   dirty: boolean;
   /** The workflow on screen, or `ALL`. */
   workflowId: string;
+  /** How the workflow on screen was reached: the tab first, then each box opened (the breadcrumb). */
+  trail: string[];
   selection: Selection;
   /** What the last save or check said, for the profile on screen. */
   diagnostics: Diagnostic[];
@@ -26,6 +40,10 @@ interface EditorState {
   edit: (change: (profile: Profile) => Profile) => void;
   saved: (profile: Profile, diagnostics: Diagnostic[]) => void;
   showWorkflow: (id: string) => void;
+  /** Opens the workflow inside a box: one step deeper in the trail. */
+  openBox: (id: string) => void;
+  /** Goes back to the workflow at `index` of the trail. */
+  backTo: (index: number) => void;
   select: (selection: Selection) => void;
   setDiagnostics: (diagnostics: Diagnostic[]) => void;
   notify: (notice: Notice | null) => void;
@@ -37,24 +55,37 @@ export const useEditor = create<EditorState>()((set) => ({
   isNew: false,
   dirty: false,
   workflowId: ALL,
+  trail: [],
   selection: nothing,
   diagnostics: [],
   notice: null,
   busy: false,
   open: (profile, isNew = false) => set({
     doc: profile ? structuredClone(profile) : null, isNew, dirty: isNew, workflowId: profile?.main_workflow_id ?? ALL,
-    selection: nothing, diagnostics: [], notice: null,
+    trail: profile ? [profile.main_workflow_id] : [], selection: nothing, diagnostics: [], notice: null,
   }),
   edit: (change) => set((state) => {
     if (!state.doc) return {};
     const doc = change(state.doc);
-    return doc === state.doc ? {} : { doc, dirty: true };
+    if (doc === state.doc) return {};
+    const trail = trailIn(state.trail, doc);
+    if (trail.length === state.trail.length) return { doc, dirty: true };
+    // The workflow on screen went away: show the last one of the trail still there.
+    const shown = state.workflowId === ALL || doc.workflows.some((workflow) => workflow.id === state.workflowId);
+    const back = trail.length ? trail : [doc.main_workflow_id];
+    return shown ? { doc, dirty: true, trail } : { doc, dirty: true, trail: back, workflowId: back[back.length - 1], selection: nothing };
   }),
-  saved: (profile, diagnostics) => set((state) => ({
-    doc: structuredClone(profile), isNew: false, dirty: false, diagnostics,
-    workflowId: state.workflowId === ALL || profile.workflows.some((workflow) => workflow.id === state.workflowId) ? state.workflowId : profile.main_workflow_id,
-  })),
-  showWorkflow: (workflowId) => set({ workflowId, selection: nothing }),
+  saved: (profile, diagnostics) => set((state) => {
+    const kept = state.workflowId === ALL || profile.workflows.some((workflow) => workflow.id === state.workflowId);
+    return {
+      doc: structuredClone(profile), isNew: false, dirty: false, diagnostics,
+      workflowId: kept ? state.workflowId : profile.main_workflow_id,
+      trail: kept ? trailIn(state.trail, profile) : [profile.main_workflow_id],
+    };
+  }),
+  showWorkflow: (workflowId) => set({ workflowId, trail: workflowId === ALL ? [] : [workflowId], selection: nothing }),
+  openBox: (id) => set((state) => ({ workflowId: id, trail: enterWorkflow(state.workflowId === ALL ? [] : state.trail.length ? state.trail : [state.workflowId], id), selection: nothing })),
+  backTo: (index) => set((state) => index < 0 || index >= state.trail.length ? {} : { workflowId: state.trail[index], trail: state.trail.slice(0, index + 1), selection: nothing }),
   select: (selection) => set({ selection }),
   setDiagnostics: (diagnostics) => set({ diagnostics }),
   notify: (notice) => set({ notice }),
