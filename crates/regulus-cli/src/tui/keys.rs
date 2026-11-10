@@ -294,6 +294,27 @@ const CONTEXTS: &[(&str, &[&str])] = &[
         "code_permission",
         &["yes", "no", "up", "down", "open", "back"],
     ),
+    // The command menu above the typing box, while it is open: `code_focus` gives way to
+    // `code_complete` there, so the two may share Tab. The rest keep answering.
+    (
+        "code_menu",
+        &[
+            "code_complete",
+            "code_send",
+            "up",
+            "down",
+            "back",
+            "cancel_turn",
+            "code_side",
+            "code_page_up",
+            "code_page_down",
+            "code_sessions",
+            "code_stop",
+            "code_help",
+            "code_permission",
+            "code_quit",
+        ],
+    ),
 ];
 
 impl Keys {
@@ -385,6 +406,8 @@ keys! {
     code_newline = ["alt+enter", "ctrl+j"];
     /// Code: move between what is typed and the side panel.
     code_focus = ["tab"];
+    /// Code: complete the command chosen in the menu that opens when `/` is typed.
+    code_complete = ["tab"];
     /// Code: show or hide the side panel.
     code_side = ["ctrl+b"];
     /// Code: scroll the transcript, or the side panel while it has the keys.
@@ -672,6 +695,15 @@ mod tests {
         assert_eq!(
             Options::from_client(Some(&bad)).unwrap_err(),
             "keys.code_search and keys.code_refresh both answer to `/` in code_side"
+        );
+        // Completing a command shares Tab with the side panel: the menu has it while open.
+        assert!(keys
+            .code_complete
+            .matches(&key(KeyCode::Tab, KeyModifiers::NONE)));
+        let bad: Table = toml::from_str(r#"keys = { code_complete = "ctrl+c" }"#).unwrap();
+        assert_eq!(
+            Options::from_client(Some(&bad)).unwrap_err(),
+            "keys.code_complete and keys.code_quit both answer to `Ctrl+C` in code_menu"
         );
         // Its numbers sit with the terminal UI's.
         let fine: Table = toml::from_str(

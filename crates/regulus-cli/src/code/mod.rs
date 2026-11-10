@@ -5,6 +5,7 @@
 //! (`agent.history`) and the workspace the module behind `code.inspect` serves.
 
 pub mod app;
+pub mod commands;
 pub mod composer;
 #[cfg(test)]
 mod fixtures;
