@@ -82,6 +82,12 @@ enum Command {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+    /// Custom nodes written in Python, as local modules of a project
+    /// (docs/18-custom-nodes.md). Works on the folder; needs no running core.
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
     /// Print the nodes and wires of a profile.
     Graph { profile: String },
     /// Start a workflow of a profile (its main workflow unless --workflow), then print
@@ -641,6 +647,26 @@ enum ProjectCommand {
 }
 
 #[derive(Subcommand)]
+enum NodeCommand {
+    /// Write `tools/<id>/run.py`, a starter node in Python with the SDK beside it, and
+    /// register it in the project's `regulus.toml` as a `[[modules.local]]`. Overwrites
+    /// nothing; trusts nothing: it runs once you open the project with `--trust`.
+    Init {
+        /// The project folder; it must have a `regulus.toml` (`regulus project open`
+        /// writes one).
+        folder: PathBuf,
+        /// The module id, listed as `<project>/<id>`, and the starter node's type:
+        /// a-z, 0-9, `-` and `_`.
+        #[arg(long)]
+        id: String,
+        /// The Python the core starts it with: a name on `PATH` or a path (a venv's
+        /// interpreter, relative to the project if it has a `/`).
+        #[arg(long, default_value = "python3")]
+        python: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ExecCommand {
     /// An execution and the children its nodes started, as deep as they go: id, state,
     /// workflow, the node that started each child and its tag.
@@ -853,6 +879,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Template { command } => template(&client, command).await,
+        Command::Node {
+            command: NodeCommand::Init { folder, id, python },
+        } => node_init(folder, id, python),
         Command::Update {
             command,
             check,
@@ -1337,6 +1366,42 @@ async fn project(client: &Client<'_>, command: ProjectCommand) -> Result<()> {
             println!("closed {} ({})", closed.id, closed.path);
         }
     }
+    Ok(())
+}
+
+/// `regulus node init`: writes the files and the registration, then says how to run it.
+fn node_init(folder: PathBuf, id: String, python: String) -> Result<()> {
+    let ask = regulus_cli::node::InitAsk { folder, id, python };
+    let done = regulus_cli::node::init(&ask)?;
+    let shown = |path: &std::path::Path| {
+        path.strip_prefix(&done.root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    };
+    for file in &done.files {
+        println!("created {}", shown(file));
+    }
+    println!(
+        "registered [[modules.local]] id = {:?} in {}",
+        ask.id,
+        shown(&done.root.join("regulus.toml"))
+    );
+    if done.rewritten {
+        eprintln!("warning: regulus.toml was written again as a whole: its comments were not kept");
+    }
+    for note in &done.notes {
+        eprintln!("warning: {note}");
+    }
+    let module = format!("{}/{}", done.project, ask.id);
+    println!();
+    println!("It runs code on this machine, so it runs only in a trusted project:");
+    println!("  regulus project open {} --trust", done.root.display());
+    println!("  regulus module show {module}");
+    println!(
+        "Use it on a node with module_id = \"{module}\" and type = \"{}\".",
+        ask.id
+    );
     Ok(())
 }
 

@@ -4,6 +4,7 @@ pub mod code;
 pub mod control_mcp;
 pub mod conversation;
 pub mod modules;
+pub mod node;
 pub mod rpc;
 pub mod talk;
 pub mod tui;

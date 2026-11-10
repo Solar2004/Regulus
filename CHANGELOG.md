@@ -15,6 +15,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **`regulus node init <proyecto> --id <id>`:** crea `tools/<id>/run.py` con un nodo de
+  ejemplo y una copia del SDK de Python, y añade su `[[modules.local]]` a `regulus.toml`
+  sin perder comentarios. No sobrescribe nada, deshace lo creado si algo falla y nunca
+  confía en el proyecto: dice el comando para hacerlo.
 - **Nodos propios en Python:** `sdk/python/regulus.py`, un solo fichero con la biblioteca
   estándar, convierte una función en un tipo de nodo de un módulo local (`@node`,
   `ctx.emit`). Responde el protocolo por ti, atiende eventos en hilos acotados
