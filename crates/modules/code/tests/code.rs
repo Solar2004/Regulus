@@ -1036,6 +1036,47 @@ fn a_search_that_does_not_look_everywhere_says_so() {
     assert_eq!(looked["truncated"], true);
 }
 
+#[test]
+fn edits_at_the_same_time_all_land() {
+    const LINES: usize = 12;
+    const ROUNDS: usize = 25;
+    let world = World::start("concurrent", json!({}));
+    let file = world.root.join("shared.txt");
+    for round in 0..ROUNDS {
+        let before: String = (0..LINES).map(|n| format!("line {n}: old\n")).collect();
+        fs::write(&file, before).unwrap();
+        let gate = std::sync::Barrier::new(LINES);
+        std::thread::scope(|scope| {
+            for n in 0..LINES {
+                let (world, gate) = (&world, &gate);
+                scope.spawn(move || {
+                    // Half through the workspace, half through a view of it: one folder.
+                    let node = if n % 2 == 0 { "ws" } else { "rw" };
+                    gate.wait();
+                    let outcome = world.call_on(
+                        node,
+                        "code_edit_file",
+                        json!({ "path": "shared.txt", "old_text": format!("line {n}: old"),
+                                "new_text": format!("line {n}: new") }),
+                    );
+                    assert!(!outcome.error, "round {round}, line {n}: {}", outcome.data);
+                });
+            }
+        });
+        let after: String = (0..LINES).map(|n| format!("line {n}: new\n")).collect();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            after,
+            "round {round}: an edit was lost"
+        );
+    }
+    // Every one of them left on `changed`.
+    assert_eq!(
+        world.emitted("changed", LINES * ROUNDS).len(),
+        LINES * ROUNDS
+    );
+}
+
 /// Runs the real git for a test's own setup, with no configuration but the repository's.
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")

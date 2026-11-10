@@ -7,6 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use regex::{Regex, RegexBuilder};
@@ -524,6 +525,17 @@ pub(crate) fn search(
 /// Numbers the temporary files of this process.
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+/// One change at a time, in the whole process. An edit reads a file, changes its text and
+/// puts it back: two at once on one file (two agents, an agent and its worker, two
+/// workspace nodes over one folder) would each put back a file without the other's
+/// change. Held from the read to the rename, and never while a value is emitted. A
+/// program outside Regulus that writes the same file meanwhile is not covered.
+static CHANGING: Mutex<()> = Mutex::new(());
+
+fn changing() -> MutexGuard<'static, ()> {
+    CHANGING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Puts `bytes` at `target` in one step: written beside it and renamed over it, so a
 /// reader never sees half a file and a failure leaves what was there.
 fn replace(target: &Path, bytes: &[u8], keep: Option<fs::Permissions>) -> io::Result<()> {
@@ -576,6 +588,7 @@ pub(crate) fn write(root: &Root, asked: &str, content: &str, max: usize) -> Resu
             "`path` names the workspace folder itself, not a file in it".into(),
         ));
     }
+    let _changing = changing();
     let existing = fs::metadata(&place.real).ok();
     if existing.as_ref().is_some_and(|meta| meta.is_dir()) {
         return Err(Fault::Request(format!("`{asked}` is a folder")));
@@ -635,6 +648,7 @@ pub(crate) fn edit(
             "`old_text` and `new_text` are the same: there is nothing to change".into(),
         ));
     }
+    let _changing = changing();
     let (place, meta) = file_at(root, asked)?;
     if meta.len() > max as u64 {
         return Err(Fault::Request(format!(
