@@ -4548,11 +4548,13 @@ dependencies = [
  "regulus-module-agent",
  "regulus-module-code",
  "regulus-module-communication",
+ "regulus-module-data",
  "regulus-module-delegation",
  "regulus-module-documents",
  "regulus-module-engine-claude",
  "regulus-module-engine-native",
  "regulus-module-engine-opencode",
+ "regulus-module-evidence",
  "regulus-module-files",
  "regulus-module-flow",
  "regulus-module-guards",
@@ -4718,6 +4720,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "regulus-module-data"
+version = "0.2.0"
+dependencies = [
+ "blake2",
+ "regulus-contract-tool",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "regulus-module-delegation"
 version = "0.2.0"
 dependencies = [
@@ -4790,6 +4805,20 @@ dependencies = [
  "regulus-core",
  "regulus-proto",
  "serde_json",
+]
+
+[[package]]
+name = "regulus-module-evidence"
+version = "0.2.0"
+dependencies = [
+ "regex",
+ "regulus-contract-tool",
+ "regulus-core",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

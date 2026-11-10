@@ -1,0 +1,246 @@
+# Evidence (docs/15-evidence.md), no agent needed. Sources and entries are values sent to
+# `source` and `cite`; `draft` is a report that cites entries by marker ([E1]) and comes
+# back on `report` (with its references) only if every citation validates, else the reasons
+# come on `error`. `evidence.list|inspect|export` read the collection of any node (a finished
+# run answers too). The book is the project's: it survives the execution and a restart.
+#
+# Run (debug build):
+#
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/evidence/examples/evidence.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run evidence --detach                               # exec-1  evidence  running
+#   regulus send exec-1 source '{"location":"https://example.org/rust","text":"The borrow checker enforces ownership rules at compile time."}'
+#     ... self.sourced emitted json@1 {"id":"S1","version":1,"sha256":"...","created":true,...}
+#   regulus send exec-1 cite '{"statement":"Rust checks ownership at compile time","source":"S1","excerpt":"enforces ownership rules at compile time"}'
+#     ... self.cited emitted json@1 {"id":"E1","status":"valid","entailment":"not_checked",...}
+#   regulus send exec-1 draft "Ownership is checked before the program runs [E1]."
+#     ... self.report emitted text@1 "Ownership ... [E1].\n\n## References\n\n- [E1] Rust checks ..."
+#   regulus send exec-1 draft "Ownership is checked at compile time [E9]."
+#     ... self.error emitted text@1 "the report does not validate:\n[E9] cites an entry that does not exist"
+#   regulus call evidence.list    '{"execution_id":"exec-1","node_id":"book"}'
+#   regulus call evidence.inspect '{"execution_id":"exec-1","node_id":"book","entry":"E1"}'
+#   regulus call evidence.export  '{"execution_id":"exec-1","node_id":"book"}'
+#
+# `loose` writes entries in the same book but matches excerpts across whitespace;
+# `strict_gate` also wants two citations and one in every long paragraph; `tiny` is a book
+# with small limits (second collection), to see what a refusal says.
+id = "evidence"
+name = "Evidence"
+main_workflow_id = "evidence"
+
+[[workflows]]
+id = "evidence"
+name = "Evidence"
+kind = "main"
+ports = [
+  { id = "source", capability = "json@1", direction = "input", kind = "then" },
+  { id = "cite", capability = "json@1", direction = "input", kind = "then" },
+  { id = "cite_loose", capability = "json@1", direction = "input", kind = "then" },
+  { id = "forget", capability = "text@1", direction = "input", kind = "then" },
+  { id = "draft", capability = "text@1", direction = "input", kind = "then" },
+  { id = "strict_draft", capability = "text@1", direction = "input", kind = "then" },
+  { id = "tiny_source", capability = "json@1", direction = "input", kind = "then" },
+  { id = "tiny_cite", capability = "json@1", direction = "input", kind = "then" },
+  { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+  { id = "cited", capability = "json@1", direction = "output", kind = "then" },
+  { id = "forgotten", capability = "json@1", direction = "output", kind = "then" },
+  { id = "result", capability = "json@1", direction = "output", kind = "then" },
+  { id = "report", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "strict_error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "tiny_error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "tiny_sourced", capability = "json@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "book"
+  name = "Evidence"
+  type = "store"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 300, y = 50 }
+  config = { collection = "notes", scope = "project" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "source", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "cite", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "forget", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+    { id = "cited", capability = "json@1", direction = "output", kind = "then" },
+    { id = "forgotten", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "loose"
+  name = "Evidence (whitespace)"
+  type = "store"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 300, y = 250 }
+  config = { collection = "notes", scope = "project", match = "whitespace" }
+  ports = [
+    { id = "cite", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "cited", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "tiny"
+  name = "Small book"
+  type = "store"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 300, y = 450 }
+  config = { collection = "tiny", scope = "project", max_sources = 1, max_entries = 1, max_source_bytes = 60, min_excerpt_chars = 5 }
+  ports = [
+    { id = "source", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "cite", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Report check"
+  type = "report"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 600, y = 50 }
+  config = { collection = "notes", scope = "project" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "result", capability = "json@1", direction = "output", kind = "then" },
+    { id = "report", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "strict_gate"
+  name = "Strict report check"
+  type = "report"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 600, y = 250 }
+  config = { collection = "notes", scope = "project", min_citations = 2, require_paragraph_citations = "yes", min_paragraph_chars = 40 }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "source"
+  kind = "then"
+  from = { node_id = "self", port_id = "source" }
+  to = { node_id = "book", port_id = "source" }
+
+  [[workflows.wires]]
+  id = "cite"
+  kind = "then"
+  from = { node_id = "self", port_id = "cite" }
+  to = { node_id = "book", port_id = "cite" }
+
+  [[workflows.wires]]
+  id = "cite-loose"
+  kind = "then"
+  from = { node_id = "self", port_id = "cite_loose" }
+  to = { node_id = "loose", port_id = "cite" }
+
+  [[workflows.wires]]
+  id = "forget"
+  kind = "then"
+  from = { node_id = "self", port_id = "forget" }
+  to = { node_id = "book", port_id = "forget" }
+
+  [[workflows.wires]]
+  id = "draft"
+  kind = "then"
+  from = { node_id = "self", port_id = "draft" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "strict-draft"
+  kind = "then"
+  from = { node_id = "self", port_id = "strict_draft" }
+  to = { node_id = "strict_gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "tiny-source"
+  kind = "then"
+  from = { node_id = "self", port_id = "tiny_source" }
+  to = { node_id = "tiny", port_id = "source" }
+
+  [[workflows.wires]]
+  id = "tiny-cite"
+  kind = "then"
+  from = { node_id = "self", port_id = "tiny_cite" }
+  to = { node_id = "tiny", port_id = "cite" }
+
+  [[workflows.wires]]
+  id = "sourced"
+  kind = "then"
+  from = { node_id = "book", port_id = "sourced" }
+  to = { node_id = "self", port_id = "sourced" }
+
+  [[workflows.wires]]
+  id = "cited"
+  kind = "then"
+  from = { node_id = "book", port_id = "cited" }
+  to = { node_id = "self", port_id = "cited" }
+
+  [[workflows.wires]]
+  id = "cited-loose"
+  kind = "then"
+  from = { node_id = "loose", port_id = "cited" }
+  to = { node_id = "self", port_id = "cited" }
+
+  [[workflows.wires]]
+  id = "forgotten"
+  kind = "then"
+  from = { node_id = "book", port_id = "forgotten" }
+  to = { node_id = "self", port_id = "forgotten" }
+
+  [[workflows.wires]]
+  id = "result"
+  kind = "then"
+  from = { node_id = "gate", port_id = "result" }
+  to = { node_id = "self", port_id = "result" }
+
+  [[workflows.wires]]
+  id = "report"
+  kind = "then"
+  from = { node_id = "gate", port_id = "report" }
+  to = { node_id = "self", port_id = "report" }
+
+  [[workflows.wires]]
+  id = "error-book"
+  kind = "then"
+  from = { node_id = "book", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "error-loose"
+  kind = "then"
+  from = { node_id = "loose", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "error-gate"
+  kind = "then"
+  from = { node_id = "gate", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "strict-error"
+  kind = "then"
+  from = { node_id = "strict_gate", port_id = "error" }
+  to = { node_id = "self", port_id = "strict_error" }
+
+  [[workflows.wires]]
+  id = "tiny-error"
+  kind = "then"
+  from = { node_id = "tiny", port_id = "error" }
+  to = { node_id = "self", port_id = "tiny_error" }
+
+  [[workflows.wires]]
+  id = "tiny-sourced"
+  kind = "then"
+  from = { node_id = "tiny", port_id = "sourced" }
+  to = { node_id = "self", port_id = "tiny_sourced" }

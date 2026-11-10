@@ -1,0 +1,341 @@
+[module]
+id             = "regulus/evidence@0.1.0"
+name           = "Evidence"
+requires_proto = "^1.9"
+# What the CLI (`regulus call`) and the app read a node's evidence with, all
+# `{ execution_id, node_id }` of any node of this module (a finished execution still
+# answers; the evidence is the project's, not the run's):
+#   evidence.list     the sources (no text), the entries with their status now, the limits.
+#   evidence.inspect  `{ source }` one source with its versions and who cites it (`text: true`
+#                     adds the text), or `{ entry, context? }` one entry with every support
+#                     checked and the text around each excerpt.
+#   evidence.export   `{ format? = "json" | "markdown", include_text? = true }` the whole
+#                     collection as a document that can be checked offline.
+methods        = ["evidence.list", "evidence.inspect", "evidence.export"]
+
+# Evidence as a box (docs/15-evidence.md): a provenance store. A *source* is a location
+# and the text that was supplied for it; an *entry* links a statement to exact excerpts of
+# sources. The module checks, with no model, that every cited source exists, that it is
+# still the version that was cited (a hash of its text) and that the excerpt is in it. That
+# is textual support. It does not say the statement is true, nor that the excerpt entails
+# it: every result says `entailment = "not_checked"`; judging that is a model's or a
+# person's job (a `judge` after the `report`).
+#
+# Sources and entries live in the module's space of the store of the node's project, per
+# `collection` and `scope` (nodes with the same name share them). Every bound below is a
+# field; past it a write is refused with the field's name, nothing is dropped silently.
+# A `scope = project` book is shared by every run of the project: a report may cite entries
+# of earlier research (by design). Ids are never issued twice: a forgotten one is retired.
+# A batch (an array on `source` or `cite`) is per item, not all-or-nothing: what can be
+# registered is, each failure is said on `error` and listed in the node's result, and the
+# call succeeds (so a retry of the whole batch is not needed, and would duplicate).
+# The methods of the module find a node by `{ execution_id, node_id }` from an index kept in
+# the store, also after a restart. A project's book is opened by the core only through a
+# running execution of that project: for a run that ended, pass `via: { execution_id,
+# node_id }` of a running one (a profile outside any project needs nothing).
+
+# The book: values on `source` register sources, values on `cite` register entries, values
+# on `forget` remove one. Agents use the same book as tools (`tools`, for a Tools box).
+[[node]]
+type = "store"
+name = "Evidence"
+
+  # evidence_sources, evidence_read, evidence_cite, evidence_entries, evidence_check and,
+  # with `agent_sources = yes`, evidence_add_source.
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # A source `{ id?, location, text, title? }` or an array of them. Without an id, the
+  # source that already has that `location` keeps its id (and a new version, if the text
+  # changed); otherwise a fresh `<source_prefix><n>` is given.
+  [[node.port]]
+  id          = "source"
+  name        = "source"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # An entry `{ id?, statement, source, excerpt }` or `{ id?, statement, supports: [{ source,
+  # excerpt }] }`, or an array of them.
+  [[node.port]]
+  id          = "cite"
+  name        = "cite"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The id of a source or an entry (or `{ id }`) to remove. Entries that cited a removed
+  # source stay and read `missing_source`.
+  [[node.port]]
+  id          = "forget"
+  name        = "forget"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # { id, location, title?, version, sha256, bytes, at, created, changed, unchanged,
+  #   stale_entries }: the source registered, without its text. `stale_entries` are the
+  # entries that cited an earlier version and no longer validate.
+  [[node.port]]
+  id         = "sourced"
+  name       = "sourced"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The entry registered with its supports checked: { id, statement, status, supports, ... }.
+  [[node.port]]
+  id         = "cited"
+  name       = "cited"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # { removed, kind, id, affected_entries }.
+  [[node.port]]
+  id         = "forgotten"
+  name       = "forgotten"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # Why a value was not registered.
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "collection"
+  type    = "text"
+  default = "evidence"
+
+  # project: every execution of the project shares the book. execution: this run only.
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  # How an excerpt is looked for in the source when an entry is registered. exact: the
+  # same characters. whitespace: runs of whitespace count as one space, so a line break in
+  # the source does not break a quote. What is stored is always the exact slice of the
+  # source, with its character offsets.
+  [[node.field]]
+  id      = "match"
+  type    = "select"
+  default = "exact"
+  options = ["exact", "whitespace"]
+
+  # yes: an entry whose references do not validate is refused. no: it is recorded with its
+  # status (for auditing what a model claimed); a report that cites it still fails.
+  [[node.field]]
+  id      = "strict"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]
+
+  # The ids given when a value brings none: `<prefix><n>`, with n never reused.
+  [[node.field]]
+  id      = "source_prefix"
+  type    = "text"
+  default = "S"
+
+  [[node.field]]
+  id      = "entry_prefix"
+  type    = "text"
+  default = "E"
+
+  # Sources in the book.
+  [[node.field]]
+  id      = "max_sources"
+  type    = "number"
+  default = 200
+
+  # Entries in the book.
+  [[node.field]]
+  id      = "max_entries"
+  type    = "number"
+  default = 500
+
+  # The text of one source, in bytes.
+  [[node.field]]
+  id      = "max_source_bytes"
+  type    = "number"
+  default = 524288
+
+  # Everything stored, in bytes: for each source its text, title and location plus, for each
+  # remembered version, its location, hash and 24 for its numbers; for each entry its
+  # statement and its excerpts (as cited and as found).
+  [[node.field]]
+  id      = "max_total_bytes"
+  type    = "number"
+  default = 8388608
+
+  [[node.field]]
+  id      = "max_statement_chars"
+  type    = "number"
+  default = 1000
+
+  # An excerpt longer than this is refused: quote the passage, not the page.
+  [[node.field]]
+  id      = "max_excerpt_chars"
+  type    = "number"
+  default = 1000
+
+  # An excerpt shorter than this is refused: a word or two "validates" anywhere. 0: no
+  # minimum.
+  [[node.field]]
+  id      = "min_excerpt_chars"
+  type    = "number"
+  default = 20
+
+  # Excerpts one entry may bring.
+  [[node.field]]
+  id      = "max_supports"
+  type    = "number"
+  default = 6
+
+  # The title of a source, in characters.
+  [[node.field]]
+  id      = "max_title_chars"
+  type    = "number"
+  default = 200
+
+  # Earlier versions of a source remembered (their hash, size and time, not their text);
+  # the oldest go first.
+  [[node.field]]
+  id      = "max_versions"
+  type    = "number"
+  default = 5
+
+  # yes: agents may add a source themselves (evidence_add_source). The text is then
+  # whatever the agent typed, so a check against it proves nothing about the world: leave
+  # it `no` and feed sources from a fetch, a file or a person.
+  [[node.field]]
+  id      = "agent_sources"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # no: agents only read (evidence_cite is not offered).
+  [[node.field]]
+  id      = "agent_cites"
+  type    = "select"
+  default = "yes"
+  options = ["yes", "no"]
+
+  # The most characters evidence_read returns at once.
+  [[node.field]]
+  id      = "max_read_chars"
+  type    = "number"
+  default = 4000
+
+# The report check: a text on `in` cites entries by marker (`[E1]`). It passes when every
+# marker names an entry, every entry validates now (source present, same version, excerpt in
+# it), at least `min_citations` distinct entries are cited and, with
+# `require_paragraph_citations = yes`, every long paragraph cites one. A pass leaves the text
+# on `report` followed by the references: each cited entry with its statement, the source's
+# location, version and hash, and the exact excerpt, so a reader can inspect every link. A
+# failure leaves the reasons on `error` and nothing on `report`. `result` always carries the
+# full verdict. Textual support only (see the module header).
+[[node]]
+type = "report"
+name = "Report check"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # { valid, check, entailment, citations, problems, ... }.
+  [[node.port]]
+  id         = "result"
+  name       = "result"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The text and its references, only when it passed.
+  [[node.port]]
+  id         = "report"
+  name       = "report"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # What is wrong, one problem per line, when it did not pass.
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The book to check against: the same collection and scope as the `store` that wrote it.
+  [[node.field]]
+  id      = "collection"
+  type    = "text"
+  default = "evidence"
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  # The marker, a regular expression whose first group is the entry id.
+  [[node.field]]
+  id      = "marker"
+  type    = "text"
+  default = "\\[(E[0-9]+)\\]"
+
+  # Distinct entries that must be cited.
+  [[node.field]]
+  id      = "min_citations"
+  type    = "number"
+  default = 1
+
+  [[node.field]]
+  id      = "require_paragraph_citations"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # A paragraph (lines between blank lines, not a heading) shorter than this needs no
+  # citation.
+  [[node.field]]
+  id      = "min_paragraph_chars"
+  type    = "number"
+  default = 80
+
+  # append: the text followed by the references. none: the text as it came.
+  [[node.field]]
+  id      = "references"
+  type    = "select"
+  default = "append"
+  options = ["append", "none"]
+
+  [[node.field]]
+  id      = "references_header"
+  type    = "text"
+  default = "## References"
+
+  # The excerpt shown in each reference, cut at this many characters (the stored one is
+  # whole).
+  [[node.field]]
+  id      = "max_excerpt_shown"
+  type    = "number"
+  default = 300
