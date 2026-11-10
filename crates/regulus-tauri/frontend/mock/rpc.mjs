@@ -1,6 +1,7 @@
 import fixture from "./profile.json" with { type: "json" };
 import config from "./config.json" with { type: "json" };
 import manifests from "./manifests.json" with { type: "json" };
+import { codeMethod, codeState } from "./code.mjs";
 import { operateMethod, operateState } from "./operate.mjs";
 import { settingsMethod, settingsState } from "./settings.mjs";
 
@@ -100,18 +101,23 @@ function diagnose(profile, modules) {
 /** In-memory state of the mock core: what `profile.save` and `profile.delete` change. */
 export function createState() {
   const operate = operateState();
+  const { codeManifests, codeTemplates, ...code } = codeState();
   const { settingsModules, ...settings } = settingsState();
   // The Settings modules come with the state they show: active, broken, disabled,
   // incompatible, and a local one blocked until its project is trusted (with `project`).
-  const modules = [...fixture.modules, ...manifests.map(summaryOf), ...operate.manifests.map(summaryOf),
+  // A module code.json describes in full replaces the example of the same name in the profile fixture.
+  const examples = fixture.modules.filter((module) => !codeManifests.some((manifest) => baseId(manifest.module.id) === baseId(module.id)));
+  const modules = [...examples, ...manifests.map(summaryOf), ...operate.manifests.map(summaryOf), ...codeManifests.map(summaryOf),
     ...settingsModules.map(({ manifest, state, project }) => ({ ...summaryOf(manifest), state, ...(project ? { project } : {}) }))];
   return {
     ...operate,
+    ...code,
     ...settings,
+    templates: [...operate.templates, ...codeTemplates],
     profiles: structuredClone(fixture.profiles),
     executions: structuredClone(fixture.executions),
     modules,
-    manifests: [...fixture.modules.map(manifestOf), ...structuredClone(manifests), ...operate.manifests, ...settingsModules.map(({ manifest }) => manifest)],
+    manifests: [...examples.map(manifestOf), ...structuredClone(manifests), ...operate.manifests, ...codeManifests, ...settingsModules.map(({ manifest }) => manifest)],
   };
 }
 
@@ -192,10 +198,10 @@ export function createSession(state = createState()) {
         result = diagnose(profile, state.modules);
         break;
       }
-      // execution.start and the other Operate methods live in operate.mjs, secret.*,
-      // config.client and service.* in settings.mjs.
+      // execution.start and the other Operate methods live in operate.mjs, code.inspect and
+      // the workers in code.mjs, secret.*, config.client and service.* in settings.mjs.
       default: {
-        const answer = operateMethod(state, method, params) ?? settingsMethod(state, method, params);
+        const answer = operateMethod(state, method, params) ?? codeMethod(state, method, params) ?? settingsMethod(state, method, params);
         if (!answer) return error(id, -32601, "Method not found");
         if (answer.error) return error(id, ...answer.error);
         result = answer.result;

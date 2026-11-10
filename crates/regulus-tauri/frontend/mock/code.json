@@ -1,0 +1,425 @@
+{
+  "manifests": [
+    {
+      "module": {"id": "regulus/code@0.1.0", "name": "Code", "requires_proto": "^1.9", "methods": ["code.inspect"], "workflow_id": null},
+      "node": [
+        {
+          "type": "workspace",
+          "name": "Code workspace",
+          "port": [
+            {"id": "workspace", "name": "workspace", "capability": "code.workspace@1", "direction": "output", "kind": "uses", "required": false},
+            {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false},
+            {"id": "root", "name": "root", "capability": "path@1", "direction": "input", "kind": "then", "required": false},
+            {"id": "changed", "name": "changed", "capability": "json@1", "direction": "output", "kind": "then", "required": false},
+            {"id": "ran", "name": "ran", "capability": "json@1", "direction": "output", "kind": "then", "required": false}
+          ],
+          "field": [
+            {"id": "root", "type": "text", "default": ""},
+            {
+              "id": "tools",
+              "type": "list",
+              "default": ["code_list_files", "code_read_file", "code_search", "code_git_status", "code_git_diff", "code_write_file", "code_edit_file", "code_run_command"]
+            },
+            {"id": "protect", "type": "list", "default": [".git"]},
+            {"id": "skip", "type": "list", "default": ["node_modules", "target"]},
+            {"id": "max_read_bytes", "type": "number", "default": 16000},
+            {"id": "inspect_max_bytes", "type": "number", "default": 1048576},
+            {"id": "inspect_max_entries", "type": "number", "default": 2000},
+            {"id": "shell", "type": "list", "default": ["sh", "-c"]},
+            {"id": "command_timeout_ms", "type": "number", "default": 120000},
+            {"id": "git", "type": "text", "default": "git"}
+          ]
+        },
+        {
+          "type": "tools",
+          "name": "Code tools",
+          "port": [
+            {"id": "workspace", "name": "workspace", "capability": "code.workspace@1", "direction": "input", "kind": "uses", "required": true},
+            {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false}
+          ],
+          "field": [
+            {"id": "access", "type": "select", "default": "read", "options": ["read", "write", "all"]},
+            {"id": "tools", "type": "list", "default": []}
+          ]
+        },
+        {
+          "type": "instructions",
+          "name": "Repository instructions",
+          "port": [
+            {"id": "workspace", "name": "workspace", "capability": "code.workspace@1", "direction": "input", "kind": "uses", "required": true},
+            {"id": "hook", "name": "hook", "capability": "hook@1", "direction": "output", "kind": "uses", "required": false}
+          ],
+          "field": [
+            {"id": "files", "type": "list", "default": ["AGENTS.md", "CLAUDE.md"]},
+            {"id": "event", "type": "select", "default": "session_start", "options": ["session_start", "prompt"]},
+            {"id": "max_chars", "type": "number", "default": 24000}
+          ]
+        }
+      ]
+    },
+    {
+      "module": {"id": "regulus/engine-native@0.1.0", "name": "Native engine", "requires_proto": "^1.9", "methods": [], "workflow_id": null},
+      "node": [
+        {
+          "type": "native",
+          "name": "Native engine",
+          "port": [
+            {"id": "engine", "name": "engine", "capability": "agent.engine@1", "direction": "output", "kind": "uses", "required": false},
+            {"id": "model", "name": "model", "capability": "llm.endpoint@1", "direction": "input", "kind": "uses", "required": true},
+            {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "input", "kind": "uses", "required": false, "cardinality": "many"},
+            {"id": "context", "name": "context", "capability": "hook@1", "direction": "input", "kind": "uses", "required": false, "cardinality": "many"}
+          ],
+          "field": [
+            {"id": "model", "type": "text", "default": ""},
+            {"id": "system", "type": "text", "default": ""},
+            {"id": "max_steps", "type": "number", "default": 16},
+            {"id": "max_tool_calls", "type": "number", "default": 32},
+            {"id": "tool_policy", "type": "select", "default": "ask", "options": ["allow", "ask", "deny"]},
+            {"id": "allow_tools", "type": "list", "default": []},
+            {"id": "deny_tools", "type": "list", "default": []},
+            {"id": "history_turns", "type": "number", "default": 20}
+          ]
+        }
+      ]
+    },
+    {
+      "module": {"id": "regulus/providers@0.1.0", "name": "Providers", "requires_proto": "^1.3", "methods": [], "workflow_id": null},
+      "node": [
+        {
+          "type": "provider",
+          "name": "AI provider",
+          "port": [{"id": "endpoint", "name": "endpoint", "capability": "llm.endpoint@1", "direction": "output", "kind": "uses", "required": false}],
+          "field": [
+            {"id": "preset", "type": "text", "default": ""},
+            {"id": "protocol", "type": "select", "default": "anthropic", "options": ["anthropic", "anthropic-oauth", "openai", "bedrock", "vertex"]},
+            {"id": "base_url", "type": "text", "default": ""},
+            {"id": "credential", "type": "text", "default": ""},
+            {"id": "auth", "type": "select", "default": "bearer", "options": ["bearer", "x-api-key", "none"]},
+            {"id": "model", "type": "text", "default": ""}
+          ]
+        }
+      ]
+    },
+    {
+      "module": {
+        "id": "regulus/delegation@0.1.0",
+        "name": "Delegation",
+        "requires_proto": "^1.16",
+        "methods": ["delegation.workers", "delegation.create", "delegation.send", "delegation.result", "delegation.close"],
+        "workflow_id": null
+      },
+      "node": [
+        {
+          "type": "delegate",
+          "name": "Delegate",
+          "port": [
+            {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false},
+            {
+              "id": "engine",
+              "name": "engine",
+              "capability": "agent.engine@1",
+              "direction": "input",
+              "kind": "uses",
+              "required": false,
+              "cardinality": "many",
+              "lazy": true
+            }
+          ],
+          "field": [
+            {"id": "workers", "type": "map", "default": {}},
+            {"id": "default_kind", "type": "text", "default": ""},
+            {"id": "max_workers", "type": "number", "default": 4},
+            {"id": "name", "type": "text", "default": ""}
+          ]
+        }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "name": "regulus-code",
+      "description": "A coding agent in one folder: read, search, edit and run with your say, workers that only read",
+      "path": "mock/templates/regulus-code.toml",
+      "vars": [
+        {"name": "root", "description": "absolute folder the agent works in"},
+        {"name": "preset", "description": "provider template (crates/modules/providers/presets.toml)", "default": "ollama"},
+        {"name": "base_url", "description": "the provider's endpoint, over the preset's; empty keeps the preset's", "default": ""},
+        {"name": "credential", "description": "secret:<name> with the provider's key; empty for a keyless endpoint", "default": ""},
+        {"name": "model", "description": "model id on that endpoint", "default": "qwen3:4b"},
+        {
+          "name": "system",
+          "description": "the system prompt, before the repository's instructions",
+          "default": "You are a careful coding assistant. Read before you change anything, and say what you changed."
+        },
+        {"name": "tool_policy", "description": "what a tool call that changes something gets: allow, ask (a person decides) or deny", "default": "ask"},
+        {"name": "max_steps", "description": "model calls per turn at most", "default": "16"},
+        {"name": "max_tool_calls", "description": "tool calls per turn at most", "default": "32"},
+        {"name": "max_workers", "description": "read-only workers live at once", "default": "2"},
+        {"name": "decision_timeout_ms", "description": "milliseconds a permission request waits for a person before it is refused", "default": "600000"}
+      ],
+      "requires": [
+        {"module": "regulus/code", "version": ">=0.1"},
+        {"module": "regulus/agent", "version": ">=0.1"},
+        {"module": "regulus/engine-native", "version": ">=0.1"},
+        {"module": "regulus/providers", "version": ">=0.1"},
+        {"module": "regulus/human", "version": ">=0.1"},
+        {"module": "regulus/delegation", "version": ">=0.1"}
+      ],
+      "text": "# Mock template: the real one is templates/regulus-code.toml at the repo root.\nid = \"regulus-code\"\nname = \"Regulus Code in {{root}}\"\nmain_workflow_id = \"code\"\n",
+      "profile": {
+        "id": "regulus-code",
+        "name": "Regulus Code in {{root}}",
+        "project_id": null,
+        "extends": null,
+        "main_workflow_id": "code",
+        "workflows": [
+          {
+            "id": "code",
+            "name": "Regulus Code",
+            "kind": "main",
+            "module_id": null,
+            "layout": {"x": 0, "y": 0, "width": 1200, "height": 600},
+            "ports": [
+              {"id": "chat", "name": "chat", "capability": "text@1", "direction": "input", "kind": "then", "required": false},
+              {"id": "reply", "name": "reply", "capability": "text@1", "direction": "output", "kind": "then", "required": false},
+              {"id": "error", "name": "error", "capability": "text@1", "direction": "output", "kind": "then", "required": false}
+            ],
+            "nodes": [
+              {
+                "id": "agent",
+                "name": "Agent",
+                "type": "agent",
+                "module_id": "regulus/agent@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "engine", "name": "engine", "capability": "agent.engine@1", "direction": "input", "kind": "uses", "required": true},
+                  {"id": "decisions", "name": "decisions", "capability": "decision@1", "direction": "input", "kind": "uses", "required": false},
+                  {"id": "prompt", "name": "prompt", "capability": "text@1", "direction": "input", "kind": "then", "required": false, "cardinality": "many"},
+                  {"id": "reply", "name": "reply", "capability": "text@1", "direction": "output", "kind": "then", "required": false},
+                  {"id": "failed", "name": "failed", "capability": "text@1", "direction": "output", "kind": "then", "required": false},
+                  {"id": "activity", "name": "activity", "capability": "agent.event@1", "direction": "output", "kind": "then", "required": false}
+                ],
+                "config": {"workdir": "{{root}}", "permissions": "ask"},
+                "position": {"x": 450, "y": 250},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "native",
+                "name": "Native engine",
+                "type": "native",
+                "module_id": "regulus/engine-native@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "engine", "name": "engine", "capability": "agent.engine@1", "direction": "output", "kind": "uses", "required": false},
+                  {"id": "model", "name": "model", "capability": "llm.endpoint@1", "direction": "input", "kind": "uses", "required": true},
+                  {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "input", "kind": "uses", "required": false, "cardinality": "many"},
+                  {"id": "context", "name": "context", "capability": "hook@1", "direction": "input", "kind": "uses", "required": false, "cardinality": "many"}
+                ],
+                "config": {
+                  "system": "{{system}}",
+                  "tool_policy": "{{tool_policy}}",
+                  "allow_tools": ["code_list_files", "code_read_file", "code_search", "code_git_status", "code_git_diff"],
+                  "max_steps": "{{max_steps}}",
+                  "max_tool_calls": "{{max_tool_calls}}"
+                },
+                "position": {"x": 450, "y": 50},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "provider",
+                "name": "Provider",
+                "type": "provider",
+                "module_id": "regulus/providers@0.1.0",
+                "resource": null,
+                "ports": [{"id": "endpoint", "name": "endpoint", "capability": "llm.endpoint@1", "direction": "output", "kind": "uses", "required": false}],
+                "config": {"preset": "{{preset}}", "base_url": "{{base_url}}", "credential": "{{credential}}", "model": "{{model}}"},
+                "position": {"x": 720, "y": 50},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "workspace",
+                "name": "Workspace",
+                "type": "workspace",
+                "module_id": "regulus/code@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "workspace", "name": "workspace", "capability": "code.workspace@1", "direction": "output", "kind": "uses", "required": false},
+                  {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false},
+                  {"id": "root", "name": "root", "capability": "path@1", "direction": "input", "kind": "then", "required": false},
+                  {"id": "changed", "name": "changed", "capability": "json@1", "direction": "output", "kind": "then", "required": false},
+                  {"id": "ran", "name": "ran", "capability": "json@1", "direction": "output", "kind": "then", "required": false}
+                ],
+                "config": {"root": "{{root}}"},
+                "position": {"x": 180, "y": 50},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "instructions",
+                "name": "Repository instructions",
+                "type": "instructions",
+                "module_id": "regulus/code@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "workspace", "name": "workspace", "capability": "code.workspace@1", "direction": "input", "kind": "uses", "required": true},
+                  {"id": "hook", "name": "hook", "capability": "hook@1", "direction": "output", "kind": "uses", "required": false}
+                ],
+                "config": {},
+                "position": {"x": 180, "y": 220},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "reader",
+                "name": "Read-only tools",
+                "type": "tools",
+                "module_id": "regulus/code@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "workspace", "name": "workspace", "capability": "code.workspace@1", "direction": "input", "kind": "uses", "required": true},
+                  {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false}
+                ],
+                "config": {"access": "read"},
+                "position": {"x": 180, "y": 390},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "decider",
+                "name": "Decider",
+                "type": "decider",
+                "module_id": "regulus/human@0.1.0",
+                "resource": null,
+                "ports": [{"id": "decisions", "name": "decisions", "capability": "decision@1", "direction": "output", "kind": "uses", "required": false}],
+                "config": {"timeout_ms": "{{decision_timeout_ms}}"},
+                "position": {"x": 450, "y": 450},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              },
+              {
+                "id": "workers",
+                "name": "Workers",
+                "type": "delegate",
+                "module_id": "regulus/delegation@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false},
+                  {
+                    "id": "engine",
+                    "name": "engine",
+                    "capability": "agent.engine@1",
+                    "direction": "input",
+                    "kind": "uses",
+                    "required": false,
+                    "cardinality": "many",
+                    "lazy": true
+                  }
+                ],
+                "config": {"workers": {"worker": "worker"}, "max_workers": "{{max_workers}}"},
+                "position": {"x": 720, "y": 250},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              }
+            ],
+            "wires": [
+              {"id": "native-agent", "kind": "uses", "from": {"node_id": "native", "port_id": "engine"}, "to": {"node_id": "agent", "port_id": "engine"}},
+              {"id": "provider-native", "kind": "uses", "from": {"node_id": "provider", "port_id": "endpoint"}, "to": {"node_id": "native", "port_id": "model"}},
+              {"id": "workspace-native", "kind": "uses", "from": {"node_id": "workspace", "port_id": "tools"}, "to": {"node_id": "native", "port_id": "tools"}},
+              {"id": "workers-native", "kind": "uses", "from": {"node_id": "workers", "port_id": "tools"}, "to": {"node_id": "native", "port_id": "tools"}},
+              {
+                "id": "workspace-instructions",
+                "kind": "uses",
+                "from": {"node_id": "workspace", "port_id": "workspace"},
+                "to": {"node_id": "instructions", "port_id": "workspace"}
+              },
+              {
+                "id": "instructions-native",
+                "kind": "uses",
+                "from": {"node_id": "instructions", "port_id": "hook"},
+                "to": {"node_id": "native", "port_id": "context"}
+              },
+              {
+                "id": "workspace-reader",
+                "kind": "uses",
+                "from": {"node_id": "workspace", "port_id": "workspace"},
+                "to": {"node_id": "reader", "port_id": "workspace"}
+              },
+              {"id": "decider-agent", "kind": "uses", "from": {"node_id": "decider", "port_id": "decisions"}, "to": {"node_id": "agent", "port_id": "decisions"}},
+              {"id": "native-workers", "kind": "uses", "from": {"node_id": "native", "port_id": "engine"}, "to": {"node_id": "workers", "port_id": "engine"}},
+              {"id": "chat-agent", "kind": "then", "from": {"node_id": "self", "port_id": "chat"}, "to": {"node_id": "agent", "port_id": "prompt"}},
+              {"id": "agent-reply", "kind": "then", "from": {"node_id": "agent", "port_id": "reply"}, "to": {"node_id": "self", "port_id": "reply"}},
+              {"id": "agent-failed", "kind": "then", "from": {"node_id": "agent", "port_id": "failed"}, "to": {"node_id": "self", "port_id": "error"}}
+            ]
+          },
+          {
+            "id": "worker",
+            "name": "Worker",
+            "kind": "extra",
+            "module_id": null,
+            "layout": {"x": 0, "y": 0, "width": 1200, "height": 600},
+            "ports": [
+              {"id": "prompt", "name": "prompt", "capability": "text@1", "direction": "input", "kind": "then", "required": false},
+              {"id": "reply", "name": "reply", "capability": "text@1", "direction": "output", "kind": "then", "required": false},
+              {"id": "failed", "name": "failed", "capability": "text@1", "direction": "output", "kind": "then", "required": false},
+              {"id": "engine", "name": "engine", "capability": "agent.engine@1", "direction": "input", "kind": "uses", "required": false}
+            ],
+            "nodes": [
+              {
+                "id": "worker",
+                "name": "Worker",
+                "type": "agent",
+                "module_id": "regulus/agent@0.1.0",
+                "resource": null,
+                "ports": [
+                  {"id": "engine", "name": "engine", "capability": "agent.engine@1", "direction": "input", "kind": "uses", "required": true},
+                  {"id": "prompt", "name": "prompt", "capability": "text@1", "direction": "input", "kind": "then", "required": false, "cardinality": "many"},
+                  {"id": "reply", "name": "reply", "capability": "text@1", "direction": "output", "kind": "then", "required": false},
+                  {"id": "failed", "name": "failed", "capability": "text@1", "direction": "output", "kind": "then", "required": false}
+                ],
+                "config": {"workdir": "{{root}}", "permissions": "reject"},
+                "position": {"x": 250, "y": 50},
+                "internal_workflow_id": null,
+                "exposed_parameters": []
+              }
+            ],
+            "wires": [
+              {"id": "worker-engine", "kind": "uses", "from": {"node_id": "self", "port_id": "engine"}, "to": {"node_id": "worker", "port_id": "engine"}},
+              {"id": "worker-prompt", "kind": "then", "from": {"node_id": "self", "port_id": "prompt"}, "to": {"node_id": "worker", "port_id": "prompt"}},
+              {"id": "worker-reply", "kind": "then", "from": {"node_id": "worker", "port_id": "reply"}, "to": {"node_id": "self", "port_id": "reply"}},
+              {"id": "worker-failed", "kind": "then", "from": {"node_id": "worker", "port_id": "failed"}, "to": {"node_id": "self", "port_id": "failed"}}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "workspace": {
+    "branch": "main",
+    "head": "4f2a9c1",
+    "tools": ["code_list_files", "code_read_file", "code_search", "code_git_status", "code_git_diff", "code_write_file", "code_edit_file", "code_run_command"],
+    "tracked": {
+      "AGENTS.md": "# Working in this repository\n\n- Run `pnpm test` before you say something works.\n- Keep handlers small: one file per route.\n",
+      "NOTES.md": "# Notes\n\n- The health route answers before the database is up.\n",
+      "README.md": "# Lighthouse\n\nA small HTTP service that says whether its parts are up.\n\n## Run\n\n```sh\npnpm install\npnpm start\n```\n\nIt listens on `PORT`, or on 3000.\n",
+      "package.json": "{\n  \"name\": \"lighthouse\",\n  \"private\": true,\n  \"scripts\": {\n    \"start\": \"node dist/app.js\",\n    \"test\": \"vitest run\"\n  }\n}\n",
+      "docs/guide.md": "# Guide\n\nEach part reports `up`, `down` or `unknown`. The service is up when none is down.\n",
+      "src/app.ts": "import { createServer } from \"node:http\";\nimport { health } from \"./routes/health\";\nimport { port } from \"./lib/port\";\n\nconst server = createServer((request, response) => {\n  if (request.url === \"/health\") return health(response);\n  response.writeHead(404).end();\n});\n\nserver.listen(port(process.env));\n",
+      "src/lib/port.ts": "const fallback = 3000;\n\n/** The port the server listens on. */\nexport function port(env: Record<string, string | undefined>): number {\n  const value = Number(env.PORT);\n  return Number.isInteger(value) && value > 0 ? value : fallback;\n}\n",
+      "src/routes/health.ts": "import type { ServerResponse } from \"node:http\";\n\n/** Says the service is up. */\nexport function health(response: ServerResponse) {\n  response.writeHead(200, { \"content-type\": \"application/json\" });\n  response.end(JSON.stringify({ status: \"up\" }));\n}\n"
+    },
+    "working": {
+      "AGENTS.md": "# Working in this repository\n\n- Run `pnpm test` before you say something works.\n- Keep handlers small: one file per route.\n",
+      "NOTES.md": "# Notes\n\n- The health route answers before the database is up.\n",
+      "README.md": "# Lighthouse\n\nA small HTTP service that says whether its parts are up.\n\n## Run\n\n```sh\npnpm install\npnpm start\n```\n\nIt listens on `PORT`, or on 3000.\n",
+      "package.json": "{\n  \"name\": \"lighthouse\",\n  \"private\": true,\n  \"scripts\": {\n    \"start\": \"node dist/app.js\",\n    \"test\": \"vitest run\"\n  }\n}\n",
+      "docs/guide.md": "# Guide\n\nEach part reports `up`, `down` or `unknown`. The service is up when none is down.\n",
+      "src/app.ts": "import { createServer } from \"node:http\";\nimport { health } from \"./routes/health\";\nimport { port } from \"./lib/port\";\n\nconst server = createServer((request, response) => {\n  if (request.url === \"/health\") return health(response);\n  response.writeHead(404).end();\n});\n\nserver.listen(port(process.env));\n",
+      "src/lib/port.ts": "const fallback = 8080;\n\n/** The port the server listens on: PORT if it is a port, else the fallback. */\nexport function port(env: Record<string, string | undefined>): number {\n  const value = Number(env.PORT);\n  return Number.isInteger(value) && value > 0 && value < 65536 ? value : fallback;\n}\n",
+      "src/routes/health.ts": "import type { ServerResponse } from \"node:http\";\n\n/** Says the service is up. */\nexport function health(response: ServerResponse) {\n  response.writeHead(200, { \"content-type\": \"application/json\" });\n  response.end(JSON.stringify({ status: \"up\" }));\n}\n",
+      "scratch/todo.txt": "check the port range\nwrite the test for it\n"
+    }
+  }
+}

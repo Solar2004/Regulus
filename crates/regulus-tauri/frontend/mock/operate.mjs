@@ -203,6 +203,18 @@ function render(template, vars) {
   return { profile: JSON.parse(text) };
 }
 
+/** A field the manifest types as a number holds a number, as a TOML hole without quotes gives the core. */
+function numbersOf(state, profile) {
+  for (const node of profile.workflows.flatMap((workflow) => workflow.nodes)) {
+    const type = state.manifests.find((manifest) => baseId(manifest.module.id) === baseId(node.module_id ?? ""))?.node?.find((item) => item.type === node.type);
+    for (const field of type?.field ?? []) {
+      const value = node.config?.[field.id];
+      if (field.type === "number" && typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) node.config[field.id] = Number(value);
+    }
+  }
+  return profile;
+}
+
 /** The workflows a workflow places as boxes, at any depth, itself first. */
 function embedded(profile, id, seen = new Set()) {
   if (seen.has(id)) return [];
@@ -276,7 +288,7 @@ export function operateMethod(state, method, params) {
       if (unmet) return failure(-32006, `template \`${template.name}\` requires \`${unmet.module}\` (${unmet.version}), which is not installed`);
       const rendered = render(template, params.vars ?? {});
       if (rendered.error) return rendered;
-      const profile = { ...rendered.profile, id: params.id || rendered.profile.id };
+      const profile = numbersOf(state, { ...rendered.profile, id: params.id || rendered.profile.id });
       const path = `mock/profiles/${profile.id}.toml`;
       const at = state.profiles.findIndex((item) => item.id === profile.id);
       if (at >= 0 && params.force !== true) return failure(-32007, `profile \`${profile.id}\` already exists at ${path}; use force to replace it`);

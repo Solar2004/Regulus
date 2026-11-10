@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createSession, createState } from "./rpc.mjs";
 import fixture from "./profile.json" with { type: "json" };
 import manifests from "./manifests.json" with { type: "json" };
+import code from "./code.json" with { type: "json" };
 import operate from "./operate.json" with { type: "json" };
 import settings from "./settings.json" with { type: "json" };
 
@@ -37,7 +38,12 @@ test("profile state is separate from executions and module metadata", () => {
   const [{ id }] = session(request("profile.list")).result;
   assert.deepEqual(session(request("profile.get", { id })).result, fixture.profiles[0]);
   assert.deepEqual(session(request("execution.list")).result, []);
-  assert.equal(session(request("module.list")).result.length, fixture.modules.length + manifests.length + operate.manifests.length + settings.modules.length);
+  const listed = session(request("module.list")).result;
+  // code.json describes `regulus/providers` in full: it stands in for the fixture's example of that name.
+  const replaced = fixture.modules.filter((module) => code.manifests.some((manifest) => manifest.module.id.split("@")[0] === module.id.split("@")[0]));
+  assert.deepEqual(replaced.map((module) => module.id), ["regulus/providers@0.1"]);
+  assert.equal(listed.length, fixture.modules.length - replaced.length + manifests.length + operate.manifests.length + code.manifests.length + settings.modules.length);
+  assert.equal(new Set(listed.map((module) => module.id.split("@")[0])).size, listed.length);
 });
 
 test("every wire joins existing compatible ports of the same kind", () => {
@@ -114,7 +120,7 @@ test("profile.delete removes a profile unless an execution of it is live", () =>
 test("template.list, template.get and template.apply mirror the core's shapes and errors", () => {
   const session = negotiatedSession();
   const list = session(request("template.list")).result;
-  assert.deepEqual(list.map((template) => template.name), ["echo", "chat", "ralph", "broken"]);
+  assert.deepEqual(list.map((template) => template.name), ["echo", "chat", "ralph", "broken", "regulus-code"]);
   assert.ok(list.every((template) => !("text" in template) && !("profile" in template) && Array.isArray(template.vars)));
   assert.match(list.find((template) => template.name === "broken").error, /TOML/);
   assert.deepEqual(Object.keys(session(request("template.get", { template: "echo" })).result), ["name", "path", "text"]);
@@ -484,4 +490,201 @@ test("execution.tree nests the children a calling node starts; stopping the pare
   assert.equal(session(request("execution.tree", {})).error.code, -32602);
   session(request("execution.stop", { id: root.id }));
   assert.deepEqual(session(request("execution.list")).result.find((item) => item.id === child.id).state, { status: "stopped" });
+});
+
+// ── Regulus Code: the `regulus-code` template, `code.inspect`, the coding turn and workers ──
+
+/** Applies `regulus-code` on a folder and starts it: the session, with helpers that read it. */
+function codeSession(root = "/home/ada/lighthouse", state = createState()) {
+  const session = negotiatedSession(state);
+  const applied = session(request("template.apply", { template: "regulus-code", vars: { root }, id: "code-lighthouse" })).result;
+  const execution = session(request("execution.start", { profile_id: applied.profile_id })).result;
+  const on = (node) => ({ execution_id: execution.id, node_id: node });
+  const inspect = (action, extra = {}) => session(request("code.inspect", { ...on("workspace"), action, ...extra }));
+  const cursors = new Map();
+  /** Reads on in an agent's history until `done` says so, one scripted step per read: what came since the last call. */
+  const follow = (done, node = "agent", from = execution.id) => {
+    const seen = { entries: [], activity: [] };
+    const key = `${from}/${node}`;
+    for (let rounds = 0; rounds < 40 && !done(seen); rounds++) {
+      const page = session(request("agent.history", { execution_id: from, node_id: node, since: cursors.get(key) ?? 0 })).result;
+      seen.entries.push(...page.entries);
+      seen.activity.push(...page.activity);
+      cursors.set(key, page.next);
+    }
+    return seen;
+  };
+  return { state, session, applied, execution, on, inspect, follow };
+}
+const kinds = (seen) => seen.activity.map((item) => item.event.kind);
+const ended = (seen) => kinds(seen).includes("turn_ended");
+const asking = (seen) => kinds(seen).includes("permission_request");
+
+test("regulus-code applies with the folder, passes profile.check and starts with nothing disabled", () => {
+  const { session, applied, execution } = codeSession();
+  assert.deepEqual(applied, { profile_id: "code-lighthouse", path: "mock/profiles/code-lighthouse.toml", diagnostics: [] });
+  const profile = session(request("profile.get", { id: "code-lighthouse" })).result;
+  const node = (id) => profile.workflows[0].nodes.find((item) => item.id === id);
+  assert.equal(profile.main_workflow_id, "code");
+  assert.equal(node("workspace").config.root, "/home/ada/lighthouse");
+  assert.deepEqual(node("provider").config, { preset: "ollama", base_url: "", credential: "", model: "qwen3:4b" });
+  // A hole the manifest types as a number is a number, as in the core's TOML.
+  assert.equal(node("workers").config.max_workers, 2);
+  assert.equal(node("native").config.max_steps, 16);
+  assert.deepEqual(session(request("profile.check", { id: "code-lighthouse" })).result, []);
+  assert.equal(execution.state.status, "running");
+  assert.equal(execution.disabled, undefined);
+  assert.equal(session(request("template.apply", { template: "regulus-code", vars: {} })).error.code, -32602);
+});
+
+test("the workspace node is the one offering code.workspace@1, and the module declares code.inspect", () => {
+  const manifest = negotiatedSession()(request("module.manifest", { id: "regulus/code" })).result;
+  assert.deepEqual(manifest.module.methods, ["code.inspect"]);
+  const offering = manifest.node.filter((type) => type.port.some((port) => port.direction === "output" && port.capability === "code.workspace@1"));
+  assert.deepEqual(offering.map((type) => type.type), ["workspace"]);
+  assert.ok(offering[0].port.some((port) => port.direction === "output" && port.capability === "tool@1"));
+});
+
+test("code.inspect summary: the folder, porcelain status with its parsed lines, and the tools", () => {
+  const { inspect } = codeSession();
+  const summary = inspect("summary").result;
+  assert.equal(summary.root, "/home/ada/lighthouse");
+  assert.equal(summary.git.branch, "main");
+  assert.equal(summary.git.status, "?? scratch/todo.txt\n M src/lib/port.ts\n");
+  assert.deepEqual(summary.git.changes, [{ path: "scratch/todo.txt", code: "??" }, { path: "src/lib/port.ts", code: " M" }]);
+  assert.equal(summary.git.truncated, false);
+  assert.equal(summary.git_reason, undefined);
+  assert.ok(summary.tools.includes("code_edit_file") && summary.tools.includes("code_run_command"));
+});
+
+test("code.inspect list gives direct children with root-relative paths; read and search stay inside the folder", () => {
+  const { inspect } = codeSession();
+  const top = inspect("list").result;
+  assert.equal(top.path, "");
+  assert.deepEqual(top.entries.map((entry) => `${entry.kind}:${entry.path}`), [
+    "file:AGENTS.md", "file:NOTES.md", "file:README.md", "directory:docs", "file:package.json", "directory:scratch", "directory:src",
+  ]);
+  assert.ok(top.entries.every((entry) => entry.kind === "directory" ? entry.size === undefined : entry.size > 0));
+  assert.deepEqual(inspect("list", { path: "src" }).result.entries.map((entry) => entry.path), ["src/app.ts", "src/lib", "src/routes"]);
+  const file = inspect("read", { path: "src/lib/port.ts" }).result;
+  assert.match(file.text, /fallback = 8080/);
+  assert.deepEqual([file.path, file.truncated, file.size], ["src/lib/port.ts", false, new TextEncoder().encode(file.text).length]);
+  // The query is literal and case-insensitive; `path` scopes it.
+  const found = inspect("search", { query: "PORT" }).result;
+  assert.ok(found.matches.length > 3 && found.matches.every((match) => /port/i.test(match.text) && match.line >= 1));
+  assert.deepEqual(inspect("search", { query: "fallback", path: "docs" }).result, { root: "/home/ada/lighthouse", matches: [], truncated: false });
+  // A substring counts: "reports" holds "port".
+  assert.deepEqual(inspect("search", { query: "port", path: "docs" }).result.matches.map((match) => [match.path, match.line]), [["docs/guide.md", 3]]);
+  assert.deepEqual([...new Set(inspect("search", { query: "port", path: "src/lib" }).result.matches.map((match) => match.path))], ["src/lib/port.ts"]);
+});
+
+test("code.inspect diff is tracked changes against the last commit; untracked files stay in the status", () => {
+  const { inspect } = codeSession();
+  const diff = inspect("diff").result;
+  assert.equal(diff.truncated, false);
+  assert.match(diff.text, /^diff --git a\/src\/lib\/port\.ts b\/src\/lib\/port\.ts\n--- a\/src\/lib\/port\.ts\n\+\+\+ b\/src\/lib\/port\.ts\n@@ -1,7 \+1,7 @@\n-const fallback = 3000;\n\+const fallback = 8080;\n/);
+  assert.ok(!diff.text.includes("scratch/todo.txt"));
+});
+
+test("code.inspect refuses what is not a look at a live workspace node, by code", () => {
+  const { state, session, execution, on, inspect } = codeSession();
+  const code = (answer) => answer.error?.code;
+  assert.equal(code(inspect("write")), -32602);
+  assert.equal(code(inspect("read")), -32602);
+  assert.equal(code(inspect("search")), -32602);
+  assert.equal(code(inspect("read", { path: "../etc/passwd" })), -32602);
+  assert.equal(code(inspect("read", { path: "/etc/passwd" })), -32602);
+  assert.equal(code(inspect("list", { path: ".git" })), -32602);
+  assert.equal(code(inspect("read", { path: "src" })), -32602);
+  assert.equal(code(inspect("list", { path: "README.md" })), -32602);
+  assert.equal(code(inspect("read", { path: "nope.txt" })), -32602);
+  assert.equal(code(session(request("code.inspect", { ...on("agent"), action: "summary" }))), -32602);
+  assert.equal(code(session(request("code.inspect", { execution_id: "exec-none", node_id: "workspace", action: "summary" }))), -32602);
+  session(request("execution.stop", { id: execution.id }));
+  assert.equal(code(inspect("summary")), -32602);
+  // Without the module the method is not there at all.
+  state.modules = state.modules.filter((module) => !module.id.startsWith("regulus/code@"));
+  assert.equal(code(inspect("summary")), -32601);
+});
+
+test("a folder without a repository has no git, with the reason, and an empty diff", () => {
+  const { inspect } = codeSession("/home/ada/no-git");
+  const summary = inspect("summary").result;
+  assert.equal(summary.git, null);
+  assert.equal(summary.git_reason, "not a git repository");
+  assert.deepEqual(inspect("diff").result, { root: "/home/ada/no-git", text: "", truncated: false, git_reason: "not a git repository" });
+  assert.equal(inspect("list").result.entries.length, 7);
+});
+
+test("a coding turn reads, asks to edit, and the edit shows in the file, the status and the diff once allowed", () => {
+  const { session, execution, on, inspect, follow } = codeSession();
+  const { turn } = session(request("agent.send", { ...on("agent"), text: "note the port range" })).result;
+  const before = follow(asking);
+  assert.deepEqual(before.activity.filter((item) => item.event.kind === "tool_call").map((item) => item.event.title), ["code_list_files", "code_read_file README.md"]);
+  const asked = before.activity.find((item) => item.event.kind === "permission_request").event;
+  assert.deepEqual([asked.tool, asked.title, asked.options.map((option) => option.id)], ["code_edit_file", "code_edit_file NOTES.md", ["allow_once", "allow_always", "reject_once"]]);
+  // Nothing is written while the question waits.
+  assert.ok(!inspect("read", { path: "NOTES.md" }).result.text.includes("note the port range"));
+  const [pending] = session(request("human.list")).result;
+  assert.deepEqual(pending.value.context, { tool: "code_edit_file", title: "code_edit_file NOTES.md", execution_id: execution.id, node_id: "agent", request_id: asked.id });
+  assert.equal(pending.node_id, "decider");
+  session(request("human.answer", { id: pending.id, decision: "approve", fields: { option: "allow_once" } }));
+  const after = follow(ended);
+  assert.equal(after.activity.find((item) => item.event.kind === "permission_resolved").event.option, "allow_once");
+  assert.equal(after.activity.filter((item) => item.event.kind === "tool_update").pop().event.status, "completed");
+  assert.match(inspect("read", { path: "NOTES.md" }).result.text, /- note the port range\n$/);
+  assert.ok(inspect("summary").result.git.status.includes(" M NOTES.md\n"));
+  assert.match(inspect("diff").result.text, /diff --git a\/NOTES\.md b\/NOTES\.md[\s\S]*\n\+- note the port range\n/);
+  const reply = after.entries.find((entry) => entry.role === "agent");
+  assert.equal(reply.turn, turn);
+  assert.match(reply.text, /I added it to NOTES\.md\.$/);
+});
+
+test("a rejected edit changes nothing, and a cancelled turn takes its question with it", () => {
+  const { session, on, inspect, follow } = codeSession();
+  session(request("agent.send", { ...on("agent"), text: "first" }));
+  follow(asking);
+  const [pending] = session(request("human.list")).result;
+  session(request("human.answer", { id: pending.id, decision: "reject", fields: {} }));
+  const rejected = follow(ended);
+  const update = rejected.activity.filter((item) => item.event.kind === "tool_update").pop().event;
+  assert.equal(update.status, "failed");
+  assert.match(update.content[0].content.text, /^refused: the person rejected it/);
+  assert.ok(!inspect("summary").result.git.status.includes("NOTES.md"));
+  assert.match(rejected.entries.find((entry) => entry.role === "agent").text, /I left NOTES\.md as it was\.$/);
+  session(request("agent.send", { ...on("agent"), text: "second" }));
+  follow(asking);
+  assert.equal(session(request("human.list")).result.length, 1);
+  assert.equal(session(request("agent.cancel", on("agent"))).result, null);
+  assert.equal(session(request("human.list")).result.length, 0);
+  assert.ok(!inspect("summary").result.git.status.includes("NOTES.md"));
+});
+
+test("a worker the agent starts is a child execution the delegate lists and closes", () => {
+  const { state, session, execution, on, follow } = codeSession();
+  assert.deepEqual(session(request("delegation.workers", on("workers"))).result, []);
+  session(request("agent.send", { ...on("agent"), text: "ask a worker to read the docs" }));
+  follow(asking);
+  session(request("human.answer", { id: session(request("human.list")).result[0].id, decision: "approve", fields: { option: "allow_always" } }));
+  const turn = follow(ended);
+  assert.ok(turn.activity.some((item) => item.event.kind === "tool_call" && item.event.title === "worker_create"));
+  const [worker] = session(request("delegation.workers", on("workers"))).result;
+  assert.deepEqual(Object.keys(worker), ["worker", "kind", "name", "execution", "state", "pending_results", "last_output_at"]);
+  assert.deepEqual([worker.worker, worker.kind, worker.state], ["w-1", "worker", "running"]);
+  const tree = session(request("execution.tree", { execution_id: execution.id })).result;
+  assert.deepEqual(tree.children.map((child) => [child.execution.id, child.execution.workflow_id, child.execution.caller, child.execution.tag]), [[worker.execution, "worker", "workers", "w-1"]]);
+  // The worker's own conversation holds its brief, and its answer counts as a result waiting.
+  const own = follow(ended, "worker", worker.execution);
+  assert.match(own.entries.find((entry) => entry.role === "user").text, /^Look into: ask a worker/);
+  assert.equal(session(request("delegation.workers", on("workers"))).result[0].pending_results, 1);
+  // "Always allow" holds for the next turn: no second question.
+  session(request("agent.send", { ...on("agent"), text: "and again" }));
+  assert.ok(!asking(follow(ended)));
+  const closed = session(request("delegation.close", { ...on("workers"), worker: "w-1" })).result;
+  assert.equal(closed.state, "closed");
+  assert.equal(state.executions.find((item) => item.id === worker.execution).state.status, "stopped");
+  assert.equal(session(request("delegation.workers", on("agent"))).error.code, -32602);
+  assert.equal(session(request("delegation.close", { ...on("workers"), worker: "w-9" })).error.code, -32003);
+  state.modules = state.modules.filter((module) => !module.id.startsWith("regulus/delegation@"));
+  assert.equal(session(request("delegation.workers", on("workers"))).error.code, -32601);
 });
