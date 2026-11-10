@@ -1,0 +1,197 @@
+# Data (docs/16-experiments.md), no agent and no network. `rows` is a bounded dataset keyed
+# by `/id`: send it a record, an array or JSONL text (`rows_jsonl`); `flush` sends the
+# whole dataset out on `dataset`. `watch` is a keyed snapshot: send the full current state
+# of a source on `state` and it says what is new, changed or removed since the last one,
+# even after a restart (the baseline lives in the store). `order` ranks `{ key: metrics }`
+# by `/recall`.
+#
+# Run, from the repository root:
+#
+#   export REGULUS_HOME=$(mktemp -d); mkdir $REGULUS_HOME/profiles
+#   cp crates/modules/data/examples/data.toml $REGULUS_HOME/profiles/
+#   regulus serve --port 0 &
+#   regulus run data --detach                                  # exec-1  data  running
+#   regulus send exec-1 rows_jsonl $'{"id":"a","q":"one"}\n{"id":"a","q":"dup"}\n{"id":"b"}'
+#     … self.stored emitted json@1 {"added":2,"duplicates":1,"total":2,…}
+#   regulus send exec-1 flush now                              # → self.dataset: both records
+#   regulus send exec-1 state '[{"url":"u1","title":"A"},{"url":"u2","title":"B"}]'
+#     … self.novel emitted json@1 [{"change":"added","key":"u1",…},{"change":"added","key":"u2",…}]
+#   regulus send exec-1 state '[{"url":"u1","title":"A"},{"url":"u2","title":"B2"},{"url":"u3"}]'
+#     … self.novel: u2 changed (with `before`), u3 added
+#   regulus send exec-1 state '[{"url":"u1","title":"A"},{"url":"u2","title":"B2"},{"url":"u3"}]'
+#     … self.same emitted json@1 {…"counts":{"added":0,"changed":0,"removed":0,"unchanged":3…}}
+#   regulus send exec-1 metrics '{"bm25":{"recall":0.5},"fixed":{"recall":1.0}}'
+#     … self.best emitted text@1 "fixed"
+#   regulus call data.list '{"execution_id":"exec-1","node_id":"watch"}'
+#   regulus call data.inspect '{"execution_id":"exec-1","node_id":"watch"}'
+#   regulus call data.export '{"execution_id":"exec-1","node_id":"rows"}'
+id = "data"
+name = "Data"
+main_workflow_id = "data"
+
+[[workflows]]
+id = "data"
+name = "Data"
+kind = "main"
+ports = [
+  { id = "rows", capability = "json@1", direction = "input", kind = "then" },
+  { id = "rows_jsonl", capability = "text@1", direction = "input", kind = "then" },
+  { id = "flush", capability = "json@1", direction = "input", kind = "then" },
+  { id = "state", capability = "json@1", direction = "input", kind = "then" },
+  { id = "metrics", capability = "json@1", direction = "input", kind = "then" },
+  { id = "stored", capability = "json@1", direction = "output", kind = "then" },
+  { id = "dataset", capability = "json@1", direction = "output", kind = "then" },
+  { id = "report", capability = "json@1", direction = "output", kind = "then" },
+  { id = "novel", capability = "json@1", direction = "output", kind = "then" },
+  { id = "removed", capability = "json@1", direction = "output", kind = "then" },
+  { id = "same", capability = "json@1", direction = "output", kind = "then" },
+  { id = "ranking", capability = "json@1", direction = "output", kind = "then" },
+  { id = "best", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "rows"
+  name = "Rows"
+  type = "collect"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 300, y = 50 }
+  config = { dataset = "rows", key_path = "/id", text = "jsonl", max_items = 100, agent_writes = "yes" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "text", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "flush", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "clear", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "stored", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "watch"
+  name = "Watch"
+  type = "snapshot"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 300, y = 250 }
+  config = { snapshot = "watch", key_path = "/url", compare_paths = "/title,/text" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "report", capability = "json@1", direction = "output", kind = "then" },
+    { id = "novel", capability = "json@1", direction = "output", kind = "then" },
+    { id = "removed", capability = "json@1", direction = "output", kind = "then" },
+    { id = "same", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "order"
+  name = "Order"
+  type = "rank"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 300, y = 450 }
+  config = { metric_path = "/recall", labels = { bm25 = "BM25", fixed = "Fixed chunks" } }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ranking", capability = "json@1", direction = "output", kind = "then" },
+    { id = "best", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "self-rows-rows-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "rows" }
+  to = { node_id = "rows", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "self-rows-jsonl-rows-text"
+  kind = "then"
+  from = { node_id = "self", port_id = "rows_jsonl" }
+  to = { node_id = "rows", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "self-flush-rows-flush"
+  kind = "then"
+  from = { node_id = "self", port_id = "flush" }
+  to = { node_id = "rows", port_id = "flush" }
+
+  [[workflows.wires]]
+  id = "rows-out-self-dataset"
+  kind = "then"
+  from = { node_id = "rows", port_id = "out" }
+  to = { node_id = "self", port_id = "dataset" }
+
+  [[workflows.wires]]
+  id = "rows-stored-self-stored"
+  kind = "then"
+  from = { node_id = "rows", port_id = "stored" }
+  to = { node_id = "self", port_id = "stored" }
+
+  [[workflows.wires]]
+  id = "rows-error-self-error"
+  kind = "then"
+  from = { node_id = "rows", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "self-state-watch-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "state" }
+  to = { node_id = "watch", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "watch-report-self-report"
+  kind = "then"
+  from = { node_id = "watch", port_id = "report" }
+  to = { node_id = "self", port_id = "report" }
+
+  [[workflows.wires]]
+  id = "watch-novel-self-novel"
+  kind = "then"
+  from = { node_id = "watch", port_id = "novel" }
+  to = { node_id = "self", port_id = "novel" }
+
+  [[workflows.wires]]
+  id = "watch-removed-self-removed"
+  kind = "then"
+  from = { node_id = "watch", port_id = "removed" }
+  to = { node_id = "self", port_id = "removed" }
+
+  [[workflows.wires]]
+  id = "watch-same-self-same"
+  kind = "then"
+  from = { node_id = "watch", port_id = "same" }
+  to = { node_id = "self", port_id = "same" }
+
+  [[workflows.wires]]
+  id = "watch-error-self-error"
+  kind = "then"
+  from = { node_id = "watch", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "self-metrics-order-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "metrics" }
+  to = { node_id = "order", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "order-ranking-self-ranking"
+  kind = "then"
+  from = { node_id = "order", port_id = "ranking" }
+  to = { node_id = "self", port_id = "ranking" }
+
+  [[workflows.wires]]
+  id = "order-best-self-best"
+  kind = "then"
+  from = { node_id = "order", port_id = "best" }
+  to = { node_id = "self", port_id = "best" }
+
+  [[workflows.wires]]
+  id = "order-error-self-error"
+  kind = "then"
+  from = { node_id = "order", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }

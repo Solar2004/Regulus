@@ -1,0 +1,442 @@
+[module]
+id             = "regulus/data@0.1.0"
+name           = "Data"
+requires_proto = "^1.9"
+# What the CLI and the app read persisted state with (`regulus call`):
+#   data.list     every dataset and snapshot of the project (kind, scope, name, size)
+#   data.inspect  one dataset or snapshot: settings, size, history, first `limit` rows
+#   data.export   the whole content (bounded by its limits)
+# Name the node (`execution_id`, `node_id`; it may have stopped while the core still knows
+# that execution), or `via: { execution_id, node_id }` (any running data node of the same
+# project) or `global: true` (profiles outside any project; needs no execution at all). A
+# node that is not running no longer says what it kept: give `kind` (`dataset` |
+# `snapshot`) and `name` (and `scope` if not `project`).
+methods        = ["data.list", "data.inspect", "data.export"]
+
+# Generic data pieces (docs/16-experiments.md): a bounded dataset collection, a keyed
+# snapshot that says what was added, changed or removed since the last one, and a ranking
+# of keyed metrics. Nothing here knows RAG, search or research: a template wires them.
+# State lives in the module's space of the store (the project's database, or the global
+# one outside a project), one JSON row per dataset or snapshot, written whole and only
+# under the module's write lock: a crash leaves the old row or the new one.
+#
+# Every bound is a field of the node and 0 means its default, never "no bound".
+
+# A dataset: records collected under a key, in the order they arrived. A value on `in`
+# is a record, an array of records, or a text read per `text`. The key is the value at
+# `key_path` (a JSON pointer such as `/id` or a dotted path); with no `key_path` it is a
+# hash of the record, so identical records collapse. A record with no key, over
+# `max_record_bytes`, that does not parse, or that does not fit is rejected and reported
+# (never silently dropped); the others are kept. `stored` says what happened to one input.
+[[node]]
+type = "collect"
+name = "Dataset"
+
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The same, for a text (read per the `text` field); a wire only joins the same capability.
+  [[node.port]]
+  id          = "text"
+  name        = "text"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value sends the whole dataset out on `out`.
+  [[node.port]]
+  id          = "flush"
+  name        = "flush"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # Any value empties the dataset.
+  [[node.port]]
+  id          = "clear"
+  name        = "clear"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # The records, oldest first, as one array.
+  [[node.port]]
+  id         = "out"
+  name       = "out"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # { dataset, scope, received, added, replaced, duplicates, evicted, rejected_count,
+  #   rejected: [{ line?, key?, reason }] (the first 20), total, bytes }
+  [[node.port]]
+  id         = "stored"
+  name       = "stored"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # One text when records were rejected, or an input could not be read at all.
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "dataset"
+  type    = "text"
+  default = "dataset"
+
+  # project: every execution of the project shares it. execution: this run only.
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  # JSON pointer (`/id`) or dotted path (`a.b`) of the record's key. Empty: a hash of the
+  # record.
+  [[node.field]]
+  id      = "key_path"
+  type    = "text"
+  default = ""
+
+  # How a text value is read: record (the text is itself a record), json (a JSON value,
+  # an array being many records) or jsonl (one JSON record per non-empty line; a bad line
+  # is rejected with its number and the others are kept).
+  [[node.field]]
+  id      = "text"
+  type    = "select"
+  default = "json"
+  options = ["record", "json", "jsonl"]
+
+  # A record with a key the dataset already has: keep_first keeps the old one and counts
+  # a duplicate; replace stores the new one as the newest.
+  [[node.field]]
+  id      = "on_duplicate"
+  type    = "select"
+  default = "keep_first"
+  options = ["keep_first", "replace"]
+
+  [[node.field]]
+  id      = "max_items"
+  type    = "number"
+  default = 1000
+
+  # Keys and records together, as compact JSON.
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 1048576
+
+  [[node.field]]
+  id      = "max_record_bytes"
+  type    = "number"
+  default = 65536
+
+  # Past a bound: refuse rejects what does not fit; oldest drops the oldest records to
+  # make room.
+  [[node.field]]
+  id      = "evict"
+  type    = "select"
+  default = "refuse"
+  options = ["refuse", "oldest"]
+
+  # flush: the dataset leaves on `out` only on `flush`. input: after every input too.
+  [[node.field]]
+  id      = "emit"
+  type    = "select"
+  default = "flush"
+  options = ["flush", "input"]
+
+  # no: agents only read (dataset_add is not offered).
+  [[node.field]]
+  id      = "agent_writes"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
+  # The most records dataset_read returns at once.
+  [[node.field]]
+  id      = "max_results"
+  type    = "number"
+  default = 20
+
+# A keyed snapshot: the full current state of a source (an array of records) compared with
+# the last one stored under `snapshot`, then stored as the new baseline. Records are keyed
+# as in `collect`, plus `key`: a constant key for a snapshot of one thing (a page). A
+# record is `changed` when the hash of its `compare_paths` (all of it if empty) differs.
+# Duplicate keys inside one input collapse per `on_duplicate`. An input that does not fit
+# the bounds, has no keyed record at all, or (`on_empty = refuse`) no record, is refused and
+# the baseline stays; with some records rejected, `on_rejected` says what happens to the
+# baseline entries the input did not repeat.
+# A value that is not an array is a state of one record (an object, a page text).
+#   report   always: { snapshot, scope, seq, previous_seq, first, baselined?, total, counts,
+#              added: [{key, record}], changed: [{key, record, before}], removed: [{key, record}],
+#              rejected: [{key?, reason}] }
+#   novel    when something was added or changed: [{change, key, record, before?}]
+#   removed  when something was removed: [{key, record}]
+#   same     the report, when nothing was added, changed or removed
+[[node]]
+type = "snapshot"
+name = "Snapshot"
+
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  # A text is one record (a page), tracked under `key`.
+  [[node.port]]
+  id          = "text"
+  name        = "text"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "report"
+  name       = "report"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "novel"
+  name       = "novel"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "removed"
+  name       = "removed"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "same"
+  name       = "same"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "snapshot"
+  type    = "text"
+  default = "snapshot"
+
+  [[node.field]]
+  id      = "scope"
+  type    = "select"
+  default = "project"
+  options = ["project", "execution"]
+
+  [[node.field]]
+  id      = "key_path"
+  type    = "text"
+  default = ""
+
+  # Used when `key_path` is empty: every record gets this key, so the snapshot is of one
+  # thing. Empty: the key is a hash of the record.
+  [[node.field]]
+  id      = "key"
+  type    = "text"
+  default = ""
+
+  # Comma-separated paths whose values decide whether a record changed. Empty: all of it.
+  [[node.field]]
+  id      = "compare_paths"
+  type    = "text"
+  default = ""
+
+  [[node.field]]
+  id      = "on_duplicate"
+  type    = "select"
+  default = "keep_first"
+  options = ["keep_first", "keep_last"]
+
+  # report: the first input reports every record as added. silent: it stores the baseline
+  # and sends only `report` (with `baselined: true`): no `novel`, no `same`.
+  [[node.field]]
+  id      = "baseline"
+  type    = "select"
+  default = "report"
+  options = ["report", "silent"]
+
+  # keep_baseline: when any record of an input is rejected (no key, too big), baseline
+  # entries the input does not repeat are kept (counted as `carried`), not reported removed
+  # and then new again. replace: the baseline follows what was readable.
+  [[node.field]]
+  id      = "on_rejected"
+  type    = "select"
+  default = "keep_baseline"
+  options = ["keep_baseline", "replace"]
+
+  # refuse: an input with no records at all (a search that found nothing, a failed fetch
+  # that said 200) is an error and the baseline stays. accept: it is a real empty state and
+  # everything stored becomes `removed`.
+  [[node.field]]
+  id      = "on_empty"
+  type    = "select"
+  default = "refuse"
+  options = ["refuse", "accept"]
+
+  [[node.field]]
+  id      = "max_items"
+  type    = "number"
+  default = 1000
+
+  [[node.field]]
+  id      = "max_bytes"
+  type    = "number"
+  default = 1048576
+
+  [[node.field]]
+  id      = "max_record_bytes"
+  type    = "number"
+  default = 65536
+
+  # Past runs kept in the history `data.inspect` shows (counts only).
+  [[node.field]]
+  id      = "history"
+  type    = "number"
+  default = 20
+
+  # The most records snapshot_read returns at once.
+  [[node.field]]
+  id      = "max_results"
+  type    = "number"
+  default = 20
+
+# A ranking of keyed metrics. `in` is an object `{ key: metrics }` (for instance a `join`
+# with `shape = object`) or an array of metrics keyed by `key_path`. `metric_path` picks
+# the number. Same rank when within `tolerance` of the first of its group. Nothing is stored. An
+# input with a missing or non-numeric metric is refused whole, naming the keys.
+#   ranking  { metric, order, count, tie, best: [key], spread, baseline?, scored?,
+#              ranking: [{ rank, key, label, value, scored?, delta_best, delta_baseline?, metrics }] }
+[[node]]
+type = "rank"
+name = "Rank"
+
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  [[node.port]]
+  id          = "in"
+  name        = "in"
+  capability  = "json@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "ranking"
+  name       = "ranking"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The label (or key) of the best entry; the labels joined by ", " on a tie.
+  [[node.port]]
+  id         = "best"
+  name       = "best"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.port]]
+  id         = "error"
+  name       = "error"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "metric_path"
+  type    = "text"
+  default = "/score"
+
+  [[node.field]]
+  id      = "order"
+  type    = "select"
+  default = "desc"
+  options = ["desc", "asc"]
+
+  [[node.field]]
+  id      = "key_path"
+  type    = "text"
+  default = ""
+
+  # Entries within this of the best of their group share its rank.
+  [[node.field]]
+  id      = "tolerance"
+  type    = "number"
+  default = 0
+
+  # A key to measure `delta_baseline` against. Empty: none.
+  [[node.field]]
+  id      = "baseline"
+  type    = "text"
+  default = ""
+
+  # key → label shown in the ranking and on `best`.
+  [[node.field]]
+  id      = "labels"
+  type    = "map"
+  default = {}
+
+  # A path (a JSON number) that says how many items each entry was measured on, for instance
+  # `/total` of a recall result. When set, every entry must have it, it must be the same
+  # for all and at least 1: metrics over different or no items are not compared. Empty: not
+  # checked.
+  [[node.field]]
+  id      = "scored_path"
+  type    = "text"
+  default = ""
+
+  # The most entries accepted.
+  [[node.field]]
+  id      = "max_items"
+  type    = "number"
+  default = 1000

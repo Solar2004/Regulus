@@ -1,0 +1,18 @@
+[package]
+license.workspace = true
+name = "regulus-module-data"
+description = "Regulus data: bounded dataset collection and deterministic keyed snapshot comparison (dedup, added, changed, removed)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-core.workspace = true
+regulus-proto.workspace = true
+regulus-contract-tool.workspace = true
+blake2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

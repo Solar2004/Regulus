@@ -43,6 +43,7 @@ members = [
     "crates/modules/delegation",
     "crates/modules/code",
     "crates/modules/evidence",
+    "crates/modules/data",
 ]
 resolver = "2"
 

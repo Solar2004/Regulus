@@ -41,6 +41,7 @@ regulus-module-engine-native = { path = "../modules/engine-native" }
 regulus-module-delegation = { path = "../modules/delegation" }
 regulus-module-code = { path = "../modules/code" }
 regulus-module-evidence = { path = "../modules/evidence" }
+regulus-module-data = { path = "../modules/data" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true
