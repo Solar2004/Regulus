@@ -487,3 +487,13 @@ core, la leen del fichero.
   `tui::client_table` y `tui::options` en la CLI; `src/core/clientConfig.ts`,
   `src/operate/settings.ts` y `applyStartView` (`src/store/useRegulusUi.ts`) en la app; el
   mock lo sirve desde `mock/settings.json`.
+
+## 12. Regulus Code (2026-11-10)
+
+✅ **HECHO** — `regulus code [carpeta]` abre una pantalla fullscreen propia: conversación del
+Agente, composer, permisos, archivos, cambios, actividad y trabajadores. `--once`,
+`--detach` y los comandos `code inspect` siguen siendo aptos para scripts. La vista Code de
+Tauri ofrece el mismo flujo con selector de carpeta, proveedor/modelo, política de permisos,
+menú `+` de contexto y acceso al canvas para editar el harness. La política `allow` se muestra
+como auto-aceptar cambios y comandos: no convierte la shell en sandbox y conserva los derechos
+del usuario del core.
