@@ -1527,10 +1527,21 @@ async fn code(config: &Config, client: &Client<'_>, args: CodeArgs) -> Result<()
     let talking = match (args.detach, args.once) {
         (true, _) => Talking::Detach,
         (false, Some(text)) => Talking::Once(text),
+        (false, None) if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() => {
+            regulus_cli::code::run(
+                config.clone(),
+                client.timeout,
+                wanted,
+                options,
+                settings,
+                args.yes,
+            )
+            .await?;
+            return Ok(());
+        }
         (false, None) => Talking::Lines,
     };
     // The screen needs a terminal on both ends; a script or a pipe talks in lines.
-    let _ = args.yes;
     launch::run(config, &options, client.timeout, &wanted, talking).await
 }
 

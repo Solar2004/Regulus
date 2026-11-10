@@ -14,6 +14,7 @@ use regulus_proto::{
 };
 use serde_json::Value;
 
+use super::commands::{self, Command, Menu, Outcome};
 use super::composer::Composer;
 use super::inspect::{self, Action, Ask, Found, Listing, Summary, Text};
 use super::launch::{self, Failure, Survey};
@@ -24,7 +25,6 @@ use super::settings::{OnExit, Settings, SetupForm};
 use crate::conversation::{
     answer_for, asks_about, open_permissions, Answer, PermissionRequest, Record, SYSTEM, USER,
 };
-use crate::talk;
 use crate::tui::app::{node_state, NodeState, Tone};
 use crate::tui::core::{self, describe, Connection, Pending};
 use crate::tui::keys::Options;
@@ -140,6 +140,10 @@ pub struct Chat {
     /// What the Agent box recorded, as far as it was read.
     pub log: AgentLog,
     pub composer: Composer,
+    /// The menu of commands that opens while a lone `/word` is in the composer.
+    pub menu: Menu,
+    /// A file explicitly requested as context; its bounded read becomes a draft.
+    pub attaching: Option<String>,
     pub focus: Focus,
     /// Lines of the transcript scrolled back from the newest; 0 follows it.
     pub scroll: usize,
@@ -343,6 +347,8 @@ impl Chat {
             modules: None,
             log: AgentLog::default(),
             composer: Composer::default(),
+            menu: Menu::default(),
+            attaching: None,
             focus: Focus::Composer,
             scroll: 0,
             side: Side {
@@ -1013,7 +1019,8 @@ impl App {
 
     /// A session to talk to: its conversation, what runs, its workspace and its workers.
     fn enter(&mut self, session: Session) -> Vec<Request> {
-        let chat = Chat::new(session, self.now);
+        let mut chat = Chat::new(session, self.now);
+        chat.side.shown = self.settings.side_panel;
         let mut requests = vec![
             chat.history_request(self.options.tuning.event_page),
             Request::Core(core::Request::Status),
@@ -1106,6 +1113,25 @@ impl App {
                 }
             }
             Action::Read => {
+                if chat
+                    .attaching
+                    .as_ref()
+                    .is_some_and(|path| Some(path) == ask.path.as_ref())
+                {
+                    let path = chat.attaching.take().unwrap();
+                    match &result {
+                        Ok(value) => {
+                            let file = inspect::file(value);
+                            chat.composer.insert_str(&format!(
+                                "\n<repository-file path={path:?} truncated={}>\n{}\n</repository-file>\n",
+                                file.truncated, file.text
+                            ));
+                            chat.focus = Focus::Composer;
+                        }
+                        Err(failure) => self.notice = Some((Tone::Error, describe(failure))),
+                    }
+                    return;
+                }
                 if let Some(viewer) = files
                     .viewer
                     .as_mut()
@@ -1228,7 +1254,12 @@ impl App {
                     (Focus::Side, Some(search)) => search
                         .query
                         .extend(text.chars().filter(|c| !c.is_control())),
-                    (Focus::Composer, _) => chat.composer.insert_str(text),
+                    (Focus::Composer, _) => {
+                        // Typed ahead of a menu or not, a paste only adds text: whatever
+                        // it holds is run by sending it, never by arriving.
+                        chat.composer.insert_str(text);
+                        chat.menu.reset();
+                    }
                     _ => {}
                 }
             }
@@ -1473,6 +1504,29 @@ impl App {
         let Some(chat) = self.chat_mut() else {
             return Vec::new();
         };
+        // The command menu, while it is open over the composer, has its keys before the
+        // side panel's: Tab completes instead of moving there, and moves there once the
+        // menu is closed (`back`). The keys above and the permission bar are never its.
+        if chat.focus == Focus::Composer {
+            let text = chat.composer.text();
+            let answers: Vec<String> = match commands::word(&text) {
+                Some(_) => chat
+                    .open_requests()
+                    .iter()
+                    .flat_map(|request| request.options.iter().map(|o| o.id.clone()))
+                    .collect(),
+                None => Vec::new(),
+            };
+            match chat.menu.key(&key, &keys, &text, &answers) {
+                Outcome::Ignored => {}
+                Outcome::Handled => return Vec::new(),
+                Outcome::Complete(done) => {
+                    chat.composer.set(&done);
+                    chat.menu.reset();
+                    return Vec::new();
+                }
+            }
+        }
         if keys.code_side.matches(&key) {
             chat.side.shown = !chat.side.shown;
             if !chat.side.shown {
@@ -1614,6 +1668,9 @@ impl App {
         let Some(asking) = open.iter().find(|r| request.is_none_or(|id| r.id == id)) else {
             let said = match request {
                 Some(id) => format!("no open permission request `{id}`"),
+                None if commands::find(word).is_some() => {
+                    format!("/{word}: no permission request waits")
+                }
                 None => format!("unknown command `/{word}`: /help lists them"),
             };
             self.say(Tone::Error, said);
@@ -1658,6 +1715,7 @@ impl App {
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let before = composer.text();
         match key.code {
             KeyCode::Char(c) if !ctrl && !alt => composer.insert(c),
             KeyCode::Char('a') if ctrl => composer.home(),
@@ -1683,6 +1741,10 @@ impl App {
                 let _ = composer.down() || composer.newer();
             }
             _ => {}
+        }
+        // Other words, other rows: the menu starts again at the first and may reopen.
+        if composer.text() != before {
+            chat.menu.reset();
         }
         Vec::new()
     }
@@ -1722,6 +1784,8 @@ impl App {
 
     /// A line that starts with `/`: what the side panel shows, the session, and the
     /// commands of `regulus talk` (`/cancel`, `/quit`, an answer to a permission request).
+    /// The words are the registry's (`commands.rs`); any other is tried as the id of an
+    /// option of a permission request.
     fn command(&mut self, line: &str) -> Vec<Request> {
         let rest = line.trim_start_matches('/');
         let (word, argument) = match rest.split_once(char::is_whitespace) {
@@ -1732,41 +1796,58 @@ impl App {
         let Some(chat) = self.chat_mut() else {
             return Vec::new();
         };
-        match word {
-            "files" | "ls" => chat.open_folder(argument),
-            "read" | "open" if argument.is_empty() => {
+        let Some(spec) = commands::find(word) else {
+            return self.answer_word(word, argument.split_whitespace().next());
+        };
+        match spec.command {
+            Command::Attach if argument.is_empty() => chat.open_folder(""),
+            Command::Attach => {
+                if chat.attaching.is_some() {
+                    self.notice = Some((Tone::Info, "a context file is still loading".into()));
+                    return Vec::new();
+                }
+                let request = chat.inspect(Ask::read(argument));
+                if request.is_some() {
+                    chat.attaching = Some(argument.to_string());
+                } else {
+                    self.notice = Some((
+                        Tone::Error,
+                        "this session has no workspace to attach files from".into(),
+                    ));
+                }
+                request.into_iter().collect()
+            }
+            Command::Files => chat.open_folder(argument),
+            Command::Read if argument.is_empty() => {
                 self.notice = Some(needs("a file"));
                 Vec::new()
             }
-            "read" | "open" => chat.open_file(argument, None),
-            "search" | "grep" if argument.is_empty() => {
+            Command::Read => chat.open_file(argument, None),
+            Command::Search if argument.is_empty() => {
                 self.notice = Some(needs("what to look for"));
                 Vec::new()
             }
-            "search" | "grep" => chat.search(argument),
-            "diff" | "changes" => chat.show(Tab::Changes),
-            "workers" => chat.show(Tab::Workers),
-            "activity" => chat.show(Tab::Activity),
-            "sessions" => self.open_sessions(),
-            "stop" => {
+            Command::Search => chat.search(argument),
+            Command::Diff => chat.show(Tab::Changes),
+            Command::Workers => chat.show(Tab::Workers),
+            Command::Activity => chat.show(Tab::Activity),
+            Command::Sessions => self.open_sessions(),
+            Command::Stop => {
                 self.confirm_stop();
                 Vec::new()
             }
-            _ => match talk::command(line) {
-                talk::Command::Quit => self.quit(),
-                talk::Command::Help => {
-                    self.overlay = Some(Overlay::Help);
-                    Vec::new()
-                }
-                // The whole conversation is on screen: go to where it starts.
-                talk::Command::History => {
-                    chat.scroll = usize::MAX;
-                    Vec::new()
-                }
-                talk::Command::Cancel => self.cancel(),
-                talk::Command::Answer(word, request) => self.answer_word(&word, request.as_deref()),
-                talk::Command::Send(_) | talk::Command::Nothing => Vec::new(),
-            },
+            Command::Quit => self.quit(),
+            Command::Help => {
+                self.overlay = Some(Overlay::Help);
+                Vec::new()
+            }
+            // The whole conversation is on screen: go to where it starts.
+            Command::History => {
+                chat.scroll = usize::MAX;
+                Vec::new()
+            }
+            Command::Cancel => self.cancel(),
+            Command::Answer => self.answer_word(word, argument.split_whitespace().next()),
         }
     }
 
@@ -2176,6 +2257,25 @@ mod tests {
     }
 
     #[test]
+    fn attaching_a_file_stages_context_without_sending_it() {
+        let mut app = chatting();
+        let requests = say(&mut app, "/attach src/main.rs");
+        assert_eq!(asked(&requests), vec![&Ask::read("src/main.rs")]);
+        let execution = chat(&app).execution().to_string();
+        let node = chat(&app).session.workspace.clone().unwrap();
+        app.inspected(
+            &execution,
+            &node,
+            Ask::read("src/main.rs"),
+            Ok(json!({"text":"fn main() {}", "truncated":false})),
+        );
+        assert!(chat(&app).composer.text().contains("fn main() {}"));
+        assert!(chat(&app).composer.text().contains("src/main.rs"));
+        assert!(chat(&app).log.queued.is_empty());
+        assert!(chat(&app).attaching.is_none());
+    }
+
+    #[test]
     fn slash_commands_show_the_workspace_and_drive_the_session() {
         let mut app = chatting();
         let files = say(&mut app, "/files src/");
@@ -2235,6 +2335,242 @@ mod tests {
         );
         say(&mut app, "/quit");
         assert_eq!(app.leave, Some(Leave::Kept(EXEC.into())));
+    }
+
+    /// What the menu offers for what is typed now.
+    fn offered(app: &App) -> Vec<&'static str> {
+        let chat = chat(app);
+        let text = chat.composer.text();
+        chat.menu.entries(&text).iter().map(|s| s.name).collect()
+    }
+
+    #[test]
+    fn a_slash_opens_a_menu_that_is_chosen_from_and_completed_with_tab() {
+        let mut app = chatting();
+        typed(&mut app, "/");
+        assert_eq!(offered(&app).len(), commands::COMMANDS.len());
+        assert_eq!(chat(&app).menu.selected(15), 0);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(chat(&app).menu.selected(15), 1);
+        // The second is `read`, which takes a file: Tab leaves room for it and the menu goes.
+        assert!(press(&mut app, KeyCode::Tab).is_empty());
+        assert_eq!(chat(&app).composer.text(), "/read ");
+        assert!(offered(&app).is_empty());
+        assert_eq!(chat(&app).focus, Focus::Composer);
+        // Typing narrows it and starts at the first again.
+        app.chat_mut().unwrap().composer.clear();
+        typed(&mut app, "/s");
+        press(&mut app, KeyCode::Down);
+        typed(&mut app, "t");
+        assert_eq!(offered(&app), ["stop"]);
+        assert_eq!(chat(&app).menu.selected(1), 0);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(chat(&app).composer.text(), "/stop");
+        // Moving the cursor or the transcript is not the menu's.
+        press(&mut app, KeyCode::Left);
+        assert_eq!(offered(&app), ["stop"]);
+    }
+
+    #[test]
+    fn enter_completes_a_half_typed_command_and_runs_nothing() {
+        for (typed_so_far, whole) in [
+            ("/sto", "/stop"),
+            ("/qu", "/quit"),
+            ("/can", "/cancel"),
+            ("/sess", "/sessions"),
+            ("/fi", "/files "),
+        ] {
+            let mut app = chatting();
+            typed(&mut app, typed_so_far);
+            assert!(press(&mut app, KeyCode::Enter).is_empty(), "{typed_so_far}");
+            assert_eq!(chat(&app).composer.text(), whole);
+            assert_eq!(app.overlay, None, "{typed_so_far} opened nothing");
+            assert_eq!(app.leave, None, "{typed_so_far} left");
+            assert!(chat(&app).log.queued.is_empty(), "{typed_so_far} sent");
+        }
+        // The whole command, sent by Enter again, does run.
+        let mut app = chatting();
+        typed(&mut app, "/sto");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.overlay, Some(Overlay::ConfirmStop));
+        // An alias typed in full is sent as it is.
+        let mut app = chatting();
+        assert_eq!(say(&mut app, "/ls"), say(&mut chatting(), "/files"));
+    }
+
+    #[test]
+    fn escape_closes_the_menu_for_the_text_and_typing_opens_it_again() {
+        let mut app = chatting();
+        app.chat_mut().unwrap().scroll = 5;
+        typed(&mut app, "/di");
+        assert_eq!(offered(&app), ["diff"]);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(chat(&app).composer.text(), "/di");
+        assert!(offered(&app).is_empty());
+        assert_eq!(
+            chat(&app).scroll,
+            5,
+            "closing the menu is not back-to-newest"
+        );
+        // With it closed Tab is the side panel's and Enter sends what was typed.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(chat(&app).focus, Focus::Side);
+        press(&mut app, KeyCode::Tab);
+        assert!(say(&mut app, "").is_empty());
+        assert!(
+            matches!(&app.notice, Some((Tone::Error, said)) if said.contains("unknown command `/di`"))
+        );
+        // The next Esc is the transcript's again.
+        typed(&mut app, "/di");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(chat(&app).scroll, 0);
+        // Other text, other menu.
+        typed(&mut app, "f");
+        assert_eq!(offered(&app), ["diff"]);
+    }
+
+    #[test]
+    fn a_word_that_matches_nothing_is_plain_input() {
+        let mut app = chatting();
+        say(&mut app, "first prompt");
+        typed(&mut app, "/zzz");
+        assert!(offered(&app).is_empty());
+        // Up goes to the earlier prompts and Tab to the side panel, as without a menu.
+        press(&mut app, KeyCode::Up);
+        assert_eq!(chat(&app).composer.text(), "first prompt");
+        app.chat_mut().unwrap().composer.set("/zzz");
+        assert!(press(&mut app, KeyCode::Enter).is_empty());
+        assert!(
+            matches!(&app.notice, Some((Tone::Error, said)) if said.contains("unknown command `/zzz`"))
+        );
+        // Arguments, a doubled slash and plain text never open it.
+        for text in ["/files src", "//files", "files", "/read "] {
+            app.chat_mut().unwrap().composer.set(text);
+            assert!(offered(&app).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_paste_is_text_and_runs_nothing() {
+        let mut app = chatting();
+        app.paste("/stop");
+        assert_eq!(chat(&app).composer.text(), "/stop");
+        assert_eq!(offered(&app), ["stop"]);
+        assert_eq!(app.overlay, None);
+        assert!(chat(&app).log.queued.is_empty());
+        // Whole commands, with the line end they were copied with.
+        for text in ["/quit\n", "/diff\r\n", "/files src\n/stop\n"] {
+            let mut app = chatting();
+            app.paste(text);
+            assert_eq!(app.overlay, None, "{text:?}");
+            assert_eq!(app.leave, None, "{text:?}");
+            assert!(chat(&app).log.queued.is_empty(), "{text:?}");
+            assert!(!chat(&app).composer.is_empty(), "{text:?}");
+            assert!(offered(&app).is_empty(), "{text:?} has a line end");
+        }
+        // Pasted after a typed `/`, it narrows the menu like typing does.
+        let mut app = chatting();
+        typed(&mut app, "/");
+        press(&mut app, KeyCode::Down);
+        app.paste("di");
+        assert_eq!(offered(&app), ["diff"]);
+        assert_eq!(chat(&app).menu.selected(1), 0);
+    }
+
+    #[test]
+    fn the_menu_leaves_the_side_panel_and_the_session_keys_alone() {
+        let mut app = chatting();
+        // Nothing offered: Tab goes to the panel and back.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(chat(&app).focus, Focus::Side);
+        // The panel has the keys, so what is typed is not the composer's: no menu opens.
+        typed(&mut app, "/");
+        assert!(chat(&app).composer.is_empty());
+        assert!(offered(&app).is_empty());
+        app.chat_mut().unwrap().focus = Focus::Composer;
+        // The keys of the session and the panel go on while it is open.
+        typed(&mut app, "/");
+        let shown = chat(&app).side.shown;
+        ctrl(&mut app, 'b');
+        assert_eq!(chat(&app).side.shown, !shown);
+        ctrl(&mut app, 'o');
+        assert!(matches!(app.overlay, Some(Overlay::Sessions(_))));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(chat(&app).composer.text(), "/");
+        ctrl(&mut app, 'c');
+        assert!(chat(&app).composer.is_empty(), "ctrl+c still clears");
+    }
+
+    #[test]
+    fn a_permission_request_keeps_its_keys_from_the_menu() {
+        let mut app = chatting();
+        app.tick(1000);
+        typed(&mut app, "/");
+        app.apply(history(0, 2, json!([]), json!([asks(2, "p1")]), "busy"));
+        // Something is being typed: the request waits, and the menu has the keys.
+        assert!(chat(&app).asking.is_none());
+        assert_eq!(offered(&app).len(), commands::COMMANDS.len());
+        ctrl(&mut app, 'p');
+        assert!(chat(&app).asking.is_some());
+        app.tick(2000);
+        // Now the request has them: Tab and Enter complete nothing, the arrows move its row.
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(chat(&app).composer.text(), "/");
+        assert_eq!(chat(&app).menu.selected(15), 0);
+        assert_eq!(chat(&app).asked().unwrap().2, 1);
+        // A request answered by an option id that starts a command is still an answer.
+        let mut app = chatting();
+        typed(&mut app, "/al");
+        let request = activity(
+            2,
+            "t-1",
+            json!({ "kind": "permission_request", "id": "p1", "tool": "t", "title": "Do it",
+                    "options": [{ "id": "al", "kind": "allow_once", "name": "Allow" }] }),
+        );
+        app.apply(history(0, 2, json!([]), json!([request]), "busy"));
+        app.apply(Event::Core(core::Event::AllDecisions(Ok(vec![decision(
+            "h-1", "p1",
+        )]))));
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            vec![Request::Core(core::Request::Choose {
+                id: "h-1".into(),
+                option: Some("al".into())
+            })]
+        );
+    }
+
+    #[test]
+    fn every_command_of_the_registry_runs() {
+        for spec in commands::COMMANDS {
+            for word in spec.words() {
+                let mut app = chatting();
+                say(&mut app, &format!("/{word}"));
+                assert!(
+                    !matches!(&app.notice, Some((_, said)) if said.contains("unknown command")),
+                    "/{word} is listed and does not run: {:?}",
+                    app.notice
+                );
+                if spec.command == Command::Answer {
+                    assert!(
+                        matches!(&app.notice, Some((_, said)) if said.contains("no permission request waits")),
+                        "/{word}: {:?}",
+                        app.notice
+                    );
+                }
+            }
+        }
+        // And a word that is not listed says so.
+        let mut app = chatting();
+        say(&mut app, "/nothing");
+        assert!(
+            matches!(&app.notice, Some((_, said)) if said.contains("unknown command `/nothing`"))
+        );
     }
 
     #[test]

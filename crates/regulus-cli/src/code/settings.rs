@@ -41,6 +41,44 @@ pub struct Settings {
     /// How often the workspace shown in the side panel is read again, in milliseconds.
     /// 0: only when a turn ends, a tool finishes or the person asks.
     pub inspect_refresh_ms: u64,
+    /// Show the session details row above the conversation.
+    pub status_bar: bool,
+    /// Session details included in that row, in display order.
+    pub status_fields: Vec<StatusField>,
+    /// Start with the workspace panel open.
+    pub side_panel: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusField {
+    Root,
+    Model,
+    Branch,
+    State,
+    Session,
+}
+
+impl StatusField {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "root" => Some(Self::Root),
+            "model" => Some(Self::Model),
+            "branch" => Some(Self::Branch),
+            "state" => Some(Self::State),
+            "session" => Some(Self::Session),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Model => "model",
+            Self::Branch => "branch",
+            Self::State => "state",
+            Self::Session => "session",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -52,6 +90,15 @@ impl Default for Settings {
             on_exit: OnExit::Keep,
             setup: SetupForm::Always,
             inspect_refresh_ms: 4000,
+            status_bar: true,
+            status_fields: vec![
+                StatusField::Root,
+                StatusField::Model,
+                StatusField::Branch,
+                StatusField::State,
+                StatusField::Session,
+            ],
+            side_panel: false,
         }
     }
 }
@@ -111,6 +158,34 @@ impl Settings {
                         .and_then(|n| u64::try_from(n).ok())
                         .ok_or_else(|| format!("{SECTION}.{key}: `{value}` is not a number ≥ 0"))?
                 }
+                "status_bar" => {
+                    settings.status_bar = value
+                        .as_bool()
+                        .ok_or_else(|| format!("{SECTION}.{key}: `{value}` is not true or false"))?
+                }
+                "side_panel" => {
+                    settings.side_panel = value
+                        .as_bool()
+                        .ok_or_else(|| format!("{SECTION}.{key}: `{value}` is not true or false"))?
+                }
+                "status_fields" => {
+                    let fields = value.as_array().ok_or_else(|| {
+                        format!("{SECTION}.{key}: `{value}` is not a list of fields")
+                    })?;
+                    settings.status_fields = fields
+                        .iter()
+                        .map(|field| {
+                            let name = field.as_str().ok_or_else(|| {
+                                format!("{SECTION}.{key}: `{field}` is not a field name")
+                            })?;
+                            StatusField::parse(name).ok_or_else(|| {
+                                format!(
+                                    "{SECTION}.{key}: `{name}` is unknown (use root, model, branch, state or session)"
+                                )
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                }
                 // Another client's key (the app keeps `panels` here): not ours to judge.
                 _ => {}
             }
@@ -151,6 +226,9 @@ mod tests {
             on_exit = "ask"
             setup = "needed"
             inspect_refresh_ms = 0
+            status_bar = false
+            status_fields = ["branch", "state"]
+            side_panel = true
             panels = ["files", "diff"]
             "#,
         ))
@@ -161,6 +239,12 @@ mod tests {
         assert_eq!(settings.on_exit, OnExit::Ask);
         assert_eq!(settings.setup, SetupForm::Needed);
         assert_eq!(settings.inspect_refresh_ms, 0);
+        assert!(!settings.status_bar);
+        assert_eq!(
+            settings.status_fields,
+            vec![StatusField::Branch, StatusField::State]
+        );
+        assert!(settings.side_panel);
     }
 
     #[test]
@@ -179,6 +263,10 @@ mod tests {
             (
                 "[code]\ninspect_refresh_ms = -1",
                 "code.inspect_refresh_ms: `-1` is not a number ≥ 0",
+            ),
+            (
+                "[code]\nstatus_fields = [\"workers\"]",
+                "code.status_fields: `workers` is unknown (use root, model, branch, state or session)",
             ),
         ] {
             assert_eq!(Settings::from_client(&client(text)).unwrap_err(), said);

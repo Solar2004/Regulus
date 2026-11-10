@@ -14,9 +14,11 @@ use regulus_proto::{ExecutionState, ExecutionTree};
 use serde_json::Value;
 
 use super::app::{App, Chat, Focus, Overlay, PickRow, Setup, Stage, Tab};
+use super::commands::COMMANDS;
 use super::inspect::Summary;
 use super::mascot::{self, Mood};
 use super::session::model_of;
+use super::settings::StatusField;
 use crate::conversation::{reduce, Grouping, Item, TurnView, AGENT, SYSTEM, USER};
 use crate::tui::app::{compact, NodeState, Tone};
 use crate::tui::core::{describe, Connection};
@@ -595,13 +597,18 @@ pub fn draw(frame: &mut Frame, app: &App, cache: &mut Cache) {
         Block::new().style(Style::default().bg(p.canvas).fg(p.text)),
         area,
     );
-    let [header, body, footer] = Layout::vertical([
+    let status = app.settings.status_bar && !app.settings.status_fields.is_empty();
+    let [header, status_area, body, footer] = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(u16::from(status)),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
     .areas(area);
     draw_header(frame, app, header);
+    if status {
+        draw_status(frame, app, status_area);
+    }
     match &app.stage {
         Stage::Chat(chat) => draw_chat(frame, app, chat, body, cache),
         Stage::Setup(setup) => draw_setup(frame, app, setup, body),
@@ -670,34 +677,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         format!("{} ", app.settings.label.to_uppercase()),
         brand_style,
     ));
-    let mut right = Vec::new();
-    if let Some(chat) = app.chat() {
-        let name = folder(chat)
-            .map(|folder| {
-                std::path::Path::new(&folder)
-                    .file_name()
-                    .map_or(folder.clone(), |n| n.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| chat.session.profile.id.clone());
-        left.push(Span::styled(
-            format!("  {name}"),
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
-        ));
-        if let Some(Ok(summary)) = &chat.side.summary {
-            left.push(Span::styled(
-                format!("  {}", git_line(summary)),
-                Style::default().fg(p.text_secondary),
-            ));
-        }
-        right.push(Span::styled(
-            format!("{} ", chat.session.execution.id),
-            Style::default().fg(p.text_muted),
-        ));
-        right.push(agent_state(chat, p));
-        right.push(Span::styled("  ", Style::default()));
-    }
-    right.push(connection_state(&app.connection, p));
-    right.push(Span::raw(" "));
+    let right = vec![connection_state(&app.connection, p), Span::raw(" ")];
     let width = area.width as usize;
     let right_width: usize = right.iter().map(Span::width).sum();
     // The left gives way first: the state on the right is always whole.
@@ -719,6 +699,38 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     spans.extend(right);
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(p.sidebar)),
+        area,
+    );
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(chat) = app.chat() else { return };
+    let p = palette();
+    let mut values = Vec::new();
+    for field in &app.settings.status_fields {
+        let value = match field {
+            StatusField::Root => folder(chat).unwrap_or_else(|| "no workspace".into()),
+            StatusField::Model => chat
+                .session
+                .workflow()
+                .and_then(|workflow| model_of(workflow, &[]))
+                .unwrap_or_else(|| "unknown".into()),
+            StatusField::Branch => chat
+                .side
+                .summary
+                .as_ref()
+                .and_then(|summary| summary.as_ref().ok())
+                .map(git_line)
+                .unwrap_or_else(|| "git: reading".into()),
+            StatusField::State => agent_state(chat, p).content.to_string(),
+            StatusField::Session => chat.session.execution.id.clone(),
+        };
+        values.push(format!("{} {value}", field.name()));
+    }
+    let line = format!(" {}", values.join("  ·  "));
+    frame.render_widget(
+        Paragraph::new(cut(&line, area.width.saturating_sub(1) as usize))
+            .style(Style::default().fg(p.text_secondary).bg(p.sidebar)),
         area,
     );
 }
@@ -815,6 +827,9 @@ fn draw_chat(frame: &mut Frame, app: &App, chat: &Chat, area: Rect, cache: &mut 
         );
     }
     draw_composer(frame, app, chat, composer, rows, composer_rows);
+    if chat.focus == Focus::Composer && chat.asking.is_none() && app.overlay.is_none() {
+        draw_commands(frame, app, chat, composer, conversation);
+    }
     if side {
         draw_side(frame, app, chat, panel, cache);
     }
@@ -997,6 +1012,88 @@ fn draw_composer(
             frame.set_cursor_position((x, y));
         }
     }
+}
+
+/// The commands that fit what is typed after `/`, in a box over the bottom of the
+/// conversation, right above the one typed in. It holds at most as many rows as the
+/// composer may (`tui.code_composer_rows`) and follows the chosen one; with no room for a
+/// row, or no match, nothing is drawn.
+fn draw_commands(frame: &mut Frame, app: &App, chat: &Chat, composer: Rect, above: Rect) {
+    let text = chat.composer.text();
+    let entries = chat.menu.entries(&text);
+    let room = composer.y.saturating_sub(above.y).saturating_sub(2) as usize;
+    let rows = entries
+        .len()
+        .min(app.options.tuning.code_composer_rows.max(1))
+        .min(room);
+    if rows == 0 {
+        return;
+    }
+    let p = palette();
+    let k = &app.options.keys;
+    let chosen = chat.menu.selected(entries.len());
+    let top = (chosen + 1).saturating_sub(rows);
+    let area = Rect {
+        y: composer.y - rows as u16 - 2,
+        height: rows as u16 + 2,
+        ..composer
+    };
+    let inner = area.width.saturating_sub(4) as usize;
+    // The usages are one column however far the list is scrolled, up to half the box.
+    let usage_width = entries
+        .iter()
+        .map(|spec| spec.usage().chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(inner / 2);
+    let lines: Vec<Line<'static>> = entries
+        .iter()
+        .enumerate()
+        .skip(top)
+        .take(rows)
+        .map(|(at, spec)| {
+            let on = at == chosen;
+            let row = if on {
+                Style::default().bg(p.selected)
+            } else {
+                Style::default()
+            };
+            let mark = if on { " ▸ " } else { "   " };
+            let usage = cut(&spec.usage(), usage_width);
+            let pad = " ".repeat(usage_width.saturating_sub(usage.chars().count()) + 2);
+            let mut said = spec.description.to_string();
+            if !spec.aliases.is_empty() {
+                let also: Vec<String> = spec.aliases.iter().map(|a| format!("/{a}")).collect();
+                said = format!("{said} · {}", also.join(" "));
+            }
+            let room = inner.saturating_sub(3 + usage_width + 2);
+            Line::from(vec![
+                Span::styled(mark, Style::default().fg(p.focus)),
+                Span::styled(
+                    usage,
+                    Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(pad),
+                Span::styled(cut(&said, room), Style::default().fg(p.text_secondary)),
+            ])
+            .style(row)
+        })
+        .collect();
+    let more = if entries.len() > rows {
+        format!(" · {}/{}", chosen + 1, entries.len())
+    } else {
+        String::new()
+    };
+    let title = format!(
+        "Commands · ↑↓ pick · {} complete · {} close{more}",
+        k.code_complete.label(),
+        k.back.label()
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(&cut(&title, inner), true, p)),
+        area,
+    );
 }
 
 // ── The side panel ────────────────────────────────────────────────────────────────────
@@ -1751,31 +1848,47 @@ fn draw_help(frame: &mut Frame, app: &App) {
         row(k.code_parent.label(), "the folder above, or out of a file"),
         row(k.code_search.label(), "search the workspace"),
         row(k.code_refresh.label(), "read it again"),
-        heading("Commands", p),
-        row("/files [folder]".into(), "list a folder of the workspace"),
-        row("/read <file>".into(), "open a file"),
-        row("/search <text>".into(), "search the workspace"),
-        row("/diff".into(), "what changed"),
-        row(
-            "/allow /reject".into(),
-            "answer a permission request; or /<option id>",
+        heading(
+            &format!(
+                "Commands · type / for a menu: ↑ / ↓ pick, {} complete, {} close",
+                k.code_complete.label(),
+                k.back.label()
+            ),
+            p,
         ),
-        row(
-            "/cancel /stop".into(),
-            "cancel the turn; stop the execution",
-        ),
-        row("/sessions /quit".into(), "other sessions; leave"),
-        row("//text".into(), "send a message that starts with /"),
-        Line::raw(""),
     ];
     let said = "The harness behind this screen is a profile: open it in the canvas of the \
                 app, or in `regulus`, to change its model, tools and rules.";
     let width = BOX_WIDTH.min(frame.area().width.saturating_sub(2));
-    lines.extend(
-        wrap(said, width.saturating_sub(4) as usize)
-            .into_iter()
-            .map(|l| Line::styled(format!(" {l}"), muted)),
-    );
+    let note: Vec<Line<'static>> = wrap(said, width.saturating_sub(4) as usize)
+        .into_iter()
+        .map(|l| Line::styled(format!(" {l}"), muted))
+        .collect();
+    // The registry's commands (`commands.rs`): what is listed here is what runs and what the
+    // menu suggests. One row each with what it does when the terminal is tall enough for
+    // them; otherwise their usages run together, and the menu says what each one does.
+    let tail = 2 + note.len() + 2;
+    if lines.len() + COMMANDS.len() + tail <= frame.area().height as usize {
+        for spec in COMMANDS {
+            let mut said = spec.description.to_string();
+            if !spec.aliases.is_empty() {
+                let also: Vec<String> = spec.aliases.iter().map(|a| format!("/{a}")).collect();
+                said = format!("{said} · {}", also.join(" "));
+            }
+            lines.push(row(spec.usage(), &said));
+        }
+    } else {
+        let usages: Vec<String> = COMMANDS.iter().map(|spec| spec.usage()).collect();
+        let focus = Style::default().fg(p.focus);
+        lines.extend(
+            wrap(&usages.join("  "), width.saturating_sub(4) as usize)
+                .into_iter()
+                .map(|l| Line::styled(format!(" {l}"), focus)),
+        );
+    }
+    lines.push(row("//text".into(), "send a message that starts with /"));
+    lines.push(Line::raw(""));
+    lines.extend(note);
     let area = centered(frame.area(), width, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -1861,6 +1974,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code::commands;
     use crate::code::fixtures::*;
     use crate::code::inspect::Ask;
     use crate::code::launch::Survey;
@@ -1892,12 +2006,31 @@ mod tests {
         screen_at(app, 140, 40)
     }
 
+    fn show_side(app: &mut App) {
+        if let Stage::Chat(chat) = &mut app.stage {
+            chat.side.shown = true;
+        }
+    }
+
     fn has(shown: &str, text: &str) {
         assert!(shown.contains(text), "no `{text}` in:\n{shown}");
     }
 
     fn has_not(shown: &str, text: &str) {
         assert!(!shown.contains(text), "`{text}` in:\n{shown}");
+    }
+
+    #[test]
+    fn status_row_uses_only_selected_fields_and_can_be_hidden() {
+        let mut app = chatting();
+        app.settings.status_fields = vec![StatusField::Session];
+        let shown = screen(&app);
+        has(&shown, "session exec-1");
+        has_not(&shown, "root /work/app");
+        app.settings.status_bar = false;
+        let hidden = screen(&app);
+        has_not(&hidden, "session exec-1");
+        has(&hidden, "Enter send · Alt+Enter new line");
     }
 
     /// A turn that read a file, asked to write it and waits.
@@ -1995,14 +2128,18 @@ mod tests {
     #[test]
     fn an_empty_conversation_welcomes_with_who_where_and_what_holds() {
         let mut app = chatting();
+        show_side(&mut app);
         app.apply(inspected(
             Ask::summary(),
             json!({ "root": "/work/app", "tools": ["code_read_file"],
                     "git": { "branch": "main", "status": " M a.rs\n" } }),
         ));
         let shown = screen(&app);
-        has(&shown, "{*} REGULUS CODE   app  ⎇ main · 1 change");
-        has(&shown, "exec-1 ✓ ready");
+        has(&shown, "{*} REGULUS CODE");
+        has(&shown, "root /work/app");
+        has(&shown, "branch ⎇ main · 1 change");
+        has(&shown, "state ✓ ready");
+        has(&shown, "session exec-1");
         has(&shown, "={o*o}=   /work/app");
         has(&shown, "Say what you want done and press Enter.");
         has(&shown, "They are not sandboxed.");
@@ -2020,7 +2157,7 @@ mod tests {
         app.settings.label = "Leo".into();
         app.settings.mascot = false;
         let shown = screen(&app);
-        has(&shown, " LEO   app");
+        has(&shown, "LEO");
         has_not(&shown, "{*}");
         has_not(&shown, "={o*o}=");
     }
@@ -2028,6 +2165,7 @@ mod tests {
     #[test]
     fn a_turn_is_drawn_as_cards_and_a_request_opens_its_bar() {
         let mut app = asking();
+        show_side(&mut app);
         app.notice = None;
         let shown = screen(&app);
         has(&shown, "› edit the main file");
@@ -2046,7 +2184,7 @@ mod tests {
             &shown,
             "1-3 pick · y allow · n reject · Enter answer · Esc later",
         );
-        has(&shown, "exec-1 ? waiting for you");
+        has(&shown, "state ? waiting for you");
         has(&shown, "a permission request has the keys");
         // The side panel says the same in its own words.
         has(&shown, "Plan");
@@ -2099,7 +2237,7 @@ mod tests {
         has(&shown, "      let x = 1;");
         has_not(&shown, "? Permission");
         has_not(&shown, "… working");
-        has(&shown, "exec-1 ✓ ready");
+        has(&shown, "state ✓ ready");
         // What was sent and not recorded yet, and what the box says went wrong.
         say(&mut app, "and now the tests");
         app.apply(history(
@@ -2183,6 +2321,7 @@ mod tests {
     fn what_the_workspace_cannot_say_is_said_as_what_it_is() {
         // No module serves `code.inspect`: not installed, never a generic error.
         let mut app = chatting();
+        show_side(&mut app);
         let missing = |code: i32, message: &str| Event::Inspected {
             execution: EXEC.into(),
             node: "workspace".into(),
@@ -2202,13 +2341,14 @@ mod tests {
             json!({ "root": "/work/app", "git": null }),
         ));
         let shown = screen(&app);
-        has(&shown, "git: not a git repository");
-        has(&shown, "REGULUS CODE   app  git: not a git");
+        has(&shown, "branch git: not a git repository");
+        has(&shown, "REGULUS CODE");
         // A workflow with an agent and no workspace: the conversation works, the rest says why.
         let mut alone = session(EXEC);
         alone.workspace = None;
         let mut app = app_for(wanted(), false);
         let asked_for = app.apply(Event::Launched(Ok(Box::new(alone))));
+        show_side(&mut app);
         assert!(asked(&asked_for).is_empty());
         has(&screen(&app), "no workspace node in this workflow");
         say(&mut app, "/files");
@@ -2227,6 +2367,153 @@ mod tests {
             &screen(&app),
             "the conversation cannot be read: □ not installed",
         );
+    }
+
+    /// The row of the screen a text first shows on.
+    fn row_of(shown: &str, text: &str) -> usize {
+        shown
+            .lines()
+            .position(|line| line.contains(text))
+            .unwrap_or_else(|| panic!("no `{text}` in:\n{shown}"))
+    }
+
+    #[test]
+    fn a_slash_shows_the_commands_above_the_prompt_and_follows_what_is_typed() {
+        let mut app = chatting();
+        typed(&mut app, "/");
+        let shown = screen(&app);
+        has(&shown, "Commands · ↑↓ pick · Tab complete · Esc close");
+        has(&shown, "list a folder of the workspace · /ls");
+        has(&shown, "▸ /files [folder]");
+        // Compact: a few rows of the list, and where the chosen one is in it.
+        has(&shown, &format!("1/{}", commands::COMMANDS.len()));
+        assert!(row_of(&shown, "Commands ·") < row_of(&shown, "› /"));
+        assert!(row_of(&shown, "/files [folder]") < row_of(&shown, "› /"));
+        has_not(&shown, "/quit");
+        // The chosen row moves, and the window with it.
+        press(&mut app, KeyCode::Down);
+        has(&screen(&app), "▸ /read <file>");
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Down);
+        }
+        let shown = screen(&app);
+        has(&shown, "▸ /quit");
+        has(&shown, &format!("{0}/{0}", commands::COMMANDS.len()));
+        has_not(&shown, "/files [folder]");
+        // Filtered by what follows: one command, with its aliases.
+        let mut app = chatting();
+        typed(&mut app, "/di");
+        let shown = screen(&app);
+        has(&shown, "▸ /diff");
+        has(&shown, "what changed · /changes");
+        has_not(&shown, "/files [folder]");
+        has_not(&shown, "/1");
+    }
+
+    #[test]
+    fn no_match_arguments_and_dismissal_draw_no_menu() {
+        for text in ["/zzz", "/files src", "//files", "hello", ""] {
+            let mut app = chatting();
+            typed(&mut app, text);
+            has_not(&screen(&app), "Commands ·");
+        }
+        let mut app = chatting();
+        typed(&mut app, "/di");
+        has(&screen(&app), "Commands ·");
+        press(&mut app, KeyCode::Esc);
+        has_not(&screen(&app), "Commands ·");
+        has(&screen(&app), "› /di");
+        typed(&mut app, "f");
+        has(&screen(&app), "Commands ·");
+    }
+
+    #[test]
+    fn a_pasted_command_shows_its_menu_and_is_not_run() {
+        let mut app = chatting();
+        app.paste("/stop");
+        let shown = screen(&app);
+        has(&shown, "▸ /stop");
+        has(&shown, "› /stop");
+        has_not(&shown, "Stop exec-1?");
+        assert_eq!(app.overlay, None);
+    }
+
+    #[test]
+    fn the_menu_gives_way_to_what_has_the_keys_and_to_small_screens() {
+        // The panel, a permission request and an overlay each have the keys: no menu.
+        let mut app = chatting();
+        typed(&mut app, "/");
+        has(&screen(&app), "Commands ·");
+        let focus = |app: &mut App, to: Focus| {
+            if let Stage::Chat(chat) = &mut app.stage {
+                chat.focus = to;
+            }
+        };
+        focus(&mut app, Focus::Side);
+        has_not(&screen(&app), "Commands ·");
+        focus(&mut app, Focus::Composer);
+        app.tick(1000);
+        app.apply(history(0, 2, json!([]), json!([asks(2, "p1")]), "busy"));
+        ctrl(&mut app, 'p');
+        let shown = screen(&app);
+        has(&shown, "? Permission");
+        has_not(&shown, "Commands ·");
+        press(&mut app, KeyCode::Esc);
+        has(&screen(&app), "Commands ·");
+        app.overlay = Some(Overlay::Help);
+        has_not(&screen(&app), "Commands · ↑↓");
+        app.overlay = None;
+        // Where there is room for one row it is one; where there is none, nothing and no panic.
+        let shown = screen_at(&app, 60, 9);
+        has(&shown, "Commands ·");
+        has(&shown, "› /");
+        for height in 0..9 {
+            screen_at(&app, 30, height);
+        }
+        // The rows are the composer's own limit.
+        app.options.tuning.code_composer_rows = 2;
+        let shown = screen(&app);
+        has(&shown, "▸ /files [folder]");
+        has(&shown, "/read <file>");
+        has_not(&shown, "/search <text>");
+    }
+
+    #[test]
+    fn the_menu_names_the_completion_key_as_bound() {
+        let table: toml::Table =
+            toml::from_str(r#"keys = { code_complete = "ctrl+g", back = "ctrl+q" }"#).unwrap();
+        let mut app = chatting();
+        app.options = crate::tui::keys::Options::from_client(Some(&table)).unwrap();
+        typed(&mut app, "/di");
+        has(&screen(&app), "Ctrl+G complete · Ctrl+Q close");
+        ctrl(&mut app, 'g');
+        assert_eq!(chat(&app).composer.text(), "/diff");
+        // Tab is the side panel's again.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(chat(&app).focus, Focus::Side);
+    }
+
+    #[test]
+    fn the_help_lists_the_registry_and_fits_the_terminal() {
+        let mut app = chatting();
+        app.overlay = Some(Overlay::Help);
+        // Tall: a row for each, with what it does and its aliases.
+        let tall = screen_at(&app, 140, 50);
+        for spec in commands::COMMANDS {
+            has(&tall, &format!("{:<22}{}", spec.usage(), spec.description));
+        }
+        has(&tall, "list a folder of the workspace · /ls");
+        has(&tall, "leave · /exit");
+        has(&tall, "open it in the canvas");
+        // Short: every usage still, the menu says the rest, and the note is not cut.
+        let short = screen_at(&app, 140, 40);
+        for spec in commands::COMMANDS {
+            has(&short, &spec.usage());
+        }
+        has(&short, "type / for a menu");
+        has(&short, "//text");
+        has(&short, "open it in the canvas");
+        has_not(&short, "list a folder of the workspace");
     }
 
     #[test]
@@ -2277,16 +2564,19 @@ mod tests {
 
     #[test]
     fn a_narrow_terminal_gives_the_conversation_the_whole_width() {
-        let app = asking();
+        let mut app = asking();
+        show_side(&mut app);
+        app.settings.status_fields = vec![StatusField::State];
         has(&screen_at(&app, 140, 40), "Activity  Files");
         let narrow = screen_at(&app, 80, 24);
         has_not(&narrow, "Activity  Files");
         has(&narrow, "› edit the main file");
         has(&narrow, "? Permission");
         // The state on the right of the header is whole; the left gives way.
-        has(&narrow, "? waiting for you");
+        has(&narrow, "state ? waiting for you");
         // With the keys, the side panel takes the conversation's place, and gives it back.
         let mut app = chatting();
+        show_side(&mut app);
         say(&mut app, "hello");
         press(&mut app, KeyCode::Tab);
         let panel = screen_at(&app, 80, 24);
