@@ -109,6 +109,9 @@ construir todas las habitaciones hoy.**
 | **`docs/11-composition.md`** | ~5.5k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). **Proyectos** como carpetas con `regulus.toml` (§13). |
 | **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido, **trabajadores vs subagentes** (§5.1), **el motor nativo** (§8). |
 | **`docs/13-blocks.md`** | ~8.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, `documents` · `inference` · `delegation`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom, RAG chat, RAG eval, delegación), límites honestos y fuentes. |
+| **`docs/15-evidence.md`** | ~3.5k | ✅ **Evidencias**: módulo `evidence` (fuentes versionadas, citas con extracto exacto, apoyo textual frente a verdad), RPC `evidence.*` y la plantilla `research-evidence`. |
+| **`docs/16-experiments.md`** | ~2.5k | ✅ **Datos y experimentos**: módulo `data` (`collect` · `snapshot` · `rank`), plantillas `rag-lab` y `topic-watch`, límites honestos. |
+| **`docs/17-control-mcp.md`** | ~2.2k | ✅ **MCP de control**: `regulus mcp`, servidor MCP por stdio que gobierna el host como cliente del RPC autenticado; herramientas, límites, autoría de módulos desde MCP, siembra de plantillas. |
 | **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), "usa" que cruza cajas, hijas vivas y `execution.tree`, bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
 | **`docs/04-client.md`** | ~4k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11), **conversación** en app, TUI y `regulus talk` (§7-8). |
@@ -131,6 +134,8 @@ construir todas las habitaciones hoy.**
 | **Escribir un módulo** | `plan.md` §4.1 → `03-modules.md` | ~2.5k |
 | **Tocar agentes, motores o proveedores** | `12-agents.md` → `03-modules.md` | ~6.9k |
 | **Escribir un bloque de lógica o una plantilla** | `13-blocks.md` → `03-modules.md` | ~10.5k |
+| **Investigación con citas, datasets, RAG lab o seguimiento** | `15-evidence.md` → `16-experiments.md` → `13-blocks.md` §5 | ~6k |
+| **Controlar Regulus desde un cliente MCP** | `17-control-mcp.md` | ~2.2k |
 | **Diseñar o implementar UI** | `04-client.md` → `composition-preview.md` → `08-design-system.md` | ~3.5k |
 | **Elegir una dependencia** | `plan.md` §4.3 (lo descartado) → `06-stack.md` | ~2.5k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |

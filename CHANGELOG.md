@@ -15,6 +15,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Evidencias comprobables:** módulo `evidence` con fuentes versionadas y citas que
+  apuntan a un extracto exacto; una cita deja de valer si la fuente cambia. La plantilla
+  `research-evidence` investiga en la web y su informe falla si cita algo que no puede
+  respaldar. Comprueba apoyo textual, no si la afirmación es cierta.
+- **Datos y experimentos:** módulo `data` con datasets acotados, comparación con la
+  última vez (nuevo, cambiado, desaparecido) y ranking de métricas. Plantillas `rag-lab`
+  (dos candidatos de recuperación sobre el mismo corpus) y `topic-watch` (sondeo
+  programado o manual que solo entrega las novedades).
+- **`regulus mcp`:** servidor MCP por stdio para gobernar Regulus desde Claude Code u
+  otro cliente MCP: descubrir módulos y plantillas, guardar perfiles, arrancar y parar
+  workflows y leer sus eventos. Con `--read-only` no cambia nada. Las plantillas nuevas
+  se instalan como copias editables en el catálogo por defecto.
 - **Comandos sugeridos en la TUI Code:** `/` abre una lista filtrable con descripciones,
   navegación por flechas y autocompletado con Tab o Enter; ayuda y ejecución comparten
   catálogo. Los comandos pegados no se ejecutan hasta enviarlos.

@@ -65,8 +65,8 @@ inspection. The default harness asks before edits and commands; its workers star
 with read-only tools.
 
 Open the profile in the canvas to replace the engine, change its tools and rules,
-connect other workflows, or save your own template. The coding tools are individual
-nodes, so they can also be used outside this harness. The small stellar lion is
+connect other workflows, or save your own template. Workspace, filtered tool views and
+repository instructions are reusable nodes outside this harness. The small stellar lion is
 defined in an [editable shared grid](assets/design/regulus-code-mascot.json).
 
 See the [coding harness design and limits](docs/14-code.md) for the supported surface.
@@ -173,6 +173,7 @@ as a template and it installs anywhere with holes for the parts that change.
 | Agents | `agent` · `engine-claude` · `engine-opencode` · `providers` · `skills` · `hooks` · `tools` · `tools-mcp` · `communication` |
 | Logic | `flow` · `files` · `process` · `judge` · `guards` · `triggers` |
 | Environment | `workspace` · `tasks` · `memory` · `web` · `human` · `service` |
+| Research and data | `documents` · `inference` · `evidence` · `data` |
 | Example | `hello` |
 
 | Template | What it builds |
@@ -185,6 +186,9 @@ as a template and it installs anywhere with holes for the parts that change.
 | `research` | Plan, parallel sub-agents on the web, an experiment job, a report scored against a rubric |
 | `chat-cli` | A chat CLI of your own: supervisor, system document, agents with and without tools |
 | `pxl` | An agent draws pixel art as text, a renderer makes the PNG, a judge or a person reviews |
+| `research-evidence` | An agent searches and reads the web, cites exact excerpts of versioned sources, and the report fails on any reference it cannot back |
+| `rag-lab` | Two retrieval candidates on the same corpus and dataset, scored with the RAG evaluator and ranked |
+| `topic-watch` | A timed or manual poll of a search or a page that reports only what is new, changed or gone since the last poll |
 
 Each template documents its holes, its risks and the run that was made with a real
 agent in its header.
@@ -315,6 +319,9 @@ it wins over every other document.
 | The core and the workspace | [`docs/02-architecture.md`](docs/02-architecture.md) |
 | Write a module | [`docs/03-modules.md`](docs/03-modules.md) |
 | The clients: app, TUI, settings | [`docs/04-client.md`](docs/04-client.md) |
+| Evidence and cited research | [`docs/15-evidence.md`](docs/15-evidence.md) |
+| Datasets, RAG lab and topic watch | [`docs/16-experiments.md`](docs/16-experiments.md) |
+| Drive Regulus from an MCP client (`regulus mcp`) | [`docs/17-control-mcp.md`](docs/17-control-mcp.md) |
 | Dependencies and versions, release and update | [`docs/06-stack.md`](docs/06-stack.md) |
 | Commit, branch, push | [`docs/09-git.md`](docs/09-git.md) |
 
