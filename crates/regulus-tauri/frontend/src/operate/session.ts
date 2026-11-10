@@ -48,3 +48,6 @@ export const useConversationCache = create<ConversationCacheState>()((set) => ({
 }));
 
 export const cachedConversation = (state: ConversationCacheState, key: string): CachedConversation => state.byKey[key] ?? empty;
+
+/** Where a direct agent's conversation is cached: any view that draws from it uses the same key. */
+export const agentConversationKey = (executionId: string, nodeId: string) => `agent:${executionId}/${nodeId}`;

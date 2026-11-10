@@ -1,8 +1,9 @@
-import { Activity, ArrowRight, Blocks, FolderOpen, GitBranch, Home, LayoutTemplate, PackageOpen, Settings, SlidersHorizontal } from "lucide-react";
+import { Activity, ArrowRight, Blocks, FolderOpen, GitBranch, Home, LayoutTemplate, PackageOpen, Settings, SlidersHorizontal, SquareTerminal } from "lucide-react";
 import { lazy, Suspense, useEffect } from "react";
 import Titlebar from "@/components/Titlebar";
 import { Button } from "@/components/ui/button";
 import { t, type LocaleKey } from "@/lib/i18n";
+import { useCodeSettings } from "@/code/settings";
 import { useClientConfig, useClientConfigSync } from "@/core/clientConfig";
 import { useCore, type CoreSource, type CoreStatus } from "@/core/connection";
 import { moduleCountKey, useModuleList } from "@/core/modules";
@@ -16,9 +17,11 @@ import "@/shell.css";
 const CompositionScene = lazy(() => import("@/composition/CompositionScene"));
 const OperateScene = lazy(() => import("@/operate/OperateScene"));
 const TemplatesScene = lazy(() => import("@/templates/TemplatesScene"));
+const CodeScene = lazy(() => import("@/code/CodeScene"));
 
 const navigation = [
   { id: "home", label: "shell.home", icon: Home },
+  { id: "code", label: "code.name", icon: SquareTerminal },
   { id: "composition", label: "shell.composition", icon: GitBranch },
   { id: "operate", label: "operate.nav", icon: Activity },
   { id: "templates", label: "templates.nav", icon: LayoutTemplate },
@@ -54,6 +57,10 @@ export default function App() {
   const { view, setView, density } = useRegulusUi();
   const { status, source, connect } = useCore();
   const modules = useModuleList();
+  // The Code view's name is a setting (`[client.code] label`): the sidebar says it too.
+  const codeLabel = useCodeSettings((s) => s.label);
+  const labelOf = (id: string, label: LocaleKey) => id === "code" && codeLabel ? codeLabel : t(label);
+  const loading = <div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>;
   useEffect(() => { connect(); }, [connect]);
   // `[update] check_on_start`: the shell says whether to look; Settings shows what it found.
   useEffect(() => { if (isTauri()) void useUpdates.getState().load(updateApi(invoke), true); }, []);
@@ -66,8 +73,8 @@ export default function App() {
   return <div className="regulus-shell" data-density={density}>
     <Titlebar />
     <div className="shell-body">
-      <aside className="shell-navigation"><div className="workspace-label">{t("shell.global")}</div><nav aria-label={t("app.name")}>{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-label={t(label)} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}><Icon size={18} strokeWidth={1.5} /><span>{t(label as LocaleKey)}</span></button>)}</nav><div className="sidebar-bottom"><PackageOpen size={16} /><span>{t(moduleCountKey(modules), { count: modules?.length ?? 0 })}</span></div></aside>
-      <main className="shell-main">{view === "settings" ? <SettingsScene /> : view === "composition" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}><CompositionScene /></Suspense> : view === "operate" || view === "templates" ? <Suspense fallback={<div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>}>{view === "operate" ? <OperateScene /> : <TemplatesScene />}</Suspense> : <HomeScene />}</main>
+      <aside className="shell-navigation"><div className="workspace-label">{t("shell.global")}</div><nav aria-label={t("app.name")}>{navigation.map(({ id, label, icon: Icon }) => <button key={id} aria-label={labelOf(id, label)} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}><Icon size={18} strokeWidth={1.5} /><span>{labelOf(id, label)}</span></button>)}</nav><div className="sidebar-bottom"><PackageOpen size={16} /><span>{t(moduleCountKey(modules), { count: modules?.length ?? 0 })}</span></div></aside>
+      <main className="shell-main">{view === "settings" ? <SettingsScene /> : view === "composition" ? <Suspense fallback={loading}><CompositionScene /></Suspense> : view === "operate" || view === "templates" || view === "code" ? <Suspense fallback={loading}>{view === "operate" ? <OperateScene /> : view === "code" ? <CodeScene /> : <TemplatesScene />}</Suspense> : <HomeScene />}</main>
     </div>
     <footer className="shell-status" role="status"><span>{t("shell.preview")}</span><span data-connection={status}>{t(connectionLabel(status, source))}</span></footer>
   </div>;

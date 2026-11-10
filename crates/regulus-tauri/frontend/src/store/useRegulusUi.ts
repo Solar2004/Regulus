@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type RegulusView = "home" | "composition" | "settings" | "operate" | "templates";
+export type RegulusView = "home" | "composition" | "settings" | "operate" | "templates" | "code";
 
 /** Where "open in canvas" lands inside a profile: a workflow, and a node of it to select. */
 export interface CanvasFocus {
@@ -16,6 +16,7 @@ const startViews: Record<string, RegulusView> = {
   operate: "operate",
   templates: "templates",
   settings: "settings",
+  code: "code",
 };
 
 /** The view `start_view` names; null if it names none, so the app's own start page stays. */

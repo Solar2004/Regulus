@@ -65,10 +65,14 @@ function Editor({ composition }: { composition: Composition }) {
     try { open(await getProfile(client, id)); then?.(); } catch (error) { fail("editor.notice.openFailed", error); }
   });
 
+  // Another view may also say where to land: a workflow, and a node of it to select. Kept
+  // by the request it came with, so an effect that runs twice lands twice on the same place.
+  const landing = useRef<{ profileId: string; at: ReturnType<typeof useRegulusUi.getState>["canvasFocus"] } | null>(null);
   useEffect(() => {
-    if (!requested || !client) return;
-    // Another view may also say where to land: a workflow, and a node of it to select.
-    const at = useRegulusUi.getState().canvasFocus;
+    if (!requested) { landing.current = null; return; }
+    if (!client) return;
+    if (landing.current?.profileId !== requested) landing.current = { profileId: requested, at: useRegulusUi.getState().canvasFocus };
+    const { at } = landing.current;
     const land = () => { if (at) focus(at); };
     useRegulusUi.setState({ canvasProfileId: null, canvasFocus: null });
     if (useEditor.getState().doc?.id !== requested) { reload(); openProfile(requested, land); } else land();

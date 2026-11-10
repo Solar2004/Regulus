@@ -20,7 +20,7 @@ import { Decision } from "./Decision";
 import { canTalk, errorText, fill, isLive, unavailableOf, type NodeRow, type Unavailable } from "./logic";
 import type { AgentSession, Execution, PendingDecision } from "./model";
 import { NotAvailable } from "./NotAvailable";
-import { cachedConversation, useConversationCache } from "./session";
+import { agentConversationKey, cachedConversation, useConversationCache } from "./session";
 import { useOperateSettings } from "./settings";
 import { Mark } from "./StateMark";
 import { usePolling } from "./usePolling";
@@ -203,7 +203,7 @@ export function AgentConversation({ api, executionId, row, decisionList, dock }:
   api: OperateApi; executionId: string; row: NodeRow; decisionList?: DecisionList; dock?: React.ReactNode;
 }) {
   const { refreshMs, eventPageSize, conversationKeep } = useOperateSettings();
-  const key = `agent:${executionId}/${row.id}`;
+  const key = agentConversationKey(executionId, row.id);
   const cached = useConversationCache((s) => cachedConversation(s, key));
   const cursor = useCursor(api, key);
   const [missing, setMissing] = useState<{ kind: Unavailable; reason: string } | null>(null);
