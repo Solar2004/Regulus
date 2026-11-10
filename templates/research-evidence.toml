@@ -1,0 +1,499 @@
+# Research with checked evidence (docs/15-evidence.md): an agent searches the web, collects
+# pages as sources, quotes exact excerpts to back each statement, and writes a report whose
+# citations are checked before it leaves. No model, no shell: every tool the agent has is a
+# box wired into it below, and the check is deterministic.
+#
+#   self.question → agent ─reply→ gate (evidence.report) ─report→ self.report   (text + references)
+#        │            │ engine ⇢ native ⇢ model ⇢ provider        ├ result → self.result  (verdict, json)
+#        │            └failed→ self.error                          └ error  → self.error   (what is wrong)
+#        │              native.tools ⇢ book      evidence_sources · evidence_read · evidence_cite ·
+#        │                                       evidence_entries           (evidence.store)
+#        │                           ⇢ gate      evidence_check             (the final check, as a tool)
+#        │                           ⇢ retrieve  search_documents · read_chunk  (documents)
+#        │                           ⇢ search_tool   web_search ← engine (searxng; swap for any web.search@1)
+#        │                           ⇢ collect_tool  collect_source { url }
+#   self.seed → book.source          (sources supplied by hand, without the web: { location, text })
+#
+#   web_search      (child workflow `search`)   query → web search node → numbered results
+#   collect_source  (child workflow `collect`)  url → fetch (readable text) → { location, title,
+#                       text } → the evidence book (a new version if the page changed) and the
+#                       documents index → { id, location, version, sha256, bytes, ... } to the agent
+#
+# What "checked" means. `book` registers an entry only if its excerpt is in the source text
+# (`match = whitespace` lets a quote ignore line breaks), pinned to the hash of that text. `gate`
+# passes the report only if every `[E<n>]` names an entry whose source is still the cited version
+# and still holds the excerpt, and at least `min_citations` distinct entries are cited; the
+# references it appends carry the location, version, hash and exact excerpt of each. A report
+# with an unknown or stale marker leaves nothing on `report`, the reasons on `error`. That is
+# textual support only: nothing here checks that a statement is true or follows from its
+# excerpt, nor that a page is honest. Add a judge after `report` for that.
+#
+# Replace without touching the rest: the model (`provider`), the search (`engine`: any node that
+# serves `web.search@1`, or a different `search` workflow), the page reader (`fetch` in
+# `collect`), the checks (`gate` settings, or another `report` node), the agent (any engine in
+# place of `native`; its tools are the same boxes). The agent cannot add a source of its own
+# text (`agent_sources = no`): sources come from `collect_source` or `seed`.
+#
+# Risks: page text reaches the provider and can instruct the model (prompt injection); the
+# check cannot tell. `allow_private = no` keeps `fetch` and the search off loopback and private
+# addresses; a local SearXNG or a test fixture needs `yes`. The book is the project's: sources
+# and entries persist across runs (`regulus call evidence.list|inspect|export`, node `book`).
+#
+# Tested (crates/regulus-cli/tests/template_research_evidence.rs): it applies, passes
+# profile.check with no diagnostic, and against a fake OpenAI server and a local web fixture the
+# agent searches, collects a page, cites two excerpts and its report leaves with inspectable
+# references; a report citing an entry that does not exist, and a made-up excerpt, fail.
+# Not run against a real model or search engine here.
+id = "research-evidence"
+name = "Research with checked evidence ({{collection}})"
+main_workflow_id = "research"
+
+[template]
+name = "research-evidence"
+description = "A web researcher whose report is checked against exact excerpts of the pages it read"
+requires = [
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-native", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/web", version = ">=0.1" },
+  { module = "regulus/documents", version = ">=0.1" },
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/evidence", version = ">=0.1" },
+]
+
+[template.vars]
+preset = { description = "provider template (crates/modules/providers/presets.toml)", default = "ollama" }
+base_url = { description = "the provider's endpoint, over the preset's; empty keeps the preset's", default = "" }
+credential = { description = "secret:<name> with the provider's key; empty for a keyless endpoint", default = "" }
+model = { description = "model id on that endpoint", default = "qwen3:4b" }
+search_url = { description = "the SearXNG-style search endpoint (answers ?q=…&format=json)", default = "http://127.0.0.1:8888/search" }
+allow_private = { description = "yes: search and fetch may reach loopback and private addresses (a local SearXNG, a fixture)", default = "no" }
+collection = { description = "name of the evidence and document collection; profiles that name the same share it", default = "research" }
+system = { description = "the system prompt", default = "You are a careful researcher. Use web_search to find pages and collect_source to bring a page into the evidence. Read sources with evidence_read, and back every statement you will report with evidence_cite, copying the excerpt exactly from the source. Write the report with a marker like [E1] after each statement, using the cite_as you were given. Run evidence_check on your draft and fix what it reports before you answer. Cite only what the excerpts say." }
+max_steps = { description = "model calls per turn at most", default = 24 }
+max_tool_calls = { description = "tool calls per turn at most", default = 48 }
+history_turns = { description = "earlier turns of the session the model sees", default = 20 }
+max_results = { description = "search results returned to the agent", default = 5 }
+match = { description = "how an excerpt is looked for in a source: exact, or whitespace (runs of whitespace count as one)", default = "whitespace" }
+min_excerpt_chars = { description = "shortest excerpt accepted, in characters", default = 20 }
+max_sources = { description = "sources the book holds at most", default = 50 }
+min_citations = { description = "distinct valid entries a report must cite", default = 2 }
+require_paragraph_citations = { description = "yes: every long paragraph of the report must cite an entry", default = "no" }
+
+[[workflows]]
+id = "research"
+name = "Research"
+kind = "main"
+ports = [
+  { id = "question", capability = "text@1", direction = "input", kind = "then" },
+  { id = "seed", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+  { id = "report", capability = "text@1", direction = "output", kind = "then" },
+  { id = "result", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "sourced", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Researcher"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 450, y = 250 }
+  config = { permissions = "reject" }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The loop. Only the tools listed here go ahead; anything else is refused.
+  [[workflows.nodes]]
+  id = "native"
+  name = "Native engine"
+  type = "native"
+  module_id = "regulus/engine-native@0.1.0"
+  position = { x = 450, y = 50 }
+  config = { system = "{{system}}", tool_policy = "deny", allow_tools = ["web_search", "collect_source", "evidence_sources", "evidence_read", "evidence_cite", "evidence_entries", "evidence_check", "search_documents", "read_chunk"], max_steps = {{max_steps}}, max_tool_calls = {{max_tool_calls}}, history_turns = {{history_turns}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" },
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "context", capability = "hook@1", direction = "input", kind = "uses", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "provider"
+  name = "Provider"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 700, y = 50 }
+  config = { preset = "{{preset}}", base_url = "{{base_url}}", credential = "{{credential}}", model = "{{model}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  # The book: sources, entries, and what the agent sees of them. Sources come from `collect`
+  # and `seed`; the agent only reads sources and cites them.
+  [[workflows.nodes]]
+  id = "book"
+  name = "Evidence"
+  type = "store"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 700, y = 200 }
+  config = { collection = "{{collection}}", scope = "project", match = "{{match}}", min_excerpt_chars = {{min_excerpt_chars}}, max_sources = {{max_sources}}, agent_sources = "no" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "source", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The final check on what the agent answers, and the same check as a tool for its drafts.
+  [[workflows.nodes]]
+  id = "gate"
+  name = "Report check"
+  type = "report"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 450, y = 450 }
+  config = { collection = "{{collection}}", scope = "project", min_citations = {{min_citations}}, require_paragraph_citations = "{{require_paragraph_citations}}" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "result", capability = "json@1", direction = "output", kind = "then" },
+    { id = "report", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The collected pages as documents: search_documents and read_chunk.
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Documents"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 700, y = 350 }
+  config = { collection = "{{collection}}" }
+  ports = [{ id = "tools", capability = "tool@1", direction = "output", kind = "uses" }]
+
+  # The search engine: swap it for another web.search@1 without touching anything else.
+  [[workflows.nodes]]
+  id = "engine"
+  name = "SearXNG"
+  type = "searxng"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 950, y = 100 }
+  config = { url = "{{search_url}}", allow_private = "{{allow_private}}" }
+  ports = [{ id = "engine", capability = "web.search@1", direction = "output", kind = "uses" }]
+
+  # The workflow `search` as the tool `web_search`.
+  [[workflows.nodes]]
+  id = "search_tool"
+  name = "Web search (tool)"
+  type = "tool"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 950, y = 250 }
+  config = { workflow = "search", name = "web_search", description = "Search the web. Returns a numbered list of results: title, URL and a snippet. Collect a promising page with collect_source.", input = "query", max_in_flight = 2, timeout_ms = 60000 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "engine", capability = "web.search@1", direction = "input", kind = "uses", required = true },
+    { id = "query", capability = "text@1", direction = "input", kind = "then" },
+    { id = "results", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The workflow `collect` as the tool `collect_source`.
+  [[workflows.nodes]]
+  id = "collect_tool"
+  name = "Collect a page (tool)"
+  type = "tool"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 950, y = 400 }
+  config = { workflow = "collect", name = "collect_source", description = "Fetch the page at a URL and add it to the evidence as a source. Returns the source id, version and size; read it with evidence_read before you quote it. Fetching the same URL again updates the source.", input = "url", max_in_flight = 2, timeout_ms = 120000 }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "url", capability = "text@1", direction = "input", kind = "then" },
+    { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "native-engine"
+  kind = "uses"
+  from = { node_id = "native", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "provider-model"
+  kind = "uses"
+  from = { node_id = "provider", port_id = "endpoint" }
+  to = { node_id = "native", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "book-tools"
+  kind = "uses"
+  from = { node_id = "book", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "gate-tools"
+  kind = "uses"
+  from = { node_id = "gate", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "retrieve-tools"
+  kind = "uses"
+  from = { node_id = "retrieve", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "search-tools"
+  kind = "uses"
+  from = { node_id = "search_tool", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "collect-tools"
+  kind = "uses"
+  from = { node_id = "collect_tool", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "engine-search"
+  kind = "uses"
+  from = { node_id = "engine", port_id = "engine" }
+  to = { node_id = "search_tool", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "question-agent"
+  kind = "then"
+  from = { node_id = "self", port_id = "question" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-gate"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "gate", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "agent-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "gate-report"
+  kind = "then"
+  from = { node_id = "gate", port_id = "report" }
+  to = { node_id = "self", port_id = "report" }
+
+  [[workflows.wires]]
+  id = "gate-result"
+  kind = "then"
+  from = { node_id = "gate", port_id = "result" }
+  to = { node_id = "self", port_id = "result" }
+
+  [[workflows.wires]]
+  id = "gate-error"
+  kind = "then"
+  from = { node_id = "gate", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "seed-book"
+  kind = "then"
+  from = { node_id = "self", port_id = "seed" }
+  to = { node_id = "book", port_id = "source" }
+
+  [[workflows.wires]]
+  id = "book-sourced"
+  kind = "then"
+  from = { node_id = "book", port_id = "sourced" }
+  to = { node_id = "self", port_id = "sourced" }
+
+  [[workflows.wires]]
+  id = "book-error"
+  kind = "then"
+  from = { node_id = "book", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "collect-sourced"
+  kind = "then"
+  from = { node_id = "collect_tool", port_id = "sourced" }
+  to = { node_id = "self", port_id = "sourced" }
+
+# The tool `web_search`: a query in, the numbered results out, from whatever engine is wired.
+[[workflows]]
+id = "search"
+name = "Search"
+kind = "extra"
+ports = [
+  { id = "query", capability = "text@1", direction = "input", kind = "then" },
+  { id = "results", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "engine", capability = "web.search@1", direction = "input", kind = "uses" },
+]
+
+  [[workflows.nodes]]
+  id = "search"
+  name = "Search"
+  type = "search"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { max_results = {{max_results}} }
+  ports = [
+    { id = "engine", capability = "web.search@1", direction = "input", kind = "uses", required = true },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "text", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "search-engine"
+  kind = "uses"
+  from = { node_id = "self", port_id = "engine" }
+  to = { node_id = "search", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "search-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "query" }
+  to = { node_id = "search", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "search-out"
+  kind = "then"
+  from = { node_id = "search", port_id = "text" }
+  to = { node_id = "self", port_id = "results" }
+
+  [[workflows.wires]]
+  id = "search-error"
+  kind = "then"
+  from = { node_id = "search", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+# The tool `collect_source`: a URL in; the page fetched as readable text, registered as a
+# source in the evidence book and indexed as a document; the source record out.
+[[workflows]]
+id = "collect"
+name = "Collect a page"
+kind = "extra"
+ports = [
+  { id = "url", capability = "text@1", direction = "input", kind = "then" },
+  { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "fetch"
+  name = "Fetch"
+  type = "fetch"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { format = "markdown", allow_private = "{{allow_private}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # { location, title, text }: the URL twice (where it came from; what to call it) and the text.
+  [[workflows.nodes]]
+  id = "page"
+  name = "Page"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 450, y = 50 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "location", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "title", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "text", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The same book as `book` in the main workflow: same collection, same project.
+  [[workflows.nodes]]
+  id = "book"
+  name = "Evidence"
+  type = "store"
+  module_id = "regulus/evidence@0.1.0"
+  position = { x = 650, y = 0 }
+  config = { collection = "{{collection}}", scope = "project", match = "{{match}}", min_excerpt_chars = {{min_excerpt_chars}}, max_sources = {{max_sources}}, agent_sources = "no" }
+  ports = [
+    { id = "source", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "sourced", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "ingest"
+  name = "Ingest"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { collection = "{{collection}}", chunker = "markdown" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "url-fetch"
+  kind = "then"
+  from = { node_id = "self", port_id = "url" }
+  to = { node_id = "fetch", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "url-location"
+  kind = "then"
+  from = { node_id = "self", port_id = "url" }
+  to = { node_id = "page", port_id = "location" }
+
+  [[workflows.wires]]
+  id = "url-title"
+  kind = "then"
+  from = { node_id = "self", port_id = "url" }
+  to = { node_id = "page", port_id = "title" }
+
+  [[workflows.wires]]
+  id = "fetch-text"
+  kind = "then"
+  from = { node_id = "fetch", port_id = "out" }
+  to = { node_id = "page", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "fetch-error"
+  kind = "then"
+  from = { node_id = "fetch", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "page-book"
+  kind = "then"
+  from = { node_id = "page", port_id = "out" }
+  to = { node_id = "book", port_id = "source" }
+
+  [[workflows.wires]]
+  id = "page-ingest"
+  kind = "then"
+  from = { node_id = "page", port_id = "out" }
+  to = { node_id = "ingest", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "book-sourced"
+  kind = "then"
+  from = { node_id = "book", port_id = "sourced" }
+  to = { node_id = "self", port_id = "sourced" }
+
+  [[workflows.wires]]
+  id = "book-error"
+  kind = "then"
+  from = { node_id = "book", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "ingest-error"
+  kind = "then"
+  from = { node_id = "ingest", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
