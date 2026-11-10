@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use regulus_contract_tool as tool;
-use regulus_core::{Core, Module, ModuleCtx, ModuleError, ProfileStore};
+use regulus_core::config::StoreConfig;
+use regulus_core::{Core, Module, ModuleCtx, ModuleError, ProfileStore, Storage, Store};
 use regulus_module_code::{contract, Code};
 use regulus_proto::{
     method, BusEventKind, EventPage, Manifest, ModuleInfo, Node, NodeCall, Profile,
@@ -1944,6 +1945,68 @@ fn a_folder_on_root_moves_the_workspace() {
         .inspect("ws", json!({ "action": "list" }))
         .unwrap_err();
     assert_eq!(code, MODULE_FAILED);
+}
+
+#[test]
+fn a_moved_root_outlives_a_restart_of_the_core() {
+    let home = temp("restart");
+    let (root, other) = (home.join("root"), home.join("other"));
+    put(&root, "first.txt", "first\n");
+    put(&other, "second.txt", "second\n");
+    let core = || {
+        let mut profiles = ProfileStore::default();
+        profiles
+            .insert(profile(json!({ "root": root }), json!({})))
+            .unwrap();
+        let storage = Storage {
+            store: Some(Arc::new(
+                Store::open(&home.join("store"), &StoreConfig::default()).unwrap(),
+            )),
+            data_dir: Some(home.join("data")),
+            ..Storage::default()
+        };
+        let modules: Vec<Box<dyn Module>> = vec![Box::new(Code::new())];
+        Core::build_with(modules, &[], profiles, storage)
+    };
+    let listed = |core: &Core, id: &str| -> Vec<String> {
+        let listing = core
+            .dispatch(
+                contract::INSPECT,
+                json!({ "execution_id": id, "node_id": "ws", "action": "list" }),
+            )
+            .unwrap();
+        paths(&listing["entries"])
+            .into_iter()
+            .map(String::from)
+            .collect()
+    };
+
+    let first = core();
+    let started = first
+        .dispatch(method::EXECUTION_START, json!({ "profile_id": "p" }))
+        .unwrap();
+    let id = started["id"].as_str().unwrap().to_string();
+    assert_eq!(listed(&first, &id), ["first.txt"]);
+    first
+        .dispatch(
+            method::WORKFLOW_SEND,
+            json!({ "execution_id": id, "port": "root", "value": other }),
+        )
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while listed(&first, &id) != ["second.txt"] {
+        assert!(Instant::now() < deadline, "the root never moved");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    first.shutdown();
+    drop(first);
+
+    // The next core resumes the execution where the root had moved to, not at the field.
+    let second = core();
+    assert_eq!(second.recover(), [format!("{id} resumed (1 checkpoints)")]);
+    assert_eq!(listed(&second, &id), ["second.txt"]);
+    second.shutdown();
+    let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
