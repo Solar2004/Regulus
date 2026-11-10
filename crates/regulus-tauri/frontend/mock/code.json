@@ -200,7 +200,7 @@
                   {"id": "activity", "name": "activity", "capability": "agent.event@1", "direction": "output", "kind": "then", "required": false}
                 ],
                 "config": {"workdir": "{{root}}", "permissions": "ask"},
-                "position": {"x": 450, "y": 250},
+                "position": {"x": 380, "y": 420},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -223,7 +223,7 @@
                   "max_steps": "{{max_steps}}",
                   "max_tool_calls": "{{max_tool_calls}}"
                 },
-                "position": {"x": 450, "y": 50},
+                "position": {"x": 380, "y": 40},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -235,7 +235,7 @@
                 "resource": null,
                 "ports": [{"id": "endpoint", "name": "endpoint", "capability": "llm.endpoint@1", "direction": "output", "kind": "uses", "required": false}],
                 "config": {"preset": "{{preset}}", "base_url": "{{base_url}}", "credential": "{{credential}}", "model": "{{model}}"},
-                "position": {"x": 720, "y": 50},
+                "position": {"x": 720, "y": 40},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -253,7 +253,7 @@
                   {"id": "ran", "name": "ran", "capability": "json@1", "direction": "output", "kind": "then", "required": false}
                 ],
                 "config": {"root": "{{root}}"},
-                "position": {"x": 180, "y": 50},
+                "position": {"x": 40, "y": 40},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -268,7 +268,7 @@
                   {"id": "hook", "name": "hook", "capability": "hook@1", "direction": "output", "kind": "uses", "required": false}
                 ],
                 "config": {},
-                "position": {"x": 180, "y": 220},
+                "position": {"x": 40, "y": 400},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -283,7 +283,7 @@
                   {"id": "tools", "name": "tools", "capability": "tool@1", "direction": "output", "kind": "uses", "required": false}
                 ],
                 "config": {"access": "read"},
-                "position": {"x": 180, "y": 390},
+                "position": {"x": 40, "y": 640},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -295,7 +295,7 @@
                 "resource": null,
                 "ports": [{"id": "decisions", "name": "decisions", "capability": "decision@1", "direction": "output", "kind": "uses", "required": false}],
                 "config": {"timeout_ms": "{{decision_timeout_ms}}"},
-                "position": {"x": 450, "y": 450},
+                "position": {"x": 720, "y": 640},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               },
@@ -319,7 +319,7 @@
                   }
                 ],
                 "config": {"workers": {"worker": "worker"}, "max_workers": "{{max_workers}}"},
-                "position": {"x": 720, "y": 250},
+                "position": {"x": 720, "y": 320},
                 "internal_workflow_id": null,
                 "exposed_parameters": []
               }
