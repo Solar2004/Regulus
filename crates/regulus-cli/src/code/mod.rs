@@ -4,6 +4,8 @@
 //! module by its name, and what it shows is the conversation the Agent box keeps
 //! (`agent.history`) and the workspace the module behind `code.inspect` serves.
 
+pub mod composer;
 pub mod inspect;
+pub mod mascot;
 pub mod session;
 pub mod settings;

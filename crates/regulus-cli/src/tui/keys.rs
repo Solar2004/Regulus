@@ -45,10 +45,15 @@ impl Chord {
             "right" => KeyCode::Right,
             "home" => KeyCode::Home,
             "end" => KeyCode::End,
-            _ => {
+            "pageup" | "pgup" => KeyCode::PageUp,
+            "pagedown" | "pgdn" => KeyCode::PageDown,
+            name => {
                 let mut chars = rest.chars();
-                match (chars.next(), chars.next()) {
-                    (Some(c), None) => KeyCode::Char(if ctrl { c.to_ascii_lowercase() } else { c }),
+                match (function_key(name), chars.next(), chars.next()) {
+                    (Some(number), ..) => KeyCode::F(number),
+                    (None, Some(c), None) => {
+                        KeyCode::Char(if ctrl { c.to_ascii_lowercase() } else { c })
+                    }
                     _ => return Err(format!("`{text}` is not a key")),
                 }
             }
@@ -81,6 +86,9 @@ impl Chord {
             KeyCode::Right => "→".to_string(),
             KeyCode::Home => "Home".to_string(),
             KeyCode::End => "End".to_string(),
+            KeyCode::PageUp => "PgUp".to_string(),
+            KeyCode::PageDown => "PgDn".to_string(),
+            KeyCode::F(n) => format!("F{n}"),
             KeyCode::Char(' ') => "Space".to_string(),
             KeyCode::Char(c) if self.ctrl => c.to_ascii_uppercase().to_string(),
             KeyCode::Char(c) => c.to_string(),
@@ -96,6 +104,12 @@ impl Chord {
         out.push_str(&key);
         out
     }
+}
+
+/// `f1` to `f12`, as a key name.
+fn function_key(name: &str) -> Option<u8> {
+    let number: u8 = name.strip_prefix('f')?.parse().ok()?;
+    (1..=12).contains(&number).then_some(number)
 }
 
 /// Every key one action answers to.
@@ -139,7 +153,8 @@ impl Binding {
 
 macro_rules! keys {
     ($($(#[$doc:meta])* $name:ident = [$($key:literal),+];)+) => {
-        /// The keys the Edit and Templates views and the new parts of Operate answer to.
+        /// The keys the Edit, Templates and Code views and the new parts of Operate answer
+        /// to.
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct Keys { $($(#[$doc])* pub $name: Binding,)+ }
 
@@ -233,6 +248,52 @@ const CONTEXTS: &[(&str, &[&str])] = &[
         &["open", "run", "open_in_editor", "back", "up", "down"],
     ),
     ("dialog", &["yes", "no", "back"]),
+    (
+        "code",
+        &[
+            "code_send",
+            "code_newline",
+            "cancel_turn",
+            "code_focus",
+            "code_side",
+            "code_page_up",
+            "code_page_down",
+            "code_sessions",
+            "code_stop",
+            "code_help",
+            "code_permission",
+            "code_quit",
+            "back",
+        ],
+    ),
+    (
+        "code_side",
+        &[
+            "up",
+            "down",
+            "open",
+            "back",
+            "code_next_tab",
+            "code_previous_tab",
+            "code_parent",
+            "code_search",
+            "code_refresh",
+            "code_focus",
+            "code_side",
+            "cancel_turn",
+            "code_page_up",
+            "code_page_down",
+            "code_sessions",
+            "code_stop",
+            "code_help",
+            "code_permission",
+            "code_quit",
+        ],
+    ),
+    (
+        "code_permission",
+        &["yes", "no", "up", "down", "open", "back"],
+    ),
 ];
 
 impl Keys {
@@ -318,6 +379,36 @@ keys! {
     down = ["down"];
     next_pane = ["tab", "right"];
     previous_pane = ["backtab", "left"];
+    /// Code (`regulus code`, docs/04-client.md §12): send what is typed.
+    code_send = ["enter"];
+    /// Code: a new line in what is typed.
+    code_newline = ["alt+enter", "ctrl+j"];
+    /// Code: move between what is typed and the side panel.
+    code_focus = ["tab"];
+    /// Code: show or hide the side panel.
+    code_side = ["ctrl+b"];
+    /// Code: scroll the transcript, or the side panel while it has the keys.
+    code_page_up = ["pageup"];
+    code_page_down = ["pagedown"];
+    /// Code: the sessions a person can attach to, and a new one.
+    code_sessions = ["ctrl+o"];
+    /// Code: stop the execution, after asking.
+    code_stop = ["ctrl+t"];
+    /// Code: every key and command.
+    code_help = ["f1", "alt+h"];
+    /// Code: answer the oldest permission request.
+    code_permission = ["ctrl+p"];
+    /// Code: clear what is typed; with nothing typed, leave.
+    code_quit = ["ctrl+c", "ctrl+d"];
+    /// Code, side panel: the next and the previous tab.
+    code_next_tab = ["right"];
+    code_previous_tab = ["left"];
+    /// Code, side panel: the folder above, or out of what is open.
+    code_parent = ["backspace"];
+    /// Code, side panel: search the workspace.
+    code_search = ["/"];
+    /// Code, side panel: read the tab again.
+    code_refresh = ["r"];
 }
 
 /// Numbers the TUI uses that a person may want to change.
@@ -337,6 +428,22 @@ pub struct Tuning {
     /// Records of a conversation kept on screen (and by `regulus talk` for `/history`),
     /// like the app's `conversationKeep`. 0 keeps everything.
     pub conversation_keep: usize,
+    /// Code (`regulus code`): columns of the side panel.
+    pub code_side_width: usize,
+    /// Code: terminal columns below which the side panel hides on its own.
+    pub code_side_min_width: usize,
+    /// Code: the most rows the box a person types in grows to.
+    pub code_composer_rows: usize,
+    /// Code: how often the conversation is read while a turn is in flight, in
+    /// milliseconds; the rest follows `client.refresh_ms`.
+    pub code_busy_refresh_ms: usize,
+    /// Code: how often the mascot's star twinkles while a turn is in flight. 0: never.
+    pub code_twinkle_ms: usize,
+    /// Code: lines of a tool's output shown under it in the transcript. 0: none.
+    pub code_tool_lines: usize,
+    /// Code: how long a permission request that just took the keys ignores them, so what
+    /// was being typed does not answer it. 0: no wait.
+    pub code_permission_grace_ms: usize,
 }
 
 impl Default for Tuning {
@@ -349,13 +456,29 @@ impl Default for Tuning {
             node_width: 250.0,
             node_height: 160.0,
             conversation_keep: 5000,
+            code_side_width: 46,
+            code_side_min_width: 110,
+            code_composer_rows: 8,
+            code_busy_refresh_ms: 250,
+            code_twinkle_ms: 400,
+            code_tool_lines: 4,
+            code_permission_grace_ms: 400,
         }
     }
 }
 
 /// Settings that make no sense at 0: a page of no events never advances, a step or a
-/// footprint of 0 piles every node on the same spot.
-const AT_LEAST_ONE: &[&str] = &["event_page", "cascade_step", "node_width", "node_height"];
+/// footprint of 0 piles every node on the same spot, a panel or a box of no size shows
+/// nothing and a refresh of 0 ms never rests.
+const AT_LEAST_ONE: &[&str] = &[
+    "event_page",
+    "cascade_step",
+    "node_width",
+    "node_height",
+    "code_side_width",
+    "code_composer_rows",
+    "code_busy_refresh_ms",
+];
 
 impl Tuning {
     pub fn from_table(table: &Table) -> Result<Self, String> {
@@ -379,6 +502,13 @@ impl Tuning {
                 "node_width" => tuning.node_width = number,
                 "node_height" => tuning.node_height = number,
                 "conversation_keep" => tuning.conversation_keep = number as usize,
+                "code_side_width" => tuning.code_side_width = number as usize,
+                "code_side_min_width" => tuning.code_side_min_width = number as usize,
+                "code_composer_rows" => tuning.code_composer_rows = number as usize,
+                "code_busy_refresh_ms" => tuning.code_busy_refresh_ms = number as usize,
+                "code_twinkle_ms" => tuning.code_twinkle_ms = number as usize,
+                "code_tool_lines" => tuning.code_tool_lines = number as usize,
+                "code_permission_grace_ms" => tuning.code_permission_grace_ms = number as usize,
                 other => return Err(format!("tui.{other}: no such setting")),
             }
         }
@@ -500,6 +630,73 @@ mod tests {
             Options::from_client(Some(&fine)).unwrap().tuning.event_keep,
             0
         );
+    }
+
+    #[test]
+    fn page_and_function_keys_have_names() {
+        assert_eq!(Chord::parse("pageup").unwrap().code, KeyCode::PageUp);
+        assert_eq!(Chord::parse("PgDn").unwrap().label(), "PgDn");
+        assert_eq!(Chord::parse("f1").unwrap().code, KeyCode::F(1));
+        assert_eq!(Chord::parse("ctrl+f12").unwrap().label(), "Ctrl+F12");
+        // A letter is still a letter, and there is no thirteenth function key.
+        assert_eq!(Chord::parse("f").unwrap().code, KeyCode::Char('f'));
+        assert!(Chord::parse("f13").is_err());
+        assert!(Chord::parse("f0").is_err());
+    }
+
+    #[test]
+    fn the_coding_screen_is_bound_and_checked_like_the_rest() {
+        let keys = Keys::default();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let alt_enter = key(KeyCode::Enter, KeyModifiers::ALT);
+        assert!(keys.code_send.matches(&enter));
+        assert!(!keys.code_send.matches(&alt_enter));
+        assert!(keys.code_newline.matches(&alt_enter));
+        assert!(keys
+            .code_newline
+            .matches(&key(KeyCode::Char('j'), KeyModifiers::CONTROL)));
+        assert!(keys
+            .code_help
+            .matches(&key(KeyCode::F(1), KeyModifiers::NONE)));
+        assert!(keys
+            .code_page_up
+            .matches(&key(KeyCode::PageUp, KeyModifiers::NONE)));
+        assert_eq!(keys.code_quit.label(), "Ctrl+C");
+        // Two of its actions on one key are refused by name, as everywhere.
+        let bad: Table = toml::from_str(r#"keys = { code_side = "ctrl+x" }"#).unwrap();
+        assert_eq!(
+            Options::from_client(Some(&bad)).unwrap_err(),
+            "keys.cancel_turn and keys.code_side both answer to `Ctrl+X` in code"
+        );
+        let bad: Table = toml::from_str(r#"keys = { code_refresh = "/" }"#).unwrap();
+        assert_eq!(
+            Options::from_client(Some(&bad)).unwrap_err(),
+            "keys.code_search and keys.code_refresh both answer to `/` in code_side"
+        );
+        // Its numbers sit with the terminal UI's.
+        let fine: Table = toml::from_str(
+            r#"
+            keys = { code_send = "ctrl+s", code_newline = "enter" }
+            tui = { code_side_width = 60, code_tool_lines = 0, code_twinkle_ms = 0 }
+            "#,
+        )
+        .unwrap();
+        let options = Options::from_client(Some(&fine)).unwrap();
+        assert!(options.keys.code_newline.matches(&enter));
+        assert_eq!(options.tuning.code_side_width, 60);
+        assert_eq!(options.tuning.code_tool_lines, 0);
+        assert_eq!(options.tuning.code_composer_rows, 8);
+        for name in [
+            "code_side_width",
+            "code_composer_rows",
+            "code_busy_refresh_ms",
+        ] {
+            let bad: Table = toml::from_str(&format!("tui = {{ {name} = 0 }}")).unwrap();
+            assert_eq!(
+                Options::from_client(Some(&bad)).unwrap_err(),
+                format!("tui.{name}: `0` is not a number ≥ 1")
+            );
+        }
     }
 
     #[test]
