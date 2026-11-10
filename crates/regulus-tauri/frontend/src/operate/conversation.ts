@@ -4,7 +4,7 @@
 // tested in conversation.test.ts.
 import type { Port, Workflow } from "@/composition/model";
 import type { AgentHistory, BusEvent, PendingDecision, PermissionOption, SessionEvent } from "./model";
-import { capabilities, hasInput } from "./logic";
+import { isAgent } from "./logic";
 
 /** Capabilities a conversation is read from, by name without version: never a module id. */
 export const conversationCapabilities = { text: "text", activity: "agent.event" } as const;
@@ -34,9 +34,9 @@ export function isConversable(workflow: Workflow | undefined): boolean {
   return ports.inputs.length > 0 && ports.outputs.length > 0;
 }
 
-/** Direct agents: nodes with a `uses` input `agent.engine`. Always talkable, no binding. */
+/** Direct agents have an eager `uses` input `agent.engine`; worker hosts do not. */
 export function agentNodes(workflow: Workflow | undefined) {
-  return (workflow?.nodes ?? []).filter((node) => hasInput(node, capabilities.agent));
+  return (workflow?.nodes ?? []).filter(isAgent);
 }
 
 export function hasConversation(workflow: Workflow | undefined): boolean {

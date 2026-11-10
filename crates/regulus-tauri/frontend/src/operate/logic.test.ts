@@ -27,6 +27,11 @@ describe("node kind by capability", () => {
     expect(nodeKind(node("c", "x", [port("p", "participant@1", "input", "uses")]))).toBe("channel");
     expect(nodeKind(node("o", "x", [port("engine", "agent.engine@1", "output", "uses")]))).toBe("other");
   });
+
+  test("an engine reserved for delegated workers does not make a chat agent", () => {
+    const delegated = { ...port("engine", "agent.engine@1", "input", "uses"), lazy: true };
+    expect(nodeKind(node("workers", "any/delegation", [delegated]))).toBe("other");
+  });
 });
 
 describe("first-level node state", () => {

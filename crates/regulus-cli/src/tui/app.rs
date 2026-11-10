@@ -17,12 +17,11 @@ use super::keys::Options;
 use super::talk::{AgentLog, BindPicker, Choice as PickChoice, PermissionPicker};
 use super::templates::{Templates, Then};
 use crate::conversation::{
-    asks_about, binding_for, bus_records, conversation_ports, is_conversable, open_permissions,
-    Binding, BindingSource, Bindings, ConfiguredBinding, Grouping, Record, USER,
+    asks_about, binding_for, bus_records, conversation_ports, is_agent, is_conversable,
+    open_permissions, Binding, BindingSource, Bindings, ConfiguredBinding, Grouping, Record, USER,
 };
 
 /// Capabilities that tell what a node is, never its module (CLAUDE.md, invariant 2).
-const AGENT_ENGINE: &str = "agent.engine";
 const PARTICIPANT: &str = "participant";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,7 +281,7 @@ fn has_input(node: &Node, capability: &str) -> bool {
 }
 
 pub fn kind(node: &Node) -> NodeKind {
-    if has_input(node, AGENT_ENGINE) {
+    if is_agent(node) {
         NodeKind::Agent
     } else if has_input(node, PARTICIPANT) {
         NodeKind::Channel
@@ -1473,6 +1472,14 @@ mod tests {
             vec![Request::Profiles, Request::Status]
         );
         assert!(app.apply(connected).is_empty());
+    }
+
+    #[test]
+    fn a_worker_host_is_not_shown_as_a_conversation() {
+        let mut engine = port("engine", "agent.engine@1", Direction::Input);
+        engine.lazy = true;
+        let workers = node("workers", Some("any/module@1"), vec![engine]);
+        assert_eq!(kind(&workers), NodeKind::Other);
     }
 
     #[test]

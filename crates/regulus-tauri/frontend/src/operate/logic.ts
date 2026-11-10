@@ -18,8 +18,14 @@ export function hasInput(node: Pick<CompositionNode, "ports">, capability: strin
   return node.ports.some((port) => port.direction === "input" && baseCapability(port.capability) === capability);
 }
 
+/** An eager engine belongs to this node's session; a lazy one may be for its workers. */
+export function isAgent(node: Pick<CompositionNode, "ports">): boolean {
+  return node.ports.some((port) => port.direction === "input" && port.kind === "uses"
+    && !port.lazy && baseCapability(port.capability) === capabilities.agent);
+}
+
 export function nodeKind(node: Pick<CompositionNode, "ports">): NodeKind {
-  if (hasInput(node, capabilities.agent)) return "agent";
+  if (isAgent(node)) return "agent";
   if (hasInput(node, capabilities.channel)) return "channel";
   return "other";
 }

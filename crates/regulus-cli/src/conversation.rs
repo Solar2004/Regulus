@@ -60,11 +60,12 @@ pub fn is_conversable(workflow: &Workflow) -> bool {
     !ports.inputs.is_empty() && !ports.outputs.is_empty()
 }
 
-/// A node with a Uses input `agent.engine`: always talkable, nothing to bind.
+/// An eager engine belongs to this node's session; a lazy one may be for its workers.
 pub fn is_agent(node: &Node) -> bool {
     node.ports.iter().any(|p| {
         p.direction == Direction::Input
             && p.kind == WireKind::Uses
+            && !p.lazy
             && base(&p.capability) == AGENT_ENGINE
     })
 }
@@ -923,6 +924,17 @@ mod tests {
             ]),
             json!([]),
         )
+    }
+
+    #[test]
+    fn a_delegate_engine_for_its_workers_is_not_a_second_chat_agent() {
+        let mut workers = agent("workers");
+        workers["ports"][0]["lazy"] = json!(true);
+        let flow = workflow(json!([]), json!([agent("dev"), workers]));
+        assert_eq!(
+            choose(&flow, "p", Asked::default(), &BTreeMap::new(), &[]),
+            Choice::Talk(Subject::Agent("dev".into()), Origin::OnlyAgent)
+        );
     }
 
     #[test]

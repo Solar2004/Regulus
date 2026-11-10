@@ -32,6 +32,13 @@ describe("what can be talked to", () => {
     expect(hasConversation(workflow([port("go", "input")]))).toBe(false);
   });
 
+  test("a delegate's lazy engine for workers is not another conversation", () => {
+    const workers = node("workers", [{ ...port("engine", "input", "agent.engine@1", "uses"), lazy: true }]);
+    const flow = workflow([], [agent, workers]);
+    expect(agentNodes(flow).map((item) => item.id)).toEqual(["agent"]);
+    expect(subjectsOf(flow)).toEqual([{ kind: "agent", nodeId: "agent" }]);
+  });
+
   test("the subject: the one picked, else the selected agent, else the bound workflow, else the first", () => {
     const flow = workflow([port("go", "input"), port("done", "output")], [agent, node("other", [port("engine", "input", "agent.engine@1", "uses")])]);
     expect(subjectsOf(flow)).toEqual([{ kind: "workflow" }, { kind: "agent", nodeId: "agent" }, { kind: "agent", nodeId: "other" }]);
