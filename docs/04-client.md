@@ -364,8 +364,8 @@ pistas `label`, `description`, `language` e `indent` del manifiesto (`03-modules
 dan nombre, ayuda, lenguaje junto al tipo y lo que mete Tab. En un `code`, Tab sangra,
 Shift+Tab quita sangría y **Esc y luego Tab sale del campo**; un aviso debajo dice que no
 hay resaltado ni comprobación. El valor se guarda tal cual se escribe. Probado en Chromium
-contra un core real y medido por tecla: los números y los límites (Ctrl+Z no deshace un
-Tab; con 1000 líneas, ~30 ms por tecla) están en `18-custom-nodes.md` §4.
+contra un core real y medido por tecla: los números (ningún caso entra en 16 ms) y los
+límites (Ctrl+Z no deshace un Tab) están en `18-custom-nodes.md` §4.
 
 **Cajas en el canvas** (2026-11-09, `composition/editor/document.ts`, funciones puras con
 tests):

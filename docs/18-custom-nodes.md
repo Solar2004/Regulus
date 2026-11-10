@@ -156,11 +156,17 @@ core real, 36 comprobaciones): escribir con saltos de línea, Tab con el cursor 
 debe, Tab y Shift+Tab sobre varias líneas, Esc → Tab saca el foco sin tocar el valor,
 `multiline` con Tab que cambia de foco, y los dos valores sobreviven a Guardar
 (`Ctrl+S` → `profile.save`) y a recargar la página; el valor guardado llega al módulo tal
-cual. **Medido** (build de producción, 30 muestras, tecla → siguiente cuadro): con 2
-líneas ~19-20 ms de mediana, lo mismo que el campo de una línea que ya existía (~19 ms;
-unos 10 ms son el documento del perfil que se rehace en cada tecla); con **1000 líneas,
-~29-30 ms de mediana y ~40-43 ms el p90**, por encima del presupuesto de 16 ms
-(`00-principles.md` §3). Para valores grandes, el camino es F4 (§7) o un editor externo.
+cual. **Medido** (build de producción, 30 muestras, de la tecla al siguiente cuadro, así
+que incluye esperar a ese cuadro). **Ni la base ni el área de texto entran en los 16 ms**
+de `00-principles.md` §3, que siguen como están:
+
+- **Base, de antes de este incremento: ~19 ms de mediana** en el campo de una línea que ya
+  existía. Unos 10 ms son el documento del perfil, que se rehace en cada tecla en todos
+  los campos del inspector.
+- **Área de texto con 2 líneas: ~19-20 ms**, lo mismo que la base: con valores pequeños no
+  añade coste.
+- **Área de texto con 1000 líneas: ~29-30 ms de mediana y ~40-43 ms el p90.** Aquí sí
+  añade coste. Para valores grandes, el camino es F4 (§7) o un editor externo.
 
 Límites del área de texto: Ctrl+Z del navegador **no deshace un Tab** (lo mete el código,
 no el navegador; medido); cada tecla es un cambio del perfil, como en los demás campos.
@@ -237,8 +243,10 @@ editor externo para ficheros, o también ficheros dentro de la app?
    configuración; la versión y el nombre son argumentos. `tools/` de `node init` es fijo:
    es dónde genera, y la entrada de `regulus.toml` puede apuntar a cualquier otro sitio.
 2. *Modular:* es un módulo local; `--without <proyecto>/<id>` y el veto lo quitan.
-3. *Rápido:* medido (§3, §4); dentro del presupuesto de arranque de locales. El área de
-   texto con 1000 líneas **no** entra en 16 ms por tecla (§4), escrito con su número.
+3. *Rápido:* medido (§3, §4); dentro del presupuesto de arranque de locales. Por tecla
+   **no** entra en 16 ms: ni la base de los campos del inspector, que es de antes, ni el
+   área de texto, que con 1000 líneas suma bastante más. Los números están en §4; el
+   presupuesto no se ha tocado.
 4. *Personalizable:* se cambia editando `run.py` y reabriendo el proyecto.
 5. *Infraestructura:* `regulus node init`, `project trust`, `module ls`.
 6. *Caja líquida:* forma fija (el protocolo); por dentro, Python, Rust o lo que hable JSON.
