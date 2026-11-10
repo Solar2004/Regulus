@@ -235,7 +235,7 @@ cargo test --workspace                      # Rust suite, including the ablation
 cargo test -p regulus-cli --test ablation   # start without each module in turn
 cargo clippy --workspace --all-targets      # zero warnings is the bar
 cd crates/regulus-tauri/frontend && pnpm test   # vitest, the frontend
-python3 -m unittest discover -s sdk/python/tests  # the Python SDK, real processes
+python3 -B -m unittest discover -s sdk/python/tests  # the Python SDK, real processes
 ```
 
 | Layer | Where | What it proves |

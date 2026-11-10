@@ -1,6 +1,6 @@
 """Tests of the Python SDK, speaking the real protocol to real processes.
 
-Run: python3 -m unittest discover -s sdk/python/tests -v
+Run: python3 -B -m unittest discover -s sdk/python/tests -v  (-B: no __pycache__ left behind)
 """
 
 import json
@@ -20,6 +20,8 @@ REPO = SDK.parents[1]
 EXAMPLE = REPO / "examples" / "local-modules" / "python-sdk" / "run.py"
 TIMEOUT = 10
 
+# Tests leave no __pycache__ in the source tree: not this process, nor the modules it runs.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(SDK))
 import regulus  # noqa: E402
 
@@ -105,6 +107,8 @@ class Module:
     """
 
     def __init__(self, script, env=None, strict=True):
+        env = dict(os.environ if env is None else env)
+        env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
         self.process = subprocess.Popen(
             [sys.executable, str(script)],
             stdin=subprocess.PIPE,

@@ -67,5 +67,5 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"manifest","params":{}}' | pytho
   and no per-node `node/start`/`node/stop`.
 - It is not a sandbox: the code runs with your permissions, in a project you trust.
 
-Tests: `python3 -m unittest discover -s sdk/python/tests -v`. Design notes and limits:
+Tests: `python3 -B -m unittest discover -s sdk/python/tests -v`. Design notes and limits:
 `docs/18-custom-nodes.md`.
