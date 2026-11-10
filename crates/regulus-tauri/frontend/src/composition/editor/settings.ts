@@ -2,6 +2,7 @@
 // density and start page. Nothing here configures the core.
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { LAYOUT_DIRECTIONS, type LayoutDirection } from "./layout";
 import type { Grouping } from "./palette";
 
 export interface CanvasSettings {
@@ -15,6 +16,14 @@ export interface CanvasSettings {
   /** Space between the workflow's own ports and its nodes, in pixels. */
   selfGap: number;
   paletteGrouping: Grouping;
+  /** Which way wires run when the nodes are arranged. */
+  layoutDirection: LayoutDirection;
+  /** Space between one rank of an arrangement and the next, in pixels. */
+  layoutLayerGap: number;
+  /** Space between nodes of one rank, and between unconnected groups, in pixels. */
+  layoutNodeGap: number;
+  /** Height assumed for a node the canvas has not measured yet, in pixels. */
+  nodeHeight: number;
   /** How far a node added by click moves away from one already there, in pixels. */
   cascadeStep: number;
   autosave: boolean;
@@ -34,6 +43,10 @@ export const canvasDefaults: CanvasSettings = {
   nodeWidth: 250,
   selfGap: 320,
   paletteGrouping: "module",
+  layoutDirection: "right",
+  layoutLayerGap: 120,
+  layoutNodeGap: 48,
+  nodeHeight: 160,
   cascadeStep: 40,
   autosave: false,
   autosaveMs: 30000,
@@ -49,6 +62,9 @@ export const canvasLimits = {
   gridSize: [2, 200],
   nodeWidth: [120, 800],
   selfGap: [40, 2000],
+  layoutLayerGap: [0, 1000],
+  layoutNodeGap: [0, 1000],
+  nodeHeight: [40, 1200],
   cascadeStep: [4, 400],
   autosaveMs: [2000, 3600000],
 } as const satisfies Partial<Record<keyof CanvasSettings, readonly [number, number]>>;
@@ -66,6 +82,7 @@ export function sanitizeCanvasSettings(saved: unknown): CanvasSettings {
   if (result.minZoom > result.maxZoom) { result.minZoom = canvasDefaults.minZoom; result.maxZoom = canvasDefaults.maxZoom; }
   for (const key of ["snapToGrid", "autosave"] as const) if (typeof input[key] === "boolean") result[key] = input[key] as boolean;
   if (GROUPINGS.includes(input.paletteGrouping as Grouping)) result.paletteGrouping = input.paletteGrouping as Grouping;
+  if (LAYOUT_DIRECTIONS.includes(input.layoutDirection as LayoutDirection)) result.layoutDirection = input.layoutDirection as LayoutDirection;
   if (Array.isArray(input.deleteKeys) && input.deleteKeys.every((key) => typeof key === "string" && key)) result.deleteKeys = [...input.deleteKeys as string[]];
   if (typeof input.saveKey === "string" && input.saveKey.length === 1) result.saveKey = input.saveKey.toLowerCase();
   return result;

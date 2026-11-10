@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReactFlowProvider, useReactFlow } from "@xyflow/react";
-import { Blocks, ChevronRight, CircleCheck, CircleAlert, FilePlus2, FileStack, GitBranch, Info, ListChecks, Play, Plus, Save, Settings2, Trash2, X } from "lucide-react";
+import { Blocks, ChevronRight, CircleCheck, CircleAlert, FilePlus2, FileStack, GitBranch, Info, LayoutDashboard, ListChecks, Network, Play, Plus, Save, Settings2, Trash2, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t } from "@/lib/i18n";
 import { useCore } from "@/core/connection";
@@ -9,14 +9,15 @@ import { useComposition } from "./client";
 import * as doc from "./editor/document";
 import { bySeverity, checkProfile, deleteProfile, getProfile, messageOf, saveProfile, saveTemplate, startExecution } from "./editor/api";
 import { EditorCanvas } from "./editor/Canvas";
-import { nodeIdOf } from "./editor/flow";
+import { measuredSizes } from "./editor/flow";
+import { arrangeWorkflow, placeNode, type LayoutOptions } from "./editor/layout";
 import { ConfirmDialog, CreateBoxDialog, NewProfileDialog, SaveTemplateDialog, SettingsDialog, type Confirm } from "./editor/dialogs";
 import { NodeInspector, SelectionInspector, WorkflowInspector } from "./editor/Inspector";
 import { SeverityMark } from "./editor/nodes";
 import { Palette, type PieceRef } from "./editor/Palette";
 import { boxNode, findNodeType, nodeFromType } from "./editor/palette";
 import { useCanvasSettings } from "./editor/settings";
-import { ALL, useEditor, type Notice } from "./editor/store";
+import { ALL, canUndoArrange, useEditor, type Notice } from "./editor/store";
 import "@xyflow/react/dist/style.css";
 import "./composition.css";
 import "./editor/editor.css";
@@ -37,7 +38,7 @@ function Editor({ composition }: { composition: Composition }) {
   const { client, profiles, modules, manifests, reload } = composition;
   const source = useCore((s) => s.source);
   const settings = useCanvasSettings();
-  const { doc: profile, isNew, dirty, workflowId, trail, selection, diagnostics, notice, busy } = useEditor();
+  const { doc: profile, isNew, dirty, workflowId, trail, selection, arranged, arrangeRev, diagnostics, notice, busy } = useEditor();
   const { open, edit, saved, showWorkflow, openBox, backTo, select, focus, setDiagnostics, notify, setBusy } = useEditor.getState();
   const [boxing, setBoxing] = useState<string[] | null>(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -135,6 +136,10 @@ function Editor({ composition }: { composition: Composition }) {
     });
   };
 
+  /** What an arrangement and a free-place search share: the fallback footprint and the grid. */
+  const layoutBase = () => ({ fallback: { width: settings.nodeWidth, height: settings.nodeHeight }, grid: settings.snapToGrid ? settings.gridSize : undefined });
+  const layoutOptions = (): LayoutOptions => ({ ...layoutBase(), direction: settings.layoutDirection, layerGap: settings.layoutLayerGap, nodeGap: settings.layoutNodeGap });
+
   const addPiece = (piece: PieceRef, screen?: { x: number; y: number }) => {
     const state = useEditor.getState();
     const current = state.doc && doc.workflowOf(state.doc, state.workflowId);
@@ -144,19 +149,11 @@ function Editor({ composition }: { composition: Composition }) {
       const rect = canvasRef.current?.getBoundingClientRect();
       point = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 3 } : { x: 0, y: 0 };
     }
-    let position = flow.screenToFlowPosition(point);
-    if (!screen) {
-      // Footprints React Flow has measured plus the gap, by document node id; the new node assumes the tallest.
-      const gap = settings.cascadeStep;
-      const measured = new Map<string, doc.Size>();
-      for (const node of flow.getNodes()) {
-        const id = nodeIdOf(node.id);
-        if (id && node.measured?.width && node.measured.height) measured.set(id, { width: node.measured.width + gap, height: node.measured.height + gap });
-      }
-      const tallest = Math.max(gap, ...[...measured.values()].map((size) => size.height));
-      position = doc.freePosition(current, position, { x: settings.nodeWidth + gap, y: tallest }, measured);
-    }
-    if (settings.snapToGrid) position = { x: Math.round(position.x / settings.gridSize) * settings.gridSize, y: Math.round(position.y / settings.gridSize) * settings.gridSize };
+    // The new node goes where it was dropped, or in the nearest free place beside the nodes it
+    // would touch (their measured size when React Flow has it). No other node moves.
+    const sizes = measuredSizes(flow.getNodes());
+    const tallest = Math.max(settings.nodeHeight, ...[...sizes.values()].map((size) => size.height));
+    const position = placeNode(current, flow.screenToFlowPosition(point), { width: settings.nodeWidth, height: tallest }, sizes, { ...layoutBase(), gap: settings.cascadeStep });
     const taken = current.nodes.map((node) => node.id);
     let created;
     if (piece.kind === "type") {
@@ -185,9 +182,30 @@ function Editor({ composition }: { composition: Composition }) {
     if (!state.doc || state.workflowId === ALL) return;
     const made = doc.createBoxFromSelection(state.doc, state.workflowId, nodeIds, name);
     if (!made) return;
-    edit(() => made.profile);
+    // The box lands at the middle of what it replaced: keep it off the nodes that stayed.
+    const kept = doc.workflowOf(made.profile, state.workflowId)!;
+    const box = doc.nodeOf(kept, made.boxId)!;
+    const sizes = measuredSizes(flow.getNodes());
+    const position = placeNode({ ...kept, nodes: kept.nodes.filter((item) => item.id !== box.id) }, box.position, { width: settings.nodeWidth, height: settings.nodeHeight }, sizes, { ...layoutBase(), gap: settings.cascadeStep });
+    edit(() => doc.moveNodes(made.profile, state.workflowId, [{ id: box.id, position }]));
     select({ nodes: [made.boxId], wires: [] });
     notify({ tone: "success", text: t("editor.box.created", { workflow: made.workflowId }), detail: made.ports.length ? made.ports.map((port) => `${port.direction === "input" ? "→" : "←"} ${port.id} (${port.kind} ${port.capability})`).join(" · ") : t("editor.box.noPorts") });
+  };
+
+  /** Arranges the workflow on screen, or only the nodes `only` names; the rest stay put. */
+  const arrange = (only: string[] | null) => {
+    const state = useEditor.getState();
+    if (!state.doc || state.workflowId === ALL) return;
+    const { moves } = arrangeWorkflow(state.doc, state.workflowId, only, measuredSizes(flow.getNodes()), layoutOptions());
+    if (!moves.length) { notify({ tone: "info", text: t("editor.layout.nothing") }); return; }
+    state.arrange(state.workflowId, moves);
+    notify({ tone: "success", text: t("editor.layout.arranged", { count: moves.length }), detail: t("editor.layout.arrangedDetail") });
+    if (!only) requestAnimationFrame(() => void flow.fitView({ padding: settings.fitPadding }));
+  };
+
+  const undoArrange = () => {
+    const count = useEditor.getState().arranged?.moves.length ?? 0;
+    notify(useEditor.getState().undoArrange() ? { tone: "info", text: t("editor.layout.undone", { count }) } : { tone: "error", text: t("editor.layout.undoGone") });
   };
 
   const addWorkflow = () => {
@@ -235,6 +253,7 @@ function Editor({ composition }: { composition: Composition }) {
   const nodeCount = workflow ? workflow.nodes.length : profile.workflows.reduce((sum, item) => sum + item.nodes.length, 0);
   const wireCount = workflow ? workflow.wires.length : profile.workflows.reduce((sum, item) => sum + item.wires.length, 0);
   const sorted = bySeverity(diagnostics);
+  const undoable = canUndoArrange({ doc: profile, arranged }, workflowId);
 
   return <>
     <header className="graph-toolbar">
@@ -245,6 +264,11 @@ function Editor({ composition }: { composition: Composition }) {
         <Button size="sm" onClick={() => void save()} disabled={busy || (!dirty && !isNew)} title={t("editor.action.saveHint")}><Save size={14} />{t("editor.action.save")}</Button>
         <Button variant="outline" size="sm" onClick={() => void check()} disabled={busy || isNew}><ListChecks size={14} />{t("editor.action.check")}</Button>
         <Button variant="outline" size="sm" onClick={() => void run()} disabled={busy || isNew}><Play size={14} />{t("editor.action.run")}</Button>
+        {workflow && <>
+          <Button variant="outline" size="sm" onClick={() => arrange(null)} title={t("editor.layout.arrangeWorkflowHint")}><Network size={14} />{t("editor.layout.arrangeWorkflow")}</Button>
+          <Button variant="outline" size="sm" onClick={() => arrange(selection.nodes)} disabled={selection.nodes.length < 2} title={t("editor.layout.arrangeSelectionHint")}><LayoutDashboard size={14} />{t("editor.layout.arrangeSelection")}</Button>
+          {undoable && <Button variant="ghost" size="sm" onClick={undoArrange} title={t("editor.layout.undoHint")}><Undo2 size={14} />{t("editor.layout.undo")}</Button>}
+        </>}
         <Button variant="outline" size="sm" onClick={() => setSavingTemplate(true)} disabled={busy || isNew} title={t("editor.template.hint")}><FileStack size={14} />{t("editor.template.action")}</Button>
         <Button variant="ghost" size="sm" onClick={remove} disabled={busy}><Trash2 size={14} />{t("editor.action.delete")}</Button>
         <Button variant="ghost" size="icon-sm" onClick={() => setShowSettings(true)} aria-label={t("editor.settings.title")}><Settings2 size={14} /></Button>
@@ -266,8 +290,8 @@ function Editor({ composition }: { composition: Composition }) {
     <div className="graph-body">
       {workflow && <Palette manifests={manifests} modules={modules} profile={profile} workflowId={workflow.id} onAdd={(piece) => addPiece(piece)} />}
       <div className="editor-center" ref={canvasRef}>
-        <EditorCanvas key={`${profile.id}:${workflowId}`} profile={profile} workflowId={workflowId} modules={modules} diagnostics={diagnostics} selection={selection} onAdd={addPiece}
-          onCreateBox={setBoxing} onDeleteSelection={deleteSelection} />
+        <EditorCanvas key={`${profile.id}:${workflowId}`} profile={profile} workflowId={workflowId} modules={modules} diagnostics={diagnostics} selection={selection} layoutRev={arrangeRev} onAdd={addPiece}
+          onCreateBox={setBoxing} onArrangeSelection={() => arrange(useEditor.getState().selection.nodes)} onDeleteSelection={deleteSelection} />
         {sorted.length > 0 && <section className="editor-diagnostics" aria-label={t("editor.diagnostics.title")}>
           <header><h2>{t("editor.diagnostics.title")}</h2><button onClick={() => setDiagnostics([])} aria-label={t("editor.dismiss")}><X size={14} /></button></header>
           <ul>{sorted.map((d, index) => <li key={index}><button disabled={!d.node_id} onClick={() => { if (d.node_id) { showWorkflow(d.workflow_id ?? workflowId); select({ nodes: [d.node_id], wires: [] }); } }}>
@@ -279,7 +303,7 @@ function Editor({ composition }: { composition: Composition }) {
         ? <NodeInspector key={single.id} profile={profile} workflowId={workflow.id} node={single} manifests={manifests} modules={modules} diagnostics={diagnostics} edit={edit}
             onOpenWorkflow={openBox} onCreateBox={() => setBoxing([single.id])} onDelete={deleteSelection} onClose={() => select({ nodes: [], wires: [] })} />
         : selection.nodes.length + selection.wires.length > 0
-          ? <SelectionInspector nodes={selection.nodes.length} wires={selection.wires.length} onCreateBox={() => setBoxing(selection.nodes)} onDelete={deleteSelection} />
+          ? <SelectionInspector nodes={selection.nodes.length} wires={selection.wires.length} onCreateBox={() => setBoxing(selection.nodes)} onArrange={() => arrange(selection.nodes)} onDelete={deleteSelection} />
           : <WorkflowInspector key={workflow.id} profile={profile} workflow={workflow} manifests={manifests} edit={edit} onDelete={() => removeWorkflow(workflow.id)} />)}
     </div>
     {notice && <NoticeLine notice={notice} onClose={() => notify(null)} />}

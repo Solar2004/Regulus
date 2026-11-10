@@ -2,7 +2,7 @@
 // render draws the document again, so there is a single copy of it.
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type { CompositionNode, Diagnostic, ModuleDefinition, Port, Profile, Workflow } from "../model";
-import { SELF, portsOf, workflowOf, type End, type Point } from "./document";
+import { SELF, portsOf, workflowOf, type End, type Point, type Size } from "./document";
 import { moduleStateOf, type PieceState } from "./palette";
 import type { Selection } from "./store";
 
@@ -32,6 +32,16 @@ export function endOf(flowId: string | null | undefined, handle: string | null |
   if (flowId === SELF_IN || flowId === SELF_OUT) return { node_id: SELF, port_id: handle };
   const nodeId = nodeIdOf(flowId);
   return nodeId === null ? null : { node_id: nodeId, port_id: handle };
+}
+
+/** The size React Flow measured for each node of the edited workflow, by document node id; nodes not measured yet are left out. */
+export function measuredSizes(nodes: readonly { id: string; measured?: { width?: number; height?: number } }[]): Map<string, Size> {
+  const sizes = new Map<string, Size>();
+  for (const { id: flowId, measured } of nodes) {
+    const id = nodeIdOf(flowId);
+    if (id !== null && measured?.width && measured.height) sizes.set(id, { width: measured.width, height: measured.height });
+  }
+  return sizes;
 }
 
 /** Where the workflow's own inputs and outputs sit: left and right of its nodes. */

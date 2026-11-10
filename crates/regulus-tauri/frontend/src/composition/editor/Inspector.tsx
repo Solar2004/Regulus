@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Boxes, GitBranch, LockKeyhole, Minus, Plus, Replace, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowRight, Boxes, GitBranch, LayoutDashboard, LockKeyhole, Minus, Plus, Replace, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModuleStatus } from "@/components/ui/status";
 import { t } from "@/lib/i18n";
@@ -233,12 +233,14 @@ export function WorkflowInspector({ profile, workflow, manifests, edit, onDelete
   </aside>;
 }
 
-export function SelectionInspector({ nodes, wires, onCreateBox, onDelete }: { nodes: number; wires: number; onCreateBox: () => void; onDelete: () => void }) {
+export function SelectionInspector({ nodes, wires, onCreateBox, onArrange, onDelete }: { nodes: number; wires: number; onCreateBox: () => void; onArrange: () => void; onDelete: () => void }) {
   return <aside className="node-inspector" aria-label={t("editor.selection.title")}>
     <header><span>{t("editor.selection.title")}</span></header>
     <p>{nodes} {t("graph.nodes")} · {wires} {t("graph.connections")}</p>
     {nodes > 0 && <><p className="inspector-hint">{t("editor.box.createHelp")}</p>
       <Button variant="outline" className="inspector-action" onClick={onCreateBox}><Boxes size={14} />{t("editor.box.create")}</Button></>}
+    {nodes > 1 && <><p className="inspector-hint">{t("editor.layout.selectionHelp")}</p>
+      <Button variant="outline" className="inspector-action" onClick={onArrange}><LayoutDashboard size={14} />{t("editor.layout.arrangeSelection")}</Button></>}
     <Button variant="destructive" className="inspector-delete" onClick={onDelete}><Trash2 size={14} />{t("editor.selection.delete")}</Button>
   </aside>;
 }

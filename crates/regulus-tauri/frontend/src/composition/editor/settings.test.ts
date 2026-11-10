@@ -19,4 +19,10 @@ describe("canvas settings", () => {
     const result = sanitizeCanvasSettings({ minZoom: 0.9, maxZoom: 1, fitPadding: 0.5 });
     expect(result).toMatchObject({ minZoom: 0.9, maxZoom: 1, fitPadding: 0.5 });
   });
+  test("the arrange preferences are kept when valid and defaulted when not", () => {
+    expect(sanitizeCanvasSettings({ layoutDirection: "down", layoutLayerGap: 200, layoutNodeGap: 0, nodeHeight: 220 }))
+      .toMatchObject({ layoutDirection: "down", layoutLayerGap: 200, layoutNodeGap: 0, nodeHeight: 220 });
+    expect(sanitizeCanvasSettings({ layoutDirection: "diagonal", layoutLayerGap: -5, layoutNodeGap: 5000, nodeHeight: 1 }))
+      .toMatchObject({ layoutDirection: canvasDefaults.layoutDirection, layoutLayerGap: canvasDefaults.layoutLayerGap, layoutNodeGap: canvasDefaults.layoutNodeGap, nodeHeight: canvasDefaults.nodeHeight });
+  });
 });

@@ -2,12 +2,27 @@
 // `doc`; its callbacks come back here as the pure changes of `document.ts`.
 import { create } from "zustand";
 import type { Diagnostic, Profile } from "../model";
+import { moveNodes, nodeOf, workflowOf } from "./document";
+import type { Move } from "./layout";
 
 export type Notice = { tone: "info" | "success" | "error"; text: string; detail?: string };
 export type Selection = { nodes: string[]; wires: string[] };
 
+/** The last arrangement, kept so one step can be taken back. */
+export type Arrangement = { workflowId: string; moves: Move[] };
+
 export const ALL = "all";
 const nothing: Selection = { nodes: [], wires: [] };
+
+/** Whether the last arrangement can be taken back here: it was made in this workflow and its nodes have not moved since. */
+export function canUndoArrange(state: { doc: Profile | null; arranged: Arrangement | null }, workflowId: string): boolean {
+  const { doc, arranged } = state;
+  const workflow = doc && arranged && arranged.workflowId === workflowId ? workflowOf(doc, workflowId) : undefined;
+  return !!arranged && !!workflow && arranged.moves.every(({ id, to }) => {
+    const node = nodeOf(workflow, id);
+    return !!node && node.position.x === to.x && node.position.y === to.y;
+  });
+}
 
 /** The trail after opening the box of workflow `id`: one step deeper, or back to it if it is already on the way. */
 export function enterWorkflow(trail: string[], id: string): string[] {
@@ -31,6 +46,10 @@ interface EditorState {
   /** How the workflow on screen was reached: the tab first, then each box opened (the breadcrumb). */
   trail: string[];
   selection: Selection;
+  /** The last arrangement of nodes, while it can still be undone. */
+  arranged: Arrangement | null;
+  /** Grows with each arrangement or undo, so the canvas places the workflow's own ports again. */
+  arrangeRev: number;
   /** What the last save or check said, for the profile on screen. */
   diagnostics: Diagnostic[];
   notice: Notice | null;
@@ -45,6 +64,10 @@ interface EditorState {
   /** Goes back to the workflow at `index` of the trail. */
   backTo: (index: number) => void;
   select: (selection: Selection) => void;
+  /** Applies an arrangement of workflow `workflowId` (the moves of `layout.ts`) and remembers it for `undoArrange`. */
+  arrange: (workflowId: string, moves: Move[]) => void;
+  /** Puts the nodes of the last arrangement back; `false` when something moved them since and it is gone. */
+  undoArrange: () => boolean;
   /** Shows a workflow of the profile and selects a node of it; what the profile does not have is left as it is. */
   focus: (at: { workflowId?: string; nodeId?: string }) => void;
   setDiagnostics: (diagnostics: Diagnostic[]) => void;
@@ -52,19 +75,21 @@ interface EditorState {
   setBusy: (busy: boolean) => void;
 }
 
-export const useEditor = create<EditorState>()((set) => ({
+export const useEditor = create<EditorState>()((set, get) => ({
   doc: null,
   isNew: false,
   dirty: false,
   workflowId: ALL,
   trail: [],
   selection: nothing,
+  arranged: null,
+  arrangeRev: 0,
   diagnostics: [],
   notice: null,
   busy: false,
   open: (profile, isNew = false) => set({
     doc: profile ? structuredClone(profile) : null, isNew, dirty: isNew, workflowId: profile?.main_workflow_id ?? ALL,
-    trail: profile ? [profile.main_workflow_id] : [], selection: nothing, diagnostics: [], notice: null,
+    trail: profile ? [profile.main_workflow_id] : [], selection: nothing, arranged: null, diagnostics: [], notice: null,
   }),
   edit: (change) => set((state) => {
     if (!state.doc) return {};
@@ -89,6 +114,19 @@ export const useEditor = create<EditorState>()((set) => ({
   openBox: (id) => set((state) => ({ workflowId: id, trail: enterWorkflow(state.workflowId === ALL ? [] : state.trail.length ? state.trail : [state.workflowId], id), selection: nothing })),
   backTo: (index) => set((state) => index < 0 || index >= state.trail.length ? {} : { workflowId: state.trail[index], trail: state.trail.slice(0, index + 1), selection: nothing }),
   select: (selection) => set({ selection }),
+  arrange: (workflowId, moves) => set((state) => {
+    if (!state.doc || !moves.length) return {};
+    const doc = moveNodes(state.doc, workflowId, moves.map(({ id, to }) => ({ id, position: to })));
+    return doc === state.doc ? {} : { doc, dirty: true, arranged: { workflowId, moves }, arrangeRev: state.arrangeRev + 1 };
+  }),
+  undoArrange: () => {
+    const state = get();
+    const { arranged } = state;
+    if (!arranged || !state.doc) return false;
+    if (!canUndoArrange(state, arranged.workflowId)) { set({ arranged: null }); return false; }
+    set({ doc: moveNodes(state.doc, arranged.workflowId, arranged.moves.map(({ id, from }) => ({ id, position: from }))), dirty: true, arranged: null, arrangeRev: state.arrangeRev + 1 });
+    return true;
+  },
   focus: ({ workflowId, nodeId }) => set((state) => {
     const workflow = state.doc?.workflows.find((item) => item.id === (workflowId ?? state.workflowId));
     if (!workflow) return {};

@@ -228,23 +228,6 @@ export function removeWorkflowPort(profile: Profile, workflowId: string, portId:
 
 export type Size = { width: number; height: number };
 
-/**
- * `point`, moved right by `size.x` until the footprint `size` placed there touches no node of the
- * workflow. A node's footprint is its measured size when `measured` has it, `size` otherwise.
- */
-export function freePosition(workflow: Workflow, point: Point, size: Point, measured?: Map<string, Size>): Point {
-  let { x } = point;
-  const { y } = point;
-  const touches = (node: CompositionNode) => {
-    const own = measured?.get(node.id);
-    const width = own?.width ?? size.x;
-    const height = own?.height ?? size.y;
-    return x < node.position.x + width && node.position.x < x + size.x && y < node.position.y + height && node.position.y < y + size.y;
-  };
-  for (let tries = 0; tries < 100 && workflow.nodes.some(touches); tries++) x += size.x;
-  return { x, y };
-}
-
 /** The port at one end of a wire of `workflow`: a node's (a box's from its workflow) or, for `self`, the workflow's own. */
 export function portAt(profile: Profile, workflow: Workflow, end: End): Port | undefined {
   if (end.node_id === SELF) return workflow.ports?.find((port) => port.id === end.port_id);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, ReactFlow, type Connection, type EdgeChange, type FinalConnectionState, type NodeChange } from "@xyflow/react";
-import { Boxes, GitBranch, PackageOpen, Trash2 } from "lucide-react";
+import { Boxes, GitBranch, LayoutDashboard, PackageOpen, Trash2 } from "lucide-react";
 import { t, type LocaleKey } from "@/lib/i18n";
 import type { Diagnostic, ModuleDefinition, Profile } from "../model";
 import * as doc from "./document";
@@ -24,8 +24,8 @@ const refusalText: Record<Refusal, LocaleKey> = {
 type Menu = { x: number; y: number };
 
 /** The canvas's right-click menu: what can be done with the selected nodes. */
-function NodeMenu({ menu, box, count, onOpen, onCreateBox, onDelete, onClose }: {
-  menu: Menu; box: string | null; count: number; onOpen: () => void; onCreateBox: () => void; onDelete: () => void; onClose: () => void;
+function NodeMenu({ menu, box, count, onOpen, onCreateBox, onArrange, onDelete, onClose }: {
+  menu: Menu; box: string | null; count: number; onOpen: () => void; onCreateBox: () => void; onArrange: () => void; onDelete: () => void; onClose: () => void;
 }) {
   const first = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -40,17 +40,21 @@ function NodeMenu({ menu, box, count, onOpen, onCreateBox, onDelete, onClose }: 
     <div className="canvas-menu" role="menu" aria-label={t("editor.menu.title")} style={{ left: menu.x, top: menu.y }}>
       {box && <button ref={first} role="menuitem" onClick={run(onOpen)}><GitBranch size={14} />{t("editor.box.open")}</button>}
       <button ref={box ? undefined : first} role="menuitem" onClick={run(onCreateBox)}><Boxes size={14} />{t("editor.box.createCount", { count })}</button>
+      {count > 1 && <button role="menuitem" onClick={run(onArrange)}><LayoutDashboard size={14} />{t("editor.layout.arrangeCount", { count })}</button>}
       <button role="menuitem" className="is-destructive" onClick={run(onDelete)}><Trash2 size={14} />{t(count > 1 ? "editor.selection.delete" : "editor.node.delete")}</button>
     </div>
   </>;
 }
 
 /** One workflow on the canvas (or all of them, to look at). Remounted per workflow, so its view state starts fresh. */
-export function EditorCanvas({ profile, workflowId, modules, diagnostics, selection, onAdd, onCreateBox, onDeleteSelection }: {
+export function EditorCanvas({ profile, workflowId, modules, diagnostics, selection, layoutRev, onAdd, onCreateBox, onArrangeSelection, onDeleteSelection }: {
   profile: Profile; workflowId: string; modules: ModuleDefinition[]; diagnostics: Diagnostic[]; selection: Selection;
+  /** Changes when the nodes were arranged (or the arrangement undone): the workflow's own ports are placed again. */
+  layoutRev: number;
   onAdd: (piece: PieceRef, screen: { x: number; y: number }) => void;
   /** Asks to move these nodes into a new workflow placed as a box. */
   onCreateBox: (nodeIds: string[]) => void;
+  onArrangeSelection: () => void;
   onDeleteSelection: () => void;
 }) {
   const settings = useCanvasSettings();
@@ -78,8 +82,8 @@ export function EditorCanvas({ profile, workflowId, modules, diagnostics, select
   const unifiedRef = useRef(unified);
   unifiedRef.current = unified;
   const workflow = unified ? undefined : doc.workflowOf(profile, workflowId);
-  // The workflow's own ports stay where they were placed when the tab opened.
-  const anchors = useMemo(() => workflow ? selfAnchors(workflow, settings.selfGap) : null, [workflow?.id, settings.selfGap]);
+  // The workflow's own ports stay where they were placed when the tab opened, until the nodes are arranged.
+  const anchors = useMemo(() => workflow ? selfAnchors(workflow, settings.selfGap) : null, [workflow?.id, settings.selfGap, layoutRev]);
   const labels = useMemo(() => ({ uses: t("graph.uses"), then: t("graph.then") }), []);
   // Mid-drag positions belong to React Flow; the document gets them on the drop.
   const [dragging, setDragging] = useState(() => new Map<string, doc.Point>());
@@ -191,7 +195,7 @@ export function EditorCanvas({ profile, workflowId, modules, diagnostics, select
       <Controls showInteractive={false} />
     </ReactFlow>
     {menu && menuNodes.length > 0 && <NodeMenu menu={menu} box={menuBox} count={menuNodes.length} onClose={() => setMenu(null)}
-      onOpen={() => { if (menuBox) openBox(menuBox); }} onCreateBox={() => onCreateBox(menuNodes)} onDelete={onDeleteSelection} />}
+      onOpen={() => { if (menuBox) openBox(menuBox); }} onCreateBox={() => onCreateBox(menuNodes)} onArrange={onArrangeSelection} onDelete={onDeleteSelection} />}
     {count === 0 && !(workflow?.ports?.length) && <div className="graph-empty-overlay"><PackageOpen size={32} /><p>{t(unified ? "graph.emptyWorkflow" : "editor.emptyWorkflow")}</p></div>}
   </div>;
 }

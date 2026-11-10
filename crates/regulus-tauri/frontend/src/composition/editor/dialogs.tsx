@@ -7,6 +7,7 @@ import { profileIdProblem, slugify, uniqueId } from "./document";
 import { emptyTemplateForm, templateSaveErrorOf, templateSaveParams, type TemplateForm, type TemplateSaveParams } from "./template";
 import { canvasLimits, useCanvasSettings, type CanvasSettings } from "./settings";
 import type { Grouping } from "./palette";
+import type { LayoutDirection } from "./layout";
 
 export type Confirm = { title: string; description: string; action: string; destructive?: boolean; run: () => void };
 
@@ -50,6 +51,9 @@ const numeric: { key: keyof typeof canvasLimits; label: Parameters<typeof t>[0];
   { key: "maxZoom", label: "editor.settings.maxZoom", step: 0.1 },
   { key: "gridSize", label: "editor.settings.gridSize", step: 1 },
   { key: "nodeWidth", label: "editor.settings.nodeWidth", step: 10 },
+  { key: "nodeHeight", label: "editor.settings.nodeHeight", step: 10 },
+  { key: "layoutLayerGap", label: "editor.settings.layoutLayerGap", step: 8 },
+  { key: "layoutNodeGap", label: "editor.settings.layoutNodeGap", step: 8 },
   { key: "autosaveMs", label: "editor.settings.autosaveMs", step: 1000 },
 ];
 
@@ -66,6 +70,11 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         </label>)}
         <label className="check-row"><input type="checkbox" checked={settings.snapToGrid} onChange={(event) => set({ snapToGrid: event.target.checked })} /><span>{t("editor.settings.snap")}</span></label>
         <label className="check-row"><input type="checkbox" checked={settings.autosave} onChange={(event) => set({ autosave: event.target.checked })} /><span>{t("editor.settings.autosave")}</span></label>
+        <label><span>{t("editor.settings.layoutDirection")}</span>
+          <select value={settings.layoutDirection} onChange={(event) => set({ layoutDirection: event.target.value as LayoutDirection })}>
+            <option value="right">{t("editor.settings.layoutRight")}</option><option value="down">{t("editor.settings.layoutDown")}</option>
+          </select>
+        </label>
         <label><span>{t("editor.settings.grouping")}</span>
           <select value={settings.paletteGrouping} onChange={(event) => set({ paletteGrouping: event.target.value as Grouping })}>
             <option value="module">{t("editor.settings.byModule")}</option><option value="state">{t("editor.settings.byState")}</option><option value="none">{t("editor.settings.noGroups")}</option>
