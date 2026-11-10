@@ -90,9 +90,21 @@ demás celdas de ojo de la rejilla pasan a ser cara.
 `mini` tiene `idle`, `blink` y `sleep` (las dos últimas sin ojos). Una pose que una rejilla
 no tiene se dibuja como `idle`.
 
-La estrella de la frente puede tomar el color de un estado (`warning` cuando la sesión
-espera una respuesta, `danger` si falló). **La mascota nunca es el único indicador de un
-estado:** al lado va siempre el icono y la palabra de `docs/08-design-system.md`.
+## Estados
+
+Lo que la mascota hace según cómo está la sesión está en `states` del JSON, para que la
+app y la terminal hagan lo mismo: las poses que se alternan y el color de la estrella.
+
+| Estado | Poses | Estrella | Cuándo |
+|---|---|---|---|
+| `idle` | `idle`, y `blink` un instante cada pocos segundos | `text` | nada en marcha |
+| `working` | `left` ⇄ `right` | `text` | un turno en curso |
+| `waiting` | `idle` | `warning` | una petición de permiso espera respuesta |
+| `failed` | `idle` | `danger` | la ejecución falló o se interrumpió |
+| `stopped` | `sleep` | `text` | la ejecución está parada |
+
+**La mascota nunca es el único indicador de un estado:** al lado va siempre el icono y la
+palabra de `docs/08-design-system.md`. El ritmo del cambio de pose lo pone cada cliente.
 
 ## En la terminal
 

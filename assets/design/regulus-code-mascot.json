@@ -10,6 +10,13 @@
     "N": { "name": "nose", "token": "canvas" }
   },
   "empty": ".",
+  "states": {
+    "idle": { "poses": ["idle", "blink"], "star": "text" },
+    "working": { "poses": ["left", "right"], "star": "text" },
+    "waiting": { "poses": ["idle"], "star": "warning" },
+    "failed": { "poses": ["idle"], "star": "danger" },
+    "stopped": { "poses": ["sleep"], "star": "text" }
+  },
   "grids": {
     "full": {
       "rows": [

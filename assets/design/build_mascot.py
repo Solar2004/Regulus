@@ -84,6 +84,13 @@ def svg(grid):
 
 for grid_name, grid in mascot["grids"].items():
     validate(grid_name, grid)
+# A state is one or more poses of the full grid, shown in turn, and the star's color.
+for state_name, state in mascot["states"].items():
+    for pose in state["poses"]:
+        if pose not in mascot["grids"]["full"]["poses"]:
+            raise ValueError(f"state `{state_name}` names the pose `{pose}`, which the full grid does not have")
+    if not state["poses"] or state["star"] not in colors:
+        raise ValueError(f"state `{state_name}` needs a pose and a star color of palette.json")
 text = svg(mascot["grids"]["full"])
 if "--check" in sys.argv[1:]:
     if not TARGET.exists() or TARGET.read_text() != text:
