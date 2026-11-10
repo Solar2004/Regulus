@@ -502,10 +502,6 @@ struct Stage {
 /// A home whose templates folder has the stand-in template, and a small folder to code in.
 fn stage(name: &str, with_template: bool) -> Stage {
     let root = std::env::temp_dir().join(format!("regulus-code-{name}-{}", std::process::id()));
-    stage_in(root, with_template)
-}
-
-fn stage_in(root: PathBuf, with_template: bool) -> Stage {
     let _ = std::fs::remove_dir_all(&root);
     let home = root.join("home");
     let work = root.join("My App");
@@ -844,40 +840,4 @@ fn checks_without(stage: Stage) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_is_missing_is_said_as_what_it_is() {
     with_core(stage("missing", false), false, checks_without).await;
-}
-
-/// Not a check: a core with the stand-ins that serves until `<stage>/stop` exists, to try
-/// the screen by hand in a terminal of your own:
-///
-/// ```sh
-/// REGULUS_CODE_STAGE=/tmp/stage cargo test -p regulus-cli --test code -- --ignored serve
-/// regulus --home /tmp/stage/home code "/tmp/stage/My App"     # in another terminal
-/// touch /tmp/stage/stop
-/// ```
-///
-/// The scripted engine answers `edit …` with a permission request, `plan …` with a plan,
-/// `slow …` by working until cancelled, and echoes anything else.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "serves until <stage>/stop exists: for trying the screen by hand"]
-async fn serve_the_stand_ins_to_try_the_screen_by_hand() {
-    let Some(root) = std::env::var_os("REGULUS_CODE_STAGE").map(PathBuf::from) else {
-        eprintln!("set REGULUS_CODE_STAGE to a folder that may be replaced");
-        return;
-    };
-    let stage = stage_in(root.clone(), true);
-    let config = Config::load(&stage.home).unwrap();
-    let (core, warnings) = regulus_core::assemble(&config, modules(true));
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let running = regulus_core::serve(&config, core.clone()).await.unwrap();
-    eprintln!(
-        "serving: regulus --home {} code {:?}",
-        stage.home.display(),
-        stage.work.display()
-    );
-    while !root.join("stop").exists() {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    running.stop().await;
-    core.shutdown();
-    let _ = std::fs::remove_dir_all(root);
 }

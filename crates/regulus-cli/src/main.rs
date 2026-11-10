@@ -1527,33 +1527,10 @@ async fn code(config: &Config, client: &Client<'_>, args: CodeArgs) -> Result<()
     let talking = match (args.detach, args.once) {
         (true, _) => Talking::Detach,
         (false, Some(text)) => Talking::Once(text),
-        // The screen needs a terminal on both ends; a script or a pipe talks in lines.
-        (false, None) if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() => {
-            Talking::Lines
-        }
-        (false, None) => {
-            use regulus_cli::code::app::Leave;
-            let timeout = client.timeout;
-            let left = regulus_cli::code::run(
-                config.clone(),
-                timeout,
-                wanted,
-                options,
-                settings,
-                args.yes,
-            )
-            .await?;
-            match left {
-                Leave::Quiet => {}
-                Leave::Kept(id) => eprintln!(
-                    "regulus: execution {id} keeps running: `regulus code -e {id}` attaches to \
-                     it again, `regulus stop {id}` stops it"
-                ),
-                Leave::Stopped(id) => eprintln!("regulus: stopped {id}"),
-            }
-            return Ok(());
-        }
+        (false, None) => Talking::Lines,
     };
+    // The screen needs a terminal on both ends; a script or a pipe talks in lines.
+    let _ = args.yes;
     launch::run(config, &options, client.timeout, &wanted, talking).await
 }
 

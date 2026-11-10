@@ -9,6 +9,7 @@ pub mod composer;
 #[cfg(test)]
 mod fixtures;
 pub mod inspect;
+pub mod launch;
 pub mod link;
 pub mod mascot;
 pub mod session;
