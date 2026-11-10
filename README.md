@@ -13,10 +13,10 @@ without anything breaking. Every module can be taken out and the rest keeps work
 and that is verified by a test on every push, not promised.
 
 **Development status (2026-11-09):** the core, CLI, desktop app and TUI work end to
-end. The current checkout adds reusable boxes with capability inputs, workflow
+end. Release 0.2.0 includes reusable boxes with capability inputs, workflow
 conversation, managed workers, document retrieval, evaluation and a native agent
-engine alongside Claude Code and opencode. These additions are in development;
-the published release below may not include them yet. Contributor guides are in
+engine alongside Claude Code and opencode. Regulus Code, described below, is being
+developed in the current checkout and is not included in 0.2.0. Contributor guides are in
 English; the detailed design record is currently in Spanish.
 
 ---
@@ -45,8 +45,32 @@ Want to help build Regulus? Start with [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 Recorded against a real local core using the deterministic Greeter example. This
 shows composition and workflow conversation; it does not use an AI model or show
-an autonomous coding run. The recording shows the development checkout; released
-packages may not yet include these changes.
+an autonomous coding run. These composition and conversation features are included
+in 0.2.0.
+
+## Regulus Code (development)
+
+A coding harness made from Regulus nodes, with a focused terminal interface and a
+Code view in the desktop app. Both clients use the same core executions, agent
+conversation, tool activity and permission decisions.
+
+```sh
+regulus code /absolute/path/to/project --preset ollama --model your-installed-model
+```
+
+Use an endpoint and model you already have; this command does not download a model.
+The desktop setup offers the same provider settings. The coding module supplies
+file reading and search, exact-match edits, file creation, command execution and Git
+inspection. The default harness asks before edits and commands; its workers start
+with read-only tools.
+
+Open the profile in the canvas to replace the engine, change its tools and rules,
+connect other workflows, or save your own template. The coding tools are individual
+nodes, so they can also be used outside this harness. The small stellar lion is
+defined in an [editable shared grid](assets/design/regulus-code-mascot.json).
+
+See the [coding harness design and limits](docs/14-code.md) for the supported surface.
+The command tool runs host processes: its working directory is not a sandbox.
 
 ## The app
 

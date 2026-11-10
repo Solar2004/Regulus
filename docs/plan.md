@@ -34,6 +34,7 @@ Se enchufan después, por el mismo camino que cualquier otro módulo:
 | **Comunicación** | Que los agentes se hablen entre ellos | **hcom** |
 | **Proveedores** | Conectar OpenAI, Anthropic, modelos locales, suscripciones; pool, plan B, router | API keys |
 | **Agente** | Un agente propio de Regulus que usa un proveedor | — |
+| **Code** | Workspace, herramientas de programación e instrucciones del repositorio; harness compuesto con los módulos de agentes | agente de programación en TUI y app |
 | **Modelos** | Elegir o rotar modelos: hoy son las ranuras de la caja Agente y las envolturas de Proveedores (`12-agents.md` §6) | — |
 
 Más adelante, también como módulos: roles, familias, MCP aislado, memoria.
@@ -66,6 +67,7 @@ un módulo. Orden: Agente + motores → Proveedores → Skills → Comunicación
 | 6 | Vista Operar con ejecuciones reales, instalar plantillas (`04-client.md` §8) | ~1 sem | ✅ hecho (2026-11-08, medio día) |
 | 7 | **App completa**: Ajustes, TUI que edita como la app y `[client]` de `config.toml` para app y TUI (`04-client.md` §10, §7, §11); proyectos con `regulus.toml` (`11-composition.md` §13) | — | ✅ hecho (2026-11-08, un día); `ProcessModule` para `[[modules.local]]` hecho (2026-11-08, `94e5aa3`); release + `regulus update` + Ajustes → Updates hechos (2026-11-08, `52d6bfe`); `blocked` con su botón de confiar en Ajustes y `release.yml` que publica en GitHub Releases (2026-11-08) |
 | 8 | **Harness líquido** (contratos C1-C10): "usa" cruza cajas, hijas vivas y `execution.tree`, `template.save`; eventos, permisos e historial del agente; conversación en app, TUI y `regulus talk`; `flow.tool` · `flow.batch` · `delegation`; `documents` · `inference`; motor nativo (`12-agents.md` §5, §8; `13-blocks.md` §3, §5; `04-client.md` §7-8) | 1 día | ✅ hecho (2026-11-09, cinco ramas en paralelo); falta correrlo con agentes y modelos reales |
+| 9 | **Regulus Code**: módulo conectable de programación, plantilla de harness editable, TUI y vista Code en Tauri, con mascota compartida (`14-code.md`) | — | en curso (2026-11-10); implementación y pruebas en tres ramas, integración coordinada |
 
 **Prueba de la base (paso 3):** la UI apunta al core real con `VITE_RPC_URL` y funciona
 sin cambiar una línea.

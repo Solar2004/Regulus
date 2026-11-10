@@ -22,6 +22,8 @@ use regulus_proto::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+mod bundled;
+
 const CLIENT_NAME: &str = concat!("regulus-cli/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Parser)]
@@ -1856,6 +1858,16 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.server.port = port;
     }
     config.modules.without.extend(without);
+    // Keep the host-shipped Code template editable, while never replacing a person's
+    // catalog entry. This is a CLI-host concern; the core still only sees ordinary
+    // template files and remains unaware of `regulus-code`.
+    if let Err(error) = bundled::install(
+        &config,
+        "regulus-code.toml",
+        include_str!("../../../templates/regulus-code.toml"),
+    ) {
+        eprintln!("regulus: could not install bundled regulus-code template: {error}");
+    }
     // Agents start the bridges as this same program, pointed at this same home.
     let host = regulus_cli::modules::Host {
         program: std::env::current_exe().context("cannot find this program's path")?,
