@@ -3,10 +3,10 @@
 // `agent`, `communication` and `human` modules; the mock adds no method of its own.
 import extra from "./operate.json" with { type: "json" };
 
-const LIVE = new Set(["starting", "running"]);
-const baseId = (id) => id.split("@")[0];
-const failure = (code, message) => ({ error: [code, message] });
-const ok = (result) => ({ result });
+export const LIVE = new Set(["starting", "running"]);
+export const baseId = (id) => id.split("@")[0];
+export const failure = (code, message) => ({ error: [code, message] });
+export const ok = (result) => ({ result });
 
 /** What `createState` adds: three modules, templates, the bus, the channels, agent conversations and decisions. */
 export function operateState() {
@@ -16,10 +16,10 @@ export function operateState() {
   };
 }
 
-const hasModule = (state, id) => state.modules.some((module) => baseId(module.id) === baseId(id));
-const workflowOf = (state, execution) =>
+export const hasModule = (state, id) => state.modules.some((module) => baseId(module.id) === baseId(id));
+export const workflowOf = (state, execution) =>
   state.profiles.find((profile) => profile.id === execution.profile_id)?.workflows.find((workflow) => workflow.id === execution.workflow_id);
-const takes = (node, capability) => (node?.ports ?? []).some((port) => port.direction === "input" && port.capability.split("@")[0] === capability);
+export const takes = (node, capability) => (node?.ports ?? []).some((port) => port.direction === "input" && port.capability.split("@")[0] === capability);
 
 function emit(state, execution, from, capability, value, depth = 0) {
   const seq = ++state.seq;
@@ -32,7 +32,7 @@ function deliver(state, execution, emitted, to) {
 }
 
 /** A live execution and the node of it a module method names. */
-function liveNode(state, params) {
+export function liveNode(state, params) {
   const execution = state.executions.find((item) => item.id === params.execution_id);
   if (!execution || !LIVE.has(execution.state.status)) return failure(-32602, `execution \`${params.execution_id}\` is not running`);
   const node = workflowOf(state, execution)?.nodes.find((item) => item.id === params.node_id);
@@ -48,7 +48,7 @@ function liveNode(state, params) {
 // update, a plan, a permission request when a decider is wired, more text, the end).
 
 const conversationKey = (execution, node) => `${execution.profile_id}/${execution.workflow_id}/${node.id}`;
-function conversationOf(state, execution, node) {
+export function conversationOf(state, execution, node) {
   const key = conversationKey(execution, node);
   if (!state.conversations.has(key)) state.conversations.set(key, { seq: 0, turns: 0, engineSeq: 0, engineTurn: 0, entries: [], activity: [], queue: [], current: null });
   return state.conversations.get(key);
@@ -85,10 +85,33 @@ function reply(state, execution, node, text) {
 const say = (text) => `(mock) You said: ${text}`;
 const PERMISSION_OPTIONS = [{ id: "allow", kind: "allow_once", name: "Allow" }, { id: "reject", kind: "reject_once", name: "Reject" }];
 
+/**
+ * A permission request of the turn in flight, like `permissions = ask` with a decider: the
+ * request shows as activity and waits in `human.list` as a decision. `false` when no
+ * decider is wired (nobody to ask).
+ */
+export function askPermission(state, execution, node, conversation, { request, tool, title, options }) {
+  const decider = deciderOf(state, execution, node);
+  if (!decider) return false;
+  const current = conversation.current;
+  addActivity(state, execution, node, conversation, current.turn, { kind: "permission_request", id: request, tool, title, options });
+  const id = `h-mock-${++state.decisionIds}`;
+  state.decisions.push({
+    id, kind: "decision", execution_id: execution.id, node_id: decider,
+    value: { options, context: { tool, title, execution_id: execution.id, node_id: node.id, request_id: request } },
+    prompt: `Agent \`${node.name || node.id}\` asks permission: ${title}`,
+    form: { type: "object", properties: { option: { type: "string", enum: options.map((option) => option.id), description: options.map((option) => `${option.id} (${option.name})`).join(", ") } }, required: ["option"], additionalProperties: false },
+    created_ms: Date.now(),
+  });
+  current.waiting = id;
+  current.request = request;
+  return true;
+}
+
 function endTurn(state, execution, node, conversation, stopReason) {
-  const { turn, text, written } = conversation.current;
+  const { turn, text, written, answer: scripted } = conversation.current;
   addActivity(state, execution, node, conversation, turn, { kind: "turn_ended", stop_reason: stopReason });
-  const answer = stopReason === "end_turn" ? say(text) : written;
+  const answer = stopReason === "end_turn" ? scripted ?? say(text) : written;
   addEntry(conversation, "agent", answer, turn, execution);
   addActivity(state, execution, node, conversation, turn, { kind: "state", state: "idle" });
   conversation.current = null;
@@ -114,10 +137,15 @@ function advance(state, execution, node, conversation) {
   const write = (chunk) => { current.written += chunk; activity({ kind: "text", text: chunk }); };
   if (current.waiting) {
     if (!state.decided.has(current.waiting)) return;
-    activity({ kind: "permission_resolved", id: current.request, option: state.decided.get(current.waiting) });
+    current.decided = state.decided.get(current.waiting);
+    activity({ kind: "permission_resolved", id: current.request, option: current.decided });
     current.waiting = null;
   }
   current.step += 1;
+  // A node with a script of its own (the coding agent of code.mjs) runs that one.
+  for (const script of state.scripts ?? []) {
+    if (script({ state, execution, node, conversation, current, activity, write, end: (reason) => endTurn(state, execution, node, conversation, reason) })) return;
+  }
   switch (current.step) {
     case 1: return activity({ kind: "thought", text: "(mock) Reading what was asked, then the notes." });
     case 2: return write("(mock) You said: ");
@@ -126,20 +154,7 @@ function advance(state, execution, node, conversation) {
     case 5: return activity({ kind: "plan", entries: [{ content: "Read the notes", status: "completed", priority: "medium" }, { content: "Answer", status: "in_progress", priority: "medium" }] });
     case 6: {
       // Like `permissions = ask` with a decider: the request waits in `human.list` as a decision.
-      const decider = deciderOf(state, execution, node);
-      if (!decider) return write(current.text);
-      const request = `${turn}-edit`;
-      activity({ kind: "permission_request", id: request, tool: "edit", title: "Edit notes.md", options: PERMISSION_OPTIONS });
-      const id = `h-mock-${++state.decisionIds}`;
-      state.decisions.push({
-        id, kind: "decision", execution_id: execution.id, node_id: decider,
-        value: { options: PERMISSION_OPTIONS, context: { tool: "edit", title: "Edit notes.md", execution_id: execution.id, node_id: node.id, request_id: request } },
-        prompt: `Agent \`${node.name || node.id}\` asks permission: Edit notes.md`,
-        form: { type: "object", properties: { option: { type: "string", enum: PERMISSION_OPTIONS.map((option) => option.id), description: PERMISSION_OPTIONS.map((option) => `${option.id} (${option.name})`).join(", ") } }, required: ["option"], additionalProperties: false },
-        created_ms: Date.now(),
-      });
-      current.waiting = id;
-      current.request = request;
+      if (!askPermission(state, execution, node, conversation, { request: `${turn}-edit`, tool: "edit", title: "Edit notes.md", options: PERMISSION_OPTIONS })) return write(current.text);
       return;
     }
     case 7: return current.written.endsWith(current.text) ? undefined : write(current.text);
@@ -148,14 +163,14 @@ function advance(state, execution, node, conversation) {
 }
 
 /** Queues `text` as the node's next turn, as the box's `prompt` input and `agent.send` do. */
-function queueTurn(conversation, text) {
+export function queueTurn(conversation, text) {
   const turn = `t-${++conversation.turns}`;
   conversation.queue.push({ turn, text });
   return turn;
 }
 
 /** Every agent node of the execution moves one step: its turns run while the bus is read. */
-function advanceExecution(state, execution) {
+export function advanceExecution(state, execution) {
   if (!LIVE.has(execution.state.status)) return;
   for (const node of workflowOf(state, execution)?.nodes ?? []) {
     if (takes(node, "agent.engine") && state.conversations.has(conversationKey(execution, node))) advance(state, execution, node, conversationOf(state, execution, node));
