@@ -51,10 +51,10 @@ const workStates: Record<string, Meta> = {
   completed: { icon: CircleCheck, tone: "success", label: "operate.conversation.status.completed" },
   failed: { icon: TriangleAlert, tone: "danger", label: "operate.conversation.status.failed" },
 };
-const WorkState = ({ status }: { status: string }) => <Said value={status} known={workStates} fallback={{ icon: CircleHelp, tone: "muted" }} />;
+export const WorkState = ({ status }: { status: string }) => <Said value={status} known={workStates} fallback={{ icon: CircleHelp, tone: "muted" }} />;
 
 /** Every pending decision the module `human` lists, polled while `enabled`; nothing without the module. */
-function useDecisionList(api: OperateApi, enabled: boolean) {
+export function useDecisionList(api: OperateApi, enabled: boolean) {
   const refreshMs = useOperateSettings((s) => s.refreshMs);
   const [decisions, setDecisions] = useState<PendingDecision[]>([]);
   const [absent, setAbsent] = useState(false);
@@ -66,7 +66,10 @@ function useDecisionList(api: OperateApi, enabled: boolean) {
   return { decisions: enabled ? decisions : [], reload: () => setTick((n) => n + 1) };
 }
 
-function PermissionCard({ api, item, decision, onAnswered }: {
+/** The pending decisions and how to ask for them again: a view that already polls them passes its own. */
+export type DecisionList = ReturnType<typeof useDecisionList>;
+
+export function PermissionCard({ api, item, decision, onAnswered }: {
   api: OperateApi; item: Extract<TurnItem, { type: "permission" }>; decision: PendingDecision | undefined; onAnswered: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -191,8 +194,14 @@ function useCursor(api: OperateApi, key: string) {
   return cursor;
 }
 
-/** A direct agent node: its conversation from `agent.history`, turns sent with `agent.send`. */
-export function AgentConversation({ api, executionId, row }: { api: OperateApi; executionId: string; row: NodeRow }) {
+/**
+ * A direct agent node: its conversation from `agent.history`, turns sent with `agent.send`.
+ * `decisionList`: the pending decisions, when the view around it already asks for them (one
+ * poll, not two). `dock`: what the view pins between the transcript and the composer.
+ */
+export function AgentConversation({ api, executionId, row, decisionList, dock }: {
+  api: OperateApi; executionId: string; row: NodeRow; decisionList?: DecisionList; dock?: React.ReactNode;
+}) {
   const { refreshMs, eventPageSize, conversationKeep } = useOperateSettings();
   const key = `agent:${executionId}/${row.id}`;
   const cached = useConversationCache((s) => cachedConversation(s, key));
@@ -214,7 +223,8 @@ export function AgentConversation({ api, executionId, row }: { api: OperateApi; 
     }
   }, refreshMs, [api, key, eventPageSize, conversationKeep], { enabled: !missing });
   const turns = useMemo(() => reduceConversation(cached.records, "turn"), [cached.records]);
-  const { decisions, reload } = useDecisionList(api, asksPermission(turns));
+  const own = useDecisionList(api, !decisionList && asksPermission(turns));
+  const { decisions, reload } = decisionList ?? own;
   if (missing) return <NotAvailable kind={missing.kind} reason={missing.reason} onRetry={() => setMissing(null)} />;
   const talkable = canTalk(row) && cached.session?.state !== "stopped";
   const working = cached.session?.state === "busy" || cached.pending.length > 0 || turns.some((turn) => turn.open);
@@ -235,6 +245,7 @@ export function AgentConversation({ api, executionId, row }: { api: OperateApi; 
       decisionOf={(item) => decisionFor(decisions, executionId, row.id, item.id)} onAnswered={reload} />
     {error && <p className="operate-error" role="alert">{error}</p>}
     {!talkable && <p className="operate-subtle">{t("operate.conversation.readOnly")}</p>}
+    {dock}
     <div className="conversation-actions">
       {working && talkable && <Button size="sm" variant="outline" onClick={() => void cancel()}><Square size={13} />{t("operate.conversation.cancel")}</Button>}
     </div>
