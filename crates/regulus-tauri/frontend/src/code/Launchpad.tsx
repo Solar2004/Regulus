@@ -4,7 +4,7 @@
 // sessions: open a running one, read an earlier one, or edit a harness in the canvas.
 import { useMemo, useState, type FormEvent } from "react";
 import {
-  ArrowRight, CircleCheck, CircleDashed, CircleHelp, FolderOpen, GitBranch, KeyRound, OctagonX, PackageOpen, Play, TriangleAlert, type LucideIcon,
+  ArrowRight, CircleCheck, CircleDashed, CircleHelp, FolderOpen, GitBranch, KeyRound, OctagonX, PackageOpen, Play, Plus, TriangleAlert, type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, type LocaleKey } from "@/lib/i18n";
@@ -67,6 +67,7 @@ function Setup({ api, data, targets, sessions, template, candidates, onTemplate,
   const vars = useMemo(() => splitVars(template.vars), [template]);
   const [root, setRoot] = useState("");
   const [typed, setTyped] = useState<FormValues>({});
+  const [context, setContext] = useState<string[]>([]);
   const [ownId, setOwnId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ title: string; reason: string } | null>(null);
@@ -76,6 +77,12 @@ function Setup({ api, data, targets, sessions, template, candidates, onTemplate,
   const remembered = Object.fromEntries(Object.entries(settings.lastVars).filter(([name]) => vars.provider.some((variable) => variable.name === name)));
   const values: FormValues = { ...initialValues(template.vars), ...remembered, ...typed, ...(vars.root ? { [vars.root.name]: normalizeRoot(root) } : {}) };
   const set = (name: string, value: string) => setTyped({ ...typed, [name]: value });
+  const addContext = (value: string) => {
+    if (context.includes(value)) return;
+    setContext([...context, value]);
+    const system = values.system ?? "";
+    set("system", `${system}\nAdditional repository context: ${value}`);
+  };
 
   const folder = normalizeRoot(root);
   const absolute = isAbsolutePath(folder);
@@ -147,6 +154,15 @@ function Setup({ api, data, targets, sessions, template, candidates, onTemplate,
     </p> : <>
       {vars.provider.length > 0 && <fieldset className="code-provider">
         <legend>{t("code.setup.provider")}</legend>
+        {vars.more.some((variable) => variable.name === "tool_policy") && <label className="operate-field code-policy">
+          <span>{t("code.setup.permissionMode")}</span>
+          <select value={values.tool_policy ?? "ask"} onChange={(event) => set("tool_policy", event.target.value)}>
+            <option value="ask">{t("code.setup.permissionAsk")}</option>
+            <option value="allow">{t("code.setup.permissionAuto")}</option>
+            <option value="deny">{t("code.setup.permissionDeny")}</option>
+          </select>
+          <small>{t("code.setup.permissionHelp")}</small>
+        </label>}
         {vars.provider.map((variable) => variable.name === "credential"
           ? <VarField key={variable.name} variable={variable} value={values[variable.name] ?? ""} onChange={(value) => set(variable.name, value)}>
             <small className="code-credential"><Mark icon={credentialMark.icon} tone={credentialMark.tone} label={fill(t(credentialMark.label), { name: "name" in credential ? credential.name : "" })} />
@@ -155,6 +171,14 @@ function Setup({ api, data, targets, sessions, template, candidates, onTemplate,
           </VarField>
           : <VarField key={variable.name} variable={variable} value={values[variable.name] ?? ""} onChange={(value) => set(variable.name, value)} />)}
         <p className="code-fine">{t("code.setup.providerNote")}</p>
+        <details className="code-context-picker">
+          <summary><Plus size={14} />{t("code.setup.addContext")}</summary>
+          <div className="code-context-actions">
+            <Button type="button" size="sm" variant="outline" onClick={() => addContext("AGENTS.md")}>{t("code.setup.contextInstructions")}</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => addContext("README.md")}>{t("code.setup.contextReadme")}</Button>
+          </div>
+          {context.length > 0 && <small>{fill(t("code.setup.contextAdded"), { items: context.join(", ") })}</small>}
+        </details>
       </fieldset>}
       <details className="code-more">
         <summary>{fill(t("code.setup.more"), { count: vars.more.length + 1 + (candidates.length > 1 ? 1 : 0) })}</summary>
