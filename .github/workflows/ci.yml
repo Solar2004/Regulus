@@ -63,6 +63,19 @@ jobs:
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
 
+  # The Python SDK for custom nodes: standard library only, so the runner's python3 is
+  # enough. Its tests drive real module processes over the real protocol.
+  python-sdk:
+    name: python · SDK unittest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 --version
+      - run: python3 -m unittest discover -s sdk/python/tests -v
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+
   rules:
     name: rules · commit messages, secrets
     runs-on: ubuntu-latest
