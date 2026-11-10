@@ -16,7 +16,7 @@ types = feat fix docs refactor perf test build ci chore revert style
 
 # Scopes permitidos. Añadir uno nuevo es editar esta línea en el mismo commit que lo usa.
 # Siguen el workspace de `docs/02-architecture.md` más las áreas que ya existen.
-scopes = core proto cli gui modules store bus terminal acp mcp docs assets design repo ci deps hooks templates agent flow release
+scopes = core proto cli gui modules store bus terminal acp mcp docs assets design repo ci deps hooks templates agent flow release sdk
 
 # ¿Es obligatorio el scope? Si es `false`, `feat: ...` vale y `feat(core): ...` también,
 # pero un scope que no esté en la lista de arriba se rechaza.

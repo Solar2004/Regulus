@@ -15,6 +15,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Nodos propios en Python:** `sdk/python/regulus.py`, un solo fichero con la biblioteca
+  estándar, convierte una función en un tipo de nodo de un módulo local (`@node`,
+  `ctx.emit`). Responde el protocolo por ti, atiende eventos en hilos acotados
+  (`max_workers`), aparta tus `print` del protocolo y convierte cualquier error, también
+  `sys.exit()`, en un error de esa llamada. Ejemplo en `examples/local-modules/python-sdk/`.
+  No es un sandbox: solo corre en proyectos de confianza.
 - **Campos de código y de varias líneas en el inspector:** un campo `type = "code"` se
   edita en un área de texto monoespaciada (Tab y Shift+Tab sangran; Esc y luego Tab sale
   del campo) y uno `type = "text"` con `multiline = true` en una que ajusta líneas.
