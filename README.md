@@ -143,6 +143,9 @@ flowchart LR
 - **Projects** are folders with a `regulus.toml`: their own profiles, templates and
   local modules, which run as separate processes over JSON-RPC and only when the
   project is trusted.
+- **Custom nodes** are local modules written in Python with a one-file SDK:
+  `regulus node init <project> --id <id>` scaffolds one, and fields of type `code`
+  are edited in the app's inspector as plain text areas (no highlighting yet).
 
 ### A workflow, end to end
 
@@ -232,6 +235,7 @@ cargo test --workspace                      # Rust suite, including the ablation
 cargo test -p regulus-cli --test ablation   # start without each module in turn
 cargo clippy --workspace --all-targets      # zero warnings is the bar
 cd crates/regulus-tauri/frontend && pnpm test   # vitest, the frontend
+python3 -m unittest discover -s sdk/python/tests  # the Python SDK, real processes
 ```
 
 | Layer | Where | What it proves |
@@ -241,6 +245,7 @@ cd crates/regulus-tauri/frontend && pnpm test   # vitest, the frontend
 | Ablation | `crates/regulus-cli/tests/ablation.rs` | The core starts with each module removed and everything else still answers |
 | Frontend | `frontend/src/**/*.test.ts` | Stores, settings, the update flow, the mock contract |
 | Templates | `tests/template_*.rs` | Holes, wiring, and the deterministic parts run without an agent |
+| Python SDK | `sdk/python/tests/` | The SDK speaks the local-module protocol to real processes: errors, concurrency, private stdout, limits |
 
 Runs with a real agent are not in the suite: they cost quota and minutes. Each
 template records its last one in its header.
@@ -279,8 +284,8 @@ trailers. Three hooks enforce it: `commit-msg` validates the message against
 formatting, `pre-push` re-validates the whole range. The slow checks run in GitHub
 Actions on every push and pull request
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): the Rust tests with the
-ablation matrix, clippy and fmt; the frontend type check and vitest; the commit
-messages and the secrets scan. Rules in [`docs/09-git.md`](docs/09-git.md).
+ablation matrix, clippy and fmt; the frontend type check and vitest; the Python SDK
+tests; the commit messages and the secrets scan. Rules in [`docs/09-git.md`](docs/09-git.md).
 
 ## Repository layout
 
@@ -292,7 +297,8 @@ messages and the secrets scan. Rules in [`docs/09-git.md`](docs/09-git.md).
 | `crates/modules/*` | The modules, one crate each, with a `regulus-module.toml`. |
 | `crates/regulus-tauri` | The desktop app: Tauri 2 shell and the React frontend. |
 | `templates/` | The ready-made agent systems, as TOML. |
-| `examples/local-modules/` | A project-local module in Python, run as a process. |
+| `sdk/python/` | The SDK for custom nodes in Python: one file, standard library only, with its tests. |
+| `examples/local-modules/` | Project-local modules in Python, run as processes: by hand (`echo`) and with the SDK (`python-sdk`). |
 | `docs/` | The design documents, in Spanish. `AGENTS.md` is the map. |
 | `harness/docguard/` | Rules that check changes against the docs. |
 | `scripts/` | Hooks installer, commit lint, secrets scan, release. |
@@ -322,6 +328,7 @@ it wins over every other document.
 | Evidence and cited research | [`docs/15-evidence.md`](docs/15-evidence.md) |
 | Datasets, RAG lab and topic watch | [`docs/16-experiments.md`](docs/16-experiments.md) |
 | Drive Regulus from an MCP client (`regulus mcp`) | [`docs/17-control-mcp.md`](docs/17-control-mcp.md) |
+| Write your own nodes in Python (`regulus node init`) | [`docs/18-custom-nodes.md`](docs/18-custom-nodes.md) |
 | Dependencies and versions, release and update | [`docs/06-stack.md`](docs/06-stack.md) |
 | Commit, branch, push | [`docs/09-git.md`](docs/09-git.md) |
 

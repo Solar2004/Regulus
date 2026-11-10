@@ -92,6 +92,13 @@ campos (`[[node.field]]`: texto, número, desplegable, mapa `nombre = valor`…)
 módulo necesita escribir UI. Un módulo **puede** traer su propia UI si la necesita; cómo
 se enchufa sin que la UI lo conozca por nombre se decide cuando el primero lo pida.
 
+**Pistas de presentación** (2026-11-10, lo pidieron los nodos propios,
+[`18-custom-nodes.md`](18-custom-nodes.md) §4): un campo puede llevar más claves que `id`,
+`type`, `default`, `options` y `own_ports`. `Field.extra` las guarda y las devuelve tal
+cual, planas; el core no las lee. La app usa `label`, `description`, `language`, `indent`
+y `multiline`, y el tipo `code` (un área de texto monoespaciada, no un editor). Un cliente
+que no conoce una clave la ignora: es un cambio opcional y no sube el protocolo (§1).
+
 ---
 
 ## 2. El contrato
@@ -327,7 +334,7 @@ a `node/child`.
 | core → proceso | `start` (petición) | `Module::init` | `{ protocol, module_id, project_id, root }`. Opcional: si responde `-32601`, arranca igual |
 | core → proceso | `call` (petición) | `Module::call` | `{ method, params }`, con el método y los parámetros tal cual: `node/start`, `node/event`, `node/stop`, `node/child` y `node/hook` con su `NodeCall` (§2.2). Errores: `-32601` → `UnknownMethod` (un nodo sin ciclo de vida), `-32602` → `InvalidParams`, otro → `Failed` |
 | core → proceso | `stop` (petición) | `Module::shutdown` | `{}`. Opcional. Después se cierra su stdin, y llega SIGTERM al grupo y SIGKILL si pasa el margen |
-| proceso → core | `emit` (notificación) | `ModuleCtx::emit` | `{ execution_id, node_id, port, value }`. Lo emitido mientras atiende una `call` se publica en el hilo que llama, **antes** de que la llamada vuelva, y sigue su cadena: `[bus] max_depth` corta también los bucles que pasan por el proceso |
+| proceso → core | `emit` (notificación) | `ModuleCtx::emit` | `{ execution_id, node_id, port, value }`. Lo emitido mientras atiende una `call` se publica en el hilo que llama, **antes** de que la llamada vuelva, y sigue su cadena: `[bus] max_depth` corta también los bucles que pasan por el proceso. Con varias llamadas en vuelo al mismo proceso, un `emit` lo puede publicar el hilo de otra ejecución y su cuenta empieza de cero (`18-custom-nodes.md` §5) |
 | proceso → core | otra petición | — | se responde `-32601`. El resto de `ModuleCtx` (`resolve`, `call`, `store`, `checkpoint`, `node_dir`, `call_workflow`) **no se ofrece todavía**: se añade cuando un módulo local lo pida |
 
 Una línea por mensaje, como viajan (`→` del core al proceso, `←` del proceso al core):
@@ -343,6 +350,12 @@ Una línea por mensaje, como viajan (`→` del core al proceso, `←` del proces
 → {"jsonrpc":"2.0","id":4,"method":"call","params":{"method":"node/start","params":{…}}}
 ← {"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"unknown method `node/start`"}}
 ```
+
+**SDK de Python** (2026-11-10): `sdk/python/regulus.py`, solo biblioteca estándar, habla
+este protocolo por el autor del nodo (un decorador por tipo de nodo y `ctx.emit`), y
+`regulus node init <proyecto> --id <id>` genera el módulo y su entrada en `regulus.toml`
+sin confiar en el proyecto. Detalle, límites y lo medido en
+[`18-custom-nodes.md`](18-custom-nodes.md).
 
 El manifiesto pasa por el mismo código que uno enlazado: el mismo `Manifest`, la misma
 comprobación de `requires_proto` y la misma de id repetido. **El id lo pone el core:**

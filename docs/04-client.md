@@ -124,7 +124,8 @@ métodos; ninguno nuevo en el core.
 
 - **Editar** (`e` sobre un perfil, `n` para uno nuevo: nombre → id). Tres paneles: el árbol
   workflow → nodos; el inspector (nombre, cada campo del manifiesto según su tipo —texto,
-  número, `select`/bool, `workflow`, `map` como JSON, lo desconocido como texto crudo— con
+  número, `select`/bool, `workflow`, `map` como JSON, lo desconocido como texto crudo; un
+  `code` también sale crudo, en una línea, y `multiline` se ignora todavía— con
   su default y *reset*, el workflow interno; con un workflow elegido, sus puertos `self`);
   y los cables del workflow. La paleta sale de `module.manifest` con el estado de cada
   módulo (§3): lo no instalado se ve y no se añade; los workflows con puertos entran como
@@ -340,7 +341,8 @@ manifiesto y los defaults de sus campos como `config`); mover, seleccionar vario
 (Supr o botón); cables de salida a entrada solo si coinciden capacidad y tipo (`uses` con
 `uses`, `then` con `then`) y la entrada tiene sitio (`cardinality`), si no se dice por qué;
 el inspector edita nombre, cada campo según su tipo (texto, número, `select`, `map`,
-`workflow`; lo desconocido como texto crudo) con su default y "reset", el workflow interno
+`workflow`, y desde el 2026-11-10 `code` y texto `multiline` como áreas de texto; lo
+desconocido como texto crudo) con su default y "reset", el workflow interno
 (una caja) y, con el workflow elegido, sus puertos propios (`self`). Workflows extra se
 crean y se borran (el principal no). Un nodo de un módulo ausente sale *no instalado* y se
 sigue editando. **Cómo guarda:** un documento único en el cliente (`composition/editor/`,
@@ -354,6 +356,16 @@ ancho de nodo (250), separación al añadir (40), agrupación de la paleta (por 
 autoguardado (apagado, 30 000 ms tras el último cambio), teclas de borrar (`Delete`,
 `Backspace`) y de guardar (`s`). La vista "Todos los workflows" es de solo lectura: pulsar
 un nodo abre su workflow.
+
+**Campos de código y de varias líneas** (2026-11-10, `composition/editor/fields.ts`,
+`textarea.ts`, `Inspector.tsx`). `type = "code"` es un `<textarea>` monoespaciado sin
+ajuste de línea; `type = "text"` con `multiline = true`, uno proporcional que ajusta. Las
+pistas `label`, `description`, `language` e `indent` del manifiesto (`03-modules.md` §1.3)
+dan nombre, ayuda, lenguaje junto al tipo y lo que mete Tab. En un `code`, Tab sangra,
+Shift+Tab quita sangría y **Esc y luego Tab sale del campo**; un aviso debajo dice que no
+hay resaltado ni comprobación. El valor se guarda tal cual se escribe. Probado en Chromium
+contra un core real y medido por tecla: los números y los límites (Ctrl+Z no deshace un
+Tab; con 1000 líneas, ~30 ms por tecla) están en `18-custom-nodes.md` §4.
 
 **Cajas en el canvas** (2026-11-09, `composition/editor/document.ts`, funciones puras con
 tests):
