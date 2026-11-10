@@ -6,7 +6,7 @@ import type { Execution } from "@/operate/model";
 import type { TemplateSummary } from "@/templates/model";
 import { codeProfile, codeWorkflow, manifests, workerWorkflow } from "./fixtures.test-util";
 import {
-  activityOf, ancestorsOf, changeKind, codeAgents, codeModuleIds, codeSessions, codeTargets, codeTemplates, credentialState, directChildren, fileLines,
+  activityOf, ancestorsOf, changeKind, codeAgents, codeModuleIds, codeSessions, fnv1a64, codeTargets, codeTemplates, credentialState, directChildren, fileLines,
   folderName, harnessParts, isAbsolutePath, isCodeWorkflow, nodesAnswering, normalizeRoot, openPermissions, parseStatus, readDiff, readFile,
   readListing, readSearch, readSummary, readWorkers, rootOf, sameRoot, secretPrefix, sessionProblems, slugOf, splitVars, suggestProfileId, targetForRoot,
   treeRows, workspaceNodes, workStamp,
@@ -32,7 +32,7 @@ describe("what is a coding session", () => {
   test("a delegate takes agent.engine too, and is not an agent to talk to", () => {
     // By the manifests: only the module that declares agent.history holds a conversation.
     expect(codeAgents(codeWorkflow(), manifests()).map((node) => node.id)).toEqual(["agent"]);
-    // Without manifests (modules not installed): the node that requires its engine.
+    // Without manifests (modules not installed): the node whose engine input is not lazy.
     expect(codeAgents(codeWorkflow(), []).map((node) => node.id)).toEqual(["agent"]);
     expect(codeAgents(undefined, manifests())).toEqual([]);
   });
@@ -79,16 +79,33 @@ describe("folders and profile ids", () => {
     expect(["app", "./app", "~/app", ""].map(isAbsolutePath)).toEqual([false, false, false, false]);
   });
 
-  test("the profile id comes from the folder's name and never repeats one that is taken", () => {
+  test("a slug is what `regulus code` makes of the same text", () => {
     expect(folderName("/home/ada/My App/")).toBe("My App");
     expect(folderName("C:\\work\\api")).toBe("api");
     expect(slugOf("My App (v2)")).toBe("my-app-v2");
-    expect(slugOf("..hidden..")).toBe("hidden");
-    expect(suggestProfileId("/home/ada/My App", [], "code")).toBe("code-my-app");
-    expect(suggestProfileId("/home/ada/app", ["code-app", "code-app-2"], "code")).toBe("code-app-3");
-    // A folder whose name leaves nothing still gets an id.
-    expect(suggestProfileId("/", [], "code")).toBe("code");
-    expect(suggestProfileId("/日本", [], "")).toBe("workspace");
+    // Leading dots and dashes go, a trailing dot stays, a typed dash is kept next to a gap.
+    expect(slugOf("..hidden..")).toBe("hidden..");
+    expect(slugOf("a -b")).toBe("a--b");
+    expect(slugOf("Café Ñu")).toBe("caf-u");
+    expect(slugOf("日本")).toBe("");
+  });
+
+  test("the hash is the standard FNV-1a 64", () => {
+    expect(fnv1a64("")).toBe("cbf29ce484222325");
+    expect(fnv1a64("a")).toBe("af63dc4c8601ec8c");
+    expect(fnv1a64("foobar")).toBe("85944171f73967e8");
+  });
+
+  test("the profile id is the folder's name and six digits of its path's hash", () => {
+    const id = suggestProfileId("/home/a/My App", [], "code");
+    expect(id).toBe(`code-my-app-${fnv1a64("/home/a/My App").slice(0, 6)}`);
+    // The same folder spelled with a trailing slash is the same profile; another folder of that name is not.
+    expect(suggestProfileId("/home/a/My App/", [], "code")).toBe(id);
+    expect(suggestProfileId("/home/b/My App", [], "code")).not.toBe(id);
+    expect(suggestProfileId("/home/a/My App", [id, `${id}-2`], "code")).toBe(`${id}-3`);
+    // A folder whose name leaves nothing still gets an id, and so does an empty prefix.
+    expect(suggestProfileId("/", [], "code")).toBe(`code-folder-${fnv1a64("/").slice(0, 6)}`);
+    expect(suggestProfileId("/日本", [], "")).toBe(`folder-${fnv1a64("/日本").slice(0, 6)}`);
   });
 });
 
@@ -162,20 +179,33 @@ describe("code.inspect answers", () => {
   test("status also reads as lines or as objects", () => {
     expect(parseStatus(["?? a.txt", " M b.txt"]).map((change) => change.path)).toEqual(["a.txt", "b.txt"]);
     expect(parseStatus(" M a.txt\0?? b.txt\0").map((change) => change.path)).toEqual(["a.txt", "b.txt"]);
-    expect(parseStatus([{ path: "a.txt", status: "??" }, { path: "b.txt", index: "M", worktree: " " }, { status: "M" }]).map((change) => [change.path, changeKind(change)]))
-      .toEqual([["a.txt", "untracked"], ["b.txt", "modified"]]);
+    expect(parseStatus([{ path: "a.txt", status: "??" }, { path: "b.txt", index: "M", worktree: " " }, { status: "M" }, { path: "c.txt", code: "R ", from: "old.txt" }])
+      .map((change) => [change.path, changeKind(change), change.from])).toEqual([["a.txt", "untracked", null], ["b.txt", "modified", null], ["c.txt", "renamed", "old.txt"]]);
     expect(parseStatus(null)).toEqual([]);
   });
 
+  test("a summary as the module gives it: status text, with what is ahead and behind", () => {
+    const repo = readSummary({
+      root: "/home/ada/app", tools: ["code_read_file", 3, "code_search"],
+      git: { branch: "main", status: " M a.ts\n?? b.ts\n", head: "1a2b3c4", upstream: "origin/main", ahead: 2, behind: 0, changes: [{ path: "a.ts", code: " M" }], truncated: false },
+    });
+    expect(repo).toMatchObject({ root: "/home/ada/app", tools: ["code_read_file", "code_search"], git: { available: true, branch: "main", reason: null, ahead: 2, behind: 0, truncated: false } });
+    // The text is what counts: both lines, not only the one `changes` repeats.
+    expect(repo?.git.changes.map((change) => change.path)).toEqual(["a.ts", "b.ts"]);
+    // Without the text the parsed list is read.
+    expect(readSummary({ root: "/r", git: { branch: "main", changes: [{ path: "a.ts", code: "A " }] } })?.git.changes).toEqual([{ path: "a.ts", from: null, index: "A", worktree: " " }]);
+    // A detached HEAD has no branch and is still a repository.
+    expect(readSummary({ root: "/r", git: { branch: null, status: "" } })?.git).toMatchObject({ available: true, branch: null, changes: [] });
+  });
+
   test("a summary without git is a folder without git, not a failure", () => {
-    const repo = readSummary({ root: "/home/ada/app", git: { branch: "main", status: " M a.ts\n" }, tools: ["code_read_file", 3, "code_search"] });
-    expect(repo).toMatchObject({ root: "/home/ada/app", tools: ["code_read_file", "code_search"], git: { available: true, branch: "main", reason: null } });
-    expect(repo?.git.changes).toHaveLength(1);
-    expect(readSummary({ root: "/tmp/x", git: null, tools: [] })?.git).toEqual({ available: false, branch: null, changes: [], reason: null });
-    expect(readSummary({ root: "/tmp/x" })?.git.available).toBe(false);
-    expect(readSummary({ root: "/tmp/x", git: { reason: "not a git repository" } })?.git).toEqual({ available: false, branch: null, changes: [], reason: "not a git repository" });
-    // A repository with no commit yet: no branch, still git.
-    expect(readSummary({ root: "/tmp/x", git: { branch: null, status: "" } })?.git).toMatchObject({ available: true, branch: null, changes: [] });
+    const none = { available: false, branch: null, changes: [], ahead: 0, behind: 0, truncated: false };
+    expect(readSummary({ root: "/tmp/x", git: null, git_reason: "not a git repository", tools: [] })?.git).toEqual({ ...none, reason: "not a git repository" });
+    expect(readSummary({ root: "/tmp/x", git: null, tools: [] })?.git).toEqual({ ...none, reason: null });
+    expect(readSummary({ root: "/tmp/x" })?.git).toEqual({ ...none, reason: null });
+    // Other ways of saying the same: a table that only holds a reason, or says it is unavailable.
+    expect(readSummary({ root: "/tmp/x", git: { reason: "git is not installed" } })?.git).toEqual({ ...none, reason: "git is not installed" });
+    expect(readSummary({ root: "/tmp/x", git: { available: false, branch: null, status: null, reason: "timed out" } })?.git).toEqual({ ...none, reason: "timed out" });
     expect(readSummary({ git: null })).toBeNull();
     expect(readSummary("nope")).toBeNull();
   });
@@ -194,6 +224,7 @@ describe("code.inspect answers", () => {
       .toEqual({ root: "/r", truncated: true, matches: [{ path: "a.ts", line: 3, text: "let x" }, { path: "b.ts", line: 1, text: "" }] });
     expect(readSearch({})).toBeNull();
     expect(readDiff({ root: "/r", text: "", truncated: false })).toEqual({ root: "/r", text: "", truncated: false });
+    expect(readDiff({ root: "/r", text: "", truncated: false, git_reason: "not a git repository" })?.git_reason).toBe("not a git repository");
     expect(readDiff({ root: "/r" })).toBeNull();
   });
 });

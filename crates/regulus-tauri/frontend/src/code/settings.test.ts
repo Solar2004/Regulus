@@ -1,21 +1,29 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { codeDefaults, configuredCode, effectiveCode, rememberRootIn, rememberableVars, sanitizeCodeOverrides } from "./settings";
+import { codeDefaults, configuredCode, effectiveCode, inspectInterval, rememberRootIn, rememberableVars, sanitizeCodeOverrides } from "./settings";
 
 describe("values and their layers", () => {
   test("saved values come back inside their limits; anything unreadable drops", () => {
-    expect(sanitizeCodeOverrides({ inspectRefreshMs: 10, workspaceWidth: "60", searchMinChars: true, label: "  Leo  ", template: 7, junk: 1 }))
-      .toEqual({ inspectRefreshMs: 1000, workspaceWidth: 60, label: "Leo" });
+    expect(sanitizeCodeOverrides({ inspectRefreshMs: -5, workspaceWidth: "60", searchMinChars: true, label: "  Leo  ", template: 7, mascot: false, junk: 1 }))
+      .toEqual({ inspectRefreshMs: 0, workspaceWidth: 60, label: "Leo", mascot: false });
+    expect(sanitizeCodeOverrides({ mascot: "no" })).toEqual({});
     expect(sanitizeCodeOverrides(null)).toEqual({});
     expect(sanitizeCodeOverrides({ label: "x".repeat(200) }).label).toHaveLength(40);
   });
 
   test("config.client sets the defaults from [client.code], and says the file", () => {
     const { values, from } = configuredCode({
-      client: { code: { inspect_refresh_ms: 9000, label: "Leo", template: "my-code", workspace_width: 200 }, refresh_ms: 500 },
+      client: { code: { inspect_refresh_ms: 9000, label: "Leo", template: "my-code", workspace_width: 200, mascot: false, on_exit: "keep" }, refresh_ms: 500 },
       sources: { "code.label": "regulus.toml", "code.template": "config.toml" },
     });
-    expect(values).toEqual({ inspectRefreshMs: 9000, workspaceWidth: 75, label: "Leo", template: "my-code" });
-    expect(from).toEqual({ inspectRefreshMs: "config.toml", workspaceWidth: "config.toml", label: "regulus.toml", template: "config.toml" });
+    // `on_exit` is the terminal's: another client's key is left alone.
+    expect(values).toEqual({ inspectRefreshMs: 9000, workspaceWidth: 75, label: "Leo", template: "my-code", mascot: false });
+    expect(from).toEqual({ inspectRefreshMs: "config.toml", workspaceWidth: "config.toml", label: "regulus.toml", template: "config.toml", mascot: "config.toml" });
+  });
+
+  test("the workspace is looked at on a timer, never faster than four times a second, or not on a timer at all", () => {
+    expect(inspectInterval(4000)).toBe(4000);
+    expect(inspectInterval(20)).toBe(250);
+    expect(inspectInterval(0)).toBeNull();
   });
 
   test("the person's change wins over config.toml, which wins over the default", () => {
@@ -23,7 +31,7 @@ describe("values and their layers", () => {
     expect(values.template).toBe("mine");
     expect(values.profilePrefix).toBe("repo");
     expect(values.inspectRefreshMs).toBe(codeDefaults.inspectRefreshMs);
-    expect(codeDefaults).toMatchObject({ template: "regulus-code", profilePrefix: "code", label: "" });
+    expect(codeDefaults).toMatchObject({ template: "regulus-code", profilePrefix: "code", label: "", mascot: true });
   });
 });
 

@@ -34,16 +34,15 @@ const manifestOf = (manifests: Manifest[], moduleId: string | null) =>
 
 /**
  * The agents of a workflow one can talk to. A node with an `agent.engine` input is a
- * candidate, but a delegate has that input too (the engines of its workers): among the
- * candidates, an agent is one whose module declares `agent.history`. A node whose module
- * has no manifest here (not installed) counts when that input is required, as the Agent
- * box's is.
+ * candidate, but a delegate has that input too (the engines of its workers, read lazily):
+ * among the candidates, an agent is one whose module declares `agent.history`. A node
+ * whose module has no manifest here (not installed) counts unless that input is lazy.
  */
 export function codeAgents(workflow: Workflow | undefined, manifests: Manifest[]): CompositionNode[] {
   return agentNodes(workflow).filter((node) => {
     const manifest = manifestOf(manifests, node.module_id);
     if (manifest) return (manifest.module.methods ?? []).includes(methods.agentHistory);
-    return node.ports.some((port) => port.direction === "input" && base(port.capability) === codeCapabilities.engine && port.required);
+    return node.ports.some((port) => port.direction === "input" && base(port.capability) === codeCapabilities.engine && !port.lazy);
   });
 }
 
@@ -133,15 +132,45 @@ export function folderName(root: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
-/** Text as part of a profile id (a file name in the core): lowercase letters, digits, dot, dash, underscore. */
+/**
+ * Text as part of a profile id (a file name in the core): ASCII letters lowered, digits,
+ * dot, dash and underscore stay; any run of other characters is one dash. The same slug
+ * `regulus code` makes (`tui/document.rs` `slugify`), character by character, so the two
+ * clients name a folder's profile alike.
+ */
 export function slugOf(text: string): string {
-  return text.normalize("NFKD").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  let out = "";
+  let gap = false;
+  for (const char of text.trim().toLowerCase()) {
+    if (/^[a-z0-9._-]$/.test(char)) {
+      if (gap && out) out += "-";
+      gap = false;
+      out += char;
+    } else gap = true;
+  }
+  return out.replace(/^[-.]+/, "").replace(/-+$/, "");
 }
 
-/** The profile id proposed for a folder: `<prefix>-<folder>`, with the next free number when it is taken. */
+/** FNV-1a, 64 bits, of the text's UTF-8 bytes, as sixteen hex digits. */
+export function fnv1a64(text: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(text)) hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
+  return hash.toString(16).padStart(16, "0");
+}
+
+/** Hex digits of the folder's hash a profile id carries. */
+const HASH_DIGITS = 6;
+
+/**
+ * The profile id proposed for a folder: `<prefix>-<folder name>-<hash>`, the hash being
+ * the first digits of the FNV-1a 64 of the folder's path, so two folders with one name do
+ * not share a profile. `regulus code` writes the same id for the same path. If another
+ * profile already has it, the next free number follows.
+ */
 export function suggestProfileId(root: string, taken: Iterable<string>, prefix: string): string {
   const used = new Set(taken);
-  const stem = [slugOf(prefix), slugOf(folderName(root))].filter(Boolean).join("-") || "workspace";
+  const folder = normalizeRoot(root);
+  const stem = [slugOf(prefix), slugOf(folderName(folder)) || "folder", fnv1a64(folder).slice(0, HASH_DIGITS)].filter(Boolean).join("-");
   if (!used.has(stem)) return stem;
   for (let n = 2; ; n++) if (!used.has(`${stem}-${n}`)) return `${stem}-${n}`;
 }
@@ -269,11 +298,19 @@ export interface GitChange {
 
 export interface GitState {
   available: boolean;
+  /** `null` on a detached HEAD, and when git is unavailable. */
   branch: string | null;
   changes: GitChange[];
   /** Why git gave nothing, when the module says. */
   reason: string | null;
+  /** Commits ahead of and behind the upstream branch, when the module counts them. */
+  ahead: number;
+  behind: number;
+  /** The status had more lines than the module gives. */
+  truncated: boolean;
 }
+
+const count = (value: unknown) => typeof value === "number" && value > 0 ? Math.floor(value) : 0;
 
 export type ChangeKind = "untracked" | "ignored" | "conflicted" | "renamed" | "added" | "deleted" | "modified";
 
@@ -303,7 +340,7 @@ function statusLine(line: string): GitChange | null {
 
 /**
  * Porcelain status as changes. Reads the text (`XY path` per line, or NUL separated), a
- * list of such lines, or a list of `{ path, status }` / `{ path, index, worktree }` objects.
+ * list of such lines, or a list of `{ path, code, from? }` / `{ path, index, worktree }` objects.
  */
 export function parseStatus(status: unknown): GitChange[] {
   if (typeof status === "string") return status.split(/\r?\n|\0/).flatMap((line) => statusLine(line) ?? []);
@@ -315,7 +352,7 @@ export function parseStatus(status: unknown): GitChange[] {
     }
     const path = isObject(item) ? str(item.path) : null;
     if (!isObject(item) || !path) return [];
-    const code = (str(item.status) ?? "").padEnd(2, " ");
+    const code = (str(item.code) ?? str(item.status) ?? "").padEnd(2, " ");
     return [{ path, from: str(item.from), index: str(item.index) ?? code[0], worktree: str(item.worktree) ?? code[1] }];
   });
 }
@@ -326,16 +363,23 @@ export interface SummaryView {
   tools: string[];
 }
 
-/** A `summary` answer; `null` when it is not one. A folder without git reads as git unavailable, never as a failure. */
+/**
+ * A `summary` answer; `null` when it is not one. A folder without git reads as git
+ * unavailable, never as a failure: `git` is `null` and `git_reason` says why. The status
+ * text is what counts; `changes` is read only when there is no text.
+ */
 export function readSummary(answer: unknown): SummaryView | null {
   if (!isObject(answer) || typeof answer.root !== "string") return null;
   const raw = isObject(answer.git) ? answer.git : null;
-  const reason = raw ? str(raw.reason) ?? str(raw.error) : null;
-  // A table with only a reason is git saying why it has nothing.
-  const available = !!raw && (raw.status !== undefined || raw.branch !== undefined) && !(reason && raw.status === undefined);
+  const status = raw && (typeof raw.status === "string" || Array.isArray(raw.status)) ? raw.status : raw && Array.isArray(raw.changes) ? raw.changes : null;
+  const available = raw !== null && raw.available !== false && status !== null;
+  const reason = str(answer.git_reason) ?? (raw ? str(raw.reason) ?? str(raw.error) : null);
   return {
     root: answer.root,
-    git: { available, branch: raw ? str(raw.branch) : null, changes: available ? parseStatus(raw!.status) : [], reason },
+    git: {
+      available, branch: available ? str(raw.branch) : null, changes: available ? parseStatus(status) : [], reason: available ? null : reason,
+      ahead: available ? count(raw.ahead) : 0, behind: available ? count(raw.behind) : 0, truncated: available && raw.truncated === true,
+    },
     tools: Array.isArray(answer.tools) ? answer.tools.filter((tool): tool is string => typeof tool === "string") : [],
   };
 }
@@ -370,9 +414,11 @@ export function readSearch(answer: unknown): WorkspaceSearch | null {
   return { root: str(answer.root) ?? "", matches, truncated: answer.truncated === true };
 }
 
+/** A `diff` answer. Outside a repository the text is empty and `git_reason` says why. */
 export function readDiff(answer: unknown): WorkspaceDiff | null {
   if (!isObject(answer) || typeof answer.text !== "string") return null;
-  return { root: str(answer.root) ?? "", text: answer.text, truncated: answer.truncated === true };
+  const reason = str(answer.git_reason);
+  return { root: str(answer.root) ?? "", text: answer.text, truncated: answer.truncated === true, ...(reason ? { git_reason: reason } : {}) };
 }
 
 // ── The file tree ──────────────────────────────────────────────────────────────────────

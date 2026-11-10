@@ -5,19 +5,27 @@
 
 export type InspectAction = "summary" | "list" | "read" | "search" | "diff";
 
-/** `summary.git`: `null` when the folder is not a repository or git is not there. */
+/** `summary.git` when the folder is a repository git could read. */
 export interface GitSummary {
-  /** `null` on a detached HEAD or a repository with no commit yet. */
+  /** `null` on a detached HEAD. */
   branch: string | null;
-  /** `git status --porcelain` text: `XY path` per line, empty when clean. */
+  /** `git status --porcelain=v1` text: `XY path` per line, `XY old -> new` for a rename, empty when clean. */
   status: string;
-  /** Why git gave nothing, when the module says. */
-  reason?: string;
+  head?: string | null;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+  /** The same lines, parsed. */
+  changes?: { path: string; code: string; from?: string }[];
+  truncated?: boolean;
 }
 
 export interface WorkspaceSummary {
   root: string;
+  /** `null`: not a repository, git not installed, or git refused or timed out. */
   git: GitSummary | null;
+  /** Why `git` is `null`. */
+  git_reason?: string;
   /** The tools the workspace node offers, by name. */
   tools: string[];
 }
@@ -25,6 +33,7 @@ export interface WorkspaceSummary {
 export interface WorkspaceEntry {
   /** Relative to the root, `/` separated. */
   path: string;
+  /** A link is listed with the kind of what it points to, when that stays inside the root. */
   kind: "file" | "directory";
 }
 
@@ -43,6 +52,7 @@ export interface WorkspaceFile {
   truncated: boolean;
 }
 
+/** One line that holds the query; the query is literal and case-insensitive. */
 export interface SearchMatch {
   path: string;
   /** 1-based. */
@@ -58,9 +68,11 @@ export interface WorkspaceSearch {
 
 export interface WorkspaceDiff {
   root: string;
-  /** One unified diff of the working tree. */
+  /** Tracked changes against `HEAD`, staged and unstaged, as one unified diff. Untracked files are not in it. */
   text: string;
   truncated: boolean;
+  /** Why there is no diff, outside a repository. */
+  git_reason?: string;
 }
 
 /** One worker of a delegate node (`delegation.workers`, `regulus workers ls`). */

@@ -11,8 +11,11 @@ import { defaultCodeLayout, readCodeLayout, type CodePanelEntry } from "./panels
 
 /** Numbers of the view, with their limits. */
 export const codeLimits = {
-  /** How often the workspace is asked for while nothing happens; it is also asked when the agent finishes a tool or a turn. */
-  inspectRefreshMs: { default: 4000, min: 1000, max: 120000 },
+  /**
+   * How often the workspace is asked for while nothing happens. 0: only when the agent
+   * finishes a tool or a turn, or the person asks; the terminal reads the same key so.
+   */
+  inspectRefreshMs: { default: 4000, min: 0, max: 120000 },
   /** Share of the session's width the workspace pane takes, in percent. */
   workspaceWidth: { default: 50, min: 25, max: 75 },
   /** Folders the setup form remembers. */
@@ -31,20 +34,36 @@ export const codeTexts = {
   profilePrefix: { default: "code", max: 40 },
 } as const;
 
+/** Switches of the view. */
+export const codeFlags = {
+  /** Draw the mascot. The terminal reads the same key. */
+  mascot: { default: true },
+} as const;
+
 export type CodeNumberKey = keyof typeof codeLimits;
 export type CodeTextKey = keyof typeof codeTexts;
+export type CodeFlagKey = keyof typeof codeFlags;
 export type CodeNumbers = Record<CodeNumberKey, number>;
 export type CodeTexts = Record<CodeTextKey, string>;
-export type CodeValues = CodeNumbers & CodeTexts;
-export type CodeSettingKey = CodeNumberKey | CodeTextKey;
+export type CodeFlags = Record<CodeFlagKey, boolean>;
+export type CodeValues = CodeNumbers & CodeTexts & CodeFlags;
+export type CodeSettingKey = CodeNumberKey | CodeTextKey | CodeFlagKey;
 
 const numberKeys = Object.keys(codeLimits) as CodeNumberKey[];
 const textKeys = Object.keys(codeTexts) as CodeTextKey[];
+const flagKeys = Object.keys(codeFlags) as CodeFlagKey[];
 
 export const codeDefaults = {
   ...Object.fromEntries(numberKeys.map((key) => [key, codeLimits[key].default])),
   ...Object.fromEntries(textKeys.map((key) => [key, codeTexts[key].default])),
+  ...Object.fromEntries(flagKeys.map((key) => [key, codeFlags[key].default])),
 } as CodeValues;
+
+/** The shortest wait between two looks at the workspace, whatever is asked for. */
+const MIN_INSPECT_MS = 250;
+
+/** How long to wait between two looks at the workspace; `null`: no looking on a timer. */
+export const inspectInterval = (inspectRefreshMs: number): number | null => inspectRefreshMs <= 0 ? null : Math.max(MIN_INSPECT_MS, inspectRefreshMs);
 
 /** Where `config.client` sets each value: `[client.code]` of config.toml or of a project's regulus.toml. */
 export const codeClientKeys: Record<CodeSettingKey, string> = {
@@ -55,6 +74,7 @@ export const codeClientKeys: Record<CodeSettingKey, string> = {
   label: "code.label",
   template: "code.template",
   profilePrefix: "code.profile_prefix",
+  mascot: "code.mascot",
 };
 /** Where `config.client` sets the order and visibility of the workspace panels. */
 export const codePanelsKey = "code.panels";
@@ -76,6 +96,7 @@ export function sanitizeCodeOverrides(saved: unknown): Partial<CodeValues> {
   const out: Partial<CodeValues> = {};
   for (const key of numberKeys) { const value = numberWithin(key, source[key]); if (value !== undefined) out[key] = value; }
   for (const key of textKeys) { const value = textWithin(key, source[key]); if (value !== undefined) out[key] = value; }
+  for (const key of flagKeys) if (typeof source[key] === "boolean") out[key] = source[key] as boolean;
   return out;
 }
 
@@ -143,7 +164,7 @@ interface CodeSettingsState extends CodeValues {
   showPanel: (id: string) => void;
   workspaceShown: boolean;
   setWorkspaceShown: (shown: boolean) => void;
-  setSetting: (key: CodeSettingKey, value: number | string) => void;
+  setSetting: (key: CodeSettingKey, value: number | string | boolean) => void;
   /** Drops the person's changes: config.toml or the defaults apply again. What is remembered stays. */
   reset: () => void;
   applyClient: (settings: Pick<ClientSettings, "client" | "sources">) => void;
