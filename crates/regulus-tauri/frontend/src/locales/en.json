@@ -694,5 +694,10 @@
   "operate.conversation.forget": "Forget this choice",
   "operate.conversation.waiting": "Waiting for you in this execution",
   "operate.conversation.inPanel": "This agent's conversation is in the Conversation panel.",
-  "operate.conversation.showInPanel": "Talk to it there"
+  "operate.conversation.showInPanel": "Talk to it there",
+  "code.name": "Regulus Code",
+  "code.panel.files": "Files",
+  "code.panel.changes": "Changes",
+  "code.panel.activity": "Activity",
+  "code.panel.workers": "Workers"
 }
