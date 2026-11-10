@@ -1,0 +1,18 @@
+/* The Regulus Code view. Colors only through --rg-* tokens (docs/08-design-system.md). */
+
+/* The mascot. Its colors are set per role by the component, from the tokens the grid names
+   (assets/design/regulus-code-mascot.json); here only how its poses take turns: in steps,
+   and with reduced motion not at all (the first pose shows). */
+.mascot { --mascot-blink:6s; --mascot-look:1.8s; flex-shrink:0; display:block; }
+.mascot-eyes { visibility:hidden; }
+.mascot-eyes:first-of-type { visibility:visible; }
+@media (prefers-reduced-motion: no-preference) {
+  .mascot[data-mood="idle"][data-poses="2"] .mascot-eyes:nth-of-type(1) { animation:mascot-mostly var(--mascot-blink) steps(1) infinite; }
+  .mascot[data-mood="idle"][data-poses="2"] .mascot-eyes:nth-of-type(2) { animation:mascot-briefly var(--mascot-blink) steps(1) infinite; }
+  .mascot[data-mood="working"][data-poses="2"] .mascot-eyes:nth-of-type(1) { animation:mascot-first-half var(--mascot-look) steps(1) infinite; }
+  .mascot[data-mood="working"][data-poses="2"] .mascot-eyes:nth-of-type(2) { animation:mascot-second-half var(--mascot-look) steps(1) infinite; }
+}
+@keyframes mascot-mostly { 0%, 96% { visibility:visible; } 97%, 100% { visibility:hidden; } }
+@keyframes mascot-briefly { 0%, 96% { visibility:hidden; } 97%, 100% { visibility:visible; } }
+@keyframes mascot-first-half { 0%, 49% { visibility:visible; } 50%, 100% { visibility:hidden; } }
+@keyframes mascot-second-half { 0%, 49% { visibility:hidden; } 50%, 100% { visibility:visible; } }

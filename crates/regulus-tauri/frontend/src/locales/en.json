@@ -696,6 +696,7 @@
   "operate.conversation.inPanel": "This agent's conversation is in the Conversation panel.",
   "operate.conversation.showInPanel": "Talk to it there",
   "code.name": "Regulus Code",
+  "code.mascot": "Regulus Code mascot: a small lion with a star on its forehead",
   "code.panel.files": "Files",
   "code.panel.changes": "Changes",
   "code.panel.activity": "Activity",
