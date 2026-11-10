@@ -331,11 +331,11 @@ impl Documents {
         let here = self.here(call);
         match here.node.node_type.as_str() {
             INGEST => {
-                let done = ingest_value(&here, &event.value).map_err(|e| here.fail(e))?;
+                let (done, pruned) = ingest_value(&here, &event.value).map_err(|e| here.fail(e))?;
                 for ingested in &done {
                     here.emit(INGESTED, ingested.clone())?;
                 }
-                Ok(json!({ "ingested": done.len() }))
+                Ok(json!({ "ingested": done.len(), "pruned": pruned }))
             }
             RETRIEVE => {
                 let hits = retrieve_value(&here, &event.value).map_err(|e| here.fail(e))?;
@@ -402,8 +402,9 @@ impl Documents {
     }
 }
 
-/// What a value on `ingest`'s `in` names: one result per source.
-fn ingest_value(here: &Here, value: &Value) -> Result<Vec<Value>, String> {
+/// What a value on `ingest`'s `in` names: one result per source, and the sources `prune`
+/// dropped.
+fn ingest_value(here: &Here, value: &Value) -> Result<(Vec<Value>, Vec<Value>), String> {
     let (path, text, title, metadata) = match value {
         Value::String(path) => (Some(path.clone()), None, None, Value::Null),
         Value::Object(o) => (
@@ -416,17 +417,17 @@ fn ingest_value(here: &Here, value: &Value) -> Result<Vec<Value>, String> {
     };
     if let Some(text) = text {
         let incoming = text_source(text, title, metadata);
-        return Ok(vec![add_source(here, incoming)?]);
+        return Ok((vec![add_source(here, incoming)?], Vec::new()));
     }
     let path = path
         .filter(|p| !p.trim().is_empty())
         .ok_or("the value has no `path` and no `text`")?;
     let files = files(here, &path)?;
     let single = files.len() == 1;
-    files
-        .into_iter()
+    let done = files
+        .iter()
         .map(|file| {
-            let bytes = read_bounded(&file, here.number("max_bytes").max(0.0) as u64)?;
+            let bytes = read_bounded(file, here.number("max_bytes").max(0.0) as u64)?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| format!("{}: not UTF-8 text", file.display()))?;
             let name = file
@@ -443,6 +444,60 @@ fn ingest_value(here: &Here, value: &Value) -> Result<Vec<Value>, String> {
                     metadata: metadata.clone(),
                 },
             )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let pruned = if here.text("prune") == YES {
+        prune(here, &path, &files)?
+    } else {
+        Vec::new()
+    };
+    Ok((done, pruned))
+}
+
+/// With `prune = yes`, after a folder was ingested: drops the file sources of the
+/// collection that lie under that folder, match its `glob` and are no longer there, so a
+/// file deleted from a corpus leaves the index too. Text sources, other folders and a
+/// single file or glob are never touched.
+fn prune(here: &Here, path: &str, found: &[PathBuf]) -> Result<Vec<Value>, String> {
+    let base = here.base()?;
+    let named = Path::new(path.trim());
+    let named = if named.is_absolute() {
+        named.to_path_buf()
+    } else {
+        base.join(named)
+    };
+    if !named.is_dir() || named.to_string_lossy().contains(GLOB_CHARS) {
+        return Ok(Vec::new());
+    }
+    // Locations are written as `files` found them: resolved unless `allow_outside`.
+    let folder = if here.text("allow_outside") == YES {
+        named
+    } else {
+        named
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", named.display()))?
+    };
+    let pattern =
+        glob::Pattern::new(here.text("glob").trim()).map_err(|e| format!("`glob`: {e}"))?;
+    let kept: std::collections::BTreeSet<String> =
+        found.iter().map(|f| f.display().to_string()).collect();
+    let col = here.collection()?;
+    let gone: Vec<Source> = col
+        .sources()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|s| s.kind == KIND_FILE && !kept.contains(&s.location))
+        .filter(|s| {
+            Path::new(&s.location)
+                .strip_prefix(&folder)
+                .is_ok_and(|rest| pattern.matches_path(rest))
+        })
+        .collect();
+    gone.iter()
+        .map(|source| {
+            let mut dropped = delete_source(here, &source.source_id)?;
+            dropped["location"] = json!(source.location);
+            Ok(dropped)
         })
         .collect()
 }

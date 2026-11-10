@@ -49,8 +49,8 @@
 # Re-runs: the collection of a candidate carries its chunker, size and overlap in its name,
 # so changing them ingests afresh instead of reusing chunks cut the old way. A candidate's
 # retrieval engine is NOT in the name: when you wire another engine, also change `collection`.
-# Files you delete from `docs_dir` stay in their collections (documents has no prune): use
-# a new `collection`, or `regulus docs rm`.
+# Files you delete from `docs_dir` leave both collections at the next run (`prune`, yes by
+# default): set it to `no` to keep them.
 id = "rag-lab"
 name = "RAG lab of {{docs_dir}}"
 main_workflow_id = "lab"
@@ -69,6 +69,7 @@ requires = [
 docs_dir = { description = "absolute folder of the documents both candidates ingest" }
 dataset = { description = "the JSONL dataset, absolute or relative to docs_dir" }
 glob = { description = "files of docs_dir ingested, relative to it", default = "**/*.md" }
+prune = { description = "yes: files deleted from docs_dir leave the collections at the next run", default = "yes" }
 collection = { description = "prefix of the two document collections (<prefix>-a-<chunking>, <prefix>-b-<chunking>); change it for a fresh start or after wiring another engine", default = "rag-lab" }
 label_a = { description = "name of candidate a in the report", default = "markdown-1200" }
 label_b = { description = "name of candidate b in the report", default = "fixed-300" }
@@ -134,7 +135,7 @@ ports = [
   type = "ingest"
   module_id = "regulus/documents@0.1.0"
   position = { x = 450, y = 20 }
-  config = { collection = "{{collection}}-a-{{chunker_a}}-{{chunk_chars_a}}-{{overlap_chars_a}}", dir = "{{docs_dir}}", glob = "{{glob}}", chunker = "{{chunker_a}}", chunk_chars = {{chunk_chars_a}}, overlap_chars = {{overlap_chars_a}} }
+  config = { collection = "{{collection}}-a-{{chunker_a}}-{{chunk_chars_a}}-{{overlap_chars_a}}", dir = "{{docs_dir}}", glob = "{{glob}}", prune = "{{prune}}", chunker = "{{chunker_a}}", chunk_chars = {{chunk_chars_a}}, overlap_chars = {{overlap_chars_a}} }
   ports = [
     { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
@@ -148,7 +149,7 @@ ports = [
   type = "ingest"
   module_id = "regulus/documents@0.1.0"
   position = { x = 450, y = 150 }
-  config = { collection = "{{collection}}-b-{{chunker_b}}-{{chunk_chars_b}}-{{overlap_chars_b}}", dir = "{{docs_dir}}", glob = "{{glob}}", chunker = "{{chunker_b}}", chunk_chars = {{chunk_chars_b}}, overlap_chars = {{overlap_chars_b}} }
+  config = { collection = "{{collection}}-b-{{chunker_b}}-{{chunk_chars_b}}-{{overlap_chars_b}}", dir = "{{docs_dir}}", glob = "{{glob}}", prune = "{{prune}}", chunker = "{{chunker_b}}", chunk_chars = {{chunk_chars_b}}, overlap_chars = {{overlap_chars_b}} }
   ports = [
     { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
     { id = "ingested", capability = "json@1", direction = "output", kind = "then" },

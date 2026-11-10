@@ -110,6 +110,15 @@ name = "Ingest"
   type    = "number"
   default = 500
 
+  # yes: after a folder is ingested, the file sources of the collection under that folder
+  # (matching `glob`) that are no longer there are removed from it, chunks and index too.
+  # Only for a folder; text sources and other folders are never touched.
+  [[node.field]]
+  id      = "prune"
+  type    = "select"
+  default = "no"
+  options = ["no", "yes"]
+
   # fixed: windows of `chunk_chars`. paragraph: paragraphs packed up to `chunk_chars`.
   # markdown: sections by heading, then paragraphs; the heading path stays with each
   # chunk (`metadata.headings`).

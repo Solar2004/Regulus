@@ -587,3 +587,79 @@ fn tools_search_read_and_ingest_only_when_allowed() {
         .error
     );
 }
+
+#[test]
+fn prune_drops_files_deleted_from_an_ingested_folder_and_nothing_else() {
+    let home = temp("prune");
+    let docs = home.join("docs");
+    std::fs::create_dir_all(docs.join("corpus")).unwrap();
+    std::fs::create_dir_all(docs.join("other")).unwrap();
+    std::fs::write(docs.join("corpus/rust.md"), RUST).unwrap();
+    std::fs::write(docs.join("corpus/python.md"), PYTHON).unwrap();
+    std::fs::write(docs.join("other/keep.md"), PYTHON).unwrap();
+    let mut profile: Value = serde_json::to_value(profile(&docs, false)).unwrap();
+    for node in profile["workflows"][0]["nodes"].as_array_mut().unwrap() {
+        if node["id"] == "ingest" {
+            node["config"]["prune"] = json!("yes");
+        }
+    }
+    let core = core(
+        &home,
+        serde_json::from_value(profile).unwrap(),
+        Calls::default(),
+    );
+    let id = start(&core);
+    let list = || -> Vec<String> {
+        let listed = core
+            .dispatch(
+                "documents.list",
+                json!({ "execution_id": id, "node_id": "retrieve" }),
+            )
+            .unwrap();
+        let mut names: Vec<String> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["title"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+
+    send(&core, &id, "ingest", json!("corpus"));
+    send(&core, &id, "ingest", json!("other/keep.md"));
+    send(
+        &core,
+        &id,
+        "ingest",
+        json!({ "text": "a note", "title": "note" }),
+    );
+    until(&core, &id, "ingested", 4);
+    assert_eq!(list(), ["keep.md", "note", "python.md", "rust.md"]);
+
+    // python.md leaves the folder: ingesting the folder again drops it, chunks and all,
+    // and leaves the other folder and the text source alone.
+    std::fs::remove_file(docs.join("corpus/python.md")).unwrap();
+    send(&core, &id, "ingest", json!("corpus"));
+    until(&core, &id, "ingested", 5);
+    let deadline = Instant::now() + WAIT;
+    while list().len() != 3 {
+        assert!(Instant::now() < deadline, "{:?}", list());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(list(), ["keep.md", "note", "rust.md"]);
+    let hits = core
+        .dispatch(
+            "documents.query",
+            json!({ "execution_id": id, "node_id": "retrieve", "query": "pip", "k": 5 }),
+        )
+        .unwrap();
+    assert!(
+        hits["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| !h["location"].as_str().unwrap_or("").ends_with("python.md")),
+        "the pruned file's chunks are gone from the index: {hits}"
+    );
+}
