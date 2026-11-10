@@ -122,6 +122,50 @@ impl Form {
             FormRow::Force => None,
         }
     }
+
+    /// What a key does to the form: moves between rows, edits the text of the row it is
+    /// on, ticks `force` with the space bar; `back` leaves it and Enter sends it.
+    pub fn key(&mut self, key: KeyEvent, keys: &Keys) -> FormKey {
+        if keys.back.matches(&key) {
+            return FormKey::Leave;
+        }
+        let rows = self.rows();
+        if keys.up.matches(&key) || key.code == KeyCode::BackTab {
+            self.row = self.row.saturating_sub(1);
+        } else if keys.down.matches(&key) || key.code == KeyCode::Tab {
+            self.row = (self.row + 1).min(rows.len() - 1);
+        } else if key.code == KeyCode::Enter {
+            return FormKey::Submit;
+        } else if rows.get(self.row) == Some(&FormRow::Force)
+            && matches!(key.code, KeyCode::Char(' '))
+        {
+            self.force = !self.force;
+        } else if key.code == KeyCode::Backspace {
+            if let Some(text) = self.text() {
+                text.pop();
+            }
+        } else if let KeyCode::Char(c) = key.code {
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                if let Some(text) = self.text() {
+                    text.push(c);
+                }
+            }
+        }
+        FormKey::Edited
+    }
+}
+
+/// What a key did to a [`Form`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormKey {
+    /// It moved or edited; nothing to do.
+    Edited,
+    Leave,
+    /// Enter: whoever shows the form checks it and sends it.
+    Submit,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -184,47 +228,25 @@ impl Templates {
 
     pub fn key(&mut self, key: KeyEvent, keys: &Keys) -> (Step, Then) {
         if let Some(form) = &mut self.form {
-            if keys.back.matches(&key) {
-                self.form = None;
-                return (Step::default(), Then::Nothing);
-            }
-            let rows = form.rows();
-            if keys.up.matches(&key) || key.code == KeyCode::BackTab {
-                form.row = form.row.saturating_sub(1);
-            } else if keys.down.matches(&key) || key.code == KeyCode::Tab {
-                form.row = (form.row + 1).min(rows.len() - 1);
-            } else if key.code == KeyCode::Enter {
-                let missing = form.missing();
-                if !missing.is_empty() {
-                    let text = format!("fill in: {}", missing.join(", "));
-                    return (Step::notice(Tone::Info, text), Then::Nothing);
-                }
-                let request = form.request();
-                return (
-                    Step {
-                        requests: vec![request],
-                        notice: Some((Tone::Info, format!("applying {}…", form.template))),
-                        leave: false,
-                        quit: false,
-                    },
-                    Then::Nothing,
-                );
-            } else if rows.get(form.row) == Some(&FormRow::Force)
-                && matches!(key.code, KeyCode::Char(' '))
-            {
-                form.force = !form.force;
-            } else if key.code == KeyCode::Backspace {
-                if let Some(text) = form.text() {
-                    text.pop();
-                }
-            } else if let KeyCode::Char(c) = key.code {
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    if let Some(text) = form.text() {
-                        text.push(c);
+            match form.key(key, keys) {
+                FormKey::Edited => {}
+                FormKey::Leave => self.form = None,
+                FormKey::Submit => {
+                    let missing = form.missing();
+                    if !missing.is_empty() {
+                        let text = format!("fill in: {}", missing.join(", "));
+                        return (Step::notice(Tone::Info, text), Then::Nothing);
                     }
+                    let request = form.request();
+                    return (
+                        Step {
+                            requests: vec![request],
+                            notice: Some((Tone::Info, format!("applying {}…", form.template))),
+                            leave: false,
+                            quit: false,
+                        },
+                        Then::Nothing,
+                    );
                 }
             }
             return (Step::default(), Then::Nothing);
