@@ -1000,6 +1000,42 @@ fn stopping_the_execution_ends_a_command_in_flight() {
     assert_eq!(code, INVALID_PARAMS);
 }
 
+#[test]
+fn a_search_that_does_not_look_everywhere_says_so() {
+    let world = World::start(
+        "search-bounds",
+        json!({ "max_search_depth": 1, "max_folder_entries": 3 }),
+    );
+    put(&world.root, "top.txt", "a needle\n");
+    put(&world.root, "a/one.txt", "a needle\n");
+    put(&world.root, "a/b/two.txt", "a needle\n");
+    // One level down and no further: what lies deeper is not looked at, and it is told.
+    let tool = world.ok("code_search", json!({ "query": "needle" }));
+    assert_eq!(
+        hits(&tool),
+        [("a/one.txt".to_string(), 1), ("top.txt".to_string(), 1)]
+    );
+    assert_eq!(tool["truncated"], true);
+    let look = world.look(json!({ "action": "search", "query": "NEEDLE" }));
+    assert_eq!(hits(&look), hits(&tool));
+    assert_eq!(look["truncated"], true);
+    // Asked for by path, the deeper folder is where the search starts.
+    let deeper = world.ok("code_search", json!({ "query": "needle", "path": "a/b" }));
+    assert_eq!(hits(&deeper), [("a/b/two.txt".to_string(), 1)]);
+    assert_eq!(deeper["truncated"], false);
+
+    // A folder with more entries than are looked at is listed in part, and says so.
+    for n in 0..6 {
+        put(&world.root, &format!("many/f{n}.txt"), "x\n");
+    }
+    let listed = world.ok("code_list_files", json!({ "path": "many" }));
+    assert_eq!(listed["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(listed["truncated"], true);
+    let looked = world.look(json!({ "action": "list", "path": "many" }));
+    assert_eq!(looked["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(looked["truncated"], true);
+}
+
 /// Runs the real git for a test's own setup, with no configuration but the repository's.
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")

@@ -69,6 +69,8 @@ pub(crate) mod field {
     pub const MAX_SEARCH_FILES: &str = "max_search_files";
     pub const MAX_SEARCH_FILE_BYTES: &str = "max_search_file_bytes";
     pub const SEARCH_TIMEOUT_MS: &str = "search_timeout_ms";
+    pub const MAX_SEARCH_DEPTH: &str = "max_search_depth";
+    pub const MAX_FOLDER_ENTRIES: &str = "max_folder_entries";
     pub const MAX_WRITE_BYTES: &str = "max_write_bytes";
     pub const INSPECT_MAX_BYTES: &str = "inspect_max_bytes";
     pub const INSPECT_MAX_ENTRIES: &str = "inspect_max_entries";
@@ -99,6 +101,8 @@ pub(crate) mod field {
         MAX_SEARCH_FILES,
         MAX_SEARCH_FILE_BYTES,
         SEARCH_TIMEOUT_MS,
+        MAX_SEARCH_DEPTH,
+        MAX_FOLDER_ENTRIES,
         MAX_WRITE_BYTES,
         INSPECT_MAX_BYTES,
         INSPECT_MAX_ENTRIES,
@@ -258,6 +262,8 @@ pub(crate) struct Settings {
     pub max_search_files: usize,
     pub max_search_file_bytes: u64,
     pub search_timeout: Duration,
+    pub max_search_depth: usize,
+    pub max_folder_entries: usize,
     pub max_write_bytes: usize,
     pub inspect_max_bytes: usize,
     pub inspect_max_entries: usize,
@@ -317,6 +323,8 @@ impl Settings {
             search_timeout: fields
                 .millis(SEARCH_TIMEOUT_MS)
                 .max(Duration::from_millis(1)),
+            max_search_depth: fields.size(MAX_SEARCH_DEPTH),
+            max_folder_entries: fields.size(MAX_FOLDER_ENTRIES).max(1),
             max_write_bytes: fields.size(MAX_WRITE_BYTES).max(1),
             inspect_max_bytes: fields.size(INSPECT_MAX_BYTES).max(1),
             inspect_max_entries: fields.size(INSPECT_MAX_ENTRIES).max(1),

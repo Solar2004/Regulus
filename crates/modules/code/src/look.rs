@@ -57,8 +57,14 @@ impl Workspace<'_> {
                 })
             }
             action::LIST => {
-                let listed =
-                    fsops::list(&root, &settings.skip, path, 1, settings.inspect_max_entries)?;
+                let listed = fsops::list(
+                    &root,
+                    &settings.skip,
+                    path,
+                    1,
+                    settings.inspect_max_entries,
+                    settings.max_folder_entries,
+                )?;
                 answer(Listing {
                     root: root.text(),
                     path: listed.path,

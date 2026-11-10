@@ -17,8 +17,6 @@ use crate::Fault;
 
 /// How much of a file is looked at to tell text from binary.
 const SNIFF_BYTES: usize = 8192;
-/// How deep a search goes down: past any real tree, short of a runaway one.
-const MAX_SEARCH_DEPTH: usize = 64;
 /// What marks a line that was cut.
 const CUT_MARK: char = '…';
 
@@ -81,11 +79,14 @@ struct Child {
     link: bool,
 }
 
-/// The entries of `dir` operations may see, by path. A link counts as what it leads to
-/// when that is inside the workspace; one that leaves it, a protected name, a name that
-/// is not text and anything that is neither a file nor a folder are left out.
-fn children(root: &Root, dir: &Path, rel: &str) -> io::Result<Vec<Child>> {
+/// The entries of `dir` operations may see, by path, and whether it has more than the
+/// `cap` that were looked at (a folder is never read without an end). A link counts as
+/// what it leads to when that is inside the workspace; one that leaves it, a protected
+/// name, a name that is not text and anything that is neither a file nor a folder are
+/// left out.
+fn children(root: &Root, dir: &Path, rel: &str, cap: usize) -> io::Result<(Vec<Child>, bool)> {
     let mut found = Vec::new();
+    let mut more = false;
     for item in fs::read_dir(dir)? {
         let Ok(item) = item else { continue };
         let Some(name) = item.file_name().to_str().map(String::from) else {
@@ -116,6 +117,10 @@ fn children(root: &Root, dir: &Path, rel: &str) -> io::Result<Vec<Child>> {
         } else {
             continue;
         };
+        if found.len() >= cap {
+            more = true;
+            break;
+        }
         let path = if rel.is_empty() {
             name.clone()
         } else {
@@ -129,7 +134,7 @@ fn children(root: &Root, dir: &Path, rel: &str) -> io::Result<Vec<Child>> {
         });
     }
     found.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
-    Ok(found)
+    Ok((found, more))
 }
 
 /// A file an operation was asked for: there, inside, and a regular file. A pipe or a
@@ -156,13 +161,15 @@ pub(crate) struct Listed {
 }
 
 /// The entries of the folder `asked`, `depth` levels down (1: its own), at most `max`,
-/// nearest levels first. Folders named in `skip` are listed but not entered.
+/// nearest levels first, looking at no more than `folder_cap` entries of any one folder.
+/// Folders named in `skip` are listed but not entered.
 pub(crate) fn list(
     root: &Root,
     skip: &[String],
     asked: &str,
     depth: usize,
     max: usize,
+    folder_cap: usize,
 ) -> Result<Listed, Fault> {
     let place = root.locate(asked)?;
     let meta = fs::metadata(&place.real).map_err(|e| gone(asked, e))?;
@@ -175,12 +182,13 @@ pub(crate) fn list(
     let mut truncated = false;
     let mut queue = VecDeque::from([(place.real.clone(), place.rel.clone(), 1usize)]);
     'folders: while let Some((dir, rel, level)) = queue.pop_front() {
-        let found = match children(root, &dir, &rel) {
+        let (found, more) = match children(root, &dir, &rel, folder_cap) {
             Ok(found) => found,
             // The folder asked for must be readable; one further down is only left out.
             Err(error) if level == 1 => return Err(broken(asked, error)),
             Err(_) => continue,
         };
+        truncated |= more;
         for child in found {
             if entries.len() >= max {
                 truncated = true;
@@ -363,6 +371,10 @@ pub(crate) struct Bounds {
     pub files: usize,
     pub file_bytes: u64,
     pub time: Duration,
+    /// Levels of folders it goes down below where it starts.
+    pub depth: usize,
+    /// Entries of any one folder it looks at.
+    pub folder_entries: usize,
 }
 
 #[derive(Debug, Default)]
@@ -383,11 +395,18 @@ struct Search<'a> {
 }
 
 impl Search<'_> {
-    /// Looks through a folder, in path order. False: the search is over.
+    /// Looks through a folder, in path order. False: the search is over. Whatever it does
+    /// not look at (out of time, too deep, too many entries) leaves the answer `truncated`.
     fn folder(&mut self, dir: &Path, rel: &str, depth: usize) -> bool {
-        let Ok(found) = children(self.root, dir, rel) else {
+        // Checked per folder too: a tree of folders with no file in it has an end as well.
+        if Instant::now() >= self.deadline {
+            self.hits.truncated = true;
+            return false;
+        }
+        let Ok((found, more)) = children(self.root, dir, rel, self.bounds.folder_entries) else {
             return true;
         };
+        self.hits.truncated |= more;
         for child in found {
             // Links are not followed: a loop would never end, and one file is one match.
             if child.link {
@@ -395,7 +414,10 @@ impl Search<'_> {
             }
             let more = match child.entry.kind {
                 Kind::Directory if self.skip.contains(&child.name) => true,
-                Kind::Directory if depth >= MAX_SEARCH_DEPTH => true,
+                Kind::Directory if depth >= self.bounds.depth => {
+                    self.hits.truncated = true;
+                    true
+                }
                 Kind::Directory => self.folder(&child.real, &child.entry.path, depth + 1),
                 Kind::File => self.file(
                     &child.real,
@@ -656,6 +678,114 @@ pub(crate) fn edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("regulus-code-fsops-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    fn put(home: &Path, path: &str, text: &str) {
+        let file = home.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
+    fn bounds() -> Bounds {
+        Bounds {
+            matches: 100,
+            line_chars: 100,
+            files: 100,
+            file_bytes: 1 << 20,
+            time: Duration::from_secs(30),
+            depth: 8,
+            folder_entries: 100,
+        }
+    }
+
+    fn needle() -> Query<'static> {
+        Query {
+            text: "needle",
+            ..Query::default()
+        }
+    }
+
+    fn found(hits: &Hits) -> Vec<&str> {
+        hits.matches.iter().map(|m| m.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_search_out_of_time_stops_in_a_tree_of_folders_too() {
+        let home = temp("expired");
+        fs::create_dir_all(home.join("a/b/c/d")).unwrap();
+        fs::create_dir_all(home.join("e/f")).unwrap();
+        let root = Root::open(home.to_str().unwrap(), Vec::new()).unwrap();
+        // No file anywhere: the clock has to be read at the folders.
+        let expired = Bounds {
+            time: Duration::ZERO,
+            ..bounds()
+        };
+        let hits = search(&root, &[], &needle(), &expired).unwrap();
+        assert!(hits.truncated, "an expired search says it did not finish");
+        assert!(hits.matches.is_empty());
+        let whole = search(&root, &[], &needle(), &bounds()).unwrap();
+        assert!(
+            !whole.truncated,
+            "with time, the same tree is searched whole"
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_search_says_when_it_did_not_go_deeper() {
+        let home = temp("depth");
+        for file in ["top.txt", "a/one.txt", "a/b/two.txt", "a/b/c/three.txt"] {
+            put(&home, file, "a needle\n");
+        }
+        let root = Root::open(home.to_str().unwrap(), Vec::new()).unwrap();
+        let down = |depth: usize| {
+            let bounds = Bounds { depth, ..bounds() };
+            search(&root, &[], &needle(), &bounds).unwrap()
+        };
+        let none = down(0);
+        assert_eq!(found(&none), ["top.txt"]);
+        assert!(
+            none.truncated,
+            "a folder it did not enter is a search cut short"
+        );
+        let one = down(1);
+        assert_eq!(found(&one), ["a/one.txt", "top.txt"]);
+        assert!(one.truncated);
+        let all = down(3);
+        assert_eq!(
+            found(&all),
+            ["a/b/c/three.txt", "a/b/two.txt", "a/one.txt", "top.txt"]
+        );
+        assert!(!all.truncated);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_folder_is_looked_at_up_to_its_cap() {
+        let home = temp("cap");
+        for n in 0..10 {
+            put(&home, &format!("f{n}.txt"), "a needle\n");
+        }
+        let root = Root::open(home.to_str().unwrap(), Vec::new()).unwrap();
+        let capped = Bounds {
+            folder_entries: 4,
+            ..bounds()
+        };
+        let hits = search(&root, &[], &needle(), &capped).unwrap();
+        assert_eq!((hits.matches.len(), hits.truncated), (4, true));
+        let listed = list(&root, &[], "", 1, 100, 4).unwrap();
+        assert_eq!((listed.entries.len(), listed.truncated), (4, true));
+        let whole = list(&root, &[], "", 1, 100, 100).unwrap();
+        assert_eq!((whole.entries.len(), whole.truncated), (10, false));
+        let _ = fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn a_line_is_read_within_what_is_kept() {

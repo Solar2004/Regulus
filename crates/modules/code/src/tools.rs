@@ -193,6 +193,8 @@ impl Workspace<'_> {
             files: self.settings.max_search_files,
             file_bytes: self.settings.max_search_file_bytes,
             time: self.settings.search_timeout,
+            depth: self.settings.max_search_depth,
+            folder_entries: self.settings.max_folder_entries,
         }
     }
 
@@ -211,6 +213,7 @@ impl Workspace<'_> {
                     text_arg(args, "path").unwrap_or(""),
                     usize::try_from(depth).unwrap_or(usize::MAX),
                     settings.max_list_entries,
+                    settings.max_folder_entries,
                 )?;
                 done(json!({ "path": listed.path, "entries": listed.entries,
                              "truncated": listed.truncated }))

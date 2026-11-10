@@ -137,7 +137,8 @@ name = "Code workspace"
   default = 200
 
   # Where a search stops: files looked at, the size past which a file is skipped, and the
-  # time it may take. Stopping at any of them answers `truncated`.
+  # time it may take (checked at every folder and every file). Stopping at any of them
+  # answers `truncated`.
   [[node.field]]
   id      = "max_search_files"
   type    = "number"
@@ -152,6 +153,20 @@ name = "Code workspace"
   id      = "search_timeout_ms"
   type    = "number"
   default = 5000
+
+  # Levels of folders a search goes down below where it starts. 0: only the folder
+  # itself. What lies deeper is not looked at, and the answer says `truncated`.
+  [[node.field]]
+  id      = "max_search_depth"
+  type    = "number"
+  default = 64
+
+  # Entries of any one folder a listing or a search looks at. A folder with more is read
+  # in part, in no particular order, and the answer says `truncated`.
+  [[node.field]]
+  id      = "max_folder_entries"
+  type    = "number"
+  default = 20000
 
   # The largest file `code_write_file` writes and `code_edit_file` edits.
   [[node.field]]
