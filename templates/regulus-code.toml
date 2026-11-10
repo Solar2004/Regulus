@@ -1,0 +1,418 @@
+# Regulus Code (docs/14-code.md): a coding agent over one folder, built from boxes. No
+# box here is special to it: the loop is the native engine, the conversation is the Agent
+# box's, a person decides through the Decider and the workers are a Delegate. The only
+# piece of its own is the `code` module, which gives all of them the folder.
+#
+#   self.chat → agent ─reply→ self.reply          agent ─failed→ self.error
+#                 engine ⇢ native ⇢ model ⇢ provider             decisions ⇢ decider
+#                          native.tools   ⇢ workspace (code_*: files, git, shell)
+#                                         ⇢ workers   (worker_*: delegation)
+#                          native.context ⇢ instructions (AGENTS.md…, on session_start)
+#   workers ⇢ engine ⇢ worker_engine ⇢ model ⇢ provider
+#                      worker_engine.tools   ⇢ reader ⇢ workspace   (reads only)
+#                      worker_engine.context ⇢ instructions
+#   workspace ─changed→ self.changed    workspace ─ran→ self.ran
+#   workers ─result→ self.worker_result
+#
+# Who may do what. Reading is free: the tools in `allow_tools` run without asking (list,
+# read, search, git status, git diff, and following a worker). Everything else asks
+# (`tool_policy`): writing or editing a file, running a command, starting a worker. The
+# request waits in `regulus human list` (the app and `regulus code` show it in the
+# conversation) and is answered with
+# `regulus human answer <id> approve --field option=allow_once` (or `allow_always`,
+# `reject_once`); nobody answering within `decision_timeout_ms` is a refusal.
+#
+# Workers. `worker_create` starts a sub-agent of its own, the workflow `worker`: an Agent
+# box on `worker_engine`, kept alive as a child execution (`regulus exec tree`,
+# `regulus workers ls <exec> workers`). A worker sees the same folder through `reader`,
+# which offers only what `worker_access` gives (`read`: nothing that changes a file or
+# runs a program is even shown to it), and answers no permission request
+# (`worker_permissions = reject`). To let workers change things, widen `worker_access`
+# and set `worker_permissions = ask`: their requests then reach the same person.
+#
+# The repository's instructions. `instructions` reads the files of `instructions`
+# (AGENTS.md, CLAUDE.md) from the folder as text and adds them to the system prompt of
+# every session. Nothing of the repository is run to do so. They are still text someone
+# else may have written: a repository can instruct the model (prompt injection), and so
+# can any file it reads.
+#
+# Not a sandbox. Every file tool stays inside the folder, links resolved, and never
+# enters `.git`. `code_run_command` starts there but is a shell with the rights of
+# whoever runs Regulus: approving a command is trusting that command. It gets only the
+# environment variables the workspace names (`env_passthrough`).
+#
+# Edit it. Every box is on the canvas: swap the provider, wire a hook into
+# `native.context` to veto a tool (`hooks.rule` on `pre_tool`) or to keep a turn going
+# until the tests pass (`stop`), add memory or documents to `native.tools`, move the
+# workspace to a worktree per execution (a `workspace` of the workspace module, its
+# `ready` into `workspace.root`).
+#
+# Limits. No streaming: the text of each step arrives whole. No compaction: the model
+# sees the last `history_turns` turns. A tool result past `observation_max_chars` is cut
+# by the engine; the workspace's own limits (`max_read_bytes`, `max_output_bytes`) are
+# set under it so a long file is read in pieces instead. A turn in flight is cancelled
+# with `regulus agent cancel`; a command already running ends at its own time limit, or
+# when the execution stops.
+#
+# Tested (crates/regulus-cli/tests/template_regulus_code.rs): it applies, passes
+# profile.check with no diagnostic, and against a fake OpenAI server one turn reads a
+# file without asking, edits it and runs a command after a person approves each, is
+# refused another command, and delegates a question to a read-only worker. Not run
+# against a real model.
+id = "regulus-code"
+name = "{{label}}"
+main_workflow_id = "code"
+
+[template]
+name = "regulus-code"
+description = "A coding agent over one folder: file, git and shell tools, a person approving changes, read-only workers"
+requires = [
+  { module = "regulus/agent", version = ">=0.1" },
+  { module = "regulus/engine-native", version = ">=0.1" },
+  { module = "regulus/providers", version = ">=0.1" },
+  { module = "regulus/human", version = ">=0.1" },
+  { module = "regulus/delegation", version = ">=0.1" },
+  { module = "regulus/code", version = ">=0.1" },
+]
+
+[template.vars]
+root = { description = "absolute folder the agent works in: every file tool stays inside it" }
+label = { description = "the name clients show for this harness", default = "Regulus Code" }
+preset = { description = "provider template (crates/modules/providers/presets.toml)", default = "ollama" }
+base_url = { description = "the provider's endpoint, over the preset's; empty keeps the preset's", default = "" }
+credential = { description = "secret:<name> with the provider's key; empty for a keyless endpoint", default = "" }
+model = { description = "model id on that endpoint", default = "qwen3:4b" }
+system = { description = "the agent's system prompt, before the repository's instructions", default = "You are a coding agent working in one repository through tools. Paths are relative to the workspace root. Look before you change: find the text with code_search and code_read_file, then change it with code_edit_file (old_text must match the file exactly) or create a file with code_write_file. Check your work with code_run_command when it helps, and with code_git_diff before you say you are done. Changes and commands wait for a person to approve them: if one is refused, do not try it again, say what you wanted to do and ask. For a question that needs a lot of reading, start a worker with worker_create and collect its answer with worker_result: workers can read, not change. Be brief: say what you did and what is left." }
+worker_system = { description = "the system prompt of each worker", default = "You are a read-only worker of a coding agent. Answer the question in your brief by reading the repository with your tools: say which files and lines you found and what they mean, briefly. You cannot change files or run commands, so do not try: say what should be done instead." }
+tool_policy = { description = "what a tool call outside allow_tools gets: ask (a person decides), allow or deny", default = "ask" }
+allow_tools = { description = "tools the agent calls without asking, separated by commas", default = "code_list_files,code_read_file,code_search,code_git_status,code_git_diff,worker_status,worker_result,worker_list,worker_close" }
+worker_access = { description = "what a worker may do in the folder: read, write (also change files) or all (also run commands)", default = "read" }
+worker_allow_tools = { description = "tools a worker calls without asking, separated by commas", default = "code_list_files,code_read_file,code_search,code_git_status,code_git_diff" }
+worker_permissions = { description = "what a worker's permission request gets: reject, ask (the same person decides) or allow", default = "reject" }
+max_workers = { description = "workers live at once", default = 2 }
+max_steps = { description = "model calls per turn at most", default = 24 }
+max_tool_calls = { description = "tool calls per turn at most", default = 48 }
+history_turns = { description = "earlier turns of the session the model sees", default = 20 }
+max_tokens = { description = "tokens of one model answer at most", default = 4096 }
+request_timeout_ms = { description = "milliseconds one model request may take", default = 120000 }
+turn_timeout_ms = { description = "milliseconds one turn may take before it is cancelled; 0: no limit", default = 0 }
+observation_max_chars = { description = "characters of a tool result the model sees; keep the two limits below under it", default = 20000 }
+max_read_bytes = { description = "bytes of a file one read gives the model; longer files are read in pieces", default = 16000 }
+max_output_bytes = { description = "bytes kept of each of a command's stdout and stderr", default = 6000 }
+command_timeout_ms = { description = "milliseconds a command may run when the call names no time", default = 120000 }
+decision_timeout_ms = { description = "milliseconds a permission request waits for a person before it is refused", default = 600000 }
+instructions = { description = "files of the folder added to the system prompt as the repository's instructions, separated by commas", default = "AGENTS.md,CLAUDE.md" }
+
+[[workflows]]
+id = "code"
+name = "Code"
+kind = "main"
+ports = [
+  { id = "chat", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  { id = "changed", capability = "json@1", direction = "output", kind = "then" },
+  { id = "ran", capability = "json@1", direction = "output", kind = "then" },
+  { id = "worker_result", capability = "json@1", direction = "output", kind = "then" },
+]
+
+  # The Agent box: the conversation clients talk to (`agent.send`, `agent.history`). `ask`
+  # sends the engine's permission requests to the decider.
+  [[workflows.nodes]]
+  id = "agent"
+  name = "Agent"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 450, y = 300 }
+  config = { workdir = "{{root}}", permissions = "ask", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "decisions", capability = "decision@1", direction = "input", kind = "uses" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  # The loop: the model, its tools and what steers them. `allow_tools` is what runs
+  # without asking; the rest follows `tool_policy`.
+  [[workflows.nodes]]
+  id = "native"
+  name = "Engine"
+  type = "native"
+  module_id = "regulus/engine-native@0.1.0"
+  position = { x = 450, y = 100 }
+  config = { name = "agent", system = "{{system}}", tool_policy = "{{tool_policy}}", allow_tools = "{{allow_tools}}", max_steps = {{max_steps}}, max_tool_calls = {{max_tool_calls}}, history_turns = {{history_turns}}, max_tokens = {{max_tokens}}, request_timeout_ms = {{request_timeout_ms}}, observation_max_chars = {{observation_max_chars}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" },
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "context", capability = "hook@1", direction = "input", kind = "uses", cardinality = "many" },
+  ]
+
+  [[workflows.nodes]]
+  id = "provider"
+  name = "Provider"
+  type = "provider"
+  module_id = "regulus/providers@0.1.0"
+  position = { x = 750, y = 0 }
+  config = { preset = "{{preset}}", base_url = "{{base_url}}", credential = "{{credential}}", model = "{{model}}" }
+  ports = [{ id = "endpoint", capability = "llm.endpoint@1", direction = "output", kind = "uses" }]
+
+  # The folder: its file, git and shell operations as tools, and itself for the boxes
+  # around it. Clients find it by its `code.workspace@1` output and look at it with
+  # `code.inspect`.
+  [[workflows.nodes]]
+  id = "workspace"
+  name = "Workspace"
+  type = "workspace"
+  module_id = "regulus/code@0.1.0"
+  position = { x = 750, y = 200 }
+  config = { root = "{{root}}", max_read_bytes = {{max_read_bytes}}, max_output_bytes = {{max_output_bytes}}, command_timeout_ms = {{command_timeout_ms}} }
+  ports = [
+    { id = "workspace", capability = "code.workspace@1", direction = "output", kind = "uses" },
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "changed", capability = "json@1", direction = "output", kind = "then" },
+    { id = "ran", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The repository's own instructions, once per session, in the system prompt.
+  [[workflows.nodes]]
+  id = "instructions"
+  name = "Repository instructions"
+  type = "instructions"
+  module_id = "regulus/code@0.1.0"
+  position = { x = 150, y = 100 }
+  config = { files = "{{instructions}}" }
+  ports = [
+    { id = "workspace", capability = "code.workspace@1", direction = "input", kind = "uses", required = true },
+    { id = "hook", capability = "hook@1", direction = "output", kind = "uses" },
+  ]
+
+  # Who decides the permission requests: a person, through `regulus human`, the app or
+  # `regulus code`.
+  [[workflows.nodes]]
+  id = "decider"
+  name = "Decider"
+  type = "decider"
+  module_id = "regulus/human@0.1.0"
+  position = { x = 150, y = 300 }
+  config = { timeout_ms = {{decision_timeout_ms}} }
+  ports = [{ id = "decisions", capability = "decision@1", direction = "output", kind = "uses" }]
+
+  # Sub-agents: each worker runs the workflow `worker` on the engine wired into `engine`,
+  # and asks the person wired into `decisions` when it may ask at all. Every output of a
+  # worker is a result (`result_port` empty), so a turn that failed comes back too.
+  [[workflows.nodes]]
+  id = "workers"
+  name = "Workers"
+  type = "delegate"
+  module_id = "regulus/delegation@0.1.0"
+  position = { x = 1050, y = 300 }
+  config = { workers = { worker = "worker" }, max_workers = {{max_workers}}, result_port = "" }
+  ports = [
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+    { id = "decisions", capability = "decision@1", direction = "input", kind = "uses", lazy = true },
+    { id = "result", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  # The workers' loop: the same model, the folder through `reader`.
+  [[workflows.nodes]]
+  id = "worker_engine"
+  name = "Worker engine"
+  type = "native"
+  module_id = "regulus/engine-native@0.1.0"
+  position = { x = 1050, y = 100 }
+  config = { name = "worker", system = "{{worker_system}}", tool_policy = "{{tool_policy}}", allow_tools = "{{worker_allow_tools}}", max_steps = {{max_steps}}, max_tool_calls = {{max_tool_calls}}, history_turns = {{history_turns}}, max_tokens = {{max_tokens}}, request_timeout_ms = {{request_timeout_ms}}, observation_max_chars = {{observation_max_chars}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "output", kind = "uses" },
+    { id = "model", capability = "llm.endpoint@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "tool@1", direction = "input", kind = "uses", cardinality = "many" },
+    { id = "context", capability = "hook@1", direction = "input", kind = "uses", cardinality = "many" },
+  ]
+
+  # What a worker gets of the folder: with `read`, nothing that changes it.
+  [[workflows.nodes]]
+  id = "reader"
+  name = "Worker tools"
+  type = "tools"
+  module_id = "regulus/code@0.1.0"
+  position = { x = 1050, y = 200 }
+  config = { access = "{{worker_access}}" }
+  ports = [
+    { id = "workspace", capability = "code.workspace@1", direction = "input", kind = "uses", required = true },
+    { id = "tools", capability = "tool@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.wires]]
+  id = "native-engine"
+  kind = "uses"
+  from = { node_id = "native", port_id = "engine" }
+  to = { node_id = "agent", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "provider-model"
+  kind = "uses"
+  from = { node_id = "provider", port_id = "endpoint" }
+  to = { node_id = "native", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "workspace-tools"
+  kind = "uses"
+  from = { node_id = "workspace", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "workers-tools"
+  kind = "uses"
+  from = { node_id = "workers", port_id = "tools" }
+  to = { node_id = "native", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "workspace-instructions"
+  kind = "uses"
+  from = { node_id = "workspace", port_id = "workspace" }
+  to = { node_id = "instructions", port_id = "workspace" }
+
+  [[workflows.wires]]
+  id = "instructions-context"
+  kind = "uses"
+  from = { node_id = "instructions", port_id = "hook" }
+  to = { node_id = "native", port_id = "context" }
+
+  [[workflows.wires]]
+  id = "decider-decisions"
+  kind = "uses"
+  from = { node_id = "decider", port_id = "decisions" }
+  to = { node_id = "agent", port_id = "decisions" }
+
+  [[workflows.wires]]
+  id = "provider-worker-model"
+  kind = "uses"
+  from = { node_id = "provider", port_id = "endpoint" }
+  to = { node_id = "worker_engine", port_id = "model" }
+
+  [[workflows.wires]]
+  id = "workspace-reader"
+  kind = "uses"
+  from = { node_id = "workspace", port_id = "workspace" }
+  to = { node_id = "reader", port_id = "workspace" }
+
+  [[workflows.wires]]
+  id = "reader-tools"
+  kind = "uses"
+  from = { node_id = "reader", port_id = "tools" }
+  to = { node_id = "worker_engine", port_id = "tools" }
+
+  [[workflows.wires]]
+  id = "instructions-worker-context"
+  kind = "uses"
+  from = { node_id = "instructions", port_id = "hook" }
+  to = { node_id = "worker_engine", port_id = "context" }
+
+  [[workflows.wires]]
+  id = "worker-engine-workers"
+  kind = "uses"
+  from = { node_id = "worker_engine", port_id = "engine" }
+  to = { node_id = "workers", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "decider-workers"
+  kind = "uses"
+  from = { node_id = "decider", port_id = "decisions" }
+  to = { node_id = "workers", port_id = "decisions" }
+
+  [[workflows.wires]]
+  id = "chat-agent"
+  kind = "then"
+  from = { node_id = "self", port_id = "chat" }
+  to = { node_id = "agent", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "agent-reply"
+  kind = "then"
+  from = { node_id = "agent", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "agent-failed"
+  kind = "then"
+  from = { node_id = "agent", port_id = "failed" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "workspace-changed"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "changed" }
+  to = { node_id = "self", port_id = "changed" }
+
+  [[workflows.wires]]
+  id = "workspace-ran"
+  kind = "then"
+  from = { node_id = "workspace", port_id = "ran" }
+  to = { node_id = "self", port_id = "ran" }
+
+  [[workflows.wires]]
+  id = "workers-result"
+  kind = "then"
+  from = { node_id = "workers", port_id = "result" }
+  to = { node_id = "self", port_id = "worker_result" }
+
+# One worker: an Agent box on the engine `workers` binds to `self.engine`, asking the
+# person it binds to `self.decisions` when `worker_permissions` is `ask`.
+[[workflows]]
+id = "worker"
+name = "Worker"
+kind = "extra"
+ports = [
+  { id = "prompt", capability = "text@1", direction = "input", kind = "then" },
+  { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+  { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses" },
+  { id = "decisions", capability = "decision@1", direction = "input", kind = "uses" },
+]
+
+  [[workflows.nodes]]
+  id = "worker"
+  name = "Worker"
+  type = "agent"
+  module_id = "regulus/agent@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { workdir = "{{root}}", permissions = "{{worker_permissions}}", turn_timeout_ms = {{turn_timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "agent.engine@1", direction = "input", kind = "uses", required = true },
+    { id = "decisions", capability = "decision@1", direction = "input", kind = "uses" },
+    { id = "prompt", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "reply", capability = "text@1", direction = "output", kind = "then" },
+    { id = "failed", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "worker-engine"
+  kind = "uses"
+  from = { node_id = "self", port_id = "engine" }
+  to = { node_id = "worker", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "worker-decisions"
+  kind = "uses"
+  from = { node_id = "self", port_id = "decisions" }
+  to = { node_id = "worker", port_id = "decisions" }
+
+  [[workflows.wires]]
+  id = "worker-prompt"
+  kind = "then"
+  from = { node_id = "self", port_id = "prompt" }
+  to = { node_id = "worker", port_id = "prompt" }
+
+  [[workflows.wires]]
+  id = "worker-reply"
+  kind = "then"
+  from = { node_id = "worker", port_id = "reply" }
+  to = { node_id = "self", port_id = "reply" }
+
+  [[workflows.wires]]
+  id = "worker-failed"
+  kind = "then"
+  from = { node_id = "worker", port_id = "failed" }
+  to = { node_id = "self", port_id = "failed" }
