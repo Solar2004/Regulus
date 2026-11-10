@@ -15,6 +15,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Comandos sugeridos en la TUI Code:** `/` abre una lista filtrable con descripciones,
+  navegación por flechas y autocompletado con Tab o Enter; ayuda y ejecución comparten
+  catálogo. Los comandos pegados no se ejecutan hasta enviarlos.
+- **Canvas ordenable:** ordenar workflow o selección con medidas reales, dirección y
+  separación configurables, y deshacer el último ordenado. Insertar por clic o arrastrar
+  busca espacio libre sin mover los demás nodos.
+- **Regulus Code:** módulo de workspace y herramientas de programación, plantilla de
+  harness editable, conversación en TUI y vista Code en la app. La TUI permite añadir
+  archivos al borrador con `/attach`, configurar la barra de estado y abrir los paneles
+  bajo demanda.
 - **Mascota de Regulus Code:** león estelar original definido en una rejilla editable,
   con SVG generado, paleta compartida y expresiones para los clientes.
 

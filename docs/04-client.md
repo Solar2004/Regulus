@@ -490,10 +490,38 @@ core, la leen del fichero.
 
 ## 12. Regulus Code (2026-11-10)
 
+El canvas ofrece **Arrange workflow**, **Arrange selection** y **Undo arrange**. Ordena
+por conexiones usando los tamaños medidos; ciclos y grupos desconectados se resuelven de
+forma determinista. Una selección conserva las posiciones de los demás nodos, que cuentan
+como obstáculos. Ajustes del canvas permite cambiar dirección, separación y altura de
+respaldo. La vista conjunta permanece de solo lectura. Insertar por clic o arrastrar busca
+espacio libre localmente. Deshacer restaura solo las posiciones y deja de ofrecerse si los
+nodos ordenados se han movido o eliminado después.
+
 ✅ **HECHO** — `regulus code [carpeta]` abre una pantalla fullscreen propia: conversación del
 Agente, composer, permisos, archivos, cambios, actividad y trabajadores. `--once`,
 `--detach` y los comandos `code inspect` siguen siendo aptos para scripts. La vista Code de
 Tauri ofrece el mismo flujo con selector de carpeta, proveedor/modelo, política de permisos,
 menú `+` de contexto y acceso al canvas para editar el harness. La política `allow` se muestra
 como auto-aceptar cambios y comandos: no convierte la shell en sandbox y conserva los derechos
-del usuario del core.
+del usuario del core. La conversación ocupa la vista principal; `[client.code] setup = "always"`
+muestra el formulario antes de crear un perfil y `setup = "needed"` lo muestra cuando falte
+un requisito. `status_bar` controla la fila de contexto, `status_fields` elige y ordena sus
+campos (`root`, `model`, `branch`, `state`, `session`), y `side_panel` decide si el panel de
+espacio de trabajo empieza abierto (por defecto, cerrado). La tecla configurada para el panel
+y `/attach <file>` permiten abrirlo o adjuntar un archivo al borrador sin enviarlo.
+
+Al escribir `/` en el composer, aparece un menú filtrable de comandos con descripción.
+Las flechas eligen, Tab (`keys.code_complete`) completa y Escape cierra; Enter completa una abreviatura y envía
+un comando que ya está escrito completo. Escribir argumentos vuelve a la edición normal.
+El catálogo de comandos alimenta también la ayuda y la ejecución; los ids de opciones de
+permisos siguen siendo respuestas válidas. Los eventos de pegado de la terminal insertan
+texto sin ejecutarlo; una terminal sin bracketed paste no permite distinguirlo de teclear.
+
+```toml
+[client.code]
+status_bar = true
+status_fields = ["root", "model", "branch", "state", "session"]
+side_panel = false
+setup = "needed"
+```
