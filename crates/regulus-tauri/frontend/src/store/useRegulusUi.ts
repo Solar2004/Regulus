@@ -3,6 +3,12 @@ import { persist } from "zustand/middleware";
 
 export type RegulusView = "home" | "composition" | "settings" | "operate" | "templates";
 
+/** Where "open in canvas" lands inside a profile: a workflow, and a node of it to select. */
+export interface CanvasFocus {
+  workflowId?: string;
+  nodeId?: string;
+}
+
 /** `start_view` of `[client]` (docs/04-client.md §11) → the view it names. */
 const startViews: Record<string, RegulusView> = {
   home: "home",
@@ -31,7 +37,9 @@ interface RegulusUiState {
   applyStartView: (value: unknown) => void;
   /** The profile the canvas should show next, set from another view; null: its own choice. */
   canvasProfileId: string | null;
-  openInCanvas: (profileId: string) => void;
+  /** The workflow and node of that profile to show and select; null: the profile's main workflow. */
+  canvasFocus: CanvasFocus | null;
+  openInCanvas: (profileId: string, focus?: CanvasFocus) => void;
 }
 
 // Persist client preferences only; runtime state belongs to the core.
@@ -49,7 +57,8 @@ export const useRegulusUi = create<RegulusUiState>()(persist((set, get) => ({
     if (view && !get().startPageChosen && get().view === get().startPage) set({ view });
   },
   canvasProfileId: null,
-  openInCanvas: (profileId) => set({ view: "composition", canvasProfileId: profileId }),
+  canvasFocus: null,
+  openInCanvas: (profileId, focus) => set({ view: "composition", canvasProfileId: profileId, canvasFocus: focus ?? null }),
 }), {
   name: "regulus-shell-preferences",
   partialize: (state) => ({ startPage: state.startPage, startPageChosen: state.startPageChosen, density: state.density }),

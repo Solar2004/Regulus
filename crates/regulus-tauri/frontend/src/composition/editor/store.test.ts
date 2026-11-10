@@ -37,6 +37,20 @@ describe("editor store", () => {
     useEditor.getState().saved(sample(), []);
     expect(useEditor.getState().workflowId).toBe("main");
   });
+
+  test("focus shows a workflow and selects a node of it; what the profile lacks changes nothing", () => {
+    useEditor.getState().open(sample());
+    useEditor.getState().focus({ workflowId: "inner", nodeId: "h" });
+    expect(useEditor.getState()).toMatchObject({ workflowId: "inner", trail: ["inner"], selection: { nodes: ["h"], wires: [] } });
+    // A node the workflow does not have: the workflow shows, nothing is selected.
+    useEditor.getState().focus({ workflowId: "main", nodeId: "nope" });
+    expect(useEditor.getState()).toMatchObject({ workflowId: "main", selection: { nodes: [], wires: [] } });
+    // Only a node: it is looked for in the workflow on screen.
+    useEditor.getState().focus({ nodeId: "b" });
+    expect(useEditor.getState()).toMatchObject({ workflowId: "main", selection: { nodes: ["b"], wires: [] } });
+    useEditor.getState().focus({ workflowId: "gone", nodeId: "a" });
+    expect(useEditor.getState()).toMatchObject({ workflowId: "main", selection: { nodes: ["b"], wires: [] } });
+  });
 });
 
 describe("breadcrumb", () => {

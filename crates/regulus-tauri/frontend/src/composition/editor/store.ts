@@ -45,6 +45,8 @@ interface EditorState {
   /** Goes back to the workflow at `index` of the trail. */
   backTo: (index: number) => void;
   select: (selection: Selection) => void;
+  /** Shows a workflow of the profile and selects a node of it; what the profile does not have is left as it is. */
+  focus: (at: { workflowId?: string; nodeId?: string }) => void;
   setDiagnostics: (diagnostics: Diagnostic[]) => void;
   notify: (notice: Notice | null) => void;
   setBusy: (busy: boolean) => void;
@@ -87,6 +89,13 @@ export const useEditor = create<EditorState>()((set) => ({
   openBox: (id) => set((state) => ({ workflowId: id, trail: enterWorkflow(state.workflowId === ALL ? [] : state.trail.length ? state.trail : [state.workflowId], id), selection: nothing })),
   backTo: (index) => set((state) => index < 0 || index >= state.trail.length ? {} : { workflowId: state.trail[index], trail: state.trail.slice(0, index + 1), selection: nothing }),
   select: (selection) => set({ selection }),
+  focus: ({ workflowId, nodeId }) => set((state) => {
+    const workflow = state.doc?.workflows.find((item) => item.id === (workflowId ?? state.workflowId));
+    if (!workflow) return {};
+    const shown = workflow.id === state.workflowId ? {} : { workflowId: workflow.id, trail: [workflow.id] };
+    const found = nodeId !== undefined && workflow.nodes.some((node) => node.id === nodeId);
+    return { ...shown, selection: found ? { nodes: [nodeId], wires: [] } : workflow.id === state.workflowId ? state.selection : nothing };
+  }),
   setDiagnostics: (diagnostics) => set({ diagnostics }),
   notify: (notice) => set({ notice }),
   setBusy: (busy) => set({ busy }),

@@ -38,7 +38,7 @@ function Editor({ composition }: { composition: Composition }) {
   const source = useCore((s) => s.source);
   const settings = useCanvasSettings();
   const { doc: profile, isNew, dirty, workflowId, trail, selection, diagnostics, notice, busy } = useEditor();
-  const { open, edit, saved, showWorkflow, openBox, backTo, select, setDiagnostics, notify, setBusy } = useEditor.getState();
+  const { open, edit, saved, showWorkflow, openBox, backTo, select, focus, setDiagnostics, notify, setBusy } = useEditor.getState();
   const [boxing, setBoxing] = useState<string[] | null>(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
@@ -60,15 +60,18 @@ function Editor({ composition }: { composition: Composition }) {
 
   const fail = useCallback((text: Parameters<typeof t>[0], error: unknown) => notify({ tone: "error", text: t(text), detail: messageOf(error) }), [notify]);
 
-  const openProfile = (id: string) => guard(async () => {
+  const openProfile = (id: string, then?: () => void) => guard(async () => {
     if (!client) return;
-    try { open(await getProfile(client, id)); } catch (error) { fail("editor.notice.openFailed", error); }
+    try { open(await getProfile(client, id)); then?.(); } catch (error) { fail("editor.notice.openFailed", error); }
   });
 
   useEffect(() => {
     if (!requested || !client) return;
-    useRegulusUi.setState({ canvasProfileId: null });
-    if (useEditor.getState().doc?.id !== requested) { reload(); openProfile(requested); }
+    // Another view may also say where to land: a workflow, and a node of it to select.
+    const at = useRegulusUi.getState().canvasFocus;
+    const land = () => { if (at) focus(at); };
+    useRegulusUi.setState({ canvasProfileId: null, canvasFocus: null });
+    if (useEditor.getState().doc?.id !== requested) { reload(); openProfile(requested, land); } else land();
   }, [requested, client]);
 
   const save = useCallback(async () => {
