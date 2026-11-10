@@ -6,7 +6,7 @@ import type { Execution } from "@/operate/model";
 import type { TemplateSummary } from "@/templates/model";
 import { codeProfile, codeWorkflow, manifests, workerWorkflow } from "./fixtures.test-util";
 import {
-  activityOf, ancestorsOf, changeKind, codeAgents, codeModuleIds, codeSessions, fnv1a64, codeTargets, codeTemplates, credentialState, directChildren, fileLines,
+  activityOf, ancestorsOf, changeKind, codeAgents, codeModuleIds, codeSessions, fnv1a64, folderRows, profileIdProblem, sessionMood, sizeParts, codeTargets, codeTemplates, credentialState, directChildren, fileLines,
   folderName, harnessParts, isAbsolutePath, isCodeWorkflow, nodesAnswering, normalizeRoot, openPermissions, parseStatus, readDiff, readFile,
   readListing, readSearch, readSummary, readWorkers, rootOf, sameRoot, secretPrefix, sessionProblems, slugOf, splitVars, suggestProfileId, targetForRoot,
   treeRows, workspaceNodes, workStamp,
@@ -58,6 +58,27 @@ describe("what is a coding session", () => {
     expect(sessions.map((session) => [session.execution.id, session.live])).toEqual([["exec-2", true], ["exec-5", false], ["exec-1", false]]);
   });
 
+  test("folders: each with its running session and the earlier ones, the running first", () => {
+    const targets = codeTargets([codeProfile("code-zeta", "/w/zeta"), codeProfile("code-app", "/w/app"), codeProfile("code-idle", "/w/idle")], manifests());
+    const sessions = codeSessions([
+      execution("exec-1", { profile_id: "code-zeta", state: { status: "stopped" } }), execution("exec-2", { profile_id: "code-zeta" }),
+      execution("exec-3", { profile_id: "code-app", state: { status: "stopped" } }),
+    ], targets);
+    expect(folderRows(targets, sessions).map((row) => [row.target.profileId, row.live?.execution.id ?? null, row.earlier.map((session) => session.execution.id)])).toEqual([
+      ["code-zeta", "exec-2", ["exec-1"]], ["code-app", null, ["exec-3"]], ["code-idle", null, []],
+    ]);
+  });
+
+  test("a session's mood is the first that holds: failed, stopped, waiting, working, idle", () => {
+    const turn = { waiting: true, working: true };
+    expect(sessionMood({ state: { status: "failed", reason: "x" } }, turn)).toBe("failed");
+    expect(sessionMood({ state: { status: "interrupted", reason: "x" } }, turn)).toBe("failed");
+    expect(sessionMood({ state: { status: "stopped" } }, turn)).toBe("stopped");
+    expect(sessionMood({ state: { status: "running" } }, turn)).toBe("waiting");
+    expect(sessionMood({ state: { status: "running" } }, { waiting: false, working: true })).toBe("working");
+    expect(sessionMood({ state: { status: "starting" } }, { waiting: false, working: false })).toBe("idle");
+  });
+
   test("the problems of a session are the nodes that will not work", () => {
     const row = (id: string, state: NodeRow["state"]): NodeRow => ({ id, name: id, type: "t", kind: "other", state });
     const rows = [row("agent", { kind: "running" }), row("provider", { kind: "not-installed" }), row("native", { kind: "disabled", missing: ["model"] }), row("notes", { kind: "resource" }), row("idle", { kind: "unused" })];
@@ -106,6 +127,13 @@ describe("folders and profile ids", () => {
     // A folder whose name leaves nothing still gets an id, and so does an empty prefix.
     expect(suggestProfileId("/", [], "code")).toBe(`code-folder-${fnv1a64("/").slice(0, 6)}`);
     expect(suggestProfileId("/日本", [], "")).toBe(`folder-${fnv1a64("/日本").slice(0, 6)}`);
+  });
+
+  test("an id typed by hand must be a file name the core would write, and a free one", () => {
+    expect(profileIdProblem("", [])).toBe("empty");
+    expect(profileIdProblem("My Code", [])).toBe("invalid");
+    expect(profileIdProblem("code-app", ["code-app"])).toBe("taken");
+    expect(profileIdProblem("code-app.v2_x", ["code-app"])).toBeNull();
   });
 });
 
@@ -211,14 +239,15 @@ describe("code.inspect answers", () => {
   });
 
   test("a listing keeps what is an entry and reads the folder kinds it knows", () => {
-    const listing = readListing({ root: "/r", path: "src/", entries: [{ path: "src/a.ts", kind: "file" }, { path: "src/lib/", kind: "directory" }, { path: "src/x", kind: "symlink" }, { kind: "file" }, "junk"], truncated: true });
-    expect(listing).toEqual({ root: "/r", path: "src", truncated: true, entries: [{ path: "src/a.ts", kind: "file" }, { path: "src/lib", kind: "directory" }, { path: "src/x", kind: "file" }] });
+    const listing = readListing({ root: "/r", path: "src/", entries: [{ path: "src/a.ts", kind: "file", size: 120 }, { path: "src/lib/", kind: "directory", size: 4096 }, { path: "src/x", kind: "symlink" }, { kind: "file" }, "junk"], truncated: true });
+    expect(listing).toEqual({ root: "/r", path: "src", truncated: true, entries: [{ path: "src/a.ts", kind: "file", size: 120 }, { path: "src/lib", kind: "directory" }, { path: "src/x", kind: "file" }] });
     expect(readListing({ root: "/r", entries: [] })).toMatchObject({ path: "", truncated: false });
     expect(readListing({ root: "/r" })).toBeNull();
   });
 
   test("read, search and diff answers", () => {
     expect(readFile({ root: "/r", path: "a.ts", text: "x", truncated: false })).toEqual({ root: "/r", path: "a.ts", text: "x", truncated: false });
+    expect(readFile({ root: "/r", path: "a.ts", text: "x", truncated: true, size: 90000 })).toMatchObject({ truncated: true, size: 90000 });
     expect(readFile({ root: "/r", path: "a.ts" })).toBeNull();
     expect(readSearch({ root: "/r", matches: [{ path: "a.ts", line: 3, text: "let x" }, { path: "b.ts", line: 0 }, { line: 2 }], truncated: true }))
       .toEqual({ root: "/r", truncated: true, matches: [{ path: "a.ts", line: 3, text: "let x" }, { path: "b.ts", line: 1, text: "" }] });
@@ -246,6 +275,12 @@ describe("the file tree", () => {
     ]);
     expect(ancestorsOf("src/lib/x.ts")).toEqual(["src", "src/lib"]);
     expect(ancestorsOf("x.ts")).toEqual([]);
+  });
+
+  test("a size reads in bytes, then in thousands with one decimal", () => {
+    expect([sizeParts(0), sizeParts(999), sizeParts(1000), sizeParts(15360), sizeParts(2_500_000)]).toEqual([
+      { value: "0", unit: "bytes" }, { value: "999", unit: "bytes" }, { value: "1.0", unit: "kb" }, { value: "15.4", unit: "kb" }, { value: "2.5", unit: "mb" },
+    ]);
   });
 
   test("a file's lines drop the empty one after a final newline", () => {

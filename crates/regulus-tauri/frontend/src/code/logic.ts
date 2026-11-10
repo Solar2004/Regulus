@@ -104,6 +104,33 @@ export function codeSessions(executions: Execution[], targets: CodeTarget[]): Co
   return sessions.sort((a, b) => Number(b.live) - Number(a.live) || b.order - a.order).map(({ order: _order, ...session }) => session);
 }
 
+/** One folder set up for coding: its saved harness, the session running in it, and the ones before. */
+export interface FolderRow {
+  target: CodeTarget;
+  live: CodeSession | null;
+  earlier: CodeSession[];
+}
+
+/** The folders set up, each with its sessions: those with one running first, then by name. */
+export function folderRows(targets: CodeTarget[], sessions: CodeSession[]): FolderRow[] {
+  const rows = targets.map((target) => {
+    const own = sessions.filter((session) => session.target.profileId === target.profileId && session.target.workflowId === target.workflowId);
+    return { target, live: own.find((session) => session.live) ?? null, earlier: own.filter((session) => !session.live) };
+  });
+  const name = (row: FolderRow) => row.target.root ? folderName(row.target.root) : row.target.profileName;
+  return rows.sort((a, b) => Number(!!b.live) - Number(!!a.live) || name(a).localeCompare(name(b)));
+}
+
+/** How a session stands, for the mascot and the words next to it: the first that holds. */
+export type SessionMood = "failed" | "stopped" | "waiting" | "working" | "idle";
+
+export function sessionMood(execution: Pick<Execution, "state">, turn: { waiting: boolean; working: boolean }): SessionMood {
+  if (execution.state.status === "failed" || execution.state.status === "interrupted") return "failed";
+  if (!isLive(execution.state)) return "stopped";
+  if (turn.waiting) return "waiting";
+  return turn.working ? "working" : "idle";
+}
+
 /** Nodes of a session that will not work, with the reason their state gives. */
 export function sessionProblems(rows: NodeRow[]): NodeRow[] {
   return rows.filter((row) => row.state.kind === "not-installed" || row.state.kind === "disabled" || row.state.kind === "broken" || row.state.kind === "incompatible");
@@ -173,6 +200,13 @@ export function suggestProfileId(root: string, taken: Iterable<string>, prefix: 
   const stem = [slugOf(prefix), slugOf(folderName(folder)) || "folder", fnv1a64(folder).slice(0, HASH_DIGITS)].filter(Boolean).join("-");
   if (!used.has(stem)) return stem;
   for (let n = 2; ; n++) if (!used.has(`${stem}-${n}`)) return `${stem}-${n}`;
+}
+
+/** Why an id cannot be a new profile's: the core writes it as a file name and never replaces a profile by itself. */
+export function profileIdProblem(id: string, taken: string[]): "empty" | "invalid" | "taken" | null {
+  if (!id) return "empty";
+  if (slugOf(id) !== id) return "invalid";
+  return taken.includes(id) ? "taken" : null;
 }
 
 /** The saved coding profile of a folder, if there is one: found by its folder, whatever its id. */
@@ -384,11 +418,14 @@ export function readSummary(answer: unknown): SummaryView | null {
   };
 }
 
+const size = (value: unknown) => typeof value === "number" && value >= 0 ? { size: value } : {};
+
 const readEntry = (item: unknown): WorkspaceEntry | null => {
   const path = isObject(item) ? str(item.path) : null;
   if (!isObject(item) || !path) return null;
   const kind = str(item.kind);
-  return { path: path.replace(/\/+$/, ""), kind: kind === "directory" || kind === "dir" || kind === "folder" ? "directory" : "file" };
+  const folder = kind === "directory" || kind === "dir" || kind === "folder";
+  return { path: path.replace(/\/+$/, ""), kind: folder ? "directory" : "file", ...(folder ? {} : size(item.size)) };
 };
 
 export function readListing(answer: unknown): WorkspaceListing | null {
@@ -401,7 +438,7 @@ export function readListing(answer: unknown): WorkspaceListing | null {
 
 export function readFile(answer: unknown): WorkspaceFile | null {
   if (!isObject(answer) || typeof answer.text !== "string") return null;
-  return { root: str(answer.root) ?? "", path: str(answer.path) ?? "", text: answer.text, truncated: answer.truncated === true };
+  return { root: str(answer.root) ?? "", path: str(answer.path) ?? "", text: answer.text, truncated: answer.truncated === true, ...size(answer.size) };
 }
 
 export function readSearch(answer: unknown): WorkspaceSearch | null {
@@ -446,7 +483,7 @@ export function directChildren(folder: string, entries: WorkspaceEntry[]): Works
     if (!first) continue;
     const path = joinPath(folder, first);
     const kind = deeper.length > 0 ? "directory" : entry.kind;
-    if (children.get(path)?.kind !== "directory") children.set(path, { path, kind });
+    if (children.get(path)?.kind !== "directory") children.set(path, kind === "directory" ? { path, kind } : { ...entry, path });
   }
   return [...children.values()].sort((a, b) => Number(b.kind === "directory") - Number(a.kind === "directory") || baseName(a.path).localeCompare(baseName(b.path)));
 }
@@ -468,6 +505,13 @@ export function treeRows(listings: Record<string, WorkspaceEntry[]>, open: Reado
     const row: TreeRow = { path: entry.path, name: baseName(entry.path), kind: entry.kind, depth, open: isOpen, loaded: entry.path in listings };
     return isOpen ? [row, ...treeRows(listings, open, entry.path, depth + 1)] : [row];
   });
+}
+
+/** A size in bytes as a number and its unit: bytes under a kilobyte, then one decimal. */
+export function sizeParts(bytes: number): { value: string; unit: "bytes" | "kb" | "mb" } {
+  if (bytes < 1000) return { value: String(Math.round(bytes)), unit: "bytes" };
+  if (bytes < 1_000_000) return { value: (bytes / 1000).toFixed(1), unit: "kb" };
+  return { value: (bytes / 1_000_000).toFixed(1), unit: "mb" };
 }
 
 /** A file's text as lines, without the empty one a final newline would add. */

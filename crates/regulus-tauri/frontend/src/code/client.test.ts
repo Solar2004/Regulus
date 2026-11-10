@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import type { Rpc } from "@/operate/client";
-import { codeApi, codeMethods, UnreadableAnswer } from "./client";
+import { RpcError } from "@/core/connection";
+import { callFailure, codeApi, codeMethods, UnreadableAnswer } from "./client";
 
 function recorder(answers: Record<string, unknown>) {
   const calls: [string, Record<string, unknown>][] = [];
@@ -32,6 +33,14 @@ test("an answer that is not the action's shape is said, not drawn as empty", asy
   const { api } = recorder({ summary: { tools: [] }, diff: null });
   await expect(api.summary("e", "w")).rejects.toBeInstanceOf(UnreadableAnswer);
   await expect(api.diff("e", "w")).rejects.toMatchObject({ action: "diff" });
+});
+
+test("a failed call is a state when its module is absent or unusable, else what the core said", () => {
+  expect(callFailure(new RpcError("Method not found", -32601))).toEqual({ kind: "not-installed", reason: "Method not found" });
+  expect(callFailure(new RpcError("module `regulus/code@0.1.0` is unavailable: init failed", -32002))).toMatchObject({ kind: "unavailable" });
+  expect(callFailure(new UnreadableAnswer("list"))).toEqual({ kind: "unreadable", action: "list" });
+  expect(callFailure(new RpcError("`../x` is outside the workspace", -32602))).toEqual({ kind: "refused", reason: "`../x` is outside the workspace" });
+  expect(callFailure("boom")).toEqual({ kind: "refused", reason: "boom" });
 });
 
 test("workers are the delegate's own methods, on its node", async () => {

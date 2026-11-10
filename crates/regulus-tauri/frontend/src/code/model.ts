@@ -35,6 +35,8 @@ export interface WorkspaceEntry {
   path: string;
   /** A link is listed with the kind of what it points to, when that stays inside the root. */
   kind: "file" | "directory";
+  /** Bytes, for a file. */
+  size?: number;
 }
 
 export interface WorkspaceListing {
@@ -48,8 +50,12 @@ export interface WorkspaceListing {
 export interface WorkspaceFile {
   root: string;
   path: string;
+  /** The file from its start, as far as the module's limit lets. */
   text: string;
+  /** The file goes on past `text`. */
   truncated: boolean;
+  /** The whole file, in bytes. */
+  size?: number;
 }
 
 /** One line that holds the query; the query is literal and case-insensitive. */

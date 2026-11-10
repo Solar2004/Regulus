@@ -4,6 +4,7 @@
 // delegate's own methods (`regulus workers ls|close`); the rest belongs to the core.
 import type { Manifest, ProjectSummary } from "@/composition/model";
 import type { Rpc } from "@/operate/client";
+import { errorText, unavailableOf } from "@/operate/logic";
 import { readDiff, readFile, readListing, readSearch, readSummary, readWorkers } from "./logic";
 import type { InspectAction } from "./model";
 
@@ -19,6 +20,22 @@ export const codeMethods = {
 /** The module answered, with something this app cannot read as the answer of that action. */
 export class UnreadableAnswer extends Error {
   constructor(readonly action: string) { super(`unreadable answer to ${action}`); }
+}
+
+/**
+ * Why a call of the view failed, as the view says it: the module absent or unusable (a
+ * first-level state, never a generic error), an answer it cannot read, or the core's words.
+ */
+export type CallFailure =
+  | { kind: "not-installed" | "unavailable"; reason: string }
+  | { kind: "unreadable"; action: string }
+  | { kind: "refused"; reason: string };
+
+export function callFailure(error: unknown): CallFailure {
+  const missing = unavailableOf(error);
+  if (missing) return { kind: missing, reason: errorText(error) };
+  if (error instanceof UnreadableAnswer) return { kind: "unreadable", action: error.action };
+  return { kind: "refused", reason: errorText(error) };
 }
 
 function expectAnswer<T>(action: string, answer: T | null): T {
