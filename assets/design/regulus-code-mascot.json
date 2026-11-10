@@ -1,0 +1,57 @@
+{
+  "name": "Regulus Code mascot",
+  "about": "A small stellar lion, drawn on a pixel grid. Source of truth for the app (SVG), the terminal (half blocks) and assets/design/regulus-code-mascot.svg. Explained in regulus-code-mascot.md.",
+  "roles": {
+    "M": { "name": "mane", "token": "steel" },
+    "F": { "name": "face", "token": "focus" },
+    "W": { "name": "muzzle", "token": "text" },
+    "S": { "name": "star", "token": "text" },
+    "E": { "name": "eye", "token": "canvas" },
+    "N": { "name": "nose", "token": "canvas" }
+  },
+  "empty": ".",
+  "grids": {
+    "full": {
+      "rows": [
+        ".......M.......",
+        "..M..MMMMM..M..",
+        "...MMMFMFMMM...",
+        ".MMMFFFMFFFMMM.",
+        "..MMFFFSFFFMM..",
+        "MMMFFFFFFFFFMMM",
+        "..MFEFFFFFEFM..",
+        ".MMFEFWWWFEFMM.",
+        "MMMFFWNNNWFFMMM",
+        "..MMFWWNWWFMM..",
+        ".MMMFFWWWFFMMM.",
+        "..MMMMFFFMMMM..",
+        "..M.MMMMMMM.M..",
+        ".......M......."
+      ],
+      "poses": {
+        "idle": [[6, 4], [7, 4], [6, 10], [7, 10]],
+        "blink": [[7, 4], [7, 10]],
+        "left": [[6, 3], [7, 3], [6, 9], [7, 9]],
+        "right": [[6, 5], [7, 5], [6, 11], [7, 11]],
+        "sleep": [[7, 3], [7, 4], [7, 10], [7, 11]]
+      }
+    },
+    "mini": {
+      "rows": [
+        "....M....",
+        ".M.MMM.M.",
+        "..MFMFM..",
+        "MMFFSFFMM",
+        ".MEFFFEM.",
+        "MMFWNWFMM",
+        ".MMFWFMM.",
+        "..M.M.M.."
+      ],
+      "poses": {
+        "idle": [[4, 2], [4, 6]],
+        "blink": [],
+        "sleep": []
+      }
+    }
+  }
+}

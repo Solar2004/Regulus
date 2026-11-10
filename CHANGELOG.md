@@ -13,6 +13,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
+### Añadido
+
+- **Mascota de Regulus Code:** león estelar original definido en una rejilla editable,
+  con SVG generado, paleta compartida y expresiones para los clientes.
+
 ## [0.2.0] - 2026-11-09
 
 ### Añadido
