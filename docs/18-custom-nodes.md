@@ -220,7 +220,7 @@ de Rust todavía** (§7, F6).
 ## 7. Lo siguiente
 
 🔶 **PROPUESTO**, nada aprobado. Sale de la investigación del 2026-11-10 (n8n, Node-RED,
-ComfyUI, Unreal, Temporal, LangGraph).
+ComfyUI, Unreal, Blender, Temporal, LangGraph; fuentes y lecciones en §9).
 
 | Fase | Qué | Aceptación |
 |---|---|---|
@@ -233,9 +233,22 @@ ComfyUI, Unreal, Temporal, LangGraph).
 Anotado en la revisión del 2026-11-10, también 🔶 y sin aprobar: que la TUI edite `code` y
 `multiline` en varias líneas, y que cada `emit` vaya a la llamada de su ejecución (§5).
 
+**Direcciones de las referencias** (§9), también 🔶, sin aprobar y sin orden entre ellas:
+lo que separa un editor de nodos profesional de un lienzo, con lo que ya existe para
+reutilizar y el primer paso que se podría aceptar. Ninguna tiene código todavía.
+
+| Dirección | Reutiliza | Siguiente paso y aceptación |
+|---|---|---|
+| **R1 · Ver valores y depurar paso a paso** (Unreal, LangGraph) | el diario `events` guarda cada `Emitted { value }` con su `seq` y sobrevive al reinicio; Operar y la TUI ya filtran por nodo | *Ver*, solo clientes: en Operar cada puerto enseña el último valor que emitió en la ejecución elegida, o "sin datos"; `regulus events` gana `--node`. App, TUI y CLI dan el mismo valor, también en ejecuciones de antes de reiniciar, sin RPC nuevo y en <16 ms con `event_keep` lleno. *Parar*, core y **conversación de diseño**: un breakpoint retiene la entrega a un nodo, con `continue` y `step` por RPC y CLI, y es del usuario, no del perfil. En `A→B→C` con breakpoint en B se ve el valor de A y B no lo recibe hasta `continue`; `step` entrega uno; un breakpoint en un nodo que no existe sale como aviso; la matriz de ablación pasa |
+| **R2 · Puertos genéricos y que crecen** (ComfyUI, Unreal); afina F3 | puertos por nodo en el perfil, el rechazo por capacidad de `canConnect` (`capability`) y de `profile.check` (`wire.capability_mismatch`), `Field.extra` | Además de lo de F3: el template tiene nombre y lo comparten entradas **y** salidas, admite una lista de tipos permitidos, lo que crece tiene mínimo y máximo, y el tipo se guarda resuelto en el perfil. Un `$T` con permitidos rechaza otro tipo como rechazo por capacidad, igual en app, TUI y `profile.check`; un nodo que crece no pasa de su máximo |
+| **R3 · Parámetros expuestos de una caja** (Blender, Node-RED) | cajas con puertos `self.*` (`11-composition.md` §6), `workflow.embeds_itself`, y `Node.exposed_parameters`, que existe en `regulus-proto` y ningún cliente rellena | Marcar un campo de un nodo interior como expuesto (id, etiqueta, descripción, defecto) y que el nodo caja lo enseñe como campo propio. El mismo workflow usado dos veces como caja con valores distintos da salidas distintas; guardar y recargar lo conserva; los perfiles antiguos cargan igual; hay comando de CLI. Después, paneles y "ocultar valor", que solo cambian el dibujo |
+| **R4 · Pausa duradera en nodos Python** (LangGraph; no el replay de Temporal); parte de F6, **conversación de diseño** | `ModuleCtx::checkpoint`, el `checkpoint` de `NodeStart`, `[store] resume`, como ya hace `human` | `ctx.checkpoint(state)` en el SDK y el estado de vuelta en `node/start`. Un nodo Python guarda estado, se mata el core con `kill -9` y, al arrancar, la ejecución sigue con el mismo id y el nodo recibe su estado; una hija sigue `interrupted`; sin checkpoint nada cambia. El SDK dice que lo anterior al checkpoint puede repetirse ("al menos una vez") y pide claves de idempotencia |
+
 ❓ **ABIERTO** (para Alexander): ¿`project.reload` también en el MCP de control? ¿El nodo
 Script va como tipo de `process` o en un crate propio? ¿CodeMirror solo para campos más
-editor externo para ficheros, o también ficheros dentro de la app?
+editor externo para ficheros, o también ficheros dentro de la app? ¿R1 entra en el plan
+(ver no toca el core; parar sí)? ¿R3 usa `exposed_parameters` tal cual o se rediseña ese
+campo? ¿R4 va con el resto de F6 o por separado?
 
 ## 8. Las seis preguntas
 
@@ -250,3 +263,25 @@ editor externo para ficheros, o también ficheros dentro de la app?
 4. *Personalizable:* se cambia editando `run.py` y reabriendo el proyecto.
 5. *Infraestructura:* `regulus node init`, `project trust`, `module ls`.
 6. *Caja líquida:* forma fija (el protocolo); por dentro, Python, Rust o lo que hable JSON.
+
+## 9. Referencias y lecciones
+
+Documentación oficial leída el 2026-11-10. Son lecciones, no decisiones: lo que propone §7
+sigue 🔶.
+
+| Sistema | Qué hace (fuente oficial) | Lección para Regulus |
+|---|---|---|
+| Unreal | Wildcards, `DeterminesOutputType`, Add Pin ([UFunctions](https://dev.epicgames.com/documentation/en-us/unreal-engine/ufunctions-in-unreal-engine)); breakpoint antes del nodo, watch con el último valor, "sin datos" si no se ejecutó, breakpoints locales en `.ini` ([Debugger](https://dev.epicgames.com/documentation/en-us/unreal-engine/blueprint-debugger-in-unreal-engine)) | Ver y parar son dos cosas. Ver sale del diario `events`, que ya guarda cada valor; parar es core (R1) |
+| ComfyUI V3 | `MatchType` con tipos permitidos, `Autogrow` con mínimo y máximo, `DynamicCombo`, `fingerprint_inputs`, `is_output_node` ([V3](https://docs.comfy.org/custom-nodes/v3_migration)); entradas `lazy` ([lazy](https://docs.comfy.org/custom-nodes/backend/lazy_evaluation)) | El template lo comparten entradas y salidas, con lista de permitidos y límites, y se guarda resuelto (R2) |
+| Blender | Group Sockets: tipo, descripción, defecto, ocultar valor, paneles ([manual](https://docs.blender.org/manual/en/latest/interface/controls/nodes/groups.html), [API](https://docs.blender.org/api/current/bpy.types.NodeTreeInterface.html)) | Una caja expone campos, no solo puertos (R3) |
+| n8n | Code node por task runners; el modo interno (hijo con el mismo uid) es "insecure by design" y está *deprecated* desde 3.0; allowlists ([Code](https://docs.n8n.io/build/code-in-n8n/using-the-code-node), [runners](https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners)) | Un proceso aparte no es aislamiento: F5 no promete sandbox |
+| Node-RED | Subflow sin recursión, una entrada, propiedades por instancia como variables de entorno ([subflows](https://nodered.org/docs/user-guide/editor/workspace/subflows)); Function con On Start/On Stop y timeout solo para código síncrono ([functions](https://nodered.org/docs/user-guide/writing-functions)) | El timeout de F5 mata el proceso; `node/start` y `node/stop` son el On Start y el On Stop; propiedades por instancia (R3) |
+| Temporal | Ejecución durable "effectively once" por replay determinista del Event History; lo no determinista va en Activities ([execution](https://docs.temporal.io/workflow-execution), [definition](https://docs.temporal.io/workflow-definition)) | Regulus reanuda por checkpoint, no por replay: no exige determinismo, y el replay no se propone |
+| LangGraph | `interrupt` guarda estado y espera; al reanudar, el nodo empieza de nuevo; los efectos previos deben ser idempotentes ([interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts), [checkpointers](https://docs.langchain.com/oss/python/langgraph/checkpointers)) | Si F6 da `checkpoint` por stdio, el SDK documenta "al menos una vez" y claves de idempotencia (R4) |
+
+Vistos y no propuestos: el replay determinista de Temporal (obliga a reescribir los
+módulos como código determinista) y reejecutar desde un punto o bifurcar (ejecución
+parcial de ComfyUI, *fork* de LangGraph), que exige guardar las entradas de cada nodo:
+mejor esperar a que se use R1. El aislamiento sigue fuera de v1 (`11-composition.md` §12).
+No consta en lo leído el aislamiento de procesos de ComfyUI, y no se afirma ninguna
+posición de mercado.

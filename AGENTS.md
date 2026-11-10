@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-11-10 · documentación vigente: ~52k tokens. Lo antiguo está en `docs/old/`.
+> Actualizado: 2026-11-10 · documentación vigente: ~53k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -117,7 +117,7 @@ construir todas las habitaciones hoy.**
 | **`docs/15-evidence.md`** | ~3.5k | ✅ **Evidencias**: módulo `evidence` (fuentes versionadas, citas con extracto exacto, apoyo textual frente a verdad), RPC `evidence.*` y la plantilla `research-evidence`. |
 | **`docs/16-experiments.md`** | ~2.5k | ✅ **Datos y experimentos**: módulo `data` (`collect` · `snapshot` · `rank`), plantillas `rag-lab` y `topic-watch`, límites honestos. |
 | **`docs/17-control-mcp.md`** | ~2.2k | ✅ **MCP de control**: `regulus mcp`, servidor MCP por stdio que gobierna el host como cliente del RPC autenticado; herramientas, límites, autoría de módulos desde MCP, siembra de plantillas. |
-| **`docs/18-custom-nodes.md`** | ~3.4k | ✅ **Nodos propios**: SDK de Python sobre el protocolo de módulos locales, `regulus node init`, campos `code`/`multiline` en el inspector (probado en navegador), Rust por stdio, límites medidos y las fases siguientes (🔶, sin aprobar). |
+| **`docs/18-custom-nodes.md`** | ~4.7k | ✅ **Nodos propios**: SDK de Python sobre el protocolo de módulos locales, `regulus node init`, campos `code`/`multiline` en el inspector (probado en navegador), Rust por stdio, límites medidos, las fases siguientes y las direcciones de las referencias (🔶, sin aprobar), y las fuentes oficiales con sus lecciones (§9). |
 | **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), "usa" que cruza cajas, hijas vivas y `execution.tree`, bus y store. |
 | **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
 | **`docs/04-client.md`** | ~4k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11), **conversación** en app, TUI y `regulus talk` (§7-8). |
@@ -142,7 +142,7 @@ construir todas las habitaciones hoy.**
 | **Escribir un bloque de lógica o una plantilla** | `13-blocks.md` → `03-modules.md` | ~10.5k |
 | **Investigación con citas, datasets, RAG lab o seguimiento** | `15-evidence.md` → `16-experiments.md` → `13-blocks.md` §5 | ~6k |
 | **Controlar Regulus desde un cliente MCP** | `17-control-mcp.md` | ~2.2k |
-| **Escribir un nodo propio (Python o un proceso por stdio)** | `18-custom-nodes.md` → `03-modules.md` §6 | ~4.5k |
+| **Escribir un nodo propio (Python o un proceso por stdio)** | `18-custom-nodes.md` → `03-modules.md` §6 | ~5.8k |
 | **Diseñar o implementar UI** | `04-client.md` → `composition-preview.md` → `08-design-system.md` | ~3.5k |
 | **Elegir una dependencia** | `plan.md` §4.3 (lo descartado) → `06-stack.md` | ~2.5k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |
