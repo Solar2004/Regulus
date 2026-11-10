@@ -1,0 +1,20 @@
+[package]
+license.workspace = true
+name = "regulus-module-code"
+description = "Regulus code: a contained workspace whose files, git state and shell an agent reaches as tools, with narrowed views of it and a hook that loads the repository's instructions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+regulus-contract-tool.workspace = true
+regulus-core.workspace = true
+regulus-proto.workspace = true
+glob.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Versions: docs/06-stack.md §2.1.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -1,0 +1,328 @@
+[module]
+id             = "regulus/code@0.1.0"
+name           = "Code"
+requires_proto = "^1.9"
+# `code.inspect` { execution_id, node_id, action, path?, query? }: a read-only look at a
+# live `workspace` node, for clients (CLI, app). `action` is `summary`, `list`, `read`,
+# `search` or `diff`; the shapes are in docs/14-code.md §5. It changes nothing and runs
+# nothing a repository configures.
+methods        = ["code.inspect"]
+
+# Coding as boxes (docs/14-code.md). This module runs no model and keeps no conversation:
+# it gives an agent a folder to work in. The Agent box, its engine, the provider, the
+# person who decides and the workers are other modules, wired on the canvas.
+#
+# The workspace: one folder (`root`) and what may be done in it. Its operations reach an
+# agent as tools on `tools` (wire it into an engine's or a Tools box's `tools`), and other
+# boxes through `workspace` (`code.workspace@1`): a narrowed view, the repository's
+# instructions, a client that inspects it. Every path an operation takes is resolved,
+# links included, and must stay inside the root; the names in `protect` are never entered.
+#
+# The shell (`code_run_command`) starts in the root but is NOT a sandbox: a command can
+# read and write whatever the user running Regulus can. Who may call it is decided by
+# whoever presents the tools (an engine's `tool_policy`, a hook, a person), not here.
+[[node]]
+type = "workspace"
+name = "Code workspace"
+
+  # The folder itself, for boxes that work in it: `code.workspace.describe`,
+  # `code.workspace.call` and `code.workspace.inspect`. Clients find a workspace by this
+  # capability, never by the node's id.
+  [[node.port]]
+  id         = "workspace"
+  name       = "workspace"
+  capability = "code.workspace@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # The operations named in `tools`, as tools: code_list_files, code_read_file,
+  # code_search, code_git_status, code_git_diff, code_write_file, code_edit_file,
+  # code_run_command.
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # Moves the workspace: every operation after a value arrives works in that folder. A
+  # path as text, or an object with `path` (the `info` of a `workspace` of the workspace
+  # module: wire its `ready` here for one worktree per execution). Empty text: back to the
+  # `root` field. A value that is not an existing absolute folder is refused and kept, so
+  # the operations after it fail instead of working somewhere else.
+  [[node.port]]
+  id         = "root"
+  name       = "root"
+  capability = "path@1"
+  direction  = "input"
+  kind       = "then"
+
+  # `{ tool, path, bytes, created, by }` after each file written or edited.
+  [[node.port]]
+  id         = "changed"
+  name       = "changed"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # `{ command, cwd, code, signal, timed_out, ms, by }` after each command, without its
+  # output: what a program prints stays out of the bus.
+  [[node.port]]
+  id         = "ran"
+  name       = "ran"
+  capability = "json@1"
+  direction  = "output"
+  kind       = "then"
+
+  # The folder, absolute. Empty: none until a value reaches the `root` input.
+  [[node.field]]
+  id      = "root"
+  type    = "text"
+  default = ""
+
+  # The operations this workspace has at all. One left out is offered to nobody, whatever
+  # is wired: no view and no engine can bring it back.
+  [[node.field]]
+  id      = "tools"
+  type    = "list"
+  default = ["code_list_files", "code_read_file", "code_search", "code_git_status", "code_git_diff", "code_write_file", "code_edit_file", "code_run_command"]
+
+  # Names no file operation enters, at any depth: not listed, searched, read or written.
+  # `.git` holds credentials and hooks; git itself still reads it for status and diff.
+  [[node.field]]
+  id      = "protect"
+  type    = "list"
+  default = [".git"]
+
+  # Folders a search or a deep listing does not go down into. Naming one as `path` still
+  # works, and so does reading or writing a file inside.
+  [[node.field]]
+  id      = "skip"
+  type    = "list"
+  default = ["node_modules", "target"]
+
+  # What one tool call may give back to an agent. The defaults fit the 20000 characters
+  # an engine shows of a tool result by default: a longer file is read in pieces
+  # (`offset`, `limit`).
+  [[node.field]]
+  id      = "max_read_bytes"
+  type    = "number"
+  default = 16000
+
+  [[node.field]]
+  id      = "max_list_entries"
+  type    = "number"
+  default = 300
+
+  [[node.field]]
+  id      = "max_search_matches"
+  type    = "number"
+  default = 60
+
+  [[node.field]]
+  id      = "max_diff_bytes"
+  type    = "number"
+  default = 16000
+
+  # Of each of a command's stdout and stderr. A longer one keeps its start and its end.
+  [[node.field]]
+  id      = "max_output_bytes"
+  type    = "number"
+  default = 6000
+
+  # Characters of a matching line a search shows.
+  [[node.field]]
+  id      = "max_line_chars"
+  type    = "number"
+  default = 200
+
+  # Where a search stops: files looked at, the size past which a file is skipped, and the
+  # time it may take. Stopping at any of them answers `truncated`.
+  [[node.field]]
+  id      = "max_search_files"
+  type    = "number"
+  default = 20000
+
+  [[node.field]]
+  id      = "max_search_file_bytes"
+  type    = "number"
+  default = 1048576
+
+  [[node.field]]
+  id      = "search_timeout_ms"
+  type    = "number"
+  default = 5000
+
+  # The largest file `code_write_file` writes and `code_edit_file` edits.
+  [[node.field]]
+  id      = "max_write_bytes"
+  type    = "number"
+  default = 1048576
+
+  # What `code.inspect` gives a client: bytes of a file or a diff, and entries of a
+  # listing, a search or a status.
+  [[node.field]]
+  id      = "inspect_max_bytes"
+  type    = "number"
+  default = 1048576
+
+  [[node.field]]
+  id      = "inspect_max_entries"
+  type    = "number"
+  default = 2000
+
+  # The program and arguments that run a command line; the line is added as the last
+  # argument.
+  [[node.field]]
+  id      = "shell"
+  type    = "list"
+  default = ["sh", "-c"]
+
+  # Milliseconds a command may take when the call names no time, and the most a call may
+  # ask for. Past it the whole process group gets SIGTERM, and SIGKILL after
+  # `kill_grace_ms`.
+  [[node.field]]
+  id      = "command_timeout_ms"
+  type    = "number"
+  default = 120000
+
+  [[node.field]]
+  id      = "max_command_timeout_ms"
+  type    = "number"
+  default = 600000
+
+  [[node.field]]
+  id      = "kill_grace_ms"
+  type    = "number"
+  default = 2000
+
+  # Milliseconds what a command left running in the background has to let go of its
+  # output once the command itself ended; then its process group is killed.
+  [[node.field]]
+  id      = "pipe_grace_ms"
+  type    = "number"
+  default = 500
+
+  # Commands of this node running at once. 0: no limit.
+  [[node.field]]
+  id      = "max_running"
+  type    = "number"
+  default = 4
+
+  # The variables of the core's environment a command inherits. Nothing else reaches it:
+  # the core's own secrets do not leak into what an agent runs.
+  [[node.field]]
+  id      = "env_passthrough"
+  type    = "list"
+  default = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME", "SHELL", "TMPDIR"]
+
+  # More variables for commands, `NAME = "value"`. A value may be `secret:<name>`.
+  [[node.field]]
+  id      = "env"
+  type    = "map"
+  default = {}
+
+  # The git program status and diff run, and how long each run may take.
+  [[node.field]]
+  id      = "git"
+  type    = "text"
+  default = "git"
+
+  [[node.field]]
+  id      = "git_timeout_ms"
+  type    = "number"
+  default = 15000
+
+  # Where the repository's own directory may be. any: wherever the folder says (a linked
+  # worktree and a submodule keep theirs outside). inside: only under the root; otherwise
+  # status and diff answer that git is unavailable. A folder you did not make can point
+  # its `.git` at another repository of yours, whose content a diff would then show.
+  [[node.field]]
+  id      = "git_dir"
+  type    = "select"
+  default = "any"
+  options = ["any", "inside"]
+
+# Some of a workspace's operations, as tools: wire a workspace into `workspace` and this
+# into an engine's `tools`. What a read-only worker gets, next to an agent that has them
+# all. It can only narrow: an operation the workspace does not have stays out.
+[[node]]
+type = "tools"
+name = "Code tools"
+
+  [[node.port]]
+  id         = "workspace"
+  name       = "workspace"
+  capability = "code.workspace@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  [[node.port]]
+  id         = "tools"
+  name       = "tools"
+  capability = "tool@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # read: what changes nothing (list, read, search, git status, git diff). write: those
+  # and the file changes (write, edit). all: those and the shell.
+  [[node.field]]
+  id      = "access"
+  type    = "select"
+  default = "read"
+  options = ["read", "write", "all"]
+
+  # Of what `access` gives, only these names. Empty: all of it.
+  [[node.field]]
+  id      = "tools"
+  type    = "list"
+  default = []
+
+# The repository's own instructions (AGENTS.md and the like), as context for an agent: a
+# hook@1 for an engine's `context` or an Agent box's `hooks`. On its `event` it answers
+# with the files of `files` that exist in the workspace, each under `header`. It reads
+# them as text through the workspace, inside the root: nothing of the repository runs.
+[[node]]
+type = "instructions"
+name = "Repository instructions"
+
+  [[node.port]]
+  id         = "workspace"
+  name       = "workspace"
+  capability = "code.workspace@1"
+  direction  = "input"
+  kind       = "uses"
+  required   = true
+
+  [[node.port]]
+  id         = "hook"
+  name       = "hook"
+  capability = "hook@1"
+  direction  = "output"
+  kind       = "uses"
+
+  # Paths relative to the root, in order. A file reached twice (a link) is read once.
+  [[node.field]]
+  id      = "files"
+  type    = "list"
+  default = ["AGENTS.md", "CLAUDE.md"]
+
+  # session_start: once per session. prompt: with every prompt, so an edit shows at once.
+  [[node.field]]
+  id      = "event"
+  type    = "select"
+  default = "session_start"
+  options = ["session_start", "prompt"]
+
+  # The line before each file; `{{path}}` is the file.
+  [[node.field]]
+  id      = "header"
+  type    = "text"
+  default = "Instructions from the repository file {{path}}:"
+
+  # Characters of context at most, all files together; the rest is cut and says so.
+  [[node.field]]
+  id      = "max_chars"
+  type    = "number"
+  default = 24000

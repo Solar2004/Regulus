@@ -4546,6 +4546,7 @@ dependencies = [
  "regulus-contract-tool",
  "regulus-core",
  "regulus-module-agent",
+ "regulus-module-code",
  "regulus-module-communication",
  "regulus-module-delegation",
  "regulus-module-documents",
@@ -4685,6 +4686,20 @@ dependencies = [
  "regulus-contract-toolset",
  "regulus-core",
  "regulus-module-human",
+ "regulus-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "regulus-module-code"
+version = "0.2.0"
+dependencies = [
+ "glob",
+ "libc",
+ "regex",
+ "regulus-contract-tool",
+ "regulus-core",
  "regulus-proto",
  "serde",
  "serde_json",

@@ -41,6 +41,7 @@ members = [
     "crates/modules/inference",
     "crates/modules/engine-native",
     "crates/modules/delegation",
+    "crates/modules/code",
 ]
 resolver = "2"
 

@@ -39,6 +39,7 @@ regulus-module-documents = { path = "../modules/documents" }
 regulus-module-inference = { path = "../modules/inference" }
 regulus-module-engine-native = { path = "../modules/engine-native" }
 regulus-module-delegation = { path = "../modules/delegation" }
+regulus-module-code = { path = "../modules/code" }
 regulus-contract-tool.workspace = true
 anyhow.workspace = true
 clap.workspace = true
