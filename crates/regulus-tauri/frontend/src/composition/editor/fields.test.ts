@@ -21,6 +21,41 @@ describe("controls", () => {
   });
 });
 
+describe("code and multiline fields", () => {
+  const source: ManifestField = { id: "source", type: "code", default: "def run(x):\n    return x", language: "python", label: " Source ", description: "Runs once per event", indent: 2 };
+
+  test("code is its own control; multiline only turns a text field into a text area", () => {
+    expect(controlFor(source)).toBe("code");
+    expect(controlFor({ id: "notes", type: "text", multiline: true })).toBe("multiline");
+    expect(controlFor({ id: "notes", type: "text", multiline: "yes" as unknown as boolean })).toBe("text");
+    // Options and boolean defaults still win: a list stays a list.
+    expect(controlFor({ id: "lang", type: "code", options: ["a", "b"] })).toBe("select");
+    // A type this app does not know stays raw, even when it asks for several lines.
+    expect(controlFor({ id: "rules", type: "rules", multiline: true })).toBe("raw");
+  });
+
+  test("label, description and language reach the row trimmed; other values are dropped", () => {
+    const [row] = fieldRows([source], {});
+    expect(row).toMatchObject({ control: "code", label: "Source", description: "Runs once per event", language: "python", indent: "  ", isDefault: true });
+    const [bare] = fieldRows([{ id: "x", type: "code", label: "  ", description: 3 as unknown as string, indent: 99 }], {});
+    expect(bare).not.toHaveProperty("label");
+    expect(bare).not.toHaveProperty("description");
+    expect(bare).not.toHaveProperty("language");
+    expect(bare.indent).toBe("    ");
+  });
+
+  test("code and multiline text is stored as typed, newlines and indentation included", () => {
+    const [row] = fieldRows([source], {});
+    const text = "def run(x):\n\treturn x.upper()  \n";
+    expect(coerce(row, text)).toEqual({ ok: true, value: text });
+    expect(coerce(fieldRows([{ id: "n", type: "text", multiline: true }], {})[0], "a\nb")).toEqual({ ok: true, value: "a\nb" });
+  });
+
+  test("defaults of a code field are copied like any other", () => {
+    expect(defaultsOf([source])).toEqual({ source: "def run(x):\n    return x" });
+  });
+});
+
 describe("rows", () => {
   test("manifest fields in order, then config keys it does not declare, as raw", () => {
     const rows = fieldRows(fields, { path: "a.md", extra: 3, mode: "overwrite" });
@@ -34,7 +69,7 @@ describe("rows", () => {
   });
 
   test("no manifest: every config key is raw", () => {
-    expect(fieldRows(undefined, { a: "x" })).toEqual([{ id: "a", type: null, control: "raw", value: "x", defaultValue: undefined, options: [], isDefault: false, secret: false }]);
+    expect(fieldRows(undefined, { a: "x" })).toEqual([{ id: "a", type: null, control: "raw", value: "x", defaultValue: undefined, options: [], isDefault: false, secret: false, indent: "    " }]);
   });
 
   test("secret references are marked as such", () => {

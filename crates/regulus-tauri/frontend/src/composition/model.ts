@@ -89,6 +89,18 @@ export interface ManifestField {
   type: string;
   default?: ConfigValue | null;
   options?: ConfigValue[];
+  // Optional presentation hints a module may add; the core passes them through unread
+  // (`Field.extra`), and a key this app does not know is simply not used.
+  /** Draw a text value as several lines. */
+  multiline?: boolean;
+  /** Language of a `code` field, shown next to its type (no highlighting yet). */
+  language?: string;
+  /** A human name for the field; the id stays visible next to it. */
+  label?: string;
+  /** One line of help shown under the control. */
+  description?: string;
+  /** What Tab inserts in a `code` field: `"tab"` or a number of spaces (default 4). */
+  indent?: number | "tab";
 }
 
 export interface ManifestNodeType {

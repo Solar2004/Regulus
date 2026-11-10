@@ -15,6 +15,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Campos de código y de varias líneas en el inspector:** un campo `type = "code"` se
+  edita en un área de texto monoespaciada (Tab y Shift+Tab sangran; Esc y luego Tab sale
+  del campo) y uno `type = "text"` con `multiline = true` en una que ajusta líneas.
+  Es texto plano: sin resaltado ni comprobación de sintaxis, y lo dice debajo.
 - **Los campos de un manifiesto conservan sus pistas:** claves como `label`,
   `description`, `language` o `multiline` llegan tal cual a los clientes
   (`module show`, `module.manifest`). El core no las lee y un cliente que no las conoce

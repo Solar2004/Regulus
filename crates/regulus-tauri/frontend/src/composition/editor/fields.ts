@@ -2,8 +2,10 @@
 // how typed text becomes the value the core stores. The manifest decides; a config key
 // it does not know is still shown, as raw text.
 import type { ConfigValue, ManifestField } from "../model";
+import { indentUnit } from "./textarea";
 
-export type Control = "text" | "number" | "select" | "map" | "workflow" | "raw";
+/** `code` and `multiline` are plain text areas: no highlighting, parsing or checking. */
+export type Control = "text" | "multiline" | "code" | "number" | "select" | "map" | "workflow" | "raw";
 
 export interface FieldRow {
   id: string;
@@ -18,6 +20,12 @@ export interface FieldRow {
   /** No value of its own, or the same as the default. */
   isDefault: boolean;
   secret: boolean;
+  /** Presentation hints from the manifest, only when they are non-empty text. */
+  label?: string;
+  description?: string;
+  language?: string;
+  /** What Tab inserts in a `code` control. */
+  indent: string;
 }
 
 export const SECRET_PREFIX = "secret:";
@@ -32,9 +40,18 @@ export function controlFor(field: ManifestField): Control {
   if (field.type === "workflow") return "workflow";
   if (field.type === "select" || BOOLEAN_TYPES.has(field.type) || typeof field.default === "boolean" || (field.options?.length ?? 0) > 0) return "select";
   if (field.type === "number") return "number";
-  if (field.type === "text") return "text";
+  if (field.type === "code") return "code";
+  if (field.type === "text") return field.multiline === true ? "multiline" : "text";
   if (field.type === "map") return "map";
   return "raw";
+}
+
+const hint = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+/** The manifest's optional label, description and language; anything not text is ignored. */
+function hints(field: ManifestField): Pick<FieldRow, "label" | "description" | "language"> {
+  const found = { label: hint(field.label), description: hint(field.description), language: hint(field.language) };
+  return Object.fromEntries(Object.entries(found).filter(([, value]) => value !== undefined));
 }
 
 function optionsFor(field: ManifestField): ConfigValue[] {
@@ -52,11 +69,12 @@ export function fieldRows(fields: ManifestField[] | undefined, config: Record<st
     return {
       id: field.id, type: field.type, control: controlFor(field), value, defaultValue, options: optionsFor(field),
       isDefault: value === undefined || same(value, defaultValue), secret: isSecret(value ?? defaultValue),
+      indent: indentUnit(field.indent), ...hints(field),
     };
   });
   for (const [id, value] of Object.entries(config)) {
     if (known.some((field) => field.id === id)) continue;
-    rows.push({ id, type: null, control: "raw", value, defaultValue: undefined, options: [], isDefault: false, secret: isSecret(value) });
+    rows.push({ id, type: null, control: "raw", value, defaultValue: undefined, options: [], isDefault: false, secret: isSecret(value), indent: indentUnit(undefined) });
   }
   return rows;
 }

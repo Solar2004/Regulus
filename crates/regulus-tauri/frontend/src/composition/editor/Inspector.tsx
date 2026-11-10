@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowRight, Boxes, GitBranch, LayoutDashboard, LockKeyhole, Minus, Plus, Replace, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModuleStatus } from "@/components/ui/status";
@@ -7,6 +7,7 @@ import type { CompositionNode, ConfigValue, Diagnostic, Manifest, ModuleDefiniti
 import * as doc from "./document";
 import { coerce, displayValue, fieldRows, mapEntries, mapFrom, resetValue, type FieldRow } from "./fields";
 import { manifestTypeOf, moduleStateOf } from "./palette";
+import { indent, outdent, rowsFor, type TextEdit } from "./textarea";
 import { SeverityMark, stateView } from "./nodes";
 import { useEditor } from "./store";
 
@@ -58,9 +59,48 @@ function MapControl({ value, label, onCommit }: { value: ConfigValue | undefined
   </div>;
 }
 
+/** Visible rows of a text area, by control: the box grows with the value up to a cap and then scrolls. */
+const TEXT_ROWS = { code: [4, 18], multiline: [3, 10] } as const;
+/** Controls whose default is not repeated under them while it is the value shown: it can be many lines. */
+const TEXT_AREAS = new Set<FieldRow["control"]>(["code", "multiline"]);
+
+/**
+ * A plain, monospaced (for `code`) text area. Tab indents and Shift+Tab outdents in `code`;
+ * Esc hands the next Tab back to the page so the keyboard can leave. No highlighting,
+ * parsing or checking: the hint under it says so.
+ */
+function TextAreaControl({ row, value, label, onCommit }: { row: FieldRow; value: string; label: string; onCommit: (value: string) => void }) {
+  const area = useRef<HTMLTextAreaElement>(null);
+  const pending = useRef<TextEdit | null>(null);
+  const released = useRef(false);
+  const code = row.control === "code";
+  const [min, max] = TEXT_ROWS[code ? "code" : "multiline"];
+  // A Tab edit goes through the store; put the caret back once the new value is rendered.
+  useLayoutEffect(() => {
+    const edit = pending.current;
+    if (!edit || !area.current || area.current.value !== edit.text) return;
+    pending.current = null;
+    area.current.setSelectionRange(edit.start, edit.end);
+  }, [value]);
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!code) return;
+    if (event.key === "Escape") { released.current = true; return; }
+    if (event.key !== "Tab" || released.current || event.ctrlKey || event.metaKey || event.altKey) { released.current = false; return; }
+    event.preventDefault();
+    const target = event.currentTarget;
+    const edit = (event.shiftKey ? outdent : indent)(target.value, target.selectionStart, target.selectionEnd, row.indent);
+    if (edit.text === target.value) return;
+    pending.current = edit;
+    onCommit(edit.text);
+  };
+  return <textarea ref={area} className={code ? "field-textarea code-input" : "field-textarea"} aria-label={label} value={value}
+    rows={rowsFor(value, min, max)} wrap={code ? "off" : "soft"} spellCheck={!code} autoCapitalize="off" autoCorrect="off"
+    data-language={row.language} onKeyDown={onKeyDown} onChange={(event) => onCommit(event.target.value)} />;
+}
+
 function FieldControl({ row, workflows, onChange }: { row: FieldRow; workflows: Workflow[]; onChange: (value: ConfigValue | undefined) => void }) {
   const current = row.value ?? row.defaultValue;
-  const label = row.id;
+  const label = row.label ?? row.id;
   switch (row.control) {
     case "select": {
       const options = row.options.map(displayValue);
@@ -76,6 +116,9 @@ function FieldControl({ row, workflows, onChange }: { row: FieldRow; workflows: 
         {workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name || workflow.id}</option>)}
         {typeof current === "string" && current && !workflows.some((workflow) => workflow.id === current) && <option value={current}>{current}</option>}
       </select>;
+    case "code":
+    case "multiline":
+      return <TextAreaControl row={row} value={displayValue(current)} label={label} onCommit={onChange} />;
     case "map":
       return <MapControl value={current} label={label} onCommit={onChange} />;
     case "number":
@@ -167,14 +210,17 @@ export function NodeInspector({ profile, workflowId, node, manifests, modules, d
     {!nodeType && node.module_id && <p className="inspector-hint">{t("editor.field.noManifest")}</p>}
     {rows.length === 0 ? <p>{t("editor.field.none")}</p> : <div className="inspector-config">{rows.map((row) => <div className="config-row" key={row.id}>
       <div className="config-head">
+        {row.label && <span className="config-label">{row.label}</span>}
         <span className="config-id">{row.id}</span>
-        <span className="config-type">{row.type ?? t("editor.field.unknown")}</span>
+        <span className="config-type">{row.type ?? t("editor.field.unknown")}{row.language && ` · ${row.language}`}</span>
         {row.type !== null && <button type="button" className="config-reset" disabled={row.isDefault} onClick={() => set(row.id, resetValue(row))} aria-label={`${t("editor.field.reset")} ${row.id}`}><RotateCcw size={12} />{t("editor.field.reset")}</button>}
         {row.type === null && <button type="button" className="config-reset" onClick={() => set(row.id, undefined)} aria-label={`${t("editor.field.remove")} ${row.id}`}><Minus size={12} />{t("editor.field.remove")}</button>}
       </div>
       <FieldControl row={row} workflows={profile.workflows} onChange={(value) => set(row.id, value)} />
+      {row.description && <small className="config-description">{row.description}</small>}
+      {row.control === "code" && <small className="config-default">{t("editor.field.codePlain")}</small>}
       {row.secret && <small className="config-secret"><LockKeyhole size={11} aria-hidden="true" />{t("editor.field.secret")}</small>}
-      {row.defaultValue !== undefined && <small className="config-default">{t("editor.field.default")} <code>{displayValue(row.defaultValue) || t("editor.field.empty")}</code></small>}
+      {row.defaultValue !== undefined && !(row.isDefault && TEXT_AREAS.has(row.control)) && <small className="config-default">{t("editor.field.default")} <code>{displayValue(row.defaultValue) || t("editor.field.empty")}</code></small>}
     </div>)}</div>}
 
     <Button variant="outline" className="inspector-delete" onClick={onCreateBox}><Boxes size={14} />{t("editor.box.create")}</Button>

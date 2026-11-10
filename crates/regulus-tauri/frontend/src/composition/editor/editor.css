@@ -37,6 +37,8 @@
 .node-inspector input, .node-inspector select, .editor-form input, .editor-form select { width:100%; border:1px solid var(--rg-color-control-border); border-radius:var(--rg-radius-control); padding:var(--rg-space-2) var(--rg-space-3); background:var(--rg-color-surface); color:var(--rg-color-text); font-size:.75rem; }
 .node-inspector input[aria-invalid], .editor-form input[aria-invalid] { border-color:var(--rg-color-danger); }
 .node-inspector .raw-input { font-family:var(--rg-font-mono); }
+.node-inspector .field-textarea { width:100%; min-height:2.5rem; resize:vertical; border:1px solid var(--rg-color-control-border); border-radius:var(--rg-radius-control); padding:var(--rg-space-2) var(--rg-space-3); background:var(--rg-color-surface); color:var(--rg-color-text); font-size:.75rem; line-height:1.45; }
+.node-inspector .code-input { font-family:var(--rg-font-mono); white-space:pre; overflow:auto; tab-size:4; }
 .node-inspector code { font-family:var(--rg-font-mono); }
 .inspector-hint { margin:var(--rg-space-2) 0 var(--rg-space-4); }
 .inspector-diagnostics { display:grid; gap:var(--rg-space-2); margin-bottom:var(--rg-space-4); font-size:.6875rem; }
@@ -47,6 +49,9 @@
 .config-head { display:flex; align-items:center; gap:var(--rg-space-2); font-size:.6875rem; }
 .config-id { font-family:var(--rg-font-mono); color:var(--rg-color-text); }
 .config-type { color:var(--rg-color-text-muted); font-size:.625rem; }
+.config-label { color:var(--rg-color-text); font-weight:500; }
+.config-label + .config-id { color:var(--rg-color-text-muted); font-size:.625rem; }
+.config-description { font-size:.625rem; color:var(--rg-color-text-secondary); }
 .config-reset { margin-left:auto; display:inline-flex; align-items:center; gap:var(--rg-space-1); padding:var(--rg-space-1) var(--rg-space-2); border-radius:var(--rg-radius-small); font-size:.625rem; color:var(--rg-color-text-secondary); cursor:pointer; }
 .config-reset:hover:not(:disabled) { background:var(--rg-color-hover); }
 .config-reset:disabled { opacity:.4; cursor:default; }

@@ -507,6 +507,7 @@
   "editor.field.noManifest": "No manifest for this module: values are shown as raw text.",
   "editor.field.noWorkflow": "No workflow",
   "editor.field.secret": "Secret reference: the value lives in the core's secrets",
+  "editor.field.codePlain": "Plain text box: no highlighting and no syntax check here; the module gets the text as written. Tab indents, Shift+Tab outdents, Esc then Tab leaves the field.",
   "editor.field.mapKey": "Key",
   "editor.field.mapValue": "Value",
   "editor.field.mapAdd": "Add entry",
