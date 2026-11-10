@@ -138,6 +138,10 @@ impl ModuleCtx {
     /// global sin nodo. El namespace es su id; no puede nombrar otro.
     pub fn store(&self, node: Option<&NodeRef>) -> Result<ModuleStore>;
 
+    /// El mismo espacio en la base de `project` sin un nodo en marcha: lo guardado sigue
+    /// legible tras acabar las ejecuciones o reiniciar el core.
+    pub fn project_store(&self, project: &str) -> Result<ModuleStore>;
+
     /// Guarda el estado de un nodo suyo. Si el core cae, el siguiente reanuda la
     /// ejecución y se lo devuelve en `node/start` (`02-architecture.md` §6).
     pub fn checkpoint(&self, node: &NodeRef, state: Value) -> Result<()>;

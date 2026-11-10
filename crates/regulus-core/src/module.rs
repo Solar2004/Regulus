@@ -203,6 +203,13 @@ impl ModuleCtx {
     pub fn store(&self, node: Option<&NodeRef>) -> Result<ModuleStore, ModuleError> {
         self.core()?.module_store(&self.module_id, node)
     }
+
+    /// This module's own key-value space in the database of `project` (open, or with data
+    /// from an earlier run), without a node of it running: what a module keeps per project
+    /// stays readable after its runs ended or the core restarted.
+    pub fn project_store(&self, project: &str) -> Result<ModuleStore, ModuleError> {
+        self.core()?.project_module_store(&self.module_id, project)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

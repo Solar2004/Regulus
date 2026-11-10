@@ -130,14 +130,10 @@ Los tres sirven a **cualquier nodo del módulo**. Parámetros comunes: `{ execut
 módulo guarda en el almacén (espacio global) un índice de los últimos 256 nodos que arrancaron, con su
 configuración, así que encuentra un nodo de una ejecución terminada o de un core reiniciado.
 
-Abrir el libro es otra cosa: el core solo da el almacén de un **proyecto** a través de una ejecución en
-marcha de ese proyecto (`ModuleCtx` no tiene otra puerta, y no se cambió el core). Por eso:
-
-- libro de un perfil **fuera de proyecto**: responde siempre, sin ejecución en marcha (probado tras reinicio);
-- libro de un **proyecto**: con la ejecución viva, igual que siempre; si terminó, el error lo dice y se
-  pasa `via: { execution_id, node_id }` de **cualquier ejecución en marcha del mismo proyecto** (se lee el
-  libro del nombre pedido). `via` de otro proyecto lee el libro de *ese* proyecto: el módulo no puede
-  comprobar que sean el mismo.
+Abrir el libro tampoco necesita nada en marcha: el core encuentra el proyecto del nodo a partir
+de su ejecución, viva o guardada (`ModuleCtx::store`, `02-architecture.md` §6). El libro de una
+ejecución terminada, o de antes de reiniciar el core, se lee con el mismo `{ execution_id, node_id }`
+(probado tras reinicio, dentro y fuera de proyecto).
 
 | Método | Extras | Devuelve |
 |---|---|---|

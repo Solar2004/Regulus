@@ -30,9 +30,8 @@ methods        = ["evidence.list", "evidence.inspect", "evidence.export"]
 # registered is, each failure is said on `error` and listed in the node's result, and the
 # call succeeds (so a retry of the whole batch is not needed, and would duplicate).
 # The methods of the module find a node by `{ execution_id, node_id }` from an index kept in
-# the store, also after a restart. A project's book is opened by the core only through a
-# running execution of that project: for a run that ended, pass `via: { execution_id,
-# node_id }` of a running one (a profile outside any project needs nothing).
+# the store, also after a restart. The core finds the node's project from its execution,
+# running or stored, so a run that ended still opens its own book.
 
 # The book: values on `source` register sources, values on `cite` register entries, values
 # on `forget` remove one. Agents use the same book as tools (`tools`, for a Tools box).

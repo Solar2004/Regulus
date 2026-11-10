@@ -424,6 +424,11 @@ impl Databases {
         Ok(db)
     }
 
+    /// Whether `project` has a database: every one on disk opens with the store.
+    fn has(&self, project: &str) -> bool {
+        self.projects().contains_key(project)
+    }
+
     /// The global database and every project database open now.
     fn all(&self) -> Vec<Arc<Db>> {
         let mut all = vec![self.global.clone()];
@@ -730,6 +735,11 @@ impl Store {
 
     pub(crate) fn db(&self, project: Option<&str>) -> Result<Arc<Db>, StoreError> {
         self.dbs.db(project)
+    }
+
+    /// Whether `project` has a database here, without creating one.
+    pub(crate) fn has_project(&self, project: &str) -> bool {
+        self.dbs.has(project)
     }
 
     /// The key-value space `namespace` in the database of `project` (or the global one).

@@ -426,7 +426,11 @@ estado compartido degenere en variable global donde todos escriben.
   aviso; una base de proyecto rota o una fila ilegible se saltan con aviso.
 - **Namespace:** `ModuleCtx::store(nodo?)` da el `kv` del módulo, con su id sin versión
   fijado por el core: no puede nombrar otro. Con nodo, en la base de su proyecto; sin él,
-  en la global.
+  en la global. El nodo puede ser de una ejecución terminada o de antes de reiniciar: el
+  core busca su proyecto en la ejecución guardada (y comprueba que el nodo sea del módulo).
+  `ModuleCtx::project_store(proyecto)` abre el mismo espacio en un proyecto sin nada en
+  marcha; solo uno abierto o con base ya escrita, nunca crea una (lo piden `evidence` y
+  `data` para leer lo guardado tras reiniciar).
 - **Reinicio:** apagar `serve` (Ctrl-C o caída) deja las ejecuciones vivas como
   `running` en el store. Al arrancar, en un hilo aparte tras abrir el socket, según
   `[store] resume`: `checkpoint` (defecto) reanuda con el mismo id las que tienen algún

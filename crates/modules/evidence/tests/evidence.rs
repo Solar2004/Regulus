@@ -1026,8 +1026,8 @@ fn the_methods_find_a_node_of_an_ended_run_after_the_core_restarted() {
     core1.shutdown();
     drop(core1);
 
-    // No execution is started in the new core: the old runs are only names. The global
-    // book answers from the persisted index of nodes.
+    // No execution is started in the new core: the old runs are only names, answered from
+    // the persisted index of nodes.
     let core2 = core(&home);
     let params = json!({ "execution_id": global, "node_id": "book" });
     let list = core2.dispatch("evidence.list", params.clone()).unwrap();
@@ -1039,37 +1039,14 @@ fn the_methods_find_a_node_of_an_ended_run_after_the_core_restarted() {
         [("E1".to_string(), "valid".to_string())]
     );
 
-    // A project's book can only be opened by the core through a running execution of that
-    // project. Without one the error says so, and says what to pass.
+    // A project's book is read the same way: the core finds the project from the stored
+    // run, with nothing running.
     let params = json!({ "execution_id": project, "node_id": "book" });
-    let refused = format!(
-        "{:?}",
-        core2.dispatch("evidence.list", params.clone()).unwrap_err()
-    );
-    assert!(refused.contains("via"), "{refused}");
-    // With any running execution of the project as `via`, the old run's book is read.
-    let running = start(&core2, "evidence-a");
-    let mut via = params;
-    via["via"] = json!({ "execution_id": running, "node_id": "book" });
-    let list = core2.dispatch("evidence.list", via.clone()).unwrap();
+    let list = core2.dispatch("evidence.list", params.clone()).unwrap();
     assert_eq!(list["entries"][0]["status"], "valid", "{list}");
-    let export = core2.dispatch("evidence.export", via).unwrap();
+    let export = core2.dispatch("evidence.export", params).unwrap();
     assert_eq!(
         verify_export(&export),
         [("E1".to_string(), "valid".to_string())]
-    );
-    // The other project's runs do not reach it.
-    let other = start(&core2, "evidence-b");
-    let wrong = core2
-        .dispatch(
-            "evidence.list",
-            json!({ "execution_id": project, "node_id": "book",
-                    "via": { "execution_id": other, "node_id": "book" } }),
-        )
-        .unwrap();
-    assert_eq!(
-        wrong["sources"],
-        json!([]),
-        "a different project's book is a different book"
     );
 }

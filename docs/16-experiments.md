@@ -85,15 +85,12 @@ medias). Una fila ilegible es un error, no un estado vacío.
 
 **Métodos del módulo**: `data.list` (colecciones e instantáneas del proyecto),
 `data.inspect` (`limit` registros, ajustes y, en `snapshot`, el historial) y `data.export`
-(todo). Se nombra el nodo (`execution_id`, `node_id`: puede haber parado, mientras el core
-conozca esa ejecución), o `via: {execution_id, node_id}` de cualquier nodo `data` en marcha
-del mismo proyecto, o `global: true` para perfiles fuera de proyectos (sin ejecución
-alguna, también tras reiniciar el core). Un nodo que no corre ya no dice qué guardó: se
-piden `kind` (`dataset` | `snapshot`) y `name` (y `scope`, si no es `project`); con el nodo
-en marcha son opcionales. **Límite del core:** las filas de un *proyecto* solo se abren a
-través de una ejecución que el core conozca; tras reiniciar el core hace falta `via` (o
-arrancar el perfil otra vez). Leerlas sin ejecución pide a `ModuleCtx` una
-`project_store(project_id)` que hoy no existe. Sin store en el core (solo pruebas) las
+(todo). Se nombra el nodo (`execution_id`, `node_id`: puede haber parado, o ser de antes
+de reiniciar el core: el core encuentra su proyecto en la ejecución guardada), o
+`project: "<id>"` para leer las filas de un proyecto sin nada en marcha
+(`ModuleCtx::project_store`), o `global: true` para perfiles fuera de proyectos. Un nodo
+que no corre ya no dice qué guardó: se piden `kind` (`dataset` | `snapshot`) y `name` (y
+`scope`, si no es `project`); con el nodo en marcha son opcionales. Sin store en el core (solo pruebas) las
 filas viven en el proceso; cualquier otro fallo del store es un error del nodo, nunca un
 desvío silencioso. Ejemplo `crates/modules/data/examples/data.toml`.
 
@@ -125,8 +122,8 @@ mismo formato JSONL `{query, expect_source_ids}`). Sin modelo.
 (`<collection>-a-<chunker>-<tamaño>-<solape>`): cambiarlo ingiere de nuevo en vez de
 reutilizar trozos cortados de otro modo (`documents` reconoce "sin cambios" solo por el
 hash del texto). El motor de recuperación no va en el nombre: al cablear otro, cambia
-`collection`. Los ficheros borrados de `docs_dir` siguen en sus colecciones (`documents` no
-tiene poda): usa otra `collection` o `regulus docs rm`.
+`collection`. Los ficheros borrados de `docs_dir` salen de las dos colecciones en la
+siguiente ejecución (hueco `prune`, `yes` por defecto: campo `prune` de `ingest`).
 
 **Candidato intercambiable.** Un candidato es un workflow con la entrada `in` (un
 registro del dataset), las salidas `hits` (el resultado de `documents.retrieve`,
@@ -169,10 +166,6 @@ sustituido por un workflow propio).
   silencio) y una mayor que `max_record_bytes` se rechaza; ambos valen 256 KiB por defecto,
   súbelos juntos. No hay modo "solo hash". El nodo `search` de `web` descarta los resultados
   sin `url` antes de llegar a `snapshot`.
-- Las filas de un proyecto no se leen tras reiniciar el core sin una ejecución del proyecto
-  (ver §1); falta `ModuleCtx::project_store`.
-- Borrar un fichero del corpus no lo quita de las colecciones ya ingeridas (falta una poda en
-  `documents`).
 - `rag-lab` dibuja dos candidatos (un tercero = copiar `ingest_b`, `batch_b`, `recall_b` y
   añadir una entrada a `pair`); el orden ingesta-antes-que-consultas se debe a que su camino
   por el bus es más corto, no a una espera. El cableado de un motor de recuperación externo

@@ -219,6 +219,23 @@ struct CallLink {
 /// Why a local module of a project that is not trusted does not run.
 const UNTRUSTED: &str = "untrusted project: reopen with --trust";
 
+/// Whether `node` of `workflow` belongs to `module_id`: a module cannot reach a project,
+/// or a state, through a node that is not its own.
+fn own_node(module_id: &str, node: &NodeRef, workflow: &Workflow) -> Result<(), ModuleError> {
+    let owned = workflow
+        .node(&node.node_id)
+        .and_then(|n| n.module_id.as_deref())
+        .is_some_and(|m| base_id(m) == base_id(module_id));
+    if owned {
+        Ok(())
+    } else {
+        Err(ModuleError::InvalidParams(format!(
+            "node `{}` does not belong to this module",
+            node.node_id
+        )))
+    }
+}
+
 /// The threads that ask hook nodes (`hook.dispatch`).
 const HOOK_THREAD: &str = "regulus-hook";
 
@@ -1937,27 +1954,61 @@ impl Core {
         live_only: bool,
     ) -> Result<Option<String>, ModuleError> {
         let executions = self.executions();
-        let live = executions
-            .iter()
-            .find(|live| {
-                live.execution.id == node.execution_id
-                    && (!live_only || live.execution.state.is_live())
-            })
-            .ok_or_else(|| {
-                ModuleError::Failed(format!("execution `{}` is not running", node.execution_id))
-            })?;
-        let owned = live
-            .workflow
-            .node(&node.node_id)
-            .and_then(|n| n.module_id.as_deref())
-            .is_some_and(|m| base_id(m) == base_id(module_id));
-        if !owned {
+        let found = executions.iter().find(|live| {
+            live.execution.id == node.execution_id && (!live_only || live.execution.state.is_live())
+        });
+        let (workflow, project) = match found {
+            Some(live) => (&live.workflow, live.execution.project_id.clone()),
+            // An execution that ended, or ran before a restart, is read from the store:
+            // its data outlives it, so a module can still reach it through its nodes.
+            None if !live_only => {
+                let stored = self
+                    .stored(&node.execution_id)
+                    .map_err(|e| ModuleError::Failed(e.message))?
+                    .ok_or_else(|| {
+                        ModuleError::Failed(format!(
+                            "no execution `{}` is running or stored",
+                            node.execution_id
+                        ))
+                    })?;
+                return own_node(module_id, node, &stored.workflow)
+                    .map(|()| stored.execution.project_id);
+            }
+            None => {
+                return Err(ModuleError::Failed(format!(
+                    "execution `{}` is not running",
+                    node.execution_id
+                )))
+            }
+        };
+        own_node(module_id, node, workflow)?;
+        Ok(project)
+    }
+
+    /// A module's key-value space in the database of `project`, without any execution of
+    /// it (`ModuleCtx::project_store`).
+    pub(crate) fn project_module_store(
+        &self,
+        module_id: &str,
+        project: &str,
+    ) -> Result<ModuleStore, ModuleError> {
+        let store = self
+            .storage
+            .store
+            .as_ref()
+            .ok_or_else(|| ModuleError::Failed("this core has no store".into()))?;
+        let namespace = base_id(module_id);
+        if namespace.is_empty() {
+            return Err(ModuleError::Failed("no module behind this context".into()));
+        }
+        // Only a project this core knows: open, or with data from an earlier run. Asking
+        // never creates a database.
+        if self.projects().get(project).is_none() && !store.has_project(project) {
             return Err(ModuleError::InvalidParams(format!(
-                "node `{}` does not belong to this module",
-                node.node_id
+                "no project `{project}` is open or has stored data"
             )));
         }
-        Ok(live.execution.project_id.clone())
+        Ok(store.module_store(Some(project), namespace)?)
     }
 
     /// Saves the state of one of a module's nodes in a live execution

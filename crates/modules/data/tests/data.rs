@@ -673,27 +673,21 @@ fn a_stopped_run_and_a_restarted_core_still_show_what_they_kept() {
         )
         .unwrap();
     assert_eq!(rows["items"], 2);
-    // The project's rows need an execution the core knows (core limit, see the report): the
-    // error says how to reach them.
-    let err = ask(
+    // The project's rows are read through the stopped execution of the old core, or by
+    // naming the project, with nothing running.
+    let listed = ask(
         &core,
         "data.list",
         json!({ "execution_id": a, "node_id": "watch" }),
-    );
-    let message = err.unwrap_err().message;
-    assert!(
-        message.contains("via") && message.contains("global"),
-        "{message}"
-    );
-    let b = start(&core, "data-a");
-    let via = ask(
-        &core,
-        "data.export",
-        json!({ "via": { "execution_id": b, "node_id": "watch" } }),
     )
     .unwrap();
-    assert_eq!(via["records"][0]["key"], "u1", "{via}");
-    // A request that names no node, `via` or `global` is refused plainly.
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    let exported = ask(&core, "data.export", json!({ "project": "proj-a" })).unwrap();
+    assert_eq!(exported["records"][0]["key"], "u1", "{exported}");
+    // A project the core has no data for is refused, not created.
+    let err = ask(&core, "data.list", json!({ "project": "nope" })).unwrap_err();
+    assert!(err.message.contains("no project `nope`"), "{err:?}");
+    // A request that names no node, `project` or `global` is refused plainly.
     let err = ask(&core, "data.list", json!({})).unwrap_err();
     assert!(err.message.contains("global"), "{err:?}");
     // A stopped node does not say what it kept: the kind and the name are asked for.

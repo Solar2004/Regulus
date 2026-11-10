@@ -208,16 +208,10 @@ impl Here<'_> {
     }
 }
 
-#[derive(Deserialize)]
-struct NodeId {
-    execution_id: String,
-    node_id: String,
-}
-
 /// What a module method asks about. A node (`execution_id`, `node_id`) opens its
-/// project's store; it may have stopped, as long as the core still knows its execution.
-/// `via` opens the project's store through any running data node of that project, and
-/// `global` the global one (profiles outside any project). A node that is not running no
+/// project's store; it may have stopped, or run before the core restarted. `project`
+/// opens that project's store with nothing of it running, and `global` the global one
+/// (profiles outside any project). A node that is not running no
 /// longer says which dataset or snapshot it kept, so `kind` and `name` (and `scope`, if not
 /// `project`) are named.
 #[derive(Deserialize)]
@@ -227,7 +221,7 @@ struct Target {
     #[serde(default)]
     node_id: Option<String>,
     #[serde(default)]
-    via: Option<NodeId>,
+    project: Option<String>,
     #[serde(default)]
     global: bool,
     #[serde(default)]
@@ -269,13 +263,6 @@ impl Data {
             Err(ModuleError::Failed(reason)) if reason == NO_STORE => {
                 Ok(Kv::Local(self.local.clone()))
             }
-            Err(ModuleError::Failed(reason)) if reason.ends_with("is not running") => {
-                Err(ModuleError::Failed(format!(
-                    "{reason}: a project's data is reached through an execution the core still \
-                     knows. Pass `via: {{ execution_id, node_id }}` of a running data node of \
-                     that project, or `global: true` for a profile outside any project"
-                )))
-            }
             Err(other) => Err(other),
         }
     }
@@ -298,12 +285,14 @@ impl Data {
 
     /// The store a method reads, by whichever way the target names it.
     fn store_of(&self, target: &Target) -> Result<Kv, ModuleError> {
-        if let Some(via) = &target.via {
-            let node = NodeRef {
-                execution_id: via.execution_id.clone(),
-                node_id: via.node_id.clone(),
+        if let Some(project) = &target.project {
+            return match self.ctx.project_store(project) {
+                Ok(store) => Ok(Kv::Store(store)),
+                Err(ModuleError::Failed(reason)) if reason == NO_STORE => {
+                    Ok(Kv::Local(self.local.clone()))
+                }
+                Err(other) => Err(other),
             };
-            return self.open(Some(&node));
         }
         if target.global {
             return self.open(None);
@@ -314,7 +303,7 @@ impl Data {
                 node_id: node_id.clone(),
             })),
             _ => Err(ModuleError::InvalidParams(
-                "name a node (`execution_id` and `node_id`), a `via` node or `global: true`".into(),
+                "name a node (`execution_id` and `node_id`), a `project` or `global: true`".into(),
             )),
         }
     }

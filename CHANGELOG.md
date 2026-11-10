@@ -15,6 +15,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
+  ejecución terminada, o de antes de reiniciar el core, se consultan con
+  `regulus call` sin arrancar nada; `data.*` acepta también `project`.
+- **Poda en `documents`:** con `prune = yes`, al ingerir una carpeta salen de la colección
+  los ficheros que ya no están. `rag-lab` la activa por defecto.
 - **Evidencias comprobables:** módulo `evidence` con fuentes versionadas y citas que
   apuntan a un extracto exacto; una cita deja de valer si la fuente cambia. La plantilla
   `research-evidence` investiga en la web y su informe falla si cita algo que no puede

@@ -40,6 +40,18 @@ impl Module for Keeper {
             self.ctx.store(Some(&node))?.list("")?;
             return Ok(Value::Null);
         }
+        if name.ends_with(".project") {
+            // Lists its space in a project, with no node of it running.
+            let project = params["project"].as_str().unwrap_or_default();
+            let keys: Vec<String> = self
+                .ctx
+                .project_store(project)?
+                .list("")?
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            return Ok(json!(keys));
+        }
         if name.ends_with(".peek") {
             let keys = |space: Vec<(String, Vec<u8>)>| -> Vec<String> {
                 space.into_iter().map(|(k, _)| k).collect()
@@ -90,7 +102,11 @@ fn keeper(id: &str, prefix: &str, log: &Log) -> Box<dyn Module> {
                 id: id.into(),
                 name: id.into(),
                 requires_proto: None,
-                methods: vec![format!("{prefix}.peek"), format!("{prefix}.reach")],
+                methods: vec![
+                    format!("{prefix}.peek"),
+                    format!("{prefix}.reach"),
+                    format!("{prefix}.project"),
+                ],
                 workflow_id: None,
                 origin: None,
             },
@@ -545,4 +561,47 @@ fn an_execution_whose_workflow_has_ports_survives_a_restart() {
     assert_eq!(reply["value"], "again");
     // ask → echo.ask → (through) echo.reply → self.reply: three crossings deep.
     assert_eq!(reply["depth"], 3);
+}
+
+#[test]
+fn a_project_space_stays_readable_after_its_runs_and_a_restart() {
+    let home = temp_home("project-space");
+    let log = Log::default();
+    let config = StoreConfig::default();
+    let nodes = || {
+        profile(vec![
+            json!({ "id": "x", "type": "k", "module_id": "t/a@1.0.0",
+                    "config": { "key": "kept", "value": 1 } }),
+            json!({ "id": "y", "type": "k", "module_id": "t/b@2.0.0" }),
+        ])
+    };
+    let core = core_on(&home, &config, nodes(), &log);
+    start(&core);
+    core.dispatch(method::EXECUTION_STOP, json!({ "id": "exec-1" }))
+        .unwrap();
+    drop(core);
+
+    // A new core: nothing runs, the data is still the project's.
+    let core = core_on(&home, &config, nodes(), &log);
+    let keys = core
+        .dispatch("a.project", json!({ "project": "proj" }))
+        .unwrap();
+    assert_eq!(keys, json!(["kept"]));
+    // Another module's space in the same project is its own, empty.
+    let keys = core
+        .dispatch("b.project", json!({ "project": "proj" }))
+        .unwrap();
+    assert_eq!(keys, json!([]));
+    // A node of the stopped run still leads to its project, but only for its own module.
+    let own = json!({ "execution_id": "exec-1", "node_id": "x" });
+    assert!(core.dispatch("a.reach", own).is_ok());
+    let foreign = json!({ "execution_id": "exec-1", "node_id": "x" });
+    let error = core.dispatch("b.reach", foreign).unwrap_err();
+    assert!(error.message.contains("does not belong"), "{error:?}");
+    // A project with no data is refused, and asking creates no database.
+    let error = core
+        .dispatch("a.project", json!({ "project": "nope" }))
+        .unwrap_err();
+    assert!(error.message.contains("no project `nope`"), "{error:?}");
+    assert!(!home.join("store/projects/nope.db").exists());
 }

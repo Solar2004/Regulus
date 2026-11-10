@@ -104,21 +104,6 @@ fn items(value: &Value) -> Vec<Value> {
 struct Seen {
     execution_id: String,
     node: Node,
-    /// Its book is in the global space (a profile outside any project): readable without
-    /// a running execution.
-    #[serde(default)]
-    global: bool,
-}
-
-/// How a node's book is reached.
-#[derive(Clone)]
-enum Route {
-    /// Through the node's own running execution.
-    Own,
-    /// Through the global space of the store.
-    Global,
-    /// Through another running execution, which must be of the same project.
-    Via(NodeRef),
 }
 
 pub struct Evidence {
@@ -137,7 +122,6 @@ struct Here<'a> {
     evidence: &'a Evidence,
     node: Node,
     me: NodeRef,
-    route: Route,
 }
 
 impl Here<'_> {
@@ -195,21 +179,11 @@ impl Here<'_> {
 
     /// The collection this node reads or writes.
     fn book(&self) -> Result<Book, ModuleError> {
-        let opened = match &self.route {
-            Route::Own => self.evidence.open(Some(&self.me)).map_err(|e| match e {
-                ModuleError::Failed(reason) if reason.ends_with("is not running") => {
-                    ModuleError::Failed(format!(
-                        "{reason}: a project's evidence is reached through a running execution \
-                         of that project. Pass `via: {{ execution_id, node_id }}` of one (any \
-                         evidence node of it), or start the profile again"
-                    ))
-                }
-                other => other,
-            }),
-            Route::Global => self.evidence.open(None),
-            Route::Via(node) => self.evidence.open(Some(node)),
-        };
-        let kv = opened.map_err(|e| self.fail(e))?;
+        // The core finds the node's project from its execution, running or stored.
+        let kv = self
+            .evidence
+            .open(Some(&self.me))
+            .map_err(|e| self.fail(e))?;
         let scope = if self.text("scope") == PROJECT {
             PROJECT.to_string()
         } else {
@@ -290,7 +264,6 @@ impl Evidence {
                 node_id: call.node.id.clone(),
             },
             node: call.node,
-            route: Route::Own,
         }
     }
 
@@ -307,17 +280,6 @@ impl Evidence {
             }
             Err(e) => Err(e),
         }
-    }
-
-    /// Whether the store behind `me` is the global one (its execution belongs to no
-    /// project): a marker written through the node is looked for in the global space.
-    fn in_global_space(&self, me: &NodeRef) -> Result<bool, ModuleError> {
-        let key = format!("probe/{}/{}", me.execution_id, me.node_id);
-        let own = self.open(Some(me))?;
-        own.set(&key, b"1")?;
-        let found = self.open(None)?.get(&key)?.is_some();
-        own.delete(&key)?;
-        Ok(found)
     }
 
     /// The nodes seen starting, oldest first: kept in the global space of the store, so the
@@ -356,21 +318,6 @@ impl Evidence {
                 target.node_id, target.execution_id
             ))
         })?;
-        let via = match params.get("via") {
-            Some(via) => {
-                let via: Target = parse(via.clone())?;
-                Some(NodeRef {
-                    execution_id: via.execution_id,
-                    node_id: via.node_id,
-                })
-            }
-            None => None,
-        };
-        let route = match (seen.global, via) {
-            (true, _) => Route::Global,
-            (false, Some(via)) => Route::Via(via),
-            (false, None) => Route::Own,
-        };
         Ok(Here {
             evidence: self,
             me: NodeRef {
@@ -378,23 +325,16 @@ impl Evidence {
                 node_id: target.node_id,
             },
             node: seen.node,
-            route,
         })
     }
 
     fn start(&self, call: NodeCall) -> Result<Value, ModuleError> {
-        let me = NodeRef {
-            execution_id: call.execution_id.clone(),
-            node_id: call.node.id.clone(),
-        };
-        let global = self.in_global_space(&me)?;
         let _index = lock(&self.index);
         let mut seen = self.seen()?;
         seen.retain(|s| s.execution_id != call.execution_id || s.node.id != call.node.id);
         seen.push(Seen {
             execution_id: call.execution_id,
             node: call.node,
-            global,
         });
         let extra = seen.len().saturating_sub(REMEMBERED_NODES);
         seen.drain(..extra);

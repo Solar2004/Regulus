@@ -6,9 +6,9 @@ requires_proto = "^1.9"
 #   data.list     every dataset and snapshot of the project (kind, scope, name, size)
 #   data.inspect  one dataset or snapshot: settings, size, history, first `limit` rows
 #   data.export   the whole content (bounded by its limits)
-# Name the node (`execution_id`, `node_id`; it may have stopped while the core still knows
-# that execution), or `via: { execution_id, node_id }` (any running data node of the same
-# project) or `global: true` (profiles outside any project; needs no execution at all). A
+# Name the node (`execution_id`, `node_id`; it may have stopped, or run before the core
+# restarted), or `project: "<id>"` (that project's rows, nothing running) or `global: true`
+# (profiles outside any project; needs no execution at all). A
 # node that is not running no longer says what it kept: give `kind` (`dataset` |
 # `snapshot`) and `name` (and `scope` if not `project`).
 methods        = ["data.list", "data.inspect", "data.export"]
