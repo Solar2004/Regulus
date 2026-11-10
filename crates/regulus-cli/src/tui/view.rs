@@ -72,7 +72,7 @@ fn draw_operate(frame: &mut Frame, app: &App) {
 }
 
 /// A box in the middle of `area`, `width` columns and `height` rows at most.
-pub(super) fn centered(area: Rect, width: u16, height: u16) -> Rect {
+pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
     Rect {
@@ -257,7 +257,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt) {
     frame.render_widget(Paragraph::new(lines).block(pane(title, true, p)), area);
 }
 
-pub(super) fn pane<'a>(title: &'a str, focused: bool, p: &Palette) -> Block<'a> {
+pub(crate) fn pane<'a>(title: &'a str, focused: bool, p: &Palette) -> Block<'a> {
     let border = if focused { p.focus } else { p.border };
     Block::new()
         .borders(Borders::ALL)
@@ -273,7 +273,7 @@ pub(super) fn pane<'a>(title: &'a str, focused: bool, p: &Palette) -> Block<'a> 
 }
 
 /// A state is always a symbol and a word, never color alone (docs/08-design-system.md).
-pub(super) fn state_span(
+pub(crate) fn state_span(
     symbol: &str,
     label: String,
     color: ratatui::style::Color,
@@ -312,7 +312,7 @@ pub(super) fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-pub(super) fn list<'a>(items: Vec<ListItem<'a>>, block: Block<'a>, p: &Palette) -> List<'a> {
+pub(crate) fn list<'a>(items: Vec<ListItem<'a>>, block: Block<'a>, p: &Palette) -> List<'a> {
     List::new(items)
         .block(block)
         .highlight_style(Style::default().bg(p.selected).add_modifier(Modifier::BOLD))
@@ -446,7 +446,7 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Splits `text` into lines no wider than `width` characters, between words when it can.
-pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.lines() {

@@ -280,6 +280,31 @@ fn has_input(node: &Node, capability: &str) -> bool {
     })
 }
 
+/// A node's state in an execution (docs/04-client.md §3), from the module that runs it
+/// and what the execution left off.
+pub fn node_state(node: &Node, execution: &Execution, modules: &[ModuleSummary]) -> NodeState {
+    let module = node
+        .module_id
+        .as_deref()
+        .map(|id| modules.iter().find(|module| module.id == id));
+    let disabled = execution.disabled.iter().find(|d| d.node_id == node.id);
+    match (module, disabled) {
+        (None, _) => NodeState::Resource,
+        (Some(None), _) => NodeState::NotInstalled,
+        (_, Some(disabled)) => NodeState::Disabled(disabled.missing.clone()),
+        (Some(Some(module)), None) => match &module.state {
+            ModuleState::Broken { reason } | ModuleState::Blocked { reason } => {
+                NodeState::Broken(reason.clone())
+            }
+            ModuleState::Incompatible { requires, have } => {
+                NodeState::Broken(format!("needs protocol {requires}, the core has {have}"))
+            }
+            _ if execution.state.is_live() => NodeState::Running,
+            _ => NodeState::Stopped,
+        },
+    }
+}
+
 pub fn kind(node: &Node) -> NodeKind {
     if is_agent(node) {
         NodeKind::Agent
@@ -326,41 +351,15 @@ impl App {
         let Some(workflow) = self.workflow(execution) else {
             return Vec::new();
         };
-        let running = matches!(
-            execution.state,
-            ExecutionState::Running | ExecutionState::Starting
-        );
         workflow
             .nodes
             .iter()
-            .map(|node| {
-                let module = node
-                    .module_id
-                    .as_deref()
-                    .map(|id| self.modules.iter().find(|module| module.id == id));
-                let disabled = execution.disabled.iter().find(|d| d.node_id == node.id);
-                let state = match (module, disabled) {
-                    (None, _) => NodeState::Resource,
-                    (Some(None), _) => NodeState::NotInstalled,
-                    (_, Some(disabled)) => NodeState::Disabled(disabled.missing.clone()),
-                    (Some(Some(module)), None) => match &module.state {
-                        ModuleState::Broken { reason } | ModuleState::Blocked { reason } => {
-                            NodeState::Broken(reason.clone())
-                        }
-                        ModuleState::Incompatible { requires, have } => NodeState::Broken(format!(
-                            "needs protocol {requires}, the core has {have}"
-                        )),
-                        _ if running => NodeState::Running,
-                        _ => NodeState::Stopped,
-                    },
-                };
-                NodeRow {
-                    id: node.id.clone(),
-                    name: node.name.clone(),
-                    node_type: node.node_type.clone(),
-                    kind: kind(node),
-                    state,
-                }
+            .map(|node| NodeRow {
+                id: node.id.clone(),
+                name: node.name.clone(),
+                node_type: node.node_type.clone(),
+                kind: kind(node),
+                state: node_state(node, execution, &self.modules),
             })
             .collect()
     }

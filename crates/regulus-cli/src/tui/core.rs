@@ -260,7 +260,10 @@ pub fn spawn(config: Config, timeout: Duration, events: mpsc::Sender<Event>) -> 
         while let Some(request) = incoming.recv().await {
             if !line.as_ref().is_some_and(|ws| ws.is_connected()) {
                 let _ = events.send(Event::Connection(Connection::Connecting));
-                match open(&config, timeout, first, &events).await {
+                let starting = || {
+                    let _ = events.send(Event::Connection(Connection::Starting));
+                };
+                match open(&config, timeout, first, &starting).await {
                     Ok((ws, connection)) => {
                         line = Some(Arc::new(ws));
                         let _ = events.send(Event::Connection(connection));
@@ -284,12 +287,13 @@ pub fn spawn(config: Config, timeout: Duration, events: mpsc::Sender<Event>) -> 
     Core { requests }
 }
 
-/// Connects to the core the home names. Only on the first try, if none answers, starts one.
-async fn open(
+/// Connects to the core the home names. With `may_start`, if none answers, starts one
+/// (`client.autostart`), calling `starting` first so the caller can say so.
+pub async fn open(
     config: &Config,
     timeout: Duration,
     may_start: bool,
-    events: &mpsc::Sender<Event>,
+    starting: &(dyn Fn() + Send + Sync),
 ) -> Result<(WsClient, Connection)> {
     let found = match local::endpoint(config) {
         Some(endpoint) => rpc::connect(&endpoint, CLIENT_NAME, timeout).await,
@@ -308,7 +312,7 @@ async fn open(
             )
         }
         Err(_) => {
-            let _ = events.send(Event::Connection(Connection::Starting));
+            starting();
             let config = config.clone();
             let endpoint = tokio::task::spawn_blocking(move || {
                 let program = local::core_program(&config, std::env::current_exe().ok());
@@ -332,7 +336,8 @@ fn text(error: anyhow::Error) -> String {
     format!("{error:#}")
 }
 
-async fn answer(ws: &WsClient, request: Request) -> Event {
+/// Carries out one request on `ws` and says what came of it.
+pub async fn answer(ws: &WsClient, request: Request) -> Event {
     match request {
         Request::Status => {
             let executions = rpc::call(ws, method::EXECUTION_LIST, Value::Null).await;
@@ -511,7 +516,8 @@ async fn answer(ws: &WsClient, request: Request) -> Event {
     }
 }
 
-async fn profiles(ws: &WsClient) -> Result<Vec<Profile>> {
+/// Every profile the core has loaded, whole.
+pub async fn profiles(ws: &WsClient) -> Result<Vec<Profile>> {
     let listed: Vec<ProfileSummary> = rpc::call(ws, method::PROFILE_LIST, Value::Null).await?;
     let mut profiles = Vec::with_capacity(listed.len());
     for summary in listed {
