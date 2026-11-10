@@ -1,0 +1,382 @@
+# Topic watch (docs/16-experiments.md): poll a source on a schedule or by hand, compare what
+# it says now with what it said last time, and hand only the news to a workflow of yours.
+#
+#   cron ─tick─┐
+#   self.poll ─┴→ go → to_{{source}} ┬ search → snap_search ─┐  report / same / removed / error
+#                                    └ fetch  → snap_fetch  ─┴→ novel → self.novel
+#                                                                  └→ notify (call {{downstream}}) → self.digest
+#
+# source = search: `search` asks the SearXNG-style endpoint `search_url`
+# (`?q=<query>&format=json`, answers `{ results: [{ title, url, content }] }`) for `query`,
+# and `snap_search` keys the results by `/url`: a result is *added* when its URL is new,
+# *changed* when `compare_paths` (title and snippet) differ from last time, and the ones
+# that dropped out are *removed*. source = fetch: `fetch` reads `url` as text and
+# `snap_fetch` tracks that one page under the key `page`: its text changing is *changed*.
+#
+# State: the snapshot `name` lives in the store of the project (the global one outside a
+# project), so a poll after a restart of the core compares with the last one before it, and
+# a different project has its own. `baseline = silent` makes the first poll only store the
+# baseline (no news); `report` (default) calls everything new on the first poll. A poll that
+# returns nothing (a search with no results, an empty answer) is an error, not news: the
+# baseline stays (`on_empty = accept` makes it an empty state). Results that cannot be read
+# (no url) never make the others look removed. A page bigger than `fetch_max_bytes` fails the
+# poll loudly; raise it together with `max_record_bytes`.
+#
+# What leaves: `report` (every poll, with counts), `novel` (added and changed items, only
+# when there are some), `removed`, `same` (a poll with no news), `digest` (the answer of
+# the workflow `downstream` to each `novel`), `error` (a failed search or fetch, an
+# unreadable result). `downstream` is a workflow of this profile with an input `in` and an
+# output `out`; the default `digest` writes the news as JSON text. Replace it with an agent,
+# a file write, an HTTP post to your own notifier: this template sends no notification.
+#
+# Scheduling: `cron` fires `schedule` (5 fields, local time) and `regulus send <exec> poll now`
+# polls at once. There is no RSS reader: a feed is read with source = fetch (the page text).
+# `allow_private = yes` is for a source on this machine (the web nodes refuse private
+# addresses otherwise). Nothing is polled until the execution runs (`regulus run`).
+id = "topic-watch"
+name = "Topic watch: {{query}}"
+main_workflow_id = "watch"
+
+[template]
+name = "topic-watch"
+description = "Poll a search or a page, keep a baseline, report what is new, changed or gone"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/web", version = ">=0.1" },
+  { module = "regulus/triggers", version = ">=0.1" },
+  { module = "regulus/data", version = ">=0.1" },
+]
+
+[template.vars]
+query = { description = "what to search for (source = search)", default = "regulus" }
+source = { description = "search: results of a search endpoint; fetch: the text of one page", default = "search" }
+search_url = { description = "the search endpoint, SearXNG style (?q=…&format=json)", default = "http://127.0.0.1:8888/search" }
+url = { description = "the page to read (source = fetch)", default = "" }
+allow_private = { description = "yes lets the web nodes reach loopback and private addresses", default = "no" }
+max_results = { description = "most search results kept per poll", default = 10 }
+compare_paths = { description = "comma-separated paths of a result that decide it changed (search)", default = "/title,/snippet" }
+name = { description = "name of the stored baseline: watches with the same name share it", default = "topic-watch" }
+baseline = { description = "report: the first poll reports everything as new; silent: it only stores the baseline", default = "report" }
+schedule = { description = "cron schedule of the automatic polls (5 fields, local time)", default = "0 * * * *" }
+downstream = { description = "workflow id that receives each batch of news and answers on out", default = "digest" }
+max_items = { description = "most items one poll may hold", default = 1000 }
+max_record_bytes = { description = "most bytes of one item (a fetched page is one item); keep it at least fetch_max_bytes", default = 262144 }
+max_bytes = { description = "most bytes of one whole state", default = 1048576 }
+fetch_max_bytes = { description = "most bytes of the page (source = fetch); a bigger page is an error on self.error, not a silent cut. Raise max_record_bytes with it", default = 262144 }
+on_empty = { description = "refuse: a poll that returns nothing is an error and the baseline stays; accept: it empties the baseline (everything is removed)", default = "refuse" }
+timeout_ms = { description = "milliseconds a request may take", default = 15000 }
+
+[[workflows]]
+id = "watch"
+name = "Topic watch"
+kind = "main"
+ports = [
+  { id = "poll", capability = "text@1", direction = "input", kind = "then" },
+  { id = "report", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "novel", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "removed", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "same", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "digest", capability = "text@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "cron"
+  name = "Schedule"
+  type = "cron"
+  module_id = "regulus/triggers@0.1.0"
+  position = { x = 50, y = 50 }
+  config = { schedule = "{{schedule}}" }
+  ports = [
+    { id = "tick", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "go"
+  name = "Poll"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 250, y = 150 }
+  config = { conversion = "template", template = "{{query}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "to_search"
+  name = "Source search"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 450, y = 50 }
+  config = { conversion = "same" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "to_fetch"
+  name = "Source fetch"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 450, y = 300 }
+  config = { conversion = "same" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "engine_search"
+  name = "Search endpoint"
+  type = "searxng"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 650, y = 150 }
+  config = { url = "{{search_url}}", allow_private = "{{allow_private}}", timeout_ms = {{timeout_ms}} }
+  ports = [
+    { id = "engine", capability = "web.search@1", direction = "output", kind = "uses" },
+  ]
+
+  [[workflows.nodes]]
+  id = "search"
+  name = "Search"
+  type = "search"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 650, y = 50 }
+  config = { max_results = {{max_results}} }
+  ports = [
+    { id = "engine", capability = "web.search@1", direction = "input", kind = "uses", required = true },
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "fetch"
+  name = "Page"
+  type = "fetch"
+  module_id = "regulus/web@0.1.0"
+  position = { x = 650, y = 300 }
+  config = { url = "{{url}}", format = "text", allow_private = "{{allow_private}}", max_bytes = {{fetch_max_bytes}}, timeout_ms = {{timeout_ms}} }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "snap_search"
+  name = "Compare results"
+  type = "snapshot"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 850, y = 50 }
+  config = { snapshot = "{{name}}", scope = "project", baseline = "{{baseline}}", on_empty = "{{on_empty}}", max_items = {{max_items}}, max_bytes = {{max_bytes}}, max_record_bytes = {{max_record_bytes}}, key_path = "/url", compare_paths = "{{compare_paths}}" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "report", capability = "json@1", direction = "output", kind = "then" },
+    { id = "novel", capability = "json@1", direction = "output", kind = "then" },
+    { id = "removed", capability = "json@1", direction = "output", kind = "then" },
+    { id = "same", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "snap_fetch"
+  name = "Compare page"
+  type = "snapshot"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 850, y = 300 }
+  config = { snapshot = "{{name}}", scope = "project", baseline = "{{baseline}}", on_empty = "{{on_empty}}", max_items = {{max_items}}, max_bytes = {{max_bytes}}, max_record_bytes = {{max_record_bytes}}, key = "page" }
+  ports = [
+    { id = "text", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "report", capability = "json@1", direction = "output", kind = "then" },
+    { id = "novel", capability = "json@1", direction = "output", kind = "then" },
+    { id = "removed", capability = "json@1", direction = "output", kind = "then" },
+    { id = "same", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "notify"
+  name = "News to downstream"
+  type = "call"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1100, y = 150 }
+  config = { workflow = "{{downstream}}" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "cron-tick-go-in"
+  kind = "then"
+  from = { node_id = "cron", port_id = "tick" }
+  to = { node_id = "go", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "self-poll-go-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "poll" }
+  to = { node_id = "go", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "go-out-to-source-in"
+  kind = "then"
+  from = { node_id = "go", port_id = "out" }
+  to = { node_id = "to_{{source}}", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "to-search-out-search-in"
+  kind = "then"
+  from = { node_id = "to_search", port_id = "out" }
+  to = { node_id = "search", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "engine-search-engine-search-engine"
+  kind = "uses"
+  from = { node_id = "engine_search", port_id = "engine" }
+  to = { node_id = "search", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "search-out-snap-search-in"
+  kind = "then"
+  from = { node_id = "search", port_id = "out" }
+  to = { node_id = "snap_search", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "search-error-self-error"
+  kind = "then"
+  from = { node_id = "search", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "to-fetch-out-fetch-in"
+  kind = "then"
+  from = { node_id = "to_fetch", port_id = "out" }
+  to = { node_id = "fetch", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "fetch-out-snap-fetch-text"
+  kind = "then"
+  from = { node_id = "fetch", port_id = "out" }
+  to = { node_id = "snap_fetch", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "fetch-error-self-error"
+  kind = "then"
+  from = { node_id = "fetch", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "snap-search-report-self-report"
+  kind = "then"
+  from = { node_id = "snap_search", port_id = "report" }
+  to = { node_id = "self", port_id = "report" }
+
+  [[workflows.wires]]
+  id = "snap-search-novel-self-novel"
+  kind = "then"
+  from = { node_id = "snap_search", port_id = "novel" }
+  to = { node_id = "self", port_id = "novel" }
+
+  [[workflows.wires]]
+  id = "snap-search-removed-self-removed"
+  kind = "then"
+  from = { node_id = "snap_search", port_id = "removed" }
+  to = { node_id = "self", port_id = "removed" }
+
+  [[workflows.wires]]
+  id = "snap-search-same-self-same"
+  kind = "then"
+  from = { node_id = "snap_search", port_id = "same" }
+  to = { node_id = "self", port_id = "same" }
+
+  [[workflows.wires]]
+  id = "snap-search-error-self-error"
+  kind = "then"
+  from = { node_id = "snap_search", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "snap-search-novel-notify-in"
+  kind = "then"
+  from = { node_id = "snap_search", port_id = "novel" }
+  to = { node_id = "notify", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "snap-fetch-report-self-report"
+  kind = "then"
+  from = { node_id = "snap_fetch", port_id = "report" }
+  to = { node_id = "self", port_id = "report" }
+
+  [[workflows.wires]]
+  id = "snap-fetch-novel-self-novel"
+  kind = "then"
+  from = { node_id = "snap_fetch", port_id = "novel" }
+  to = { node_id = "self", port_id = "novel" }
+
+  [[workflows.wires]]
+  id = "snap-fetch-removed-self-removed"
+  kind = "then"
+  from = { node_id = "snap_fetch", port_id = "removed" }
+  to = { node_id = "self", port_id = "removed" }
+
+  [[workflows.wires]]
+  id = "snap-fetch-same-self-same"
+  kind = "then"
+  from = { node_id = "snap_fetch", port_id = "same" }
+  to = { node_id = "self", port_id = "same" }
+
+  [[workflows.wires]]
+  id = "snap-fetch-error-self-error"
+  kind = "then"
+  from = { node_id = "snap_fetch", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "snap-fetch-novel-notify-in"
+  kind = "then"
+  from = { node_id = "snap_fetch", port_id = "novel" }
+  to = { node_id = "notify", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "notify-out-self-digest"
+  kind = "then"
+  from = { node_id = "notify", port_id = "out" }
+  to = { node_id = "self", port_id = "digest" }
+
+# The default downstream: the news as text. Same ports as any `downstream` workflow.
+[[workflows]]
+id = "digest"
+name = "Digest"
+kind = "extra"
+ports = [
+  { id = "in", capability = "json@1", direction = "input", kind = "then" },
+  { id = "out", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "as_text"
+  name = "News as text"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 250, y = 150 }
+  config = { conversion = "json_to_text", pretty = "yes" }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "self-in-as-text-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "as_text", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "as-text-out-self-out"
+  kind = "then"
+  from = { node_id = "as_text", port_id = "out" }
+  to = { node_id = "self", port_id = "out" }

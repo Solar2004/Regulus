@@ -1,0 +1,500 @@
+# RAG lab (docs/16-experiments.md): two retrieval candidates compared on the SAME corpus and
+# the SAME dataset, with the evaluator of rag-eval (`documents` `recall`, recall@k) and no
+# model at all. Each candidate is a workflow you can swap by name; the lab ingests the corpus
+# once per candidate into its own collection, runs the dataset through each candidate's
+# workflow and ranks the two recall results.
+#
+#   self.go → start ─docs─→ docs_path ─→ ingest_a (collection {{collection}}-a-<chunking of a>)
+#                   │                  └→ ingest_b (collection {{collection}}-b-<chunking of b>)
+#                   └data─→ read dataset → collect (JSONL, deduped by /query, bounded)
+#        collect.out ─→ batch_a (workflow {{candidate_a}}) → recall_a ─score→ pair.a ┐
+#                  └──→ batch_b (workflow {{candidate_b}}) → recall_b ─score→ pair.b ┴→ rank
+#        pair.out → self.candidates      rank.ranking → self.comparison     rank.best → self.winner
+#
+# A candidate workflow (default retrieve_a / retrieve_b, kind extra) has this contract: an input
+# `in` carrying one dataset record `{ query, expect_source_ids }`, an output `hits` with the
+# `documents.retrieve` result for it (keep the `request` field: recall reads the expected
+# ids from it) and an output `error`. It must read the collection the lab ingests for it:
+# `{{collection}}-a-{{chunker_a}}-{{chunk_chars_a}}-{{overlap_chars_a}}` (and `-b-…`). Put anything in between: query
+# rewriting, a reranker, another retrieval engine. To use your own, add the workflow to the profile and apply the template
+# with `--set candidate_a=<its id>`.
+#
+# Swapping the retrieval engine through wires: add a node that serves `retrieval.engine@1`
+# (a module of yours) and wire it ("uses") into `ingest_a.engine` and `batch_a.engine`;
+# the batch hands it to the `engine` input of the candidate workflow, which gives it to
+# its `retrieve` node. Nothing else changes. With nothing wired, documents' own BM25 index
+# is used.
+#
+# The dataset is JSONL, one record per line: `{"query": "…", "expect_source_ids": ["rust.md"]}`;
+# a name matches the end of a hit's location. The `collect` node (module `data`) keys each
+# case by its whole content: an identical line is dropped, while the same query with other
+# expected ids is a different case and both are scored. It refuses lines that are not JSON
+# (they leave on `self.error` with their line number) and holds at most `max_queries`
+# records. Both candidates get exactly that collected dataset; its summary leaves on
+# `self.dataset`.
+#
+# `comparison` is the `rank` report: `ranking` with each candidate's recall, how many items
+# it was scored on (`scored`), its distance to the best and to `baseline` (a = the first
+# candidate), `best` (keys) and `tie`. Candidates are only compared when both were scored
+# on the same, non-zero number of items (a failed or timed-out query drops an item from
+# that candidate): otherwise `rank` says why on `self.error` and `comparison` is not sent.
+# `candidates` is `{ a: <recall result>, b: <recall result> }`, the metrics of each with
+# their per-item hits. recall@k semantics are exactly rag-eval's: an item counts when one
+# expected id is among the k hits; blank lines and items without expected ids are skipped.
+#
+# Order: the bus delivers in order and the ingestion path (start → docs_path → ingest) is
+# shorter than the data path (start → read → collect → batch), so both collections are
+# complete before the first query. Ingesting again with the same bytes changes nothing.
+#
+# Re-runs: the collection of a candidate carries its chunker, size and overlap in its name,
+# so changing them ingests afresh instead of reusing chunks cut the old way. A candidate's
+# retrieval engine is NOT in the name: when you wire another engine, also change `collection`.
+# Files you delete from `docs_dir` stay in their collections (documents has no prune): use
+# a new `collection`, or `regulus docs rm`.
+id = "rag-lab"
+name = "RAG lab of {{docs_dir}}"
+main_workflow_id = "lab"
+
+[template]
+name = "rag-lab"
+description = "Compare two retrieval candidates on one corpus and dataset: recall@k each, ranked"
+requires = [
+  { module = "regulus/flow", version = ">=0.1" },
+  { module = "regulus/files", version = ">=0.1" },
+  { module = "regulus/documents", version = ">=0.1" },
+  { module = "regulus/data", version = ">=0.1" },
+]
+
+[template.vars]
+docs_dir = { description = "absolute folder of the documents both candidates ingest" }
+dataset = { description = "the JSONL dataset, absolute or relative to docs_dir" }
+glob = { description = "files of docs_dir ingested, relative to it", default = "**/*.md" }
+collection = { description = "prefix of the two document collections (<prefix>-a-<chunking>, <prefix>-b-<chunking>); change it for a fresh start or after wiring another engine", default = "rag-lab" }
+label_a = { description = "name of candidate a in the report", default = "markdown-1200" }
+label_b = { description = "name of candidate b in the report", default = "fixed-300" }
+candidate_a = { description = "workflow id run for each query of candidate a", default = "retrieve_a" }
+candidate_b = { description = "workflow id run for each query of candidate b", default = "retrieve_b" }
+chunker_a = { description = "how candidate a cuts documents: markdown, paragraph or fixed", default = "markdown" }
+chunk_chars_a = { description = "characters per chunk of candidate a at most", default = 1200 }
+overlap_chars_a = { description = "characters a chunk of candidate a repeats of the one before", default = 150 }
+k_a = { description = "hits per query of candidate a: its k of recall@k", default = 6 }
+chunker_b = { description = "how candidate b cuts documents: markdown, paragraph or fixed", default = "fixed" }
+chunk_chars_b = { description = "characters per chunk of candidate b at most", default = 300 }
+overlap_chars_b = { description = "characters a chunk of candidate b repeats of the one before", default = 0 }
+k_b = { description = "hits per query of candidate b: its k of recall@k", default = 6 }
+threshold = { description = "recall@k from which a candidate passes its own gate, 0 to 1", default = 0.8 }
+tolerance = { description = "recalls this close share a rank", default = 0 }
+baseline = { description = "candidate (a or b) the ranking measures its deltas against", default = "a" }
+max_queries = { description = "most dataset records kept", default = 1000 }
+max_in_flight = { description = "queries each candidate runs at once", default = 4 }
+timeout_ms = { description = "milliseconds from the first query to scoring what came, stopping the rest; 0: no limit", default = 120000 }
+
+[[workflows]]
+id = "lab"
+name = "RAG lab"
+kind = "main"
+ports = [
+  { id = "go", capability = "text@1", direction = "input", kind = "then" },
+  { id = "comparison", capability = "json@1", direction = "output", kind = "then" },
+  { id = "winner", capability = "text@1", direction = "output", kind = "then" },
+  { id = "candidates", capability = "json@1", direction = "output", kind = "then" },
+  { id = "dataset", capability = "json@1", direction = "output", kind = "then" },
+  { id = "ingested", capability = "json@1", direction = "output", kind = "then", cardinality = "many" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+]
+
+  [[workflows.nodes]]
+  id = "start"
+  name = "Start"
+  type = "fanout"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 50, y = 200 }
+  config = { mode = "copy" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "docs", capability = "text@1", direction = "output", kind = "then" },
+    { id = "data", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "docs_path"
+  name = "Documents folder"
+  type = "convert"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 250, y = 50 }
+  config = { conversion = "template", template = "{{docs_dir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "path@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "ingest_a"
+  name = "Ingest a"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 450, y = 20 }
+  config = { collection = "{{collection}}-a-{{chunker_a}}-{{chunk_chars_a}}-{{overlap_chars_a}}", dir = "{{docs_dir}}", glob = "{{glob}}", chunker = "{{chunker_a}}", chunk_chars = {{chunk_chars_a}}, overlap_chars = {{overlap_chars_a}} }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  [[workflows.nodes]]
+  id = "ingest_b"
+  name = "Ingest b"
+  type = "ingest"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 450, y = 150 }
+  config = { collection = "{{collection}}-b-{{chunker_b}}-{{chunk_chars_b}}-{{overlap_chars_b}}", dir = "{{docs_dir}}", glob = "{{glob}}", chunker = "{{chunker_b}}", chunk_chars = {{chunk_chars_b}}, overlap_chars = {{overlap_chars_b}} }
+  ports = [
+    { id = "in", capability = "path@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ingested", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  [[workflows.nodes]]
+  id = "read"
+  name = "Dataset"
+  type = "read"
+  module_id = "regulus/files@0.1.0"
+  position = { x = 250, y = 350 }
+  config = { path = "{{dataset}}", dir = "{{docs_dir}}" }
+  ports = [
+    { id = "in", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "collect"
+  name = "Dataset records"
+  type = "collect"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 450, y = 350 }
+  config = { dataset = "rag-lab", scope = "execution", text = "jsonl", on_duplicate = "keep_first", max_items = {{max_queries}}, emit = "input" }
+  ports = [
+    { id = "text", capability = "text@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+    { id = "stored", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "batch_a"
+  name = "Queries a"
+  type = "batch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 300 }
+  config = { workflow = "{{candidate_a}}", input = "in", max_in_flight = {{max_in_flight}}, timeout_ms = {{timeout_ms}} }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "values", capability = "json@1", direction = "output", kind = "then" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  [[workflows.nodes]]
+  id = "recall_a"
+  name = "Recall@k a"
+  type = "recall"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 850, y = 300 }
+  config = { threshold = {{threshold}} }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "score", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "batch_b"
+  name = "Queries b"
+  type = "batch"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 650, y = 450 }
+  config = { workflow = "{{candidate_b}}", input = "in", max_in_flight = {{max_in_flight}}, timeout_ms = {{timeout_ms}} }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "values", capability = "json@1", direction = "output", kind = "then" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  [[workflows.nodes]]
+  id = "recall_b"
+  name = "Recall@k b"
+  type = "recall"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 850, y = 450 }
+  config = { threshold = {{threshold}} }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "score", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "pair"
+  name = "Candidates"
+  type = "join"
+  module_id = "regulus/flow@0.1.0"
+  position = { x = 1050, y = 375 }
+  config = { mode = "barrier", shape = "object" }
+  ports = [
+    { id = "a", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "b", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "out", capability = "json@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.nodes]]
+  id = "rank"
+  name = "Compare"
+  type = "rank"
+  module_id = "regulus/data@0.1.0"
+  position = { x = 1250, y = 375 }
+  config = { metric_path = "/recall", scored_path = "/total", order = "desc", tolerance = {{tolerance}}, baseline = "{{baseline}}", labels = { a = "{{label_a}}", b = "{{label_b}}" } }
+  ports = [
+    { id = "in", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "ranking", capability = "json@1", direction = "output", kind = "then" },
+    { id = "best", capability = "text@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then" },
+  ]
+
+  [[workflows.wires]]
+  id = "self-go-start-in"
+  kind = "then"
+  from = { node_id = "self", port_id = "go" }
+  to = { node_id = "start", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "start-docs-docs-path-in"
+  kind = "then"
+  from = { node_id = "start", port_id = "docs" }
+  to = { node_id = "docs_path", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "start-data-read-in"
+  kind = "then"
+  from = { node_id = "start", port_id = "data" }
+  to = { node_id = "read", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "docs-path-out-ingest-a-in"
+  kind = "then"
+  from = { node_id = "docs_path", port_id = "out" }
+  to = { node_id = "ingest_a", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ingest-a-ingested-self-ingested"
+  kind = "then"
+  from = { node_id = "ingest_a", port_id = "ingested" }
+  to = { node_id = "self", port_id = "ingested" }
+
+  [[workflows.wires]]
+  id = "ingest-a-error-self-error"
+  kind = "then"
+  from = { node_id = "ingest_a", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "collect-out-batch-a-in"
+  kind = "then"
+  from = { node_id = "collect", port_id = "out" }
+  to = { node_id = "batch_a", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "batch-a-values-recall-a-in"
+  kind = "then"
+  from = { node_id = "batch_a", port_id = "values" }
+  to = { node_id = "recall_a", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "recall-a-score-pair-a"
+  kind = "then"
+  from = { node_id = "recall_a", port_id = "score" }
+  to = { node_id = "pair", port_id = "a" }
+
+  [[workflows.wires]]
+  id = "docs-path-out-ingest-b-in"
+  kind = "then"
+  from = { node_id = "docs_path", port_id = "out" }
+  to = { node_id = "ingest_b", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "ingest-b-ingested-self-ingested"
+  kind = "then"
+  from = { node_id = "ingest_b", port_id = "ingested" }
+  to = { node_id = "self", port_id = "ingested" }
+
+  [[workflows.wires]]
+  id = "ingest-b-error-self-error"
+  kind = "then"
+  from = { node_id = "ingest_b", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "collect-out-batch-b-in"
+  kind = "then"
+  from = { node_id = "collect", port_id = "out" }
+  to = { node_id = "batch_b", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "batch-b-values-recall-b-in"
+  kind = "then"
+  from = { node_id = "batch_b", port_id = "values" }
+  to = { node_id = "recall_b", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "recall-b-score-pair-b"
+  kind = "then"
+  from = { node_id = "recall_b", port_id = "score" }
+  to = { node_id = "pair", port_id = "b" }
+
+  [[workflows.wires]]
+  id = "read-out-collect-text"
+  kind = "then"
+  from = { node_id = "read", port_id = "out" }
+  to = { node_id = "collect", port_id = "text" }
+
+  [[workflows.wires]]
+  id = "collect-stored-self-dataset"
+  kind = "then"
+  from = { node_id = "collect", port_id = "stored" }
+  to = { node_id = "self", port_id = "dataset" }
+
+  [[workflows.wires]]
+  id = "collect-error-self-error"
+  kind = "then"
+  from = { node_id = "collect", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+  [[workflows.wires]]
+  id = "pair-out-self-candidates"
+  kind = "then"
+  from = { node_id = "pair", port_id = "out" }
+  to = { node_id = "self", port_id = "candidates" }
+
+  [[workflows.wires]]
+  id = "pair-out-rank-in"
+  kind = "then"
+  from = { node_id = "pair", port_id = "out" }
+  to = { node_id = "rank", port_id = "in" }
+
+  [[workflows.wires]]
+  id = "rank-ranking-self-comparison"
+  kind = "then"
+  from = { node_id = "rank", port_id = "ranking" }
+  to = { node_id = "self", port_id = "comparison" }
+
+  [[workflows.wires]]
+  id = "rank-best-self-winner"
+  kind = "then"
+  from = { node_id = "rank", port_id = "best" }
+  to = { node_id = "self", port_id = "winner" }
+
+  [[workflows.wires]]
+  id = "rank-error-self-error"
+  kind = "then"
+  from = { node_id = "rank", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+# Candidate a: one dataset record in, the retrieval result out. Replace what is inside, or
+# the whole workflow (`candidate_a`), as long as the ports stay.
+[[workflows]]
+id = "retrieve_a"
+name = "Candidate a"
+kind = "extra"
+ports = [
+  { id = "in", capability = "json@1", direction = "input", kind = "then" },
+  { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Retrieve"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 250, y = 150 }
+  config = { collection = "{{collection}}-a-{{chunker_a}}-{{chunk_chars_a}}-{{overlap_chars_a}}", k = {{k_a}} }
+  ports = [
+    { id = "query", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  [[workflows.wires]]
+  id = "self-in-retrieve-query"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "retrieve", port_id = "query" }
+
+  [[workflows.wires]]
+  id = "self-engine-retrieve-engine"
+  kind = "uses"
+  from = { node_id = "self", port_id = "engine" }
+  to = { node_id = "retrieve", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "retrieve-hits-self-hits"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "hits" }
+  to = { node_id = "self", port_id = "hits" }
+
+  [[workflows.wires]]
+  id = "retrieve-error-self-error"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
+
+# Candidate b: one dataset record in, the retrieval result out. Replace what is inside, or
+# the whole workflow (`candidate_b`), as long as the ports stay.
+[[workflows]]
+id = "retrieve_b"
+name = "Candidate b"
+kind = "extra"
+ports = [
+  { id = "in", capability = "json@1", direction = "input", kind = "then" },
+  { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+  { id = "error", capability = "text@1", direction = "output", kind = "then" },
+]
+
+  [[workflows.nodes]]
+  id = "retrieve"
+  name = "Retrieve"
+  type = "retrieve"
+  module_id = "regulus/documents@0.1.0"
+  position = { x = 250, y = 150 }
+  config = { collection = "{{collection}}-b-{{chunker_b}}-{{chunk_chars_b}}-{{overlap_chars_b}}", k = {{k_b}} }
+  ports = [
+    { id = "query", capability = "json@1", direction = "input", kind = "then", cardinality = "many" },
+    { id = "hits", capability = "json@1", direction = "output", kind = "then" },
+    { id = "error", capability = "text@1", direction = "output", kind = "then", cardinality = "many" },
+    { id = "engine", capability = "retrieval.engine@1", direction = "input", kind = "uses", cardinality = "many", lazy = true },
+  ]
+
+  [[workflows.wires]]
+  id = "self-in-retrieve-query"
+  kind = "then"
+  from = { node_id = "self", port_id = "in" }
+  to = { node_id = "retrieve", port_id = "query" }
+
+  [[workflows.wires]]
+  id = "self-engine-retrieve-engine"
+  kind = "uses"
+  from = { node_id = "self", port_id = "engine" }
+  to = { node_id = "retrieve", port_id = "engine" }
+
+  [[workflows.wires]]
+  id = "retrieve-hits-self-hits"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "hits" }
+  to = { node_id = "self", port_id = "hits" }
+
+  [[workflows.wires]]
+  id = "retrieve-error-self-error"
+  kind = "then"
+  from = { node_id = "retrieve", port_id = "error" }
+  to = { node_id = "self", port_id = "error" }
