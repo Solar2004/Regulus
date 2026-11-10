@@ -15,6 +15,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Añadido
 
+- **Los campos de un manifiesto conservan sus pistas:** claves como `label`,
+  `description`, `language` o `multiline` llegan tal cual a los clientes
+  (`module show`, `module.manifest`). El core no las lee y un cliente que no las conoce
+  las ignora; no cambia el protocolo.
 - **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
   ejecución terminada, o de antes de reiniciar el core, se consultan con
   `regulus call` sin arrancar nada; `data.*` acepta también `project`.

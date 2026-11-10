@@ -58,9 +58,9 @@ pub struct NodeType {
 /// "then" output, which the node runs as a child (`ModuleCtx::call_workflow`).
 pub const FIELD_WORKFLOW: &str = "workflow";
 
-/// An option of a node type. `field_type` is open (`text`, `number`, `select`…): a client
-/// that does not know a type falls back to showing the raw value. The core only checks
-/// [`FIELD_WORKFLOW`].
+/// An option of a node type. `field_type` is open (`text`, `number`, `select`, `code`…): a
+/// client that does not know a type falls back to showing the raw value. The core only
+/// checks [`FIELD_WORKFLOW`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub id: String,
@@ -75,6 +75,12 @@ pub struct Field {
     /// tool), not a mirror of the workflow's, so the core does not line them up.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_ports: bool,
+    /// Every other key of the field, kept as written and handed to clients unchanged:
+    /// presentation hints such as `multiline`, `language`, `label` or `description`. The
+    /// core never reads them; a client that does not know a key ignores it. Adding one is
+    /// an optional change and does not bump the protocol (docs/03-modules.md §1).
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 impl NodeType {
@@ -136,4 +142,54 @@ pub struct ModuleSummary {
     /// a client can offer to trust that project when the module is `blocked` (1.15).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn node(fields: Value) -> NodeType {
+        serde_json::from_value(json!({ "type": "t", "name": "T", "field": fields })).unwrap()
+    }
+
+    #[test]
+    fn field_keeps_keys_it_does_not_know() {
+        let source = json!([{
+            "id": "source", "type": "code", "default": "return value",
+            "language": "python", "multiline": true, "label": "Source",
+            "description": "Runs per event", "future": { "rows": 12 },
+        }]);
+        let node = node(source.clone());
+        let field = node.field("source").unwrap();
+        assert_eq!(field.field_type, "code");
+        assert_eq!(field.default, Some(json!("return value")));
+        assert_eq!(field.extra.get("language"), Some(&json!("python")));
+        assert_eq!(field.extra.get("multiline"), Some(&json!(true)));
+        assert_eq!(field.extra.get("future"), Some(&json!({ "rows": 12 })));
+        assert!(!field.extra.contains_key("id") && !field.extra.contains_key("type"));
+        // What clients receive is what the module wrote, flat, not nested under `extra`.
+        assert_eq!(serde_json::to_value(&node).unwrap()["field"], source);
+    }
+
+    #[test]
+    fn field_without_extra_keys_serializes_as_before() {
+        let node = node(json!([{ "id": "path", "type": "text", "default": "out.md" }]));
+        assert!(node.fields[0].extra.is_empty());
+        assert_eq!(
+            serde_json::to_value(&node).unwrap()["field"],
+            json!([{ "id": "path", "type": "text", "default": "out.md" }])
+        );
+    }
+
+    #[test]
+    fn known_keys_are_not_duplicated_into_extra() {
+        let node = node(json!([{
+            "id": "flow", "type": "workflow", "own_ports": true, "options": ["a"], "hint": 1,
+        }]));
+        let field = &node.fields[0];
+        assert!(field.own_ports);
+        assert_eq!(field.options, vec![json!("a")]);
+        assert_eq!(field.extra.keys().collect::<Vec<_>>(), vec!["hint"]);
+    }
 }
