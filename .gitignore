@@ -11,6 +11,10 @@ dist-ssr/
 .vite/
 *.tsbuildinfo
 
+# --- Python (SDK de nodos, docguard) ---
+__pycache__/
+*.py[cod]
+
 # --- Tauri ---
 crates/*/target/
 crates/*/gen/
