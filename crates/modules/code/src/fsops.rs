@@ -536,6 +536,19 @@ fn changing() -> MutexGuard<'static, ()> {
     CHANGING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A file nobody may write. Renaming a new file over it would go through all the same
+/// (that only needs the folder), so it is asked about first: whoever took the write
+/// permission away meant the file to stay as it is.
+fn read_only(meta: &fs::Metadata) -> bool {
+    meta.permissions().readonly()
+}
+
+fn locked(asked: &str) -> Fault {
+    Fault::Request(format!(
+        "`{asked}` is read-only: it is not changed while it has no write permission"
+    ))
+}
+
 /// Puts `bytes` at `target` in one step: written beside it and renamed over it, so a
 /// reader never sees half a file and a failure leaves what was there.
 fn replace(target: &Path, bytes: &[u8], keep: Option<fs::Permissions>) -> io::Result<()> {
@@ -596,6 +609,9 @@ pub(crate) fn write(root: &Root, asked: &str, content: &str, max: usize) -> Resu
     if existing.as_ref().is_some_and(|meta| !meta.is_file()) {
         return Err(Fault::Request(format!("`{asked}` is not a regular file")));
     }
+    if existing.as_ref().is_some_and(read_only) {
+        return Err(locked(asked));
+    }
     let folder = place
         .real
         .parent()
@@ -650,6 +666,9 @@ pub(crate) fn edit(
     }
     let _changing = changing();
     let (place, meta) = file_at(root, asked)?;
+    if read_only(&meta) {
+        return Err(locked(asked));
+    }
     if meta.len() > max as u64 {
         return Err(Fault::Request(format!(
             "`{asked}` is {} bytes; this workspace edits files of at most {max} (`max_write_bytes`)",

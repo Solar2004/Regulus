@@ -768,6 +768,26 @@ fn files_are_written_whole_and_edited_only_where_the_text_matches() {
         assert!(said.contains(why), "{args}: {said}");
     }
     assert_eq!(text("notes/deep/a.txt"), "1\n2\n1\n");
+    // A file without write permission stays as it is, though its folder would allow it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        put(&root, "frozen.txt", "keep me\n");
+        fs::set_permissions(root.join("frozen.txt"), fs::Permissions::from_mode(0o444)).unwrap();
+        for said in [
+            world.refused(
+                "code_write_file",
+                json!({ "path": "frozen.txt", "content": "x" }),
+            ),
+            world.refused(
+                "code_edit_file",
+                json!({ "path": "frozen.txt", "old_text": "keep", "new_text": "lose" }),
+            ),
+        ] {
+            assert!(said.contains("is read-only"), "{said}");
+        }
+        assert_eq!(text("frozen.txt"), "keep me\n");
+    }
     let leftovers: Vec<String> = fs::read_dir(root.join("notes/deep"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
