@@ -161,6 +161,11 @@ enum Command {
         #[arg(long, value_name = "TEXT")]
         once: Option<String>,
     },
+    /// Code with an agent in a folder: finds the folder's session, or sets one up from the
+    /// `regulus-code` template, and talks to its agent (docs/04-client.md §12). Without a
+    /// terminal, or with `--once` or `--detach`, it does not take the screen.
+    #[command(args_conflicts_with_subcommands = true)]
+    Code(Box<CodeArgs>),
     /// Workers of a delegate node (module delegation) of a running execution, without
     /// an agent in between.
     Workers {
@@ -245,6 +250,66 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+}
+
+/// What `regulus code` takes when it launches or attaches.
+#[derive(clap::Args)]
+struct CodeArgs {
+    #[command(subcommand)]
+    command: Option<CodeCommand>,
+    /// The folder to work in. Defaults to the current one.
+    path: Option<PathBuf>,
+    /// Attach to this execution and set nothing up.
+    #[arg(long, short = 'e', conflicts_with_all = [
+        "path", "profile", "template", "preset", "base_url", "credential", "model", "set",
+        "reset", "new",
+    ])]
+    execution: Option<String>,
+    /// The profile to run or to write. Defaults to the folder's own
+    /// (`code-<folder>-<hash>`).
+    #[arg(long)]
+    profile: Option<String>,
+    /// The template a new profile is written from: a name, or a `.toml` file. Defaults
+    /// to `[client.code] template` (`regulus-code`).
+    #[arg(long)]
+    template: Option<String>,
+    /// The template's `preset` var: the provider, e.g. `ollama`.
+    #[arg(long)]
+    preset: Option<String>,
+    /// The template's `base_url` var: where the provider answers.
+    #[arg(long)]
+    base_url: Option<String>,
+    /// The template's `credential` var, as `secret:<name>` (`regulus secret set`).
+    #[arg(long)]
+    credential: Option<String>,
+    /// The template's `model` var.
+    #[arg(long)]
+    model: Option<String>,
+    /// Any other var of the template, `name=value`. Repeatable.
+    #[arg(long = "set", value_name = "NAME=VALUE")]
+    set: Vec<String>,
+    /// Write the profile again from the template. What was edited in it is lost.
+    #[arg(long)]
+    reset: bool,
+    /// Start a new session even if one is live in the folder.
+    #[arg(long)]
+    new: bool,
+    /// The agent node to talk to, when the workflow has more than one.
+    #[arg(long)]
+    node: Option<String>,
+    /// The workspace node to look at, when the workflow has more than one.
+    #[arg(long)]
+    workspace: Option<String>,
+    /// Set up and start, print the execution, the profile and the nodes, and leave.
+    #[arg(long, conflicts_with = "once")]
+    detach: bool,
+    /// Send this, print the reply and leave; non-zero on a failure or no reply within
+    /// --timeout.
+    #[arg(long, value_name = "TEXT")]
+    once: Option<String>,
+    /// On the screen: do not show the setup form before writing a profile.
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -421,6 +486,30 @@ enum AgentCommand {
     },
     /// Ask the agent to end the turn in flight.
     Cancel { execution: String, node: String },
+}
+
+#[derive(Subcommand)]
+enum CodeCommand {
+    /// Ask the workspace of a running execution, without changing anything: `summary`,
+    /// `list [PATH]`, `read PATH`, `search QUERY` or `diff [PATH]` (`code.inspect`).
+    Inspect {
+        execution: String,
+        /// `summary`, `list`, `read`, `search` or `diff`.
+        action: String,
+        /// The path of `list`, `read` and `diff`; what `search` looks for.
+        argument: Option<String>,
+        /// The workspace node. Without it, the only one of the workflow.
+        #[arg(long)]
+        node: Option<String>,
+        /// Where `search` looks, relative to the workspace's folder.
+        #[arg(long)]
+        path: Option<String>,
+        /// Print the answer as the module gave it.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The executions a person can code with: those whose workflow has an agent.
+    Ls,
 }
 
 #[derive(Subcommand)]
@@ -899,6 +988,7 @@ async fn main() -> Result<()> {
             let ws = client.connect().await?;
             regulus_cli::talk::run(&ws, &config, &settings, talk).await
         }
+        Command::Code(args) => code(&config, &client, *args).await,
         Command::Workers { command } => workers(&client, command).await,
         Command::Msg { command } => match command {
             MsgCommand::Send {
@@ -1404,6 +1494,163 @@ const EXPOSE_TOML: &str = r#"# Paste into the main workflow of the profile that 
   to = { node_id = "service-{workflow}", port_id = "engine" }
 "#;
 
+/// `regulus code`: a tool on a session there is (`inspect`, `ls`), or the launch.
+async fn code(config: &Config, client: &Client<'_>, args: CodeArgs) -> Result<()> {
+    use regulus_cli::code::launch::{self, Talking};
+    if let Some(command) = args.command {
+        return code_tool(client, command).await;
+    }
+    let table = regulus_cli::tui::client_table(&config.client);
+    let options = regulus_cli::tui::options(config, Some(&table))?;
+    let settings = code_settings(config)?;
+    let named = [
+        ("preset", args.preset),
+        ("base_url", args.base_url),
+        ("credential", args.credential),
+        ("model", args.model),
+    ];
+    let wanted = regulus_cli::code::session::Wanted {
+        root: match &args.execution {
+            Some(_) => None,
+            None => Some(code_folder(args.path.as_deref())?),
+        },
+        root_given: args.path.is_some(),
+        execution: args.execution,
+        profile: args.profile,
+        template: args.template.unwrap_or_else(|| settings.template.clone()),
+        vars: code_vars(named, args.set)?,
+        fresh: args.new,
+        reset: args.reset,
+        agent: args.node,
+        workspace: args.workspace,
+    };
+    let talking = match (args.detach, args.once) {
+        (true, _) => Talking::Detach,
+        (false, Some(text)) => Talking::Once(text),
+        // The screen needs a terminal on both ends; a script or a pipe talks in lines.
+        (false, None) if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() => {
+            Talking::Lines
+        }
+        (false, None) => {
+            use regulus_cli::code::app::Leave;
+            let timeout = client.timeout;
+            let left = regulus_cli::code::run(
+                config.clone(),
+                timeout,
+                wanted,
+                options,
+                settings,
+                args.yes,
+            )
+            .await?;
+            match left {
+                Leave::Quiet => {}
+                Leave::Kept(id) => eprintln!(
+                    "regulus: execution {id} keeps running: `regulus code -e {id}` attaches to \
+                     it again, `regulus stop {id}` stops it"
+                ),
+                Leave::Stopped(id) => eprintln!("regulus: stopped {id}"),
+            }
+            return Ok(());
+        }
+    };
+    launch::run(config, &options, client.timeout, &wanted, talking).await
+}
+
+/// `[client.code]` of `config.toml`. A mistake stops the command with the file and the key.
+fn code_settings(config: &Config) -> Result<regulus_cli::code::settings::Settings> {
+    regulus_cli::code::settings::Settings::from_client(&config.client.written)
+        .map_err(|e| anyhow::anyhow!("{}: [client] {e}", config.config_path().display()))
+}
+
+/// The folder `regulus code` works in, absolute and as the file system spells it: the one
+/// given, else where the command runs.
+fn code_folder(path: Option<&std::path::Path>) -> Result<String> {
+    let path = match path {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir().context("cannot tell the current folder")?,
+    };
+    let folder = std::fs::canonicalize(&path)
+        .with_context(|| format!("{} is not a folder that can be read", path.display()))?;
+    if !folder.is_dir() {
+        bail!("{} is not a folder", folder.display());
+    }
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// The template vars `regulus code` was given: the named flags, then each `--set`. The
+/// folder is the argument, and a credential is a secret's name, never the secret.
+fn code_vars(
+    named: [(&str, Option<String>); 4],
+    set: Vec<String>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut vars = std::collections::BTreeMap::new();
+    for (name, value) in named {
+        if let Some(value) = value {
+            vars.insert(name.to_string(), value);
+        }
+    }
+    for pair in set {
+        let (name, value) = pair
+            .split_once('=')
+            .with_context(|| format!("`{pair}` is not NAME=VALUE"))?;
+        vars.insert(name.trim().to_string(), value.to_string());
+    }
+    if vars.contains_key(regulus_cli::code::session::ROOT) {
+        bail!("the folder is the argument (`regulus code <folder>`), not a --set");
+    }
+    if let Some(credential) = vars.get("credential") {
+        if !credential.is_empty() && !credential.starts_with("secret:") {
+            bail!(
+                "a credential is named, never written down: store it with `regulus secret \
+                 set <name>` and pass --credential secret:<name>"
+            );
+        }
+    }
+    Ok(vars)
+}
+
+/// `regulus code inspect` and `regulus code ls`: what there is to code with and what a
+/// workspace holds, read-only.
+async fn code_tool(client: &Client<'_>, command: CodeCommand) -> Result<()> {
+    use regulus_cli::code::{inspect, launch};
+    let ws = client.connect().await?;
+    match command {
+        CodeCommand::Inspect {
+            execution,
+            action,
+            argument,
+            node,
+            path,
+            json,
+        } => {
+            let ask =
+                inspect::Ask::from_words(&action, argument, path).map_err(anyhow::Error::msg)?;
+            let answer = launch::inspect(&ws, &execution, node.as_deref(), &ask).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&answer)?);
+                return Ok(());
+            }
+            let printed = inspect::print(ask.action, &answer);
+            print!("{}", printed.out);
+            for note in printed.notes {
+                eprintln!("regulus: {note}");
+            }
+            Ok(())
+        }
+        CodeCommand::Ls => {
+            let found = launch::list(&ws).await?;
+            if found.is_empty() {
+                eprintln!("regulus: no execution has an agent to code with; `regulus code <folder>` starts one");
+            }
+            for candidate in &found {
+                println!("{}", launch::print_candidate(candidate));
+            }
+            Ok(())
+        }
+    }
+}
+
 /// `regulus workers …`: the `delegation.*` methods of the module that runs delegate nodes.
 async fn workers(client: &Client<'_>, command: WorkersCommand) -> Result<()> {
     let on = |execution: &str, node: &str| serde_json::json!({ "execution_id": execution, "node_id": node });
@@ -1858,9 +2105,6 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.server.port = port;
     }
     config.modules.without.extend(without);
-    // Keep the host-shipped Code template editable, while never replacing a person's
-    // catalog entry. This is a CLI-host concern; the core still only sees ordinary
-    // template files and remains unaware of `regulus-code`.
     if let Err(error) = bundled::install(
         &config,
         "regulus-code.toml",
