@@ -316,7 +316,7 @@ Sin modelo real en ningún caso.
   principio y final, entorno vacío, lectura de `git status`, una búsqueda sin tiempo en un
   árbol de solo carpetas, el corte por profundidad y por tamaño de carpeta, y que **el
   manifiesto declara exactamente los campos y puertos que el código lee**.
-- **Contra un core real** (`crates/modules/code/tests/code.rs`, 18): listar, leer por
+- **Contra un core real** (`crates/modules/code/tests/code.rs`, 19): listar, leer por
   trozos y buscar con sus topes; ninguna operación sale de la raíz ni entra en `.git`;
   escritura atómica, conflictos de edición y un fichero de solo lectura intacto; **doce
   ediciones a la vez sobre un fichero, por dos nodos, entran las doce** (sin el cerrojo se
@@ -326,8 +326,9 @@ Sin modelo real en ningún caso.
   repo con fsmonitor, hook, filtros, diff externo, textconv y pagers configurados no
   ejecuta ninguno a través del módulo, después de comprobar que con un git normal sí**;
   `core.worktree` y `git_dir = inside`; las formas y los códigos de `code.inspect`; las
-  vistas; las instrucciones; la entrada `root`; y la vista y las instrucciones sobre **un
-  módulo falso** que ofrece `code.workspace@1`.
+  vistas; las instrucciones; la entrada `root`, y que una raíz movida sigue movida tras
+  reiniciar el core sobre un store real; y la vista y las instrucciones sobre **un módulo
+  falso** que ofrece `code.workspace@1`.
 - **La plantilla, por el programa real** (`crates/regulus-cli/tests/
   template_regulus_code.rs`, 4): aplica y pasa `profile.check` sin diagnósticos; cada
   campo y cada puerto de sus nodos está en el manifiesto de su módulo; con un modelo
