@@ -181,6 +181,28 @@ enum Command {
     /// on stdio and reads its binding from the environment.
     #[command(name = "tools-mcp", hide = true)]
     ToolsMcp,
+    /// Control this host from an MCP client (Claude Code, Cursor, ...): serves MCP on
+    /// stdio as a client of the running core, with tools to discover modules, edit
+    /// profiles, apply templates and run workflows. Needs a running core
+    /// (docs/17-control-mcp.md).
+    Mcp {
+        /// Offer only the tools that read; nothing can be saved, started or stopped.
+        #[arg(long)]
+        read_only: bool,
+        /// Cut any tool result longer than this many bytes.
+        #[arg(long, default_value_t = 262_144, value_name = "BYTES")]
+        max_result_bytes: usize,
+        /// How many events `event_list` returns when the caller gives no limit.
+        #[arg(long, default_value_t = 100, value_name = "N")]
+        default_events: usize,
+        /// Print the client configuration (absolute program and --home) and exit.
+        #[arg(long)]
+        print_config: bool,
+        /// Refuse to save, apply or start anything that uses this module (`author/module`,
+        /// optionally `@version`). Repeatable.
+        #[arg(long = "deny-module", value_name = "MODULE")]
+        deny_module: Vec<String>,
+    },
     /// The bridge an agent's CLI runs for each hook event. Not for people: it reads the
     /// event on stdin, asks the hooks wired into the agent through the core, and answers
     /// the way that CLI reads hooks (docs/13-blocks.md §4).
@@ -721,6 +743,22 @@ async fn main() -> Result<()> {
     match command {
         Command::Serve { port, without } => serve(config, port, without).await,
         Command::ToolsMcp => tools_bridge(&client).await,
+        Command::Mcp {
+            read_only,
+            max_result_bytes,
+            default_events,
+            print_config,
+            deny_module,
+        } => {
+            let options = regulus_cli::control_mcp::Options {
+                deny_modules: deny_module,
+                read_only,
+                max_result_bytes,
+                default_events,
+                print_config,
+            };
+            regulus_cli::control_mcp::run(&config, client.timeout, options).await
+        }
         Command::Hook {
             execution,
             node,
@@ -2093,13 +2131,7 @@ async fn serve(mut config: Config, port: Option<u16>, without: Vec<String>) -> R
         config.server.port = port;
     }
     config.modules.without.extend(without);
-    if let Err(error) = bundled::install(
-        &config,
-        "regulus-code.toml",
-        include_str!("../../../templates/regulus-code.toml"),
-    ) {
-        eprintln!("regulus: could not install bundled regulus-code template: {error}");
-    }
+    bundled::seed(&config);
     // Agents start the bridges as this same program, pointed at this same home.
     let host = regulus_cli::modules::Host {
         program: std::env::current_exe().context("cannot find this program's path")?,

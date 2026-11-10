@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "regulus": {
+      "command": "/ABSOLUTE/PATH/TO/regulus",
+      "args": ["--home", "/ABSOLUTE/PATH/TO/REGULUS_HOME", "mcp"]
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "id": "module-author",
+  "name": "Write the files of a local module",
+  "main_workflow_id": "main",
+  "workflows": [
+    {
+      "id": "main",
+      "name": "Write files",
+      "kind": "main",
+      "ports": [
+        { "id": "manifest", "capability": "text@1", "direction": "input", "kind": "then" },
+        { "id": "program", "capability": "text@1", "direction": "input", "kind": "then" },
+        { "id": "project", "capability": "text@1", "direction": "input", "kind": "then" }
+      ],
+      "nodes": [
+        {
+          "id": "manifest", "name": "Manifest", "type": "write", "module_id": "regulus/files",
+          "config": { "dir": "<project folder>", "path": "tools/<id>/regulus-module.toml" },
+          "ports": [
+            { "id": "in", "capability": "text@1", "direction": "input", "kind": "then", "cardinality": "many" },
+            { "id": "written", "capability": "path@1", "direction": "output", "kind": "then" }
+          ]
+        },
+        {
+          "id": "program", "name": "Program", "type": "write", "module_id": "regulus/files",
+          "config": { "dir": "<project folder>", "path": "tools/<id>/run.py" },
+          "ports": [
+            { "id": "in", "capability": "text@1", "direction": "input", "kind": "then", "cardinality": "many" },
+            { "id": "written", "capability": "path@1", "direction": "output", "kind": "then" }
+          ]
+        },
+        {
+          "id": "project", "name": "regulus.toml entry", "type": "write", "module_id": "regulus/files",
+          "config": { "dir": "<project folder>", "path": "regulus.toml", "mode": "append" },
+          "ports": [
+            { "id": "in", "capability": "text@1", "direction": "input", "kind": "then", "cardinality": "many" },
+            { "id": "written", "capability": "path@1", "direction": "output", "kind": "then" }
+          ]
+        }
+      ],
+      "wires": [
+        { "id": "w1", "kind": "then", "from": { "node_id": "self", "port_id": "manifest" }, "to": { "node_id": "manifest", "port_id": "in" } },
+        { "id": "w2", "kind": "then", "from": { "node_id": "self", "port_id": "program" }, "to": { "node_id": "program", "port_id": "in" } },
+        { "id": "w3", "kind": "then", "from": { "node_id": "self", "port_id": "project" }, "to": { "node_id": "project", "port_id": "in" } }
+      ]
+    }
+  ]
+}
