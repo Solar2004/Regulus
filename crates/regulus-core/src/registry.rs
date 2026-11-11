@@ -1,8 +1,9 @@
 //! The module registry: loads modules, routes their methods and contains their panics.
 //!
 //! The core never knows a module by name. The list of modules is handed in by whoever
-//! hosts the core (decision #10: one line per module, written by
-//! `regulus module install`), and every lookup goes through what a manifest declares.
+//! hosts the core (decision #10: one line per module in `regulus-cli`'s `modules.rs`,
+//! written by hand; an install command is approved but not built), and every lookup goes
+//! through what a manifest declares.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -65,6 +66,35 @@ pub struct Local {
     /// for a running one, which gets its `init`.
     pub preset: Option<ModuleState>,
     pub health: Option<Health>,
+}
+
+/// A local module checked and initialized, waiting to be listed ([`Registry::swap_local`])
+/// or dropped ([`Registry::discard`]).
+pub struct Prepared(Arc<Entry>);
+
+impl Prepared {
+    pub fn manifest(&self) -> Arc<Manifest> {
+        self.0.manifest.clone()
+    }
+
+    pub fn state(&self) -> ModuleState {
+        self.0.state().clone()
+    }
+}
+
+/// A local module taken out of the registry, still to be stopped.
+pub struct Retired(Arc<Entry>);
+
+impl Retired {
+    /// Its module id.
+    pub fn id(&self) -> &str {
+        &self.0.manifest.module.id
+    }
+
+    /// Ends its process.
+    pub fn stop(self) {
+        Registry::stop_entry(&self.0);
+    }
 }
 
 #[derive(Default)]
@@ -217,61 +247,152 @@ impl Registry {
     /// so it is reached through its nodes.
     pub fn add_local(&self, owner: &str, modules: Vec<Local>) {
         for local in modules {
-            let Local {
-                manifest,
-                mut module,
-                preset,
-                health,
-            } = local;
-            let id = manifest.module.id.clone();
-            let clash = self.is_installed(&id);
-            let state = if let Some(preset) = preset {
-                preset
-            } else if let Some(requires) = manifest
-                .module
-                .requires_proto
-                .as_deref()
-                .filter(|r| !satisfies(r, PROTOCOL))
-            {
-                ModuleState::Incompatible {
-                    requires: requires.into(),
-                    have: PROTOCOL.into(),
-                }
-            } else if clash {
-                ModuleState::Broken {
-                    reason: format!("a module `{}` is already loaded", base_id(&id)),
-                }
-            } else if !manifest.module.methods.is_empty() {
-                ModuleState::Broken {
-                    reason: "a local module cannot serve `methods`; reach it through its nodes"
-                        .into(),
-                }
-            } else {
-                let ctx = self.ctx.for_module(&id);
-                match catch_unwind(AssertUnwindSafe(|| module.init(&ctx))) {
-                    Ok(Ok(())) => ModuleState::Idle { last_used: None },
-                    Ok(Err(error)) => ModuleState::Broken {
-                        reason: format!("init failed: {error}"),
-                    },
-                    Err(payload) => ModuleState::Broken {
-                        reason: format!("init panicked: {}", panic_reason(payload)),
-                    },
-                }
-            };
-            let entry = Arc::new(Entry {
-                manifest: Arc::new(manifest),
-                module: RwLock::new(module),
-                state: Mutex::new(state),
-                local: Some((owner.to_string(), health)),
-            });
-            if clash {
-                // Listed, never reached: lookups find the one loaded first.
-                eprintln!("regulus: local module {id} clashes with a loaded module");
-            }
+            let entry = self.admit_local(owner, local, None);
             self.locals
                 .write()
                 .unwrap_or_else(|p| p.into_inner())
                 .push(entry);
+        }
+    }
+
+    /// Whether a module with the base id of `id` is loaded, other than the local module
+    /// `replacing` (`<owner>/<id>` without version) of `owner`.
+    fn clashes(&self, id: &str, owner: &str, replacing: Option<&str>) -> bool {
+        let wanted = base_id(id);
+        self.all().iter().any(|entry| {
+            base_id(&entry.manifest.module.id) == wanted
+                && !(replacing == Some(wanted)
+                    && entry.local.as_ref().is_some_and(|(o, _)| o == owner))
+        })
+    }
+
+    /// The entry of a local module of `owner`, checked and with its `init` run, not listed
+    /// yet. `replacing` is the base id of the local module it is to take the place of, which
+    /// does not count as a clash.
+    fn admit_local(&self, owner: &str, local: Local, replacing: Option<&str>) -> Arc<Entry> {
+        let Local {
+            manifest,
+            mut module,
+            preset,
+            health,
+        } = local;
+        let id = manifest.module.id.clone();
+        let clash = self.clashes(&id, owner, replacing);
+        let state = if let Some(preset) = preset {
+            preset
+        } else if let Some(requires) = manifest
+            .module
+            .requires_proto
+            .as_deref()
+            .filter(|r| !satisfies(r, PROTOCOL))
+        {
+            ModuleState::Incompatible {
+                requires: requires.into(),
+                have: PROTOCOL.into(),
+            }
+        } else if clash {
+            ModuleState::Broken {
+                reason: format!("a module `{}` is already loaded", base_id(&id)),
+            }
+        } else if !manifest.module.methods.is_empty() {
+            ModuleState::Broken {
+                reason: "a local module cannot serve `methods`; reach it through its nodes".into(),
+            }
+        } else {
+            let ctx = self.ctx.for_module(&id);
+            match catch_unwind(AssertUnwindSafe(|| module.init(&ctx))) {
+                Ok(Ok(())) => ModuleState::Idle { last_used: None },
+                Ok(Err(error)) => ModuleState::Broken {
+                    reason: format!("init failed: {error}"),
+                },
+                Err(payload) => ModuleState::Broken {
+                    reason: format!("init panicked: {}", panic_reason(payload)),
+                },
+            }
+        };
+        if clash {
+            // Listed, never reached: lookups find the one loaded first.
+            eprintln!("regulus: local module {id} clashes with a loaded module");
+        }
+        Arc::new(Entry {
+            manifest: Arc::new(manifest),
+            module: RwLock::new(module),
+            state: Mutex::new(state),
+            local: Some((owner.to_string(), health)),
+        })
+    }
+
+    /// The manifest and state of the local module of `owner` with base id `base`
+    /// (`<project>/<id>`), if it is listed.
+    pub fn local(&self, owner: &str, base: &str) -> Option<(Arc<Manifest>, ModuleState)> {
+        self.locals()
+            .iter()
+            .find(|e| {
+                e.local.as_ref().is_some_and(|(o, _)| o == owner)
+                    && base_id(&e.manifest.module.id) == base
+            })
+            .map(|e| (e.manifest.clone(), e.state().clone()))
+    }
+
+    /// A local module of `owner` made ready to take the place of `base` (or to join, if no
+    /// module has that base id): checked and initialized, not listed yet. Nothing changes
+    /// for anyone until [`Registry::swap_local`].
+    pub fn prepare_local(&self, owner: &str, local: Local, base: &str) -> Prepared {
+        Prepared(self.admit_local(owner, local, Some(base)))
+    }
+
+    /// Lists `prepared` in the place of the local module of its project with the same base
+    /// id (at the end if there is none). The one it replaces is no longer reached; stop it
+    /// with [`Retired::stop`], outside any lock of the caller.
+    pub fn swap_local(&self, prepared: Prepared) -> Option<Retired> {
+        let entry = prepared.0;
+        let owner = entry.local.as_ref().map(|(o, _)| o.clone());
+        let base = base_id(&entry.manifest.module.id).to_string();
+        let mut locals = self.locals.write().unwrap_or_else(|p| p.into_inner());
+        let at = locals.iter().position(|e| {
+            e.local.as_ref().map(|(o, _)| o) == owner.as_ref()
+                && base_id(&e.manifest.module.id) == base
+        });
+        match at {
+            Some(at) => Some(Retired(std::mem::replace(&mut locals[at], entry))),
+            None => {
+                locals.push(entry);
+                None
+            }
+        }
+    }
+
+    /// Stops a prepared module that is not going to be listed.
+    pub fn discard(&self, prepared: Prepared) {
+        Self::stop_entry(&prepared.0);
+    }
+
+    /// Takes out the local module of `owner` with base id `base`; stop it with
+    /// [`Retired::stop`].
+    pub fn take_local(&self, owner: &str, base: &str) -> Option<Retired> {
+        let mut locals = self.locals.write().unwrap_or_else(|p| p.into_inner());
+        let at = locals.iter().position(|e| {
+            e.local.as_ref().is_some_and(|(o, _)| o == owner)
+                && base_id(&e.manifest.module.id) == base
+        })?;
+        Some(Retired(locals.remove(at)))
+    }
+
+    /// The base ids (`<project>/<id>`) of the local modules of `owner`, in order.
+    pub fn local_ids(&self, owner: &str) -> Vec<String> {
+        self.locals()
+            .iter()
+            .filter(|e| e.local.as_ref().is_some_and(|(o, _)| o == owner))
+            .map(|e| base_id(&e.manifest.module.id).to_string())
+            .collect()
+    }
+
+    /// Ends a local module's process, whatever its state.
+    fn stop_entry(entry: &Entry) {
+        match entry.local.as_ref().and_then(|(_, health)| health.as_ref()) {
+            // Without the module's lock: a call that hangs must not hold the stop.
+            Some(health) => health.stop(),
+            None => Self::shut(entry),
         }
     }
 
@@ -287,11 +408,7 @@ impl Registry {
             gone
         };
         for entry in &removed {
-            match entry.local.as_ref().and_then(|(_, health)| health.as_ref()) {
-                // Without the module's lock: a call that hangs must not hold the close.
-                Some(health) => health.stop(),
-                None => Self::shut(entry),
-            }
+            Self::stop_entry(entry);
         }
         removed
             .iter()
@@ -373,6 +490,15 @@ impl Registry {
     /// loaded), whatever its state.
     pub fn manifest(&self, id: &str) -> Option<Arc<Manifest>> {
         self.find(id).map(|e| e.manifest.clone())
+    }
+
+    /// The manifest a module declared, by id (any version if the exact one is not loaded):
+    /// `None` for a local module that never started (blocked, or it failed before saying
+    /// its manifest), whose manifest is only a placeholder with its id.
+    pub fn declared_manifest(&self, id: &str) -> Option<Arc<Manifest>> {
+        self.find(id)
+            .filter(|e| !matches!(e.local, Some((_, None))))
+            .map(|e| e.manifest.clone())
     }
 
     /// The manifests of every loaded module, whatever its state, in load order; local

@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use regulus_proto::{
-    Cardinality, Diagnostic, Direction, Manifest, Node, Port, PortRef, Profile, Severity, Wire,
-    WireKind, Workflow, BOX_SEPARATOR, FIELD_WORKFLOW, WORKFLOW_SELF,
+    shape, Cardinality, Diagnostic, Direction, Manifest, Node, Port, PortRef, Profile, Severity,
+    Wire, WireKind, Workflow, BOX_SEPARATOR, FIELD_WORKFLOW, WORKFLOW_SELF,
 };
 
 struct Report<'a> {
@@ -127,6 +127,61 @@ pub fn check_fields<M: Deref<Target = Manifest>>(
         for node in &workflow.nodes {
             for (severity, code, message) in field_findings(profile, node, &manifest_of) {
                 report.push(severity, code, message, Some(&node.id), None);
+            }
+        }
+    }
+    report.list
+}
+
+/// The code of a node whose ports differ from what its `managed_ports` type gives for its
+/// config.
+pub const PORTS_STALE: &str = "node.ports_stale";
+
+/// The module nodes whose shape no longer fits what their module declares (protocol 1.17),
+/// all warnings: a type the loaded module does not have (`node.type_missing`, e.g. after a
+/// reload), and for a `managed_ports` type what of the config the shape cannot use
+/// (`node.shape_problem`) and ports that differ from the shape ([`PORTS_STALE`]).
+/// `manifest_of` gives what a module declared; a module that is not loaded, or never said
+/// its manifest, is skipped.
+pub fn check_shapes<M: Deref<Target = Manifest>>(
+    profile: &Profile,
+    manifest_of: impl Fn(&str) -> Option<M>,
+) -> Vec<Diagnostic> {
+    let mut report = Report {
+        list: Vec::new(),
+        workflow: None,
+    };
+    for workflow in &profile.workflows {
+        report.workflow = Some(&workflow.id);
+        for node in &workflow.nodes {
+            let Some(manifest) = node.module_id.as_deref().and_then(&manifest_of) else {
+                continue;
+            };
+            let id = Some(node.id.as_str());
+            let Some(node_type) = manifest.node_type(&node.node_type) else {
+                let message = format!(
+                    "module `{}` has no node type `{}` (a reload may have removed it)",
+                    manifest.module.id, node.node_type
+                );
+                report.push(Severity::Warning, "node.type_missing", message, id, None);
+                continue;
+            };
+            if !node_type.managed_ports {
+                continue;
+            }
+            let shaped = shape::shape(node_type, &node.config);
+            for problem in shaped.problems {
+                report.push(Severity::Warning, "node.shape_problem", problem, id, None);
+            }
+            let changes = shape::diff_ports(&node.ports, &shaped.ports);
+            if !changes.is_empty() {
+                let message = format!(
+                    "ports differ from what `{}` declares for this config: {}; sync them \
+                     (profile.sync)",
+                    manifest.module.id,
+                    changes.describe()
+                );
+                report.push(Severity::Warning, PORTS_STALE, message, id, None);
             }
         }
     }

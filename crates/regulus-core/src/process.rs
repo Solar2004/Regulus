@@ -594,7 +594,15 @@ fn manifest_of(answer: Value, spec: &LocalSpec) -> Result<Manifest, String> {
     module
         .entry("name")
         .or_insert_with(|| json!(spec.id.clone()));
-    serde_json::from_value(value).map_err(|e| format!("invalid manifest: {e}"))
+    let manifest: Manifest =
+        serde_json::from_value(value).map_err(|e| format!("invalid manifest: {e}"))?;
+    // The same check a source gets before it runs (`source.check`): a node type whose
+    // ports cannot be shaped is not admitted.
+    let problems = regulus_proto::shape::validate_manifest(&manifest);
+    if !problems.is_empty() {
+        return Err(format!("invalid manifest: {}", problems.join("; ")));
+    }
+    Ok(manifest)
 }
 
 /// A process to start, and where to say how it went.
