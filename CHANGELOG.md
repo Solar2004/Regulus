@@ -55,6 +55,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   para el que se pidió (si cambió, pide otra; si se abrió otro perfil, se descarta). La TUI
   crea los nodos con la misma forma del core (con sus puertos dinámicos) pero no los
   resincroniza al editar un campo: para eso, `regulus profile sync`.
+- **Nodos propios en Rust por stdio:** `regulus node init --lang rust` genera un crate con un
+  ayudante de un fichero (`sdk/rust/regulus.rs`: atiende los eventos en un grupo de hilos,
+  un `panic` solo falla su llamada y nunca escribe una línea que el core mataría) y
+  `regulus node build` lo compila (exige confianza en el proyecto antes de ejecutar nada,
+  construye siempre en `tools/<id>/target` y se niega a registrar un ejecutable que no sea
+  el de `target/release`, p. ej. con un `build.target` de Cargo); ejemplo en
+  `examples/local-modules/rust-stdio/`. El módulo se carga al abrir el proyecto o con
+  `project reload`. Sin sandbox y solo `emit` del contexto del módulo.
 - **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
   ejecución terminada, o de antes de reiniciar el core, se consultan con
   `regulus call` sin arrancar nada; `data.*` acepta también `project`.
@@ -94,6 +102,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - **`[local_modules]` de `config.toml`** gana `python`, `check_timeout_ms` y
   `max_source_bytes`; los tiempos del editor y de la comprobación son ajustes del
   dispositivo en la app, no del `config.toml`.
+- **`regulus node init` en Python** usa el mismo escritor que la app (`node.init`) y lleva el
+  SDK y el nodo inicial dentro del binario, así que funciona con un binario descargado sin
+  el repo.
 
 ### Corregido
 

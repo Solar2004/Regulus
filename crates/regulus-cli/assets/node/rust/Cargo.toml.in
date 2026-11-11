@@ -1,0 +1,12 @@
+[package]
+name = "node-__ID__"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+# This crate is its own workspace, so a Cargo workspace above the project folder does not
+# adopt it and `regulus node build` builds it where it is.
+[workspace]

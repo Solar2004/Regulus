@@ -619,6 +619,17 @@ enum ModuleCommand {
         /// The module id, with or without the version (`regulus/flow`).
         id: String,
     },
+    /// The ports a node of a type has for a configuration, as the core resolves them: the
+    /// same answer the app gets.
+    Shape {
+        /// The module id, with or without the version.
+        module: String,
+        /// The node type.
+        node_type: String,
+        /// The node's configuration, as a JSON object.
+        #[arg(long, default_value = "{}")]
+        config: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -644,13 +655,26 @@ enum ProjectCommand {
     },
     /// Forget an open project. Nothing in its folder is deleted.
     Close { id: String },
+    /// Load a project's local modules again without restarting the core: a new process
+    /// replaces the old one only once it is ready, and the old one stays if the new one
+    /// fails. Refused while live executions use the module, unless `--stop-executions`.
+    Reload {
+        id: String,
+        /// Only this module: its local id, or `<project>/<id>[@version]`.
+        #[arg(long)]
+        module: Option<String>,
+        /// Stop the executions that use the module first.
+        #[arg(long)]
+        stop_executions: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum NodeCommand {
-    /// Write `tools/<id>/run.py`, a starter node in Python with the SDK beside it, and
-    /// register it in the project's `regulus.toml` as a `[[modules.local]]`. Overwrites
-    /// nothing; trusts nothing: it runs once you open the project with `--trust`.
+    /// Write a starter node and register it in the project's `regulus.toml` as a
+    /// `[[modules.local]]`: in Python, `tools/<id>/run.py` with the SDK beside it; with
+    /// `--lang rust`, a Cargo crate in `tools/<id>/` (build it with `regulus node build`).
+    /// Overwrites nothing; trusts nothing: it runs once you open the project with `--trust`.
     Init {
         /// The project folder; it must have a `regulus.toml` (`regulus project open`
         /// writes one).
@@ -659,11 +683,71 @@ enum NodeCommand {
         /// a-z, 0-9, `-` and `_`.
         #[arg(long)]
         id: String,
+        /// What the node is written in.
+        #[arg(long, value_enum, default_value_t = NodeLang::Python)]
+        lang: NodeLang,
         /// The Python the core starts it with: a name on `PATH` or a path (a venv's
-        /// interpreter, relative to the project if it has a `/`).
-        #[arg(long, default_value = "python3")]
-        python: String,
+        /// interpreter, relative to the project if it has a `/`). Default `python3`;
+        /// only for `--lang python`.
+        #[arg(long)]
+        python: Option<String>,
     },
+    /// Compile the Rust node `<id>` of a project (`cargo build --release`, into
+    /// `tools/<id>/target`). It runs the project's code (build scripts), so the project
+    /// must be trusted first (`regulus project trust`). The core runs the new program once
+    /// the module reloads (`regulus project reload <project> --module <id>`) or the project
+    /// opens. Honors `$CARGO`.
+    Build {
+        /// The project folder.
+        folder: PathBuf,
+        /// The module id given to `regulus node init --lang rust`.
+        #[arg(long)]
+        id: String,
+    },
+    /// Print the Python source of a project's local module (needs the running core;
+    /// reading executes nothing). The text goes to stdout, the path and revision to stderr.
+    Source {
+        /// The id of an open project (`regulus project ls`).
+        project: String,
+        /// The module's local id (`tools/<id>` from `node init`).
+        module: String,
+        /// Print the whole answer as JSON instead.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace that source with a file (or `-` for stdin). Refused when the file changed
+    /// since you read it; saving does not reload (`regulus project reload`).
+    Save {
+        project: String,
+        module: String,
+        /// The new text: a file, or `-` to read stdin.
+        file: String,
+        /// The revision `node source` printed: what this edit is based on.
+        #[arg(long, conflicts_with = "new")]
+        revision: Option<String>,
+        /// Expect no file yet: create it.
+        #[arg(long)]
+        new: bool,
+        /// Overwrite whatever is there now.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Check the source for errors without running it: syntax and the node types it
+    /// declares. Checks the saved file, or `--file`/stdin (`-`) for an unsaved text.
+    /// Non-zero when it finds an error.
+    Check {
+        project: String,
+        module: String,
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+    },
+}
+
+/// The languages `regulus node init` writes.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum NodeLang {
+    Python,
+    Rust,
 }
 
 #[derive(Subcommand)]
@@ -746,6 +830,25 @@ enum ProfileCommand {
     },
     /// Unload a profile and delete its file. Refused while an execution of it runs.
     Rm { id: String },
+    /// Check a profile and print what the core finds (stale ports included).
+    Check { id: String },
+    /// Bring the ports of nodes back to what their module declares. Prints the plan and
+    /// writes nothing, unless `--apply`.
+    Sync {
+        id: String,
+        /// Only nodes of this workflow.
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Only this node, even if its ports are not stale (reset them). Repeatable.
+        #[arg(long = "node", value_name = "NODE")]
+        nodes: Vec<String>,
+        /// Save the synced profile.
+        #[arg(long)]
+        apply: bool,
+        /// With `--apply`: accept that wires to removed ports are removed.
+        #[arg(long, requires = "apply")]
+        drop_wires: bool,
+    },
 }
 
 #[tokio::main]
@@ -846,6 +949,46 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Module {
+            command:
+                ModuleCommand::Shape {
+                    module,
+                    node_type,
+                    config,
+                },
+        } => {
+            let config: Value = serde_json::from_str(&config).context("--config must be JSON")?;
+            let params = serde_json::json!({
+                "module_id": module, "type": node_type, "config": config,
+            });
+            let shape: Value = client.request("module.shape", params).await?;
+            for line in regulus_cli::authoring::shape_lines(&shape) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Command::Profile {
+            command: ProfileCommand::Check { id },
+        } => {
+            let diagnostics: Vec<Diagnostic> = client
+                .request(method::PROFILE_CHECK, serde_json::json!({ "id": id }))
+                .await?;
+            if diagnostics.is_empty() {
+                println!("no findings");
+            }
+            print_diagnostics(diagnostics);
+            Ok(())
+        }
+        Command::Profile {
+            command:
+                ProfileCommand::Sync {
+                    id,
+                    workflow,
+                    nodes,
+                    apply,
+                    drop_wires,
+                },
+        } => profile_sync(&client, id, workflow, nodes, apply, drop_wires).await,
         Command::Profile {
             command: ProfileCommand::Ls { project },
         } => {
@@ -879,9 +1022,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Template { command } => template(&client, command).await,
-        Command::Node {
-            command: NodeCommand::Init { folder, id, python },
-        } => node_init(folder, id, python),
+        Command::Node { command } => node_command(&config, &client, command).await,
         Command::Update {
             command,
             check,
@@ -1365,13 +1506,206 @@ async fn project(client: &Client<'_>, command: ProjectCommand) -> Result<()> {
             let closed: ProjectSummary = client.request(method::PROJECT_CLOSE, params).await?;
             println!("closed {} ({})", closed.id, closed.path);
         }
+        ProjectCommand::Reload {
+            id,
+            module,
+            stop_executions,
+        } => {
+            let params = serde_json::json!({
+                "id": id, "module": module, "stop_executions": stop_executions,
+            });
+            match client
+                .request_coded::<Value>("project.reload", params)
+                .await?
+            {
+                Ok(reloaded) => {
+                    let (lines, ok) = regulus_cli::authoring::reload_lines(&id, &reloaded);
+                    lines.iter().for_each(|line| println!("{line}"));
+                    if !ok {
+                        std::process::exit(1);
+                    }
+                }
+                Err(error) if error.code == Some(regulus_cli::authoring::MODULE_IN_USE) => {
+                    let data = error.data.unwrap_or(Value::Null);
+                    regulus_cli::authoring::in_use_lines(&data)
+                        .iter()
+                        .for_each(|line| eprintln!("{line}"));
+                    std::process::exit(1);
+                }
+                Err(error) => bail!("{error}"),
+            }
+        }
     }
     Ok(())
 }
 
+/// `regulus node …`: `init` and `build` work on the folder; the rest ask the running core.
+async fn node_command(config: &Config, client: &Client<'_>, command: NodeCommand) -> Result<()> {
+    use regulus_cli::authoring;
+    match command {
+        NodeCommand::Init {
+            folder,
+            id,
+            lang,
+            python,
+        } => node_init(folder, id, lang, python),
+        NodeCommand::Build { folder, id } => node_build(config, folder, id),
+        NodeCommand::Source {
+            project,
+            module,
+            json,
+        } => {
+            let params = serde_json::json!({ "project_id": project, "module": module });
+            let source: Value = client.request("source.get", params).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&source)?);
+            } else {
+                let field = |key: &str| source[key].as_str().unwrap_or_default().to_string();
+                eprintln!("path      {}", field("path"));
+                eprintln!("revision  {}", field("revision"));
+                print!("{}", field("text"));
+            }
+            Ok(())
+        }
+        NodeCommand::Save {
+            project,
+            module,
+            file,
+            revision,
+            new,
+            force,
+        } => {
+            if revision.is_none() && !new && !force {
+                bail!(
+                    "say what this edit is based on: --revision <rev> (printed by `regulus node \
+                     source`), --new for a file that does not exist yet, or --force"
+                );
+            }
+            let params = serde_json::json!({
+                "project_id": project, "module": module, "text": read_text(&file)?,
+                "revision": revision, "force": force,
+            });
+            match client.request_coded::<Value>("source.save", params).await? {
+                Ok(saved) => {
+                    let path = saved["path"].as_str().unwrap_or_default();
+                    println!(
+                        "saved {path} (revision {})",
+                        saved["revision"].as_str().unwrap_or_default()
+                    );
+                    let (lines, errors) =
+                        authoring::check_lines(path, &project, &module, &saved["check"]);
+                    lines.iter().for_each(|line| println!("{line}"));
+                    if errors > 0 {
+                        println!(
+                            "saved with {errors} error(s): the loaded module is unchanged until it is reloaded"
+                        );
+                    } else {
+                        println!(
+                            "not applied yet: regulus project reload {project} --module {module}"
+                        );
+                    }
+                    Ok(())
+                }
+                Err(error) if error.code == Some(authoring::SOURCE_CONFLICT) => {
+                    let current = error
+                        .data
+                        .as_ref()
+                        .and_then(|d| d["revision"].as_str())
+                        .unwrap_or("(no file)");
+                    bail!(
+                        "the file changed since you read it (now at revision {current}); nothing \
+                         was written. Read it again with `regulus node source`, merge, and save \
+                         with that revision, or use --force"
+                    )
+                }
+                Err(error) => bail!("{error}"),
+            }
+        }
+        NodeCommand::Check {
+            project,
+            module,
+            file,
+        } => {
+            let text = file.as_deref().map(read_text).transpose()?;
+            let params = serde_json::json!({
+                "project_id": project, "module": module, "text": text,
+            });
+            let check: Value = client.request("source.check", params).await?;
+            let shown = file.as_deref().filter(|f| *f != "-").unwrap_or("source");
+            let (lines, errors) = authoring::check_lines(shown, &project, &module, &check);
+            lines.iter().for_each(|line| println!("{line}"));
+            if errors > 0 {
+                std::process::exit(1);
+            }
+            println!("no errors");
+            Ok(())
+        }
+    }
+}
+
+/// A file's text, or stdin's for `-`.
+fn read_text(file: &str) -> Result<String> {
+    if file == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .context("cannot read stdin")?;
+        return Ok(text);
+    }
+    std::fs::read_to_string(file).with_context(|| format!("cannot read {file}"))
+}
+
+/// `regulus profile sync`: prints the core's plan; with `--apply` saves the synced
+/// profile, but not over wires it would remove unless `--drop-wires` says so.
+async fn profile_sync(
+    client: &Client<'_>,
+    id: String,
+    workflow: Option<String>,
+    nodes: Vec<String>,
+    apply: bool,
+    drop_wires: bool,
+) -> Result<()> {
+    use regulus_cli::authoring;
+    let params = serde_json::json!({
+        "profile_id": id,
+        "workflow_id": workflow,
+        "node_ids": if nodes.is_empty() { Value::Null } else { serde_json::json!(nodes) },
+    });
+    let synced: Value = client.request("profile.sync", params).await?;
+    authoring::sync_lines(&synced)
+        .iter()
+        .for_each(|line| println!("{line}"));
+    if synced["nodes"].as_array().is_none_or(Vec::is_empty) {
+        return Ok(());
+    }
+    if !apply {
+        println!("nothing saved; add --apply to save this");
+        return Ok(());
+    }
+    if let Some(refusal) = authoring::apply_refusal(&synced, drop_wires) {
+        bail!("{refusal}");
+    }
+    let params = serde_json::json!({ "profile": synced["profile"], "force": true });
+    let saved: ProfileSaved = client.request(method::PROFILE_SAVE, params).await?;
+    println!("saved profile {} ({})", saved.profile_id, saved.path);
+    print_diagnostics(saved.diagnostics);
+    Ok(())
+}
+
 /// `regulus node init`: writes the files and the registration, then says how to run it.
-fn node_init(folder: PathBuf, id: String, python: String) -> Result<()> {
-    let ask = regulus_cli::node::InitAsk { folder, id, python };
+fn node_init(folder: PathBuf, id: String, lang: NodeLang, python: Option<String>) -> Result<()> {
+    use regulus_cli::node::Lang;
+    if matches!(lang, NodeLang::Rust) && python.is_some() {
+        anyhow::bail!("--python is only for --lang python");
+    }
+    let ask = regulus_cli::node::InitAsk {
+        folder,
+        id,
+        lang: match lang {
+            NodeLang::Python => Lang::Python,
+            NodeLang::Rust => Lang::Rust,
+        },
+        python: python.unwrap_or_else(|| "python3".into()),
+    };
     let done = regulus_cli::node::init(&ask)?;
     let shown = |path: &std::path::Path| {
         path.strip_prefix(&done.root)
@@ -1396,12 +1730,56 @@ fn node_init(folder: PathBuf, id: String, python: String) -> Result<()> {
     let module = format!("{}/{}", done.project, ask.id);
     println!();
     println!("It runs code on this machine, so it runs only in a trusted project:");
-    println!("  regulus project open {} --trust", done.root.display());
+    if ask.lang == Lang::Rust {
+        println!("  regulus project trust {}", done.root.display());
+        println!(
+            "  regulus node build {} --id {}",
+            done.root.display(),
+            ask.id
+        );
+        println!("  regulus project open {}", done.root.display());
+    } else {
+        println!("  regulus project open {} --trust", done.root.display());
+    }
     println!("  regulus module show {module}");
     println!(
         "Use it on a node with module_id = \"{module}\" and type = \"{}\".",
         ask.id
     );
+    Ok(())
+}
+
+/// `regulus node build`: compile the Rust node of a project. Needs the trusted list of
+/// `config.toml`, not the core.
+fn node_build(config: &Config, folder: PathBuf, id: String) -> Result<()> {
+    let ask = regulus_cli::node::BuildAsk {
+        folder,
+        id,
+        config: config.config_path(),
+        home: config.home.clone(),
+        cargo: std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+    };
+    let built = regulus_cli::node::build(&ask)?;
+    let shown = built
+        .program
+        .strip_prefix(&built.root)
+        .unwrap_or(&built.program)
+        .display();
+    println!("built {shown}");
+    if built.registered {
+        // `project reload` takes the project's id, not its folder.
+        let project = regulus_core::projects::Project::load(&built.root)
+            .map_or_else(|_| "<project-id>".to_string(), |p| p.id);
+        println!("The core runs it once the module reloads (project open) or the project opens:");
+        println!("  regulus project reload {project} --module {}", ask.id);
+        println!("  regulus project open {}", built.root.display());
+    } else {
+        eprintln!(
+            "warning: the `command` of [[modules.local]] `{}` does not run that program; \
+             point it at {shown} to use the build",
+            ask.id
+        );
+    }
     Ok(())
 }
 
@@ -2580,6 +2958,16 @@ impl Client<'_> {
 
     async fn request<T: DeserializeOwned>(&self, name: &str, params: Value) -> Result<T> {
         rpc::call(&self.connect().await?, name, params).await
+    }
+
+    /// Like `request`, but a refusal by the core comes back with its code and `data`
+    /// (the outer error is only for not reaching the core).
+    async fn request_coded<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        params: Value,
+    ) -> Result<std::result::Result<T, rpc::Refusal>> {
+        Ok(rpc::call_refusal(&self.connect().await?, name, params).await)
     }
 }
 

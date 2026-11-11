@@ -72,25 +72,59 @@ impl std::fmt::Display for CallError {
     }
 }
 
+/// A [`CallError`] with the `data` object some refusals carry (the live executions of a
+/// refused reload, the current revision of a refused save).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Refusal {
+    pub code: Option<i32>,
+    pub message: String,
+    pub data: Option<Value>,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// Like [`call`], keeping the error code.
 pub async fn call_coded<T: DeserializeOwned>(
     ws: &WsClient,
     name: &str,
     params: Value,
 ) -> std::result::Result<T, CallError> {
-    let params = object(params).map_err(|e| CallError {
+    call_refusal(ws, name, params)
+        .await
+        .map_err(|refusal| CallError {
+            code: refusal.code,
+            message: refusal.message,
+        })
+}
+
+/// Like [`call_coded`], keeping the error's `data` too.
+pub async fn call_refusal<T: DeserializeOwned>(
+    ws: &WsClient,
+    name: &str,
+    params: Value,
+) -> std::result::Result<T, Refusal> {
+    let params = object(params).map_err(|e| Refusal {
         code: None,
         message: format!("{e:#}"),
+        data: None,
     })?;
     match ws.request(name, params).await {
         Ok(value) => Ok(value),
-        Err(jsonrpsee::core::client::Error::Call(error)) => Err(CallError {
+        Err(jsonrpsee::core::client::Error::Call(error)) => Err(Refusal {
             code: Some(error.code()),
             message: error.message().to_string(),
+            data: error
+                .data()
+                .and_then(|raw| serde_json::from_str(raw.get()).ok()),
         }),
-        Err(error) => Err(CallError {
+        Err(error) => Err(Refusal {
             code: None,
             message: error.to_string(),
+            data: None,
         }),
     }
 }
