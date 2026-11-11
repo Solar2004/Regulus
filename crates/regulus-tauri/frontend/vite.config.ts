@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -12,6 +13,12 @@ export default defineConfig(() => ({
 
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "src") },
+  },
+
+  // Tests skip stylesheets, except a stylesheet imported as text (`?raw`): the
+  // dialog test compiles the app's own CSS to check its classes exist.
+  test: {
+    css: { include: [/\.css\?raw$/] },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

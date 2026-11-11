@@ -20,6 +20,7 @@
     "raised": "#1C2C42",
     "hover": "#243650",
     "selected": "#293F5C",
+    "scrim": "#04080D",
     "border": "#2F4664",
     "control-border": "#6883A9",
     "steel": "#577396",

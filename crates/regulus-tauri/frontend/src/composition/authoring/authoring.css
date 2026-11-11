@@ -38,7 +38,7 @@
 .authoring-list li { display:flex; flex-wrap:wrap; gap:var(--rg-space-2); align-items:baseline; }
 .authoring-list code { font-family:var(--rg-font-mono); }
 .authoring-list small { color:var(--rg-color-text-muted); }
-.sync-nodes { display:grid; gap:var(--rg-space-3); max-height:50vh; overflow:auto; font-size:.75rem; }
+.sync-nodes { display:grid; gap:var(--rg-space-3); font-size:.75rem; }
 .sync-node-head { display:flex; gap:var(--rg-space-2); align-items:baseline; margin-bottom:var(--rg-space-1); }
 .sync-node-head code, .sync-line code { font-family:var(--rg-font-mono); font-size:.6875rem; }
 .sync-line { display:flex; flex-wrap:wrap; gap:var(--rg-space-2); align-items:baseline; padding-left:var(--rg-space-2); }

@@ -79,6 +79,13 @@ es la referencia de material, no una textura que haya que repetir por toda la pa
 6. Radios: `small` 6 px etiquetas, `control` 10–12 px botones/inputs/items de menú,
    `panel` 16 px paneles y popovers de menú, `dialog` 28 px diálogos. El `Button`
    e `Input` usan `rounded-md`; el `DialogContent`, `rounded-[var(--rg-radius-dialog)]`.
+7. Diálogos (2026-11-11, `frontend/src/components/ui/dialog.tsx`): panel opaco
+   `surface` sobre un velo `--overlay` (`scrim` al 72 %) que oscurece sin desenfocar. El
+   panel nunca es más alto que la ventana: su cuerpo hace scroll entre la cabecera y las
+   acciones, que quedan fijas; si la ventana no llega a 20rem, hace scroll el velo. Las
+   barras de scroll de detrás se ocultan mientras el modal está abierto, porque WebKit
+   las pinta encima de todo. Un diálogo nuevo usa este componente, sin alturas ni
+   scroll propios.
 
 ### Referencia de color: Centaury + icono de Regulus
 
@@ -98,6 +105,7 @@ app es la fuente de los extremos de gradiente.
 | `canvas` | Azul noche del logo, un paso más oscuro |
 | `sidebar`, `surface` | Escala del icono, un paso sobre el canvas |
 | `raised`, `hover`, `selected` | Escala del icono |
+| `scrim` | Tinta de las sombras (`shadow.overlay`); velo de los diálogos |
 | `border` | Azul grisáceo derivado del icono |
 | `steel` / `accent` | Azul acero del logo (`#587BA7`), oscurecido en `accent` para texto blanco |
 | `focus` | Azul hielo del icono (`#A8CFFF`) |
@@ -131,6 +139,7 @@ fuentes, radios, espaciados, tiempos y sombras. No copiar valores hex a componen
 | Fondo global / lateral | `canvas` / `sidebar` |
 | Paneles / popovers | `surface` / `raised` |
 | Hover / selección | `hover` / `selected` |
+| Velo detrás de un diálogo modal | `scrim` (vía `--overlay`) |
 | Separadores decorativos | `border` |
 | Contornos que identifican campos y botones | `control-border` |
 | Acero decorativo / acento interactivo | `steel` / `accent` |

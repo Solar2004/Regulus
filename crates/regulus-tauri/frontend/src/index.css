@@ -14,4 +14,10 @@
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
   }
+  /* While a modal is open, Base UI marks the rest of the app inert. WebKit (the Tauri
+     webview) paints overlay scrollbars after everything else, so a scrollbar behind a
+     dialog would cross its opaque panel: hide them there, without changing the layout. */
+  [data-base-ui-inert] * {
+    scrollbar-color: transparent transparent;
+  }
 }

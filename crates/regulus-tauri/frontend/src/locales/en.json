@@ -7,6 +7,7 @@
   "window.unsaved.title": "Close Regulus with unsaved changes?",
   "window.unsaved.description": "These changes are not saved and will be lost: {items}",
   "window.unsaved.close": "Close without saving",
+  "dialog.close": "Close",
   "view.operate": "Operate",
   "view.topology": "Topology",
   "modules.title": "Modules",

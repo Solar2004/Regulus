@@ -34,6 +34,8 @@
   --chart-3: var(--rg-color-chart-3);
   --chart-4: var(--rg-color-chart-4);
   --chart-5: var(--rg-color-chart-5);
+  /* Veil behind modal dialogs: darkens the app, never blurs it (08-design-system.md). */
+  --overlay: color-mix(in srgb, var(--rg-color-scrim) 72%, transparent);
 }
 
 @theme inline {
@@ -72,6 +74,9 @@
   --color-success: var(--rg-color-success);
   --color-warning: var(--rg-color-warning);
   --color-danger: var(--rg-color-danger);
+  --color-surface: var(--rg-color-surface);
+  --color-hover: var(--rg-color-hover);
+  --color-overlay: var(--overlay);
   --font-sans: var(--rg-font-ui);
   --font-display: var(--rg-font-display);
   --font-mono: var(--rg-font-mono);
