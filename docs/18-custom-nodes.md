@@ -221,13 +221,16 @@ menos unario, nombres de módulo ligados una vez a algo así, `import regulus [a
 `python.unreadable` y no se evalúa nunca. El fichero tampoco puede hacer trabajar al lector
 sin límite: cada nombre se lee una vez y cuenta su coste entero cada vez que se usa, y un
 solo presupuesto por fichero, de 100 000 valores (`_MAX_VALUES`; un nombre que se dobla en
-cada línea llega en 17), 4 MiB de texto (`_MAX_BYTES`; una cadena larga usada muchas veces
-serían otras tantas copias en el manifiesto) y 64 niveles de anidamiento, para antes de
-copiar o serializar nada, con `python.unreadable` y el motivo
+cada línea llega en 17), 4 MiB de lo que se escribiría (`_MAX_BYTES`: el texto por su
+longitud, un entero por sus dígitos, los nombres de los argumentos con nombre, que pasan a
+ser claves de un campo, y lo que añade cada constructor; una cadena larga usada muchas
+veces serían otras tantas copias en el manifiesto) y 64 niveles de anidamiento, para antes
+de copiar o serializar nada, con `python.unreadable` y el motivo
 (`test_names_that_double_at_every_line_are_read_within_a_budget`,
-`test_long_text_used_many_times_is_read_within_a_byte_budget_in_capped_memory`). Los
-ficheros de la revisión tardan 0,1-0,2 s y ~20-30 MB en vez de agotar los 5 s o la memoria
-(~600 MB y `MemoryError`). Probado con un fichero centinela y un módulo
+`test_long_text_used_many_times_is_read_within_a_byte_budget_in_capped_memory`,
+`test_keyword_names_and_long_integers_count_in_the_byte_budget`). Los ficheros de las
+revisiones tardan 0,1-0,2 s y ~20-30 MB en vez de agotar los 5 s o la memoria (~600-730 MB y
+`MemoryError`). Probado con un fichero centinela y un módulo
 importable plantado (`test_malicious_sources_run_nothing_even_through_the_core_command`).
 
 `SourceCheck` = `{ language, checked, interpreter, diagnostics, nodes, complete,

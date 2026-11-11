@@ -606,6 +606,18 @@ _MAX_VALUES = 100_000
 #: How many characters of text (and bytes of numbers) those values may hold in all: a
 #: long string used many times is that many copies once serialized into the manifest.
 _MAX_BYTES = 4 * 1024 * 1024
+#: What a builder's result costs beyond its arguments: the keys it adds itself.
+_BUILT_BYTES = 128
+
+
+def _literal_bytes(value):
+    """About how much a literal weighs once written out as JSON: text by its length, an
+    integer by its decimal digits (a 4300-digit literal is not 8 bytes), anything else 8."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(8, abs(value).bit_length() // 3 + 1)
+    return 8
 #: How much of an expression a diagnostic quotes.
 _QUOTE = 80
 
@@ -763,7 +775,7 @@ def inspect(source, filename="run.py"):
         if isinstance(expr, ast.Constant):
             value = expr.value
             if value is None or isinstance(value, (str, int, float, bool)):
-                charge(1, len(value) if isinstance(value, str) else 8, expr)
+                charge(1, _literal_bytes(value), expr)
                 return value
             raise _Unreadable(expr)
         charge(1, 0, expr)
@@ -805,6 +817,8 @@ def inspect(source, filename="run.py"):
             builder = _BUILDERS.get(sdk(expr.func))
             if builder is None or any(isinstance(a, ast.Starred) for a in expr.args):
                 raise _Unreadable(expr)
+            # Keyword names become keys of the result (`field(**extra)`): they weigh too.
+            charge(0, _BUILT_BYTES + sum(len(k.arg) for k in expr.keywords if k.arg), expr)
             args = [ev(a, depth + 1) for a in expr.args]
             kwargs = {}
             for keyword in expr.keywords:

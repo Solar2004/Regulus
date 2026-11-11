@@ -822,6 +822,52 @@ class InspectTest(unittest.TestCase):
         self.assertTrue(found["complete"], found)
         self.assertEqual(found["nodes"][0]["node"]["field"][0]["default"], ["b" * 1000] * 2)
 
+    def test_keyword_names_and_long_integers_count_in_the_byte_budget(self):
+        # Two channels the text budget first missed: a keyword name becomes a key of the
+        # field (`field(**extra)`), and a long integer is many digits once written out. Each
+        # file is small and few values, yet gigabytes or minutes of CPU once serialized.
+        name = "k" * 200_000
+        ident = "\n".join([
+            "import regulus as rg",
+            f'f = rg.field("x", {name}=1)',
+            "row = [" + ", ".join(["f"] * 1000) + "]",
+            "grid = [" + ", ".join(["row"] * 20) + "]",
+            '@rg.node("t", fields=[rg.field("g", "list", default=grid)])',
+            "def t(ctx, port, value): pass",
+            "rg.run()",
+        ]) + "\n"
+        number = "\n".join([
+            "import regulus as rg",
+            "i = " + "9" * 4300,
+            "row = [" + ", ".join(["i"] * 200) + "]",
+            "grid = [" + ", ".join(["row"] * 200) + "]",
+            '@rg.node("t", fields=[rg.field("g", "list", default=grid)])',
+            "def t(ctx, port, value): pass",
+            "rg.run()",
+        ]) + "\n"
+        script = (SDK / "regulus.py").read_text() + "\n_inspect_main()\n"
+        cap = 512 * 1024 * 1024
+
+        def limit():
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+
+        for source in (ident, number):
+            started = time.monotonic()
+            done = subprocess.run([sys.executable, "-I", "-S", "-c", script], input=source.encode(),
+                                  capture_output=True, timeout=TIMEOUT, env={}, preexec_fn=limit)
+            self.assertEqual(done.returncode, 0, done.stderr[-500:])
+            self.assertLess(time.monotonic() - started, 2.0)
+            answer = json.loads(done.stdout)
+            self.assertFalse(answer["complete"])
+            self.assertEqual([d["code"] for d in answer["diagnostics"]], ["python.unreadable"])
+            self.assertIn(f"more than {regulus._MAX_BYTES} bytes", answer["diagnostics"][0]["message"])
+        # Ordinary keyword hints and numbers still read as written.
+        found = regulus.inspect('import regulus as rg\n@rg.node("t", fields=[rg.field("n", "number", default=12345678901234567890, label="Big")])\ndef t(ctx, port, value): pass\nrg.run()\n')
+        self.assertTrue(found["complete"], found)
+        self.assertEqual(found["nodes"][0]["node"]["field"][0]["default"], 12345678901234567890)
+        self.assertEqual(found["nodes"][0]["node"]["field"][0]["label"], "Big")
+
     def test_an_empty_file_has_no_nodes(self):
         codes = [d["code"] for d in regulus.inspect(b"")["diagnostics"]]
         self.assertEqual(codes, ["python.no_nodes", "python.no_run"])
