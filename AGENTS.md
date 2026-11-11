@@ -67,16 +67,16 @@ nativo** corre el bucle del agente dentro de Regulus con herramientas y hooks ca
 agente o un modelo real: solo con motores y servidores falsos. **Nodos propios** (2026-11-10 y 2026-11-11,
 `docs/18-custom-nodes.md`): un nodo se escribe en Python con el SDK (`sdk/python/regulus.py`,
 solo biblioteca estándar) como módulo local, `regulus node init` lo genera sin confiar en el
-proyecto. El segundo incremento, **candidato 0.2.1, sin publicar** (el binario 0.2.0 habla
-1.16 y no lo trae), está construido en el árbol de trabajo (protocolo 1.17): la app crea un
+proyecto. El segundo incremento, **0.2.1** (publicada el 2026-11-11 con el tag `v0.2.1`; el binario 0.2.0 habla
+1.16 y no lo trae), está construido (protocolo 1.17): la app crea un
 nodo Python, edita su fuente con CodeMirror y la comprueba **sin ejecutarla**, la guarda con
 protección de escritura vieja, recarga el módulo sin reiniciar el core (el viejo sigue si el
 nuevo falla; una ejecución viva lo impide salvo que se pida pararla), los puertos pueden
 depender de la config (`dynamic_port`, `when`, `repeat`, `managed_ports`, una sola
 `shape()`) y los puertos viejos se sincronizan **a petición** y enseñando los cables que
 caen; Rust por stdio con `regulus node init --lang rust` y `node build`; el binario trae
-las **17** plantillas, y el flujo de tags reutiliza la CI como puerta (escrito, no
-ejecutado en GitHub). Probado contra un core real y en un navegador real, aún sin uso en un
+las **17** plantillas, y el flujo de tags reutiliza la CI como puerta (ejecutada en GitHub
+en el tag `v0.2.1`). Probado contra un core real y en un navegador real, aún sin uso en un
 proyecto real; teclear **no** cumple 16 ms en el p90 (`18-custom-nodes.md` §4.3). **Sigue 🔶
 y sin construir:** `$T`, depurador (R1), R2-R4, nodo Script, más `ModuleCtx` por stdio, MCP
 para estos métodos y `regulus module install` (aprobado en el diseño, no existe). **Lo siguiente:** correr las
@@ -236,7 +236,7 @@ Refs: docs/plan.md §3
 |---|---|---|
 | 1 | **Pulir con uso real**: ~~mostrar el estado `blocked` con su acción "confiar" en Ajustes~~ (2026-11-08); publicar `v0.1.0` con `release.yml` (falta el secreto `REGULUS_SIGNING_KEY` y el tag) y, con una segunda versión, instalar la actualización con la app abierta | el secreto y el tag los pone Alexander |
 | 1c | **Harness líquido con uso real** (2026-11-09): correr `rag-chat`, `delegation`, `native-harness` y `research` (lote) con un agente y un modelo reales; `hook@1` no tiene respuesta "pregunta" ni "termina" (`12-agents.md` §8); `profile.check` no revisa los workflows del mapa `workers` del delegado (`13-blocks.md` §3.3) | nada |
-| 1d | **Publicar 0.2.1** (candidato: el código ya dice 0.2.1, sin tag ni release): poner el tag `v0.2.1` y fechar el changelog, firmar con la clave real y publicar; ejecutar el flujo de tags una vez en GitHub (la puerta de CI está escrita y **no se ha ejecutado**), y usar los nodos propios en un proyecto real | el tag y la clave de firma son de Alexander |
+| 1d | **0.2.1 publicada** (2026-11-11, tag `v0.2.1`, `release.yml` con la puerta de CI: éxito en GitHub); queda usar los nodos propios en un proyecto real | nada |
 | 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~, ~~pxl~~. **Las ocho hechas** (2026-11-08) | — |
 | 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); ~~release + `regulus update` + Ajustes → Updates~~ (`06-stack.md` §5.4); lo que queda está en la fila 1 | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |
