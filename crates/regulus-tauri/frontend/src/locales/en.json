@@ -901,5 +901,9 @@
   "code.settings.mascot": "Show the mascot",
   "code.settings.panels": "Panels of the folder pane",
   "code.settings.panelsHelp": "Tick to show, move up or down. Workers stays out of a session that has none.",
-  "code.settings.shared": "How often the conversation is read, its page size and the start timeout are Operate's settings: this view uses the same ones."
+  "code.settings.shared": "How often the conversation is read, its page size and the start timeout are Operate's settings: this view uses the same ones.",
+  "codeEditor.syntax.missing": "Syntax error: something is missing here",
+  "codeEditor.syntax.unexpected": "Syntax error: unexpected “{text}”",
+  "codeEditor.syntax.parser": "editor parser",
+  "codeEditor.syntax.core": "core check"
 }

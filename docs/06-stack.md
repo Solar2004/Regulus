@@ -88,6 +88,7 @@ la alternativa es `nix` directo, que es lo que hcom hace hoy.
 | Canvas de composición | **`@xyflow/react`** | `12.12.0` (verificado 2026-10-04) | Ver §2.3. |
 | Mock de desarrollo | **`ws`**, tipos `@types/ws` | `8.22.0` / `8.18.2` (verificado 2026-10-04) | JSON-RPC por WebSocket integrado en Vite; no entra en el cliente de producción. |
 | Tests unitarios del cliente | **`vitest`** | `5.1.0` (verificado 2026-11-08) | Usa la config de Vite (alias `@`), sin otro bundler; `pnpm test` corre la lógica pura de `src/`. |
+| Editor de código (campos `code` y fuente de módulos locales) | **CodeMirror 6**: `@codemirror/state`, `view`, `language`, `commands`, `lint`, `lang-python`; `@lezer/highlight` | `6.7.6`, `6.43.15`, `6.13.1`, `6.11.1`, `6.9.7`, `6.2.1`; `1.2.5` (registro npm, verificado 2026-11-11) | Modular (solo lo que se usa, sin `basicSetup`), deshacer y Tab/Esc accesibles de serie, parser incremental Lezer para errores de sintaxis sin ejecutar nada. Se carga con `import()` al abrir un campo `code` o una fuente: trozo aparte (~404 kB, ~136 kB gzip) que la primera pantalla no paga. Colores desde los tokens `--rg-*`. |
 | Actualizar la app | **`tauri-plugin-updater`** (Rust) | `2.14.1` (verif. 2026-11-08) | El updater de Tauri, configurado en tiempo de ejecución desde `[update]` de `config.toml` (§5.4): sin URL ni clave fijas en `tauri.conf.json`. Solo en el shell: el frontend lo pide con comandos de Tauri, sin el paquete JS. |
 
 ### 2.3 Canvas de composición con React Flow

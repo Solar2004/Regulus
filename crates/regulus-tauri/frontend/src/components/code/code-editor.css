@@ -1,0 +1,7 @@
+/* The code editor's frame; CodeMirror's own look is in setup.ts, from the same tokens. */
+.code-editor { display:grid; min-width:0; }
+.code-editor-host { min-width:0; }
+.code-editor[data-state="loading"] .code-editor-host { display:none; }
+.code-editor-loading { margin:0; overflow:auto; white-space:pre; padding:var(--rg-space-2) var(--rg-space-3); border:1px solid var(--rg-color-control-border); border-radius:var(--rg-radius-control); background:var(--rg-color-surface); color:var(--rg-color-text-muted); font-family:var(--rg-font-mono); font-size:.75rem; line-height:1.45; }
+.code-editor.fill, .code-editor.fill .code-editor-host, .code-editor.fill .cm-editor { height:100%; min-height:0; }
+.code-editor .cm-editor { max-width:100%; }
