@@ -53,8 +53,8 @@ esto. La fecha la pone el tag `v0.2.1` cuando Alexander lo publique; la firma es
   (`source.save` con la revisión leída: si el fichero cambió fuera, `-32015` y la app deja
   cargar el suyo, sobrescribir o seguir) y *Save & reload*. Lo escrito sin guardar no se
   pierde: sigue ahí al cambiar de vista, otra fuente espera a que la guardes o descartes, y
-  salir de la página o cerrar la ventana desde su barra pregunta (también con el perfil sin
-  guardar). Es un fichero por módulo: sin árbol de ficheros, sin editor externo y sin ver el
+  salir de la página o cerrar la ventana (barra de título, Alt+F4 o el gestor de ventanas)
+  pregunta (también con el perfil sin guardar). Es un fichero por módulo: sin árbol de ficheros, sin editor externo y sin ver el
   stderr del módulo en Ajustes. CLI: `regulus node source|save|check`. La comprobación tiene
   un presupuesto: un fichero que haría crecer sin límite lo que se lee sale como
   `python.unreadable`.

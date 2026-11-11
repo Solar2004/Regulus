@@ -449,9 +449,12 @@ Un panel junto al canvas edita el `.py` de **un** módulo local (`source.get`, �
   cambios sin guardar (el «Edit source» de otro módulo, un nodo nuevo, Ajustes → Módulos)
   no la reemplaza: la deja pendiente con un aviso de tres salidas, *Guardar y abrir*,
   *Descartar y abrir* o *Seguir editando*. Recargar la página o cerrar la ventana con
-  cambios sin guardar, de la fuente **o** del perfil, pregunta antes desde cualquier vista
-  (`beforeunload` y el botón de cerrar de la barra de título). No pregunta un cierre que
-  manda el gestor de ventanas (Alt+F4), igual que antes con el perfil. Probado en un
+  cambios sin guardar, de la fuente **o** del perfil, pregunta antes desde cualquier vista:
+  `beforeunload` en el navegador y, en la ventana de escritorio, toda petición de cierre
+  (el botón de la barra de título, Alt+F4, el gestor de ventanas) pasa por
+  `onCloseRequested`, que la retiene y pregunta; si no hay nada pendiente, la página
+  destruye la ventana (permiso `core:window:allow-destroy`). Esto último está probado con
+  un evento simulado y el permiso, no en una ventana de escritorio real. Probado en un
   navegador (2026-11-11): cambiar de vista y volver, otra fuente desde el inspector y desde
   Ajustes → Módulos con sus tres salidas, salir de la página justo tras teclear, y volver
   con el fichero cambiado fuera. Medido tras este cambio: mismo coste por tecla que antes,

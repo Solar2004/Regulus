@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
-import { unsavedWork } from "@/lib/unsaved";
+import { holdClose } from "@/lib/unsaved";
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -42,15 +42,23 @@ function ControlButton({
 
 export default function Titlebar() {
   const [maximized, setMaximized] = useState(false);
-  /** Unsaved work found when the close button was pressed: the window asks before closing. */
+  /** Unsaved work found when the window was asked to close: it stays open and asks. */
   const [unsaved, setUnsaved] = useState<string[] | null>(null);
   const tauri = isTauri();
-  const closeWindow = () => getCurrentWindow().close().catch(() => {});
-  const askClose = () => {
-    const found = unsavedWork();
-    if (found.length) setUnsaved(found);
-    else void closeWindow();
-  };
+
+  // Every close request (this title bar's button, Alt+F4, the window manager) comes here:
+  // while something is unsaved the window stays and asks. With this listener Tauri leaves
+  // the close to the page; it destroys the window when nothing held it (core:window:allow-destroy).
+  useEffect(() => {
+    if (!tauri) return;
+    let off: (() => void) | undefined;
+    let gone = false;
+    getCurrentWindow()
+      .onCloseRequested((event) => { holdClose(event, setUnsaved); })
+      .then((unlisten) => { if (gone) unlisten(); else off = unlisten; })
+      .catch(() => {});
+    return () => { gone = true; off?.(); };
+  }, [tauri]);
 
   useEffect(() => {
     if (!tauri) return;
@@ -121,7 +129,7 @@ export default function Titlebar() {
             <ControlButton
               label={t("window.close")}
               danger
-              onClick={askClose}
+              onClick={() => getCurrentWindow().close().catch(() => {})}
             >
               <X size={16} strokeWidth={1.5} />
             </ControlButton>
@@ -136,7 +144,7 @@ export default function Titlebar() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUnsaved(null)}>{t("editor.cancel")}</Button>
-            <Button variant="destructive" onClick={() => { setUnsaved(null); void closeWindow(); }}>{t("window.unsaved.close")}</Button>
+            <Button variant="destructive" onClick={() => { setUnsaved(null); void getCurrentWindow().destroy().catch(() => {}); }}>{t("window.unsaved.close")}</Button>
           </DialogFooter>
         </DialogContent>}
       </Dialog>

@@ -19,3 +19,15 @@ export function unsavedWork(): string[] {
 export function guardUnload(event: BeforeUnloadEvent): void {
   if (unsavedWork().length) event.preventDefault();
 }
+
+/**
+ * A desktop window's close request (title bar, Alt+F4, the window manager): kept open, and
+ * `ask` told what is unsaved, while something is. True when the close was held.
+ */
+export function holdClose(event: { preventDefault(): void }, ask: (items: string[]) => void): boolean {
+  const found = unsavedWork();
+  if (!found.length) return false;
+  event.preventDefault();
+  ask(found);
+  return true;
+}
