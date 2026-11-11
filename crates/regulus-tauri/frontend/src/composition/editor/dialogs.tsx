@@ -55,6 +55,15 @@ const numeric: { key: keyof typeof canvasLimits; label: Parameters<typeof t>[0];
   { key: "layoutLayerGap", label: "editor.settings.layoutLayerGap", step: 8 },
   { key: "layoutNodeGap", label: "editor.settings.layoutNodeGap", step: 8 },
   { key: "autosaveMs", label: "editor.settings.autosaveMs", step: 1000 },
+  { key: "codeCommitMs", label: "editor.settings.codeCommitMs", step: 50 },
+  { key: "codeLintMs", label: "editor.settings.codeLintMs", step: 50 },
+  { key: "codeMinLines", label: "editor.settings.codeMinLines", step: 1 },
+  { key: "codeMaxLines", label: "editor.settings.codeMaxLines", step: 1 },
+  { key: "sourceCheckMs", label: "editor.settings.sourceCheckMs", step: 250 },
+  { key: "shapeDelayMs", label: "editor.settings.shapeDelayMs", step: 50 },
+  { key: "reloadTimeoutMs", label: "editor.settings.reloadTimeoutMs", step: 1000 },
+  { key: "checkTimeoutMs", label: "editor.settings.checkTimeoutMs", step: 1000 },
+  { key: "sourceIndent", label: "editor.settings.sourceIndent", step: 1 },
 ];
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {

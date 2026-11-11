@@ -141,11 +141,13 @@ export interface ModuleRow {
   name: string;
   nodeTypes: string[];
   status: ModuleStatus;
+  /** A local module's project: it can be reloaded, and its source edited if the project lists one. */
+  project: string | null;
 }
 
 export function moduleRows(modules: ModuleDefinition[]): ModuleRow[] {
   return modules
-    .map((module) => ({ id: module.id, name: module.name || module.id, nodeTypes: module.node_types, status: moduleStatus(module) }))
+    .map((module) => ({ id: module.id, name: module.name || module.id, nodeTypes: module.node_types, status: moduleStatus(module), project: module.project ?? null }))
     .sort((a, b) => attention.indexOf(a.status.kind) - attention.indexOf(b.status.kind) || a.name.localeCompare(b.name));
 }
 

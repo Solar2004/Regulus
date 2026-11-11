@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Blocks, GitBranch, Plus, Search } from "lucide-react";
+import { Blocks, FilePlus2, GitBranch, Plus, Search } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ModuleStatus } from "@/components/ui/status";
 import { t, type LocaleKey } from "@/lib/i18n";
 import type { Manifest, ModuleDefinition, Profile } from "../model";
@@ -11,9 +12,11 @@ import { useCanvasSettings } from "./settings";
 export type PieceRef = { kind: "type"; key: string } | { kind: "box"; workflowId: string };
 export const PIECE_MIME = "application/x-regulus-piece";
 
-export function Palette({ manifests, modules, profile, workflowId, onAdd }: {
+export function Palette({ manifests, modules, profile, workflowId, onAdd, onNewNode }: {
   manifests: Manifest[]; modules: ModuleDefinition[]; profile: Profile; workflowId: string;
   onAdd: (piece: PieceRef) => void;
+  /** Starts a new Python node module in a project; absent without a core. */
+  onNewNode?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const grouping = useCanvasSettings((s) => s.paletteGrouping);
@@ -29,7 +32,9 @@ export function Palette({ manifests, modules, profile, workflowId, onAdd }: {
   const groupLabel = (label: string) => grouping === "state" ? t(stateView[label as PieceState].label) : label;
 
   return <aside className="editor-palette" aria-label={t("editor.palette.title")}>
-    <header><h2>{t("editor.palette.title")}</h2><p>{t("editor.palette.help")}</p></header>
+    <header><h2>{t("editor.palette.title")}</h2><p>{t("editor.palette.help")}</p>
+      {onNewNode && <Button variant="outline" size="sm" className="palette-new" onClick={onNewNode}><FilePlus2 size={14} />{t("authoring.newNode.action")}</Button>}
+    </header>
     <label className="palette-search"><Search size={14} aria-hidden="true" /><input type="search" value={query} placeholder={t("editor.palette.search")} aria-label={t("editor.palette.search")} onChange={(event) => setQuery(event.target.value)} /></label>
     <div className="palette-groups">
       {groups.map((group) => <section key={group.key}>

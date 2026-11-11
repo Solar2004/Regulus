@@ -25,14 +25,33 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   (`max_workers`), aparta tus `print` del protocolo y convierte cualquier error, también
   `sys.exit()`, en un error de esa llamada. Ejemplo en `examples/local-modules/python-sdk/`.
   No es un sandbox: solo corre en proyectos de confianza.
-- **Campos de código y de varias líneas en el inspector:** un campo `type = "code"` se
-  edita en un área de texto monoespaciada (Tab y Shift+Tab sangran; Esc y luego Tab sale
-  del campo) y uno `type = "text"` con `multiline = true` en una que ajusta líneas.
-  Es texto plano: sin resaltado ni comprobación de sintaxis, y lo dice debajo.
+- **Campos de código con editor:** un campo `type = "code"` se edita con CodeMirror 6, que
+  se carga solo al abrir un campo `code` o una fuente (si no carga, vuelve el área de
+  texto): resalta Python, marca los errores de sintaxis sin ejecutar nada, deshace y
+  rehace, y Tab y Shift+Tab sangran (Esc y luego Tab sale del campo). El texto vive en un
+  borrador local y pasa al perfil tras una pausa, al perder el foco o al guardar; una
+  tecla ya marca el perfil como sin guardar. Un campo `type = "text"` con `multiline =
+  true` sigue siendo un área de texto. **Rendimiento medido: el objetivo de 16 ms por tecla
+  no se cumple en el p90**; los números y su método están en
+  [`docs/18-custom-nodes.md` §4.3](docs/18-custom-nodes.md#43-probado-y-medido).
 - **Los campos de un manifiesto conservan sus pistas:** claves como `label`,
   `description`, `language` o `multiline` llegan tal cual a los clientes
   (`module show`, `module.manifest`). El core no las lee y un cliente que no las conoce
   las ignora; no cambia el protocolo.
+- **Editar y comprobar la fuente de un nodo en la app** (protocolo `1.17`,
+  [`docs/04-client.md` §13](docs/04-client.md), `docs/18-custom-nodes.md` §2): el botón *New
+  Python node* crea el módulo en un proyecto abierto (o abre antes una carpeta por su ruta,
+  sin confiar en ella, así que una instalación nueva no necesita la línea de comandos), y un
+  panel edita el `.py` de un módulo local con *Check* (`source.check`: sintaxis y tipos de
+  nodo, **sin ejecutar nada del proyecto**; usa el Python del anfitrión), *Save*
+  (`source.save` con la revisión leída: si el fichero cambió fuera, `-32015` y la app deja
+  cargar el suyo, sobrescribir o seguir) y *Save & reload*. Lo escrito sin guardar no se
+  pierde: sigue ahí al cambiar de vista, otra fuente espera a que la guardes o descartes, y
+  salir de la página o cerrar la ventana desde su barra pregunta (también con el perfil sin
+  guardar). Es un fichero por módulo: sin árbol de ficheros, sin editor externo y sin ver el
+  stderr del módulo en Ajustes. CLI: `regulus node source|save|check`. La comprobación tiene
+  un presupuesto: un fichero que haría crecer sin límite lo que se lee sale como
+  `python.unreadable`.
 - **Recargar un módulo local sin reiniciar el core:** `project.reload`, `regulus project
   reload [--module] [--stop-executions]` y *Reload* en el panel y en Ajustes → Módulos. El
   proceso nuevo arranca antes de parar el viejo y, si falla, sigue el viejo. Si una

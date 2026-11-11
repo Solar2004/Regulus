@@ -1,14 +1,22 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowRight, Boxes, GitBranch, LayoutDashboard, LockKeyhole, Minus, Plus, Replace, RotateCcw, Trash2, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, Boxes, FileCode2, GitBranch, LayoutDashboard, LockKeyhole, Minus, Plus, Replace, RefreshCcw, RotateCcw, Trash2, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModuleStatus } from "@/components/ui/status";
+import { CodeEditor } from "@/components/code/CodeEditor";
+import { parserFor } from "@/components/code/syntax";
 import { t } from "@/lib/i18n";
-import type { CompositionNode, ConfigValue, Diagnostic, Manifest, ModuleDefinition, Port, Profile, Workflow } from "../model";
+import type { CompositionNode, ConfigValue, Diagnostic, Manifest, ManifestNodeType, ModuleDefinition, NodeShape, Port, Profile, Workflow } from "../model";
+import { CODE, codeOf, moduleShape } from "../authoring/api";
+import { useProjectSources } from "../authoring/hooks";
+import { hasShape, projectOf, samePorts, shapeFields, sourceOf, type SourceRef } from "../authoring/logic";
+import { useAuthoring } from "../authoring/store";
+import { messageOf, type Requester } from "./api";
 import * as doc from "./document";
-import { coerce, displayValue, fieldRows, mapEntries, mapFrom, resetValue, type FieldRow } from "./fields";
+import { coerce, displayValue, fieldRows, listItems, mapEntries, mapFrom, resetValue, type FieldRow } from "./fields";
 import { manifestTypeOf, moduleStateOf } from "./palette";
 import { indent, outdent, rowsFor, type TextEdit } from "./textarea";
 import { SeverityMark, stateView } from "./nodes";
+import { useCanvasSettings } from "./settings";
 import { useEditor } from "./store";
 
 type Edit = (change: (profile: Profile) => Profile) => void;
@@ -59,6 +67,19 @@ function MapControl({ value, label, onCommit }: { value: ConfigValue | undefined
   </div>;
 }
 
+/** A `list` field: one text per row; the value is the list as typed (the core says if an item cannot name a port). */
+function ListControl({ value, label, onCommit }: { value: ConfigValue | undefined; label: string; onCommit: (value: ConfigValue) => void }) {
+  const items = listItems(value);
+  const update = (next: string[]) => onCommit(next);
+  return <div className="map-control" role="group" aria-label={label}>
+    {items.map((item, index) => <div className="map-row list-row" key={index}>
+      <input aria-label={`${label} ${index + 1}`} value={item} spellCheck={false} onChange={(event) => update(items.map((old, at) => at === index ? event.target.value : old))} />
+      <button type="button" aria-label={t("editor.field.listRemove")} onClick={() => update(items.filter((_, at) => at !== index))}><Minus size={12} /></button>
+    </div>)}
+    <button type="button" className="map-add" onClick={() => update([...items, ""])}><Plus size={12} />{t("editor.field.listAdd")}</button>
+  </div>;
+}
+
 /** Visible rows of a text area, by control: the box grows with the value up to a cap and then scrolls. */
 const TEXT_ROWS = { code: [4, 18], multiline: [3, 10] } as const;
 /** Controls whose default is not repeated under them while it is the value shown: it can be many lines. */
@@ -67,7 +88,8 @@ const TEXT_AREAS = new Set<FieldRow["control"]>(["code", "multiline"]);
 /**
  * A plain, monospaced (for `code`) text area. Tab indents and Shift+Tab outdents in `code`;
  * Esc hands the next Tab back to the page so the keyboard can leave. No highlighting,
- * parsing or checking: the hint under it says so.
+ * parsing or checking: the hint under it says so. A `code` field uses it only when the
+ * code editor cannot be fetched.
  */
 function TextAreaControl({ row, value, label, onCommit }: { row: FieldRow; value: string; label: string; onCommit: (value: string) => void }) {
   const area = useRef<HTMLTextAreaElement>(null);
@@ -98,6 +120,21 @@ function TextAreaControl({ row, value, label, onCommit }: { row: FieldRow; value
     data-language={row.language} onKeyDown={onKeyDown} onChange={(event) => onCommit(event.target.value)} />;
 }
 
+/** Marks the profile as changed at the first keystroke a code field has not written yet. */
+const markPending = () => { if (!useEditor.getState().dirty) useEditor.setState({ dirty: true }); };
+
+/**
+ * A `code` field in the code editor. Typing stays in the editor; the profile gets the text
+ * after a pause, on blur, and before save, check or run (`flushEdits`), so a keystroke
+ * does not rebuild the canvas.
+ */
+function CodeField({ row, value, label, onCommit }: { row: FieldRow; value: string; label: string; onCommit: (value: string) => void }) {
+  const { codeCommitMs, codeLintMs, codeMinLines, codeMaxLines } = useCanvasSettings();
+  return <CodeEditor value={value} language={row.language} indent={row.indent} label={label} onCommit={onCommit} onPending={markPending}
+    commitDelayMs={codeCommitMs} lintDelayMs={codeLintMs} minLines={codeMinLines} maxLines={codeMaxLines} className="field-code"
+    fallback={() => <TextAreaControl row={row} value={value} label={label} onCommit={onCommit} />} />;
+}
+
 function FieldControl({ row, workflows, onChange }: { row: FieldRow; workflows: Workflow[]; onChange: (value: ConfigValue | undefined) => void }) {
   const current = row.value ?? row.defaultValue;
   const label = row.label ?? row.id;
@@ -117,10 +154,13 @@ function FieldControl({ row, workflows, onChange }: { row: FieldRow; workflows: 
         {typeof current === "string" && current && !workflows.some((workflow) => workflow.id === current) && <option value={current}>{current}</option>}
       </select>;
     case "code":
+      return <CodeField row={row} value={displayValue(current)} label={label} onCommit={onChange} />;
     case "multiline":
       return <TextAreaControl row={row} value={displayValue(current)} label={label} onCommit={onChange} />;
     case "map":
       return <MapControl value={current} label={label} onCommit={onChange} />;
+    case "list":
+      return <ListControl value={current} label={label} onCommit={onChange} />;
     case "number":
       return <DraftInput type="number" label={label} value={displayValue(current)} parse={(text) => coerce(row, text)} onCommit={onChange} />;
     case "raw":
@@ -165,18 +205,98 @@ function Dependencies({ profile, workflowId, node, edit }: { profile: Profile; w
   </>;
 }
 
-export function NodeInspector({ profile, workflowId, node, manifests, modules, diagnostics, edit, onOpenWorkflow, onCreateBox, onDelete, onClose }: {
+/** `key` says which config it answers; `rev` which reading of the modules (it changes after a reload). */
+type ShapeAnswer = { key: string; rev: number; shape: NodeShape } | { key: string; rev: number; error: string; code: number | null };
+
+/**
+ * The node's shape from the core (`module.shape`) for its current config, asked for again
+ * `delay` ms after a field the shape reads changes. Nothing is resolved here.
+ */
+function useNodeShape(rpc: Requester | null | undefined, node: CompositionNode, nodeType: ManifestNodeType | null, delay: number): ShapeAnswer | null {
+  const fields = useMemo(() => [...shapeFields(nodeType)].sort(), [nodeType]);
+  const relevant = hasShape(nodeType) && !!node.module_id;
+  const key = relevant ? JSON.stringify([node.module_id, node.type, fields.map((id) => [id, node.config[id] ?? null])]) : "";
+  const rev = useAuthoring((s) => s.modulesRev);
+  const [answer, setAnswer] = useState<ShapeAnswer | null>(null);
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!rpc || !relevant) return;
+    let disposed = false;
+    // The first question goes at once; later ones wait for typing to pause.
+    const wait = asked.current === null || asked.current === key ? 0 : delay;
+    asked.current = key;
+    const timer = setTimeout(() => {
+      moduleShape(rpc, node.module_id!, node.type, node.config).then(
+        (shape) => { if (!disposed) setAnswer({ key, rev, shape }); },
+        (error) => { if (!disposed) setAnswer({ key, rev, error: messageOf(error), code: codeOf(error) }); });
+    }, wait);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [rpc, relevant, key, rev]);
+  return relevant && answer?.key === key && answer.rev === rev ? answer : null;
+}
+
+/**
+ * Whether the node's ports are the ones its module gives for this config, and the way to
+ * make them so. A change of a field the shape reads syncs by itself when no wire would go;
+ * anything that would remove a wire waits for the person to review it.
+ */
+function ShapeSection({ node, nodeType, answer, stale, edited, onSync }: {
+  node: CompositionNode; nodeType: ManifestNodeType | null; answer: ShapeAnswer | null; stale: boolean;
+  /** Set when the person changed a field the shape reads; the next answer follows it once. */
+  edited: React.MutableRefObject<boolean>;
+  onSync: (nodeIds: string[], auto: boolean) => void;
+}) {
+  const shape = answer && "shape" in answer ? answer.shape : null;
+  const differs = shape ? !samePorts(node.ports, shape.ports) : stale;
+  // Only a field the person just changed makes the ports follow by themselves; a reload or
+  // opening the node only shows the difference and waits for "Review".
+  useEffect(() => {
+    if (!shape || !edited.current) return;
+    edited.current = false;
+    if (differs) onSync([node.id], true);
+  }, [answer?.key, answer?.rev]);
+  if (answer && "error" in answer && answer.code === CODE.methodNotFound) return null;
+  if (!differs && !shape?.problems.length && !(answer && "error" in answer)) return null;
+  return <div className="inspector-shape" role="status">
+    {differs && <>
+      <p><TriangleAlert size={12} aria-hidden="true" />{t(nodeType?.managed_ports ? "editor.shape.stale" : "editor.shape.differs")}</p>
+      {shape && <small>{t("editor.shape.ports", { ports: shape.ports.map((port) => port.id).join(", ") || "—" })}</small>}
+      <Button variant="outline" size="sm" onClick={() => onSync([node.id], false)}><RefreshCcw size={12} />{t("editor.shape.review")}</Button>
+    </>}
+    {shape?.problems.map((problem, index) => <small className="field-error" key={index}>{problem}</small>)}
+    {answer && "error" in answer && <small className="field-error">{t("editor.shape.failed")} <code>{answer.error}</code></small>}
+  </div>;
+}
+
+export function NodeInspector({ profile, workflowId, node, manifests, modules, diagnostics, edit, onOpenWorkflow, onCreateBox, onDelete, onClose, rpc, onEditSource, onSync }: {
   profile: Profile; workflowId: string; node: CompositionNode; manifests: Manifest[]; modules: ModuleDefinition[]; diagnostics: Diagnostic[];
   edit: Edit; onOpenWorkflow: (id: string) => void; onCreateBox: () => void; onDelete: () => void; onClose: () => void;
+  /** The core, for the node's shape; without it the inspector edits as before. */
+  rpc?: Requester | null;
+  /** Opens the module's Python file; given only where the source panel exists. */
+  onEditSource?: (source: SourceRef) => void;
+  /** Previews a port sync of these nodes (`auto`: apply at once if no wire would go). */
+  onSync?: (nodeIds: string[], auto: boolean) => void;
 }) {
   const nodeType = manifestTypeOf(manifests, node.module_id, node.type);
-  const rows = fieldRows(nodeType?.field, node.config);
+  const shapeDelay = useCanvasSettings((s) => s.shapeDelayMs);
+  const answer = useNodeShape(onSync ? rpc : null, node, nodeType, shapeDelay);
+  const hidden = new Set(answer && "shape" in answer ? answer.shape.hidden_fields : []);
+  const rows = fieldRows(nodeType?.field, node.config).filter((row) => !hidden.has(row.id));
+  const sources = useProjectSources(onEditSource ? rpc : null, projectOf(modules, node.module_id));
+  const source = onEditSource ? sourceOf(modules, node.module_id, sources) : null;
   const state = moduleStateOf(modules, node.module_id);
   const ports = doc.portsOf(profile, node);
   const others = profile.workflows.filter((workflow) => workflow.id !== workflowId);
   const internal = node.internal_workflow_id ? doc.workflowOf(profile, node.internal_workflow_id) : undefined;
   const found = diagnostics.filter((d) => d.node_id === node.id && (d.workflow_id === null || d.workflow_id === workflowId));
-  const set = (key: string, value: ConfigValue | undefined) => edit((p) => doc.setConfig(p, workflowId, node.id, key, value));
+  const stale = found.some((d) => d.code === "node.ports_stale");
+  // A code field may write after the profile on screen changed: only this profile's node takes it.
+  const shapeEdited = useRef(false);
+  const set = (key: string, value: ConfigValue | undefined) => {
+    if (shapeFields(nodeType).has(key)) shapeEdited.current = true;
+    edit((p) => p.id === profile.id && doc.workflowOf(p, workflowId) && doc.nodeOf(doc.workflowOf(p, workflowId)!, node.id) ? doc.setConfig(p, workflowId, node.id, key, value) : p);
+  };
 
   return <aside className="node-inspector" aria-label={t("graph.inspector")}>
     <header><span>{t("graph.inspector")}</span><button onClick={onClose} aria-label={t("graph.closeInspector")}><X size={16} /></button></header>
@@ -188,6 +308,7 @@ export function NodeInspector({ profile, workflowId, node, manifests, modules, d
       {node.resource && <><dt>{t("graph.resource")}</dt><dd><code>{node.resource}</code></dd></>}
     </dl>
     {state === "not-installed" && <p className="inspector-hint">{t("editor.node.absentHint")}</p>}
+    {source && <Button variant="outline" className="inspector-action" onClick={() => onEditSource!(source)}><FileCode2 size={14} />{t("editor.node.editSource")}<code>{source.path}</code></Button>}
     {found.length > 0 && <ul className="inspector-diagnostics">{found.map((d, index) => <li key={index}><SeverityMark severity={d.severity} /><span>{d.message}</span><code>{d.code}</code></li>)}</ul>}
 
     <label className="inspector-field"><span>{t("editor.node.internal")}</span>
@@ -201,6 +322,7 @@ export function NodeInspector({ profile, workflowId, node, manifests, modules, d
     {internal && <Button variant="outline" className="open-internal" onClick={() => onOpenWorkflow(internal.id)}><GitBranch size={14} />{t("editor.box.open")}<ArrowRight size={14} /></Button>}
 
     <h3>{t("graph.ports")}</h3>
+    {onSync && <ShapeSection node={node} nodeType={nodeType} answer={answer} stale={stale} edited={shapeEdited} onSync={onSync} />}
     {ports.length === 0 && <p>{t("graph.noPorts")}</p>}
     <ul className="inspector-ports">{ports.map((port) => <li key={port.id}><div><span>{port.name || port.id}</span><span>{t(port.direction === "input" ? "graph.input" : "graph.output")}</span></div><code>{port.capability}</code><small>{t(port.kind === "uses" ? "graph.uses" : "graph.then")}{port.direction === "input" && ` · ${t(port.required ? "graph.required" : "graph.optional")} · ${t(port.cardinality === "many" ? "editor.port.many" : "editor.port.one")}`}</small></li>)}</ul>
 
@@ -218,7 +340,7 @@ export function NodeInspector({ profile, workflowId, node, manifests, modules, d
       </div>
       <FieldControl row={row} workflows={profile.workflows} onChange={(value) => set(row.id, value)} />
       {row.description && <small className="config-description">{row.description}</small>}
-      {row.control === "code" && <small className="config-default">{t("editor.field.codePlain")}</small>}
+      {row.control === "code" && <small className="config-default">{parserFor(row.language) ? t("editor.field.codeEditor", { language: row.language ?? "" }) : t("editor.field.codeText")}</small>}
       {row.secret && <small className="config-secret"><LockKeyhole size={11} aria-hidden="true" />{t("editor.field.secret")}</small>}
       {row.defaultValue !== undefined && !(row.isDefault && TEXT_AREAS.has(row.control)) && <small className="config-default">{t("editor.field.default")} <code>{displayValue(row.defaultValue) || t("editor.field.empty")}</code></small>}
     </div>)}</div>}

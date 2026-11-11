@@ -1,12 +1,19 @@
-import { CircleCheck, CircleDashed, OctagonX, PackageOpen, ShieldCheck, ShieldOff, TriangleAlert, type LucideIcon } from "lucide-react";
+import { CircleCheck, CircleDashed, FileCode2, OctagonX, PackageOpen, RefreshCw, ShieldCheck, ShieldOff, TriangleAlert, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { ProjectSummary } from "@/composition/model";
+import { CODE, codeOf } from "@/composition/authoring/api";
+import { useProjectSources } from "@/composition/authoring/hooks";
+import { localIdOf, sourceOf } from "@/composition/authoring/logic";
+import { outcomeText, reloadWithConsent, useStopConsent } from "@/composition/authoring/reload";
+import { useAuthoring } from "@/composition/authoring/store";
+import { useCanvasSettings } from "@/composition/editor/settings";
+import type { ModuleDefinition, ProjectSummary } from "@/composition/model";
 import { useCore } from "@/core/connection";
+import { useRegulusUi } from "@/store/useRegulusUi";
 import { moduleCountKey, useModuleList } from "@/core/modules";
 import { t, type LocaleKey } from "@/lib/i18n";
 import { Mark } from "@/operate/StateMark";
-import { formatTime, moduleRows, statusCounts, trustTarget, type ModuleStatus } from "./logic";
+import { formatTime, moduleRows, statusCounts, trustTarget, type ModuleRow, type ModuleStatus } from "./logic";
 import { useSettingsApi } from "./useSettingsApi";
 
 type Tone = "success" | "warning" | "danger" | "muted";
@@ -76,6 +83,52 @@ function TrustAction({ status, projects, onTrusted }: { status: ModuleStatus; pr
   </div>;
 }
 
+/**
+ * A local module's own actions: reload it from its files without restarting the core
+ * (asking first if that would stop runs), and open its Python source in the canvas.
+ */
+function LocalActions({ row, modules, onReloaded }: { row: ModuleRow; modules: ModuleDefinition[]; onReloaded: () => void }) {
+  const { client } = useCore();
+  const reloadMs = useCanvasSettings((s) => s.reloadTimeoutMs);
+  const checkMs = useCanvasSettings((s) => s.checkTimeoutMs);
+  const sources = useProjectSources(client, row.project);
+  const source = sourceOf(modules, row.id, sources);
+  const [askStop, stopDialog] = useStopConsent();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ tone: "danger" | "muted"; text: string } | null>(null);
+  if (!client || !row.project) return null;
+  const reload = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const done = await reloadWithConsent(client, { id: row.project!, module: localIdOf(row.id) }, { reloadMs, checkMs }, askStop);
+      if (!done) { setResult({ tone: "muted", text: t("authoring.reload.keptRuns") }); return; }
+      const mine = done.modules.find((item) => item.local_id === localIdOf(row.id)) ?? done.modules[0];
+      // Every run the core stopped is named, also one that started after the question.
+      const stopped = done.stopped_executions.length ? ` ${t("authoring.reload.stopped", { runs: done.stopped_executions.join(", ") })}` : "";
+      setResult({ tone: mine && ["kept", "failed", "skipped"].includes(mine.outcome) ? "danger" : "muted", text: (mine ? outcomeText(mine) : t("authoring.reload.done")) + stopped });
+      useAuthoring.getState().modulesChanged();
+      onReloaded();
+    } catch (error) {
+      setResult({ tone: "danger", text: `${t(codeOf(error) === CODE.methodNotFound ? "authoring.reload.unsupported" : "authoring.reload.failed")} ${error instanceof Error ? error.message : String(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const edit = () => {
+    if (!source) return;
+    useAuthoring.getState().openSource(source);
+    useRegulusUi.getState().setView("composition");
+  };
+  return <div className="settings-module-action">
+    <Button variant="outline" size="sm" disabled={busy} onClick={() => void reload()}><RefreshCw size={14} />{t(busy ? "authoring.source.reloading" : "authoring.source.reload")}</Button>
+    {source && <Button variant="outline" size="sm" onClick={edit}><FileCode2 size={14} />{t("editor.node.editSource")}</Button>}
+    {source && <code>{source.path}</code>}
+    {result && <p className={`settings-module-why${result.tone === "danger" ? " tone-danger" : ""}`} role={result.tone === "danger" ? "alert" : "status"}>{result.text}</p>}
+    {stopDialog}
+  </div>;
+}
+
 export function ModuleSettings() {
   const [epoch, setEpoch] = useState(0);
   const modules = useModuleList(epoch);
@@ -111,7 +164,8 @@ export function ModuleSettings() {
               <Mark icon={look.icon} tone={look.tone} label={t(look.label)} />
             </div>
             <p className={problem(row.status) ? "settings-module-why tone-danger" : "settings-module-why"}>{reasonOf(row.status)}</p>
-            {row.status.kind === "broken" && <p className="settings-module-why">{t("settings.module.reload")}</p>}
+            {row.status.kind === "broken" && !row.project && <p className="settings-module-why">{t("settings.module.reload")}</p>}
+            {row.project && modules && <LocalActions row={row} modules={modules} onReloaded={() => setEpoch((n) => n + 1)} />}
             {row.status.kind === "blocked" && <>
               <p className="settings-module-why">{t("settings.module.blockedWhy")}</p>
               <TrustAction status={row.status} projects={projects} onTrusted={() => setEpoch((n) => n + 1)} />

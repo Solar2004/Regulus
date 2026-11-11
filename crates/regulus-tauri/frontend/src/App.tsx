@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect } from "react";
 import Titlebar from "@/components/Titlebar";
 import { Button } from "@/components/ui/button";
 import { t, type LocaleKey } from "@/lib/i18n";
+import { guardUnload } from "@/lib/unsaved";
 import { useCodeSettings } from "@/code/settings";
 import { useClientConfig, useClientConfigSync } from "@/core/clientConfig";
 import { useCore, type CoreSource, type CoreStatus } from "@/core/connection";
@@ -62,6 +63,11 @@ export default function App() {
   const labelOf = (id: string, label: LocaleKey) => id === "code" && codeLabel ? codeLabel : t(label);
   const loading = <div role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("graph.loading")}</div>;
   useEffect(() => { connect(); }, [connect]);
+  // Leaving the page asks while any view has unsaved work, whichever view is on screen.
+  useEffect(() => {
+    window.addEventListener("beforeunload", guardUnload);
+    return () => window.removeEventListener("beforeunload", guardUnload);
+  }, []);
   // `[update] check_on_start`: the shell says whether to look; Settings shows what it found.
   useEffect(() => { if (isTauri()) void useUpdates.getState().load(updateApi(invoke), true); }, []);
   useClientConfigSync(useOperateSettings((s) => s.projectId));

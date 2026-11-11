@@ -32,6 +32,23 @@ export interface CanvasSettings {
   deleteKeys: string[];
   /** With Ctrl or Cmd, saves. */
   saveKey: string;
+  /** A code field writes its text to the profile this long after the last keystroke (and at once on blur or save), in ms. */
+  codeCommitMs: number;
+  /** The code editor shows syntax problems this long after the last change, in ms. */
+  codeLintMs: number;
+  /** Lines a code field shows before it scrolls, and at least. */
+  codeMaxLines: number;
+  codeMinLines: number;
+  /** A module source is checked by the core this long after typing pauses, in ms; 0 checks only on save or on request. */
+  sourceCheckMs: number;
+  /** A node's shape is asked for again this long after a field it depends on changes, in ms. */
+  shapeDelayMs: number;
+  /** How long a reload or a new node module may take to start, in ms. */
+  reloadTimeoutMs: number;
+  /** How long a source check or save may take, in ms. */
+  checkTimeoutMs: number;
+  /** Spaces Tab inserts in a module source. */
+  sourceIndent: number;
 }
 
 export const canvasDefaults: CanvasSettings = {
@@ -52,6 +69,15 @@ export const canvasDefaults: CanvasSettings = {
   autosaveMs: 30000,
   deleteKeys: ["Delete", "Backspace"],
   saveKey: "s",
+  codeCommitMs: 400,
+  codeLintMs: 300,
+  codeMaxLines: 18,
+  codeMinLines: 4,
+  sourceCheckMs: 1500,
+  shapeDelayMs: 250,
+  reloadTimeoutMs: 60000,
+  checkTimeoutMs: 15000,
+  sourceIndent: 4,
 };
 
 /** Bounds a saved value must keep; outside them the default is used. */
@@ -67,6 +93,15 @@ export const canvasLimits = {
   nodeHeight: [40, 1200],
   cascadeStep: [4, 400],
   autosaveMs: [2000, 3600000],
+  codeCommitMs: [0, 10000],
+  codeLintMs: [0, 10000],
+  codeMaxLines: [4, 200],
+  codeMinLines: [1, 50],
+  sourceCheckMs: [0, 60000],
+  shapeDelayMs: [0, 5000],
+  reloadTimeoutMs: [1000, 600000],
+  checkTimeoutMs: [1000, 120000],
+  sourceIndent: [1, 8],
 } as const satisfies Partial<Record<keyof CanvasSettings, readonly [number, number]>>;
 
 const GROUPINGS: Grouping[] = ["module", "state", "none"];
@@ -80,6 +115,7 @@ export function sanitizeCanvasSettings(saved: unknown): CanvasSettings {
     if (typeof value === "number" && Number.isFinite(value) && value >= low && value <= high) result[key] = value;
   }
   if (result.minZoom > result.maxZoom) { result.minZoom = canvasDefaults.minZoom; result.maxZoom = canvasDefaults.maxZoom; }
+  if (result.codeMinLines > result.codeMaxLines) { result.codeMinLines = canvasDefaults.codeMinLines; result.codeMaxLines = canvasDefaults.codeMaxLines; }
   for (const key of ["snapToGrid", "autosave"] as const) if (typeof input[key] === "boolean") result[key] = input[key] as boolean;
   if (GROUPINGS.includes(input.paletteGrouping as Grouping)) result.paletteGrouping = input.paletteGrouping as Grouping;
   if (LAYOUT_DIRECTIONS.includes(input.layoutDirection as LayoutDirection)) result.layoutDirection = input.layoutDirection as LayoutDirection;

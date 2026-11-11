@@ -29,14 +29,15 @@ function render(config: Record<string, string> = {}) {
 const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 describe("inspector text areas", () => {
-  test("a code field is a monospaced text area with its language, label, help and the plain-text notice", () => {
+  test("a code field is the code editor with its language, label, help and the editor notice", () => {
     const html = render();
-    expect(html).toMatch(/<textarea[^>]*class="field-textarea code-input"[^>]*aria-label="Source"[^>]*rows="4"[^>]*wrap="off"[^>]*spellCheck="false"[^>]*data-language="python"/);
-    expect(html).toContain("def run(ctx, port, value):\n    return value</textarea>");
+    // Before the editor's code arrives (and in server rendering) the value is shown, busy.
+    expect(html).toMatch(/<div class="code-editor field-code" data-language="python" data-state="loading"><pre class="code-editor-loading" aria-busy="true" aria-label="Source"/);
+    expect(html).toContain("def run(ctx, port, value):\n    return value</pre>");
     expect(html).toContain('<span class="config-label">Source</span><span class="config-id">source</span>');
     expect(html).toContain("code · python");
     expect(html).toContain("Runs once per event");
-    expect(html).toContain(escape(t("editor.field.codePlain")));
+    expect(html).toContain(escape(t("editor.field.codeEditor", { language: "python" })));
     // The default is the text shown; it is not repeated under the box.
     expect(html).not.toContain(`${t("editor.field.default")} <code>def run`);
   });
@@ -44,13 +45,14 @@ describe("inspector text areas", () => {
   test("a multiline text field is a proportional text area without the code notice", () => {
     const html = render();
     expect(html).toMatch(/<textarea[^>]*class="field-textarea"[^>]*aria-label="notes"[^>]*rows="3"[^>]*wrap="soft"/);
-    expect(html.match(new RegExp(escape(t("editor.field.codePlain")).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))).toHaveLength(1);
+    expect(html).not.toContain(escape(t("editor.field.codePlain")));
+    expect(html.match(new RegExp(escape(t("editor.field.codeEditor", { language: "python" })).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))).toHaveLength(1);
   });
 
   test("a plain text field stays a one-line input and the node's own value wins over the default", () => {
     const html = render({ source: "x = 1" });
     expect(html).toMatch(/<input aria-label="path" value="out.md"\/>/);
-    expect(html).toContain(">x = 1</textarea>");
+    expect(html).toContain(">x = 1</pre>");
     // Once the value differs, the default shows again so the user sees what reset gives back.
     expect(html).toContain(`${t("editor.field.default")} <code>def run`);
   });
