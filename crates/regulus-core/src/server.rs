@@ -32,7 +32,7 @@ const TOKEN_BYTES: usize = 32;
 
 impl From<RpcError> for ErrorObjectOwned {
     fn from(error: RpcError) -> Self {
-        ErrorObjectOwned::owned(error.code, error.message, None::<()>)
+        ErrorObjectOwned::owned(error.code, error.message, error.data)
     }
 }
 
@@ -225,6 +225,10 @@ fn methods(core: Arc<Core>) -> Result<RpcModule<Core>, jsonrpsee::server::Regist
         method::TEMPLATE_SAVE,
         method::PROFILE_SAVE,
         method::PROFILE_DELETE,
+        method::PROJECT_RELOAD,
+        method::NODE_INIT,
+        method::SOURCE_SAVE,
+        method::SOURCE_CHECK,
     ];
     for name in method::CORE
         .iter()
@@ -290,4 +294,21 @@ pub async fn start(core: Arc<Core>, config: &ServerConfig, token: &str) -> io::R
     let addr = server.local_addr()?;
     let handle = server.start(methods(core).map_err(io::Error::other)?);
     Ok(Running { addr, handle })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_client_can_act_on_travels_with_the_error() {
+        let error = RpcError::new(regulus_proto::code::SOURCE_CONFLICT, "changed")
+            .with_data(serde_json::json!({ "revision": "abc-1", "path": "tools/x/run.py" }));
+        let wire = serde_json::to_value(ErrorObjectOwned::from(error)).unwrap();
+        assert_eq!(wire["code"], -32015);
+        assert_eq!(wire["data"]["revision"], "abc-1");
+        let plain =
+            serde_json::to_value(ErrorObjectOwned::from(RpcError::new(-32602, "x"))).unwrap();
+        assert!(plain.get("data").is_none(), "{plain}");
+    }
 }

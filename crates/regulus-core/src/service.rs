@@ -1,5 +1,7 @@
 //! What the core answers, independent of the transport.
 
+mod nodes;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,11 +24,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::authoring::AuthoringError;
 use crate::bus::{self, ChildNews, Journal, Listing, News, Pending};
 use crate::config::{BusConfig, CallConfig, HooksConfig, LocalModulesConfig, Resume};
 use crate::graph::{
-    boundary, check_fields, check_profile, check_vetoed, flatten, missing_workflow, start_order,
-    wire_end, End,
+    boundary, check_fields, check_profile, check_shapes, check_vetoed, flatten, missing_workflow,
+    start_order, wire_end, End,
 };
 use crate::module::{ChildMode, ChildOptions, Endpoint, Module, ModuleCtx, ModuleError, NodeRef};
 use crate::process::{LocalSpec, ProcessModule};
@@ -44,6 +47,9 @@ const METHOD_NOT_FOUND: i32 = -32601;
 pub struct RpcError {
     pub code: i32,
     pub message: String,
+    /// What a client can act on, beside the message (1.17): e.g. the executions that keep a
+    /// reload from happening, or the revision a stale save missed.
+    pub data: Option<Value>,
 }
 
 impl RpcError {
@@ -51,7 +57,13 @@ impl RpcError {
         Self {
             code,
             message: message.into(),
+            data: None,
         }
+    }
+
+    pub fn with_data(mut self, data: Value) -> Self {
+        self.data = Some(data);
+        self
     }
 
     pub fn invalid_params(message: impl Into<String>) -> Self {
@@ -102,6 +114,23 @@ impl From<ProjectError> for RpcError {
             ProjectError::Io(_) => code::MODULE_FAILED,
         };
         Self::new(code, error.to_string())
+    }
+}
+
+impl From<AuthoringError> for RpcError {
+    fn from(error: AuthoringError) -> Self {
+        match error {
+            AuthoringError::Invalid(message) => Self::invalid_params(message),
+            AuthoringError::Exists(message) => Self::new(code::SOURCE_CONFLICT, message),
+            AuthoringError::Unavailable(message) => Self::new(code::SOURCE_UNAVAILABLE, message),
+            AuthoringError::Conflict {
+                message,
+                revision,
+                path,
+            } => Self::new(code::SOURCE_CONFLICT, message)
+                .with_data(serde_json::json!({ "revision": revision, "path": path })),
+            AuthoringError::Io(message) => Self::new(code::MODULE_FAILED, message),
+        }
     }
 }
 
@@ -219,6 +248,20 @@ struct CallLink {
 /// Why a local module of a project that is not trusted does not run.
 const UNTRUSTED: &str = "untrusted project: reopen with --trust";
 
+/// What it takes to run `local`, a usable `[[modules.local]]` of `project` with id `id`.
+fn local_spec(project: &Project, id: String, local: &crate::projects::LocalModule) -> LocalSpec {
+    LocalSpec {
+        project_id: project.id.clone(),
+        root: project.root.clone(),
+        id,
+        command: local.command.clone(),
+        cwd: local.cwd.clone(),
+        env: local.env.clone(),
+        version: local.version.clone(),
+        manifest: local.manifest.clone(),
+    }
+}
+
 /// Whether `node` of `workflow` belongs to `module_id`: a module cannot reach a project,
 /// or a state, through a node that is not its own.
 fn own_node(module_id: &str, node: &NodeRef, workflow: &Workflow) -> Result<(), ModuleError> {
@@ -255,6 +298,10 @@ pub struct Core {
     /// `profiles` stays free for readers. Lock order: `recovering`, `executions`, then
     /// `profiles`.
     profile_writes: Mutex<()>,
+    /// Held for a whole `project.reload` (and `node.init`), so two reloads never cross. It
+    /// does not stop anything else: starting candidate processes happens without
+    /// `profile_writes`, which the reload takes only to check and swap.
+    reloads: Mutex<()>,
     /// Where templates are read from and applied ones written (`set_template_places`).
     places: RwLock<Places>,
     /// The open projects. Lock order: `profile_writes`, then `projects`, then `profiles`;
@@ -357,6 +404,7 @@ impl Core {
             registry: Registry::load_with(modules, without, &ModuleCtx::new(core.clone())),
             profiles: RwLock::new(profiles),
             profile_writes: Mutex::default(),
+            reloads: Mutex::default(),
             places: RwLock::default(),
             projects: RwLock::default(),
             project_home: RwLock::default(),
@@ -413,31 +461,7 @@ impl Core {
 
     /// Starts the local modules of one project, unless `--without` leaves them out.
     fn start_locals(&self, project: &Project) {
-        let config = self
-            .local_modules
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let specs: Vec<LocalSpec> = project
-            .file
-            .modules
-            .local
-            .iter()
-            .filter(|local| local.unusable().is_none())
-            .filter_map(|local| {
-                Some(LocalSpec {
-                    project_id: project.id.clone(),
-                    root: project.root.clone(),
-                    id: local.id.clone()?,
-                    command: local.command.clone(),
-                    cwd: local.cwd.clone(),
-                    env: local.env.clone(),
-                    version: local.version.clone(),
-                    manifest: local.manifest.clone(),
-                })
-            })
-            .filter(|spec| !self.registry.excludes(&spec.base_id()))
-            .collect();
+        let specs = self.local_specs(project);
         let trusted = self.is_trusted(&project.root);
         // Decided before anything runs: what may not start never gets a process.
         let mut seen = HashSet::new();
@@ -458,8 +482,30 @@ impl Core {
                 }
             })
             .collect();
+        let started = self.spawn_locals(&specs, presets);
+        self.registry.add_local(&project.id, started);
+    }
+
+    /// What it takes to run each usable `[[modules.local]]` of `project` that `--without`
+    /// does not leave out.
+    fn local_specs(&self, project: &Project) -> Vec<LocalSpec> {
+        project
+            .file
+            .modules
+            .local
+            .iter()
+            .filter(|local| local.unusable().is_none())
+            .filter_map(|local| Some(local_spec(project, local.id.clone()?, local)))
+            .filter(|spec| !self.registry.excludes(&spec.base_id()))
+            .collect()
+    }
+
+    /// Starts the processes of `specs` in parallel, but not those with a preset state (why
+    /// they may not run), which are listed with it and no process.
+    fn spawn_locals(&self, specs: &[LocalSpec], presets: Vec<Option<ModuleState>>) -> Vec<Local> {
+        let config = self.local_config();
         // In parallel: starting them all takes as long as the slowest, not their sum.
-        let started: Vec<Local> = std::thread::scope(|scope| {
+        std::thread::scope(|scope| {
             let spawning: Vec<_> = specs
                 .iter()
                 .zip(presets)
@@ -499,8 +545,15 @@ impl Core {
                     }
                 })
                 .collect()
-        });
-        self.registry.add_local(&project.id, started);
+        })
+    }
+
+    /// `[local_modules]` of `config.toml`.
+    fn local_config(&self) -> LocalModulesConfig {
+        self.local_modules
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Whether `[projects] trusted` of `config.toml` names this folder. Without a home,
@@ -1038,6 +1091,9 @@ impl Core {
     fn check(&self, profile: &Profile) -> Vec<regulus_proto::Diagnostic> {
         let mut found = check_profile(profile, |id| self.registry.is_installed(id));
         found.extend(check_fields(profile, |id| self.registry.manifest(id)));
+        found.extend(check_shapes(profile, |id| {
+            self.registry.declared_manifest(id)
+        }));
         if let Some(project) = self.project_of(profile.project_id.as_deref()) {
             found.extend(check_vetoed(profile, &project.id, |m| project.vetoes(m)));
         }
@@ -1364,6 +1420,13 @@ impl Core {
             method::EVENT_LIST => json(self.events(&parse(params)?)?),
             method::WORKFLOW_SEND => json(self.send(parse(params)?)?),
             method::HOOK_DISPATCH => json(self.hook(parse(params)?)?),
+            method::MODULE_SHAPE => json(self.module_shape(parse(params)?)?),
+            method::PROFILE_SYNC => json(self.sync_profile(parse(params)?)?),
+            method::PROJECT_RELOAD => json(self.reload_project(parse(params)?)?),
+            method::SOURCE_GET => json(self.source_get(parse(params)?)?),
+            method::SOURCE_SAVE => json(self.source_save(parse(params)?)?),
+            method::SOURCE_CHECK => json(self.source_check(parse(params)?)?),
+            method::NODE_INIT => json(self.node_init(parse(params)?)?),
             method::HELLO => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 "hello is answered by the connection",

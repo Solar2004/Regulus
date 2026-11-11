@@ -33,6 +33,28 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   `description`, `language` o `multiline` llegan tal cual a los clientes
   (`module show`, `module.manifest`). El core no las lee y un cliente que no las conoce
   las ignora; no cambia el protocolo.
+- **Recargar un módulo local sin reiniciar el core:** `project.reload`, `regulus project
+  reload [--module] [--stop-executions]` y *Reload* en el panel y en Ajustes → Módulos. El
+  proceso nuevo arranca antes de parar el viejo y, si falla, sigue el viejo. Si una
+  ejecución viva usa el módulo, la recarga se niega (`-32014`) salvo que se pida pararla, y
+  una ejecución nunca pasa a un proceso nuevo; se dicen todas las ejecuciones paradas. Una
+  recarga rechazada para su proceso candidato después de soltar los cerrojos del core, así
+  que un módulo lento en pararse no frena guardar perfiles ni abrir proyectos. Un proyecto
+  sin confianza sigue `blocked`.
+- **Puertos que dependen de la configuración:** `[[node.dynamic_port]]` con `when` y
+  `repeat`, campos `type = "list"` y campos con `when` (se ocultan), `managed_ports`, y en el
+  SDK `then_in/then_out(..., when=, repeat=)`. Una sola función decide los puertos
+  (`module.shape`, `regulus module shape`); la app y el CLI no llevan otra. Un módulo con
+  puertos dinámicos pide `requires_proto = "^1.17"` (el SDK lo pone solo). No están los
+  tipos genéricos (`$T`) ni el mínimo y máximo de puertos.
+- **Puertos viejos y sincronizar:** `profile.check` avisa `node.ports_stale`,
+  `node.type_missing` y `node.shape_problem`; `profile.sync` y `regulus profile sync
+  [--apply] [--drop-wires]` enseñan qué puertos cambian y **qué cables caen, con su
+  motivo**, sin escribir nada. La app lo aplica como un solo cambio con Deshacer, tras
+  confirmar, y no guarda hasta Guardar; una vista previa solo se aplica al mismo borrador
+  para el que se pidió (si cambió, pide otra; si se abrió otro perfil, se descarta). La TUI
+  crea los nodos con la misma forma del core (con sus puertos dinámicos) pero no los
+  resincroniza al editar un campo: para eso, `regulus profile sync`.
 - **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
   ejecución terminada, o de antes de reiniciar el core, se consultan con
   `regulus call` sin arrancar nada; `data.*` acepta también `project`.
@@ -62,6 +84,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   bajo demanda.
 - **Mascota de Regulus Code:** león estelar original definido en una rejilla editable,
   con SVG generado, paleta compartida y expresiones para los clientes.
+
+### Cambiado
+
+- **Protocolo `1.17`** (menor): `module.shape`, `profile.sync`, `project.reload`,
+  `source.get|save|check` y `node.init`; `project.get` devuelve `sources`; los errores
+  JSON-RPC pueden llevar `data`; códigos `-32014` a `-32016`. Un core `1.16` contesta
+  `-32601` a los nuevos y la app esconde esas acciones. Un manifiesto antiguo carga igual.
+- **`[local_modules]` de `config.toml`** gana `python`, `check_timeout_ms` y
+  `max_source_bytes`; los tiempos del editor y de la comprobación son ajustes del
+  dispositivo en la app, no del `config.toml`.
 
 ### Corregido
 
