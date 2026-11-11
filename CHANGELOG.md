@@ -13,6 +13,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
+## [0.2.1] - candidato, sin publicar
+
+El código ya dice **0.2.1** (`[workspace.package]`), pero **no hay tag, firma ni release**:
+los binarios descargables siguen siendo los de 0.2.0 (protocolo `1.16`) y no traen nada de
+esto. La fecha la pone el tag `v0.2.1` cuando Alexander lo publique; la firma es suya.
+
 ### Añadido
 
 - **`regulus node init <proyecto> --id <id>`:** crea `tools/<id>/run.py` con un nodo de
