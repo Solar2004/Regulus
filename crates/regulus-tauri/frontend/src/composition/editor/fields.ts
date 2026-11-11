@@ -5,7 +5,7 @@ import type { ConfigValue, ManifestField } from "../model";
 import { indentUnit } from "./textarea";
 
 /** `code` and `multiline` are plain text areas: no highlighting, parsing or checking. */
-export type Control = "text" | "multiline" | "code" | "number" | "select" | "map" | "workflow" | "raw";
+export type Control = "text" | "multiline" | "code" | "number" | "select" | "map" | "list" | "workflow" | "raw";
 
 export interface FieldRow {
   id: string;
@@ -43,6 +43,7 @@ export function controlFor(field: ManifestField): Control {
   if (field.type === "code") return "code";
   if (field.type === "text") return field.multiline === true ? "multiline" : "text";
   if (field.type === "map") return "map";
+  if (field.type === "list") return "list";
   return "raw";
 }
 
@@ -118,6 +119,12 @@ export function coerce(row: Pick<FieldRow, "control" | "value" | "defaultValue" 
     }
     default: return { ok: true, value: input };
   }
+}
+
+/** The items of a `list` field as text; a value that is not a list shows as one item. */
+export function listItems(value: ConfigValue | undefined): string[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value.map(displayValue) : [displayValue(value)];
 }
 
 /** The rows of a `map` field: each key with its value as text. */

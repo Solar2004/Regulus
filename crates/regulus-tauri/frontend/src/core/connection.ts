@@ -10,9 +10,9 @@ const settings = {
   timeout: 5000,
 };
 
-/** A JSON-RPC error answer: `code` tells a missing module (-32601, -32002) from a refusal. */
+/** A JSON-RPC error answer: `code` tells a missing module (-32601, -32002) from a refusal; `data` is what the core added (protocol 1.17). */
 export class RpcError extends Error {
-  constructor(message: string, readonly code: number) { super(message); }
+  constructor(message: string, readonly code: number, readonly data?: unknown) { super(message); }
 }
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
@@ -40,7 +40,7 @@ export class RpcClient {
         if (!pending) return;
         clearTimeout(pending.timer);
         this.pending.delete(response.id);
-        if (response.error) pending.reject(new RpcError(response.error.message, response.error.code));
+        if (response.error) pending.reject(new RpcError(response.error.message, response.error.code, response.error.data));
         else pending.resolve(response.result);
       } catch { this.close(); }
     });

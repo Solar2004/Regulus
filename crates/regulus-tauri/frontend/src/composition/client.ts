@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useCore, type CoreStatus, type RpcClient } from "@/core/connection";
 import type { Manifest, ModuleDefinition, Profile, ProfileSummary } from "./model";
 import { loadManifests } from "./editor/api";
+import { useAuthoring } from "./authoring/store";
 
 type Loaded = { client: RpcClient; profiles: Profile[]; modules: ModuleDefinition[]; manifests: Manifest[]; failed: boolean };
 
@@ -31,6 +32,20 @@ export function useComposition() {
     void load(client);
     return () => { disposed = true; };
   }, [client, version]);
+
+  // After a reload or a new node module only modules and manifests changed: read those, keep the profiles.
+  const modulesRev = useAuthoring((s) => s.modulesRev);
+  useEffect(() => {
+    if (!client || !modulesRev) return;
+    let disposed = false;
+    Promise.all([
+      client.request<ModuleDefinition[]>("module.list"),
+      loadManifests(client).catch(() => null),
+    ]).then(([modules, manifests]) => {
+      if (!disposed) setLoaded((current) => current && current.client === client ? { ...current, modules, manifests: manifests ?? current.manifests } : current);
+    }, () => { /* the next full read says what is wrong */ });
+    return () => { disposed = true; };
+  }, [client, modulesRev]);
 
   const reload = useCallback(() => setVersion((value) => value + 1), []);
   const current = loaded && loaded.client === client ? loaded : null;

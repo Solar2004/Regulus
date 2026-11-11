@@ -5,7 +5,8 @@ import type { TemplateSaveParams } from "./template";
 
 /** Anything that sends one JSON-RPC request: the shared `RpcClient`, or a test double. */
 export interface Requester {
-  request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
+  /** `timeout` in ms, for methods that wait on a process (reload, a source check). */
+  request<T>(method: string, params?: Record<string, unknown>, timeout?: number): Promise<T>;
 }
 
 export const loadManifests = (rpc: Requester) => rpc.request<Manifest[]>("module.manifest", {});

@@ -1,12 +1,16 @@
 // The one copy of the profile being edited. React Flow nodes and edges are derived from
 // `doc`; its callbacks come back here as the pure changes of `document.ts`.
 import { create } from "zustand";
+import { registerUnsaved } from "@/lib/unsaved";
 import type { Diagnostic, Profile } from "../model";
 import { moveNodes, nodeOf, workflowOf } from "./document";
 import type { Move } from "./layout";
 
-export type Notice = { tone: "info" | "success" | "error"; text: string; detail?: string };
+export type Notice = { tone: "info" | "success" | "error"; text: string; detail?: string; action?: { label: string; run: () => void } };
 export type Selection = { nodes: string[]; wires: string[] };
+
+/** The last port sync, kept so it can be taken back while nothing changed after it. */
+export type Synced = { before: Profile; after: Profile };
 
 /** The last arrangement, kept so one step can be taken back. */
 export type Arrangement = { workflowId: string; moves: Move[] };
@@ -50,6 +54,8 @@ interface EditorState {
   arranged: Arrangement | null;
   /** Grows with each arrangement or undo, so the canvas places the workflow's own ports again. */
   arrangeRev: number;
+  /** The last port sync, while it can still be undone. */
+  synced: Synced | null;
   /** What the last save or check said, for the profile on screen. */
   diagnostics: Diagnostic[];
   notice: Notice | null;
@@ -70,6 +76,10 @@ interface EditorState {
   undoArrange: () => boolean;
   /** Shows a workflow of the profile and selects a node of it; what the profile does not have is left as it is. */
   focus: (at: { workflowId?: string; nodeId?: string }) => void;
+  /** Takes a synced document (one change) and remembers the one before it for `undoSync`. */
+  applySynced: (next: Profile) => void;
+  /** Puts back the document from before the last sync; `false` once something changed after it. */
+  undoSync: () => boolean;
   setDiagnostics: (diagnostics: Diagnostic[]) => void;
   notify: (notice: Notice | null) => void;
   setBusy: (busy: boolean) => void;
@@ -84,12 +94,13 @@ export const useEditor = create<EditorState>()((set, get) => ({
   selection: nothing,
   arranged: null,
   arrangeRev: 0,
+  synced: null,
   diagnostics: [],
   notice: null,
   busy: false,
   open: (profile, isNew = false) => set({
     doc: profile ? structuredClone(profile) : null, isNew, dirty: isNew, workflowId: profile?.main_workflow_id ?? ALL,
-    trail: profile ? [profile.main_workflow_id] : [], selection: nothing, arranged: null, diagnostics: [], notice: null,
+    trail: profile ? [profile.main_workflow_id] : [], selection: nothing, arranged: null, synced: null, diagnostics: [], notice: null,
   }),
   edit: (change) => set((state) => {
     if (!state.doc) return {};
@@ -134,7 +145,19 @@ export const useEditor = create<EditorState>()((set, get) => ({
     const found = nodeId !== undefined && workflow.nodes.some((node) => node.id === nodeId);
     return { ...shown, selection: found ? { nodes: [nodeId], wires: [] } : workflow.id === state.workflowId ? state.selection : nothing };
   }),
+  applySynced: (next) => set((state) => !state.doc || next === state.doc ? {} : { doc: next, dirty: true, synced: { before: state.doc, after: next } }),
+  undoSync: () => {
+    const { synced, doc } = get();
+    if (!synced || doc !== synced.after) { set({ synced: null }); return false; }
+    set({ doc: synced.before, dirty: true, synced: null });
+    return true;
+  },
   setDiagnostics: (diagnostics) => set({ diagnostics }),
   notify: (notice) => set({ notice }),
   setBusy: (busy) => set({ busy }),
 }));
+
+registerUnsaved(() => {
+  const { doc, dirty } = useEditor.getState();
+  return doc && dirty ? doc.name || doc.id : null;
+});

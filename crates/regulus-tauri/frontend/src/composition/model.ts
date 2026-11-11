@@ -83,6 +83,13 @@ export interface ModuleDefinition {
   project?: string;
 }
 
+/** Where each `[[modules.local]]` of a project keeps its editable Python file, or why it has none (`project.get` → `sources`, proto 1.17). */
+export interface ProjectSource {
+  module: string;
+  path: string | null;
+  error: string | null;
+}
+
 /** A field of a node type, as `module.manifest` gives it (TOML names). */
 export interface ManifestField {
   id: string;
@@ -101,13 +108,33 @@ export interface ManifestField {
   description?: string;
   /** What Tab inserts in a `code` field: `"tab"` or a number of spaces (default 4). */
   indent?: number | "tab";
+  /** Shown only while the condition holds; the value is kept when hidden (proto 1.17). */
+  when?: ShapeCondition;
+}
+
+/** When a manifest port or field exists: a field's value equals, is in a list, or is truthy. Only the core reads it (`module.shape`). */
+export interface ShapeCondition {
+  field: string;
+  equals?: ConfigValue;
+  in?: ConfigValue[];
+}
+
+/** A `dynamic_port` of a manifest: a port that exists under a condition, or once per item of a list field. */
+export interface ManifestPort extends Port {
+  when?: ShapeCondition;
+  /** One port per item of this `list` field; `id` and `name` hold `{item}`. */
+  repeat?: string;
 }
 
 export interface ManifestNodeType {
   type: string;
   name: string;
   port?: Port[];
+  /** Ports that depend on the config; only the core resolves them (`module.shape`, proto 1.17). */
+  dynamic_port?: ManifestPort[];
   field?: ManifestField[];
+  /** Every node of this type has exactly the ports `module.shape` gives; a difference is stale (proto 1.17). */
+  managed_ports?: boolean;
 }
 
 export interface Manifest {
@@ -144,4 +171,106 @@ export interface ProfileSummary {
   id: string;
   name: string;
   project_id: string | null;
+}
+
+/** `module.shape`: the concrete ports of a node type for a config, from the core's one resolver (proto 1.17). */
+export interface NodeShape {
+  ports: Port[];
+  hidden_fields: string[];
+  problems: string[];
+}
+
+export interface SyncedNode {
+  workflow_id: string;
+  node_id: string;
+  module_id: string | null;
+  node_type: string;
+  added: Port[];
+  removed: Port[];
+  changed: { before: Port; after: Port }[];
+  wires_removed: { wire: Wire; reason: string }[];
+  problems: string[];
+}
+
+/** `profile.sync`: a preview, never written. */
+export interface ProfileSynced {
+  profile: Profile;
+  drops_wires: boolean;
+  nodes: SyncedNode[];
+}
+
+export type ReloadOutcome = "started" | "replaced" | "kept" | "failed" | "blocked" | "removed" | "skipped";
+
+export interface ReloadedModule {
+  local_id: string;
+  id: string | null;
+  previous: string | null;
+  outcome: ReloadOutcome;
+  state: ModuleState | null;
+  error: string | null;
+  node_types?: { added: string[]; removed: string[]; changed: string[] };
+}
+
+/** `project.reload`. */
+export interface ProjectReloaded {
+  project: ProjectSummary;
+  modules: ReloadedModule[];
+  stopped_executions: string[];
+  stale: { profile_id: string; workflow_id: string; node_id: string }[];
+}
+
+/** The live executions that keep `project.reload` from swapping a module (`-32014`'s `data`). */
+export interface ModuleInUse {
+  executions: { id: string; profile_id: string; workflow_id: string; nodes: string[] }[];
+}
+
+/** `source.get`. */
+export interface SourceFile {
+  project_id: string;
+  module: string;
+  path: string;
+  file: string;
+  language: string;
+  text: string;
+  revision: string;
+}
+
+export interface SourceDiagnostic {
+  severity: "error" | "warning" | "info";
+  code: string;
+  message: string;
+  line: number | null;
+  column: number | null;
+  end_line?: number | null;
+  end_column?: number | null;
+}
+
+/** `source.check` and the check `source.save` returns: read statically, nothing imported or run. */
+export interface SourceCheck {
+  language: string;
+  checked: boolean;
+  interpreter: string | null;
+  diagnostics: SourceDiagnostic[];
+  nodes: ManifestNodeType[];
+  complete: boolean;
+  matches_loaded: boolean | null;
+}
+
+export interface SourceSaved {
+  path: string;
+  file: string;
+  revision: string;
+  check: SourceCheck;
+}
+
+/** `node.init`: a new Python node module in a project. */
+export interface NodeCreated {
+  project_id: string;
+  module_id: string;
+  node_type: string;
+  source: string;
+  files: string[];
+  rewritten: boolean;
+  notes: string[];
+  module: ReloadedModule;
 }

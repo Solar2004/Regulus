@@ -1,6 +1,6 @@
 // What can be added to a workflow: the node types of every manifest, with the state of
 // the module that brings them, and the profile's own workflows as boxes.
-import type { CompositionNode, Manifest, ManifestNodeType, ModuleDefinition, Profile, Workflow } from "../model";
+import type { CompositionNode, Manifest, ManifestNodeType, ModuleDefinition, Port, Profile, Workflow } from "../model";
 import { baseModuleId, uniqueId, type Point } from "./document";
 import { defaultsOf } from "./fields";
 
@@ -72,15 +72,21 @@ export function findNodeType(manifests: Manifest[], key: string): { manifest: Ma
   return null;
 }
 
-/** A node of a manifest type: its ports, its fields' defaults as config, a free id. */
-export function nodeFromType(manifest: Manifest, nodeType: ManifestNodeType, position: Point, taken: Iterable<string>): CompositionNode {
+/**
+ * The ports a node of this type starts with when the core cannot say its shape (an older
+ * core): the manifest's fixed ports; the dynamic ones need the core.
+ */
+export const manifestPorts = (nodeType: ManifestNodeType): Port[] => structuredClone(nodeType.port ?? []);
+
+/** A node of a manifest type: its ports (the core's shape when given), its fields' defaults as config, a free id. */
+export function nodeFromType(manifest: Manifest, nodeType: ManifestNodeType, position: Point, taken: Iterable<string>, ports?: Port[]): CompositionNode {
   return {
     id: uniqueId(nodeType.type, taken),
     type: nodeType.type,
     name: nodeType.name || nodeType.type,
     module_id: manifest.module.id,
     resource: null,
-    ports: structuredClone(nodeType.port ?? []),
+    ports: ports ? structuredClone(ports) : manifestPorts(nodeType),
     config: defaultsOf(nodeType.field),
     position: { x: position.x, y: position.y },
     internal_workflow_id: null,
