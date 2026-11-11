@@ -63,6 +63,9 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
   el de `target/release`, p. ej. con un `build.target` de Cargo); ejemplo en
   `examples/local-modules/rust-stdio/`. El módulo se carga al abrir el proyecto o con
   `project reload`. Sin sandbox y solo `emit` del contexto del módulo.
+- **Las 17 plantillas van en el binario:** `regulus` instala todas las de `templates/` en
+  `<casa>/templates` al primer arranque (cada nombre una vez: lo editado se conserva y lo
+  borrado no vuelve), y un test falla si la carpeta y la lista del binario difieren.
 - **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
   ejecución terminada, o de antes de reiniciar el core, se consultan con
   `regulus call` sin arrancar nada; `data.*` acepta también `project`.

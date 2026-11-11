@@ -10,9 +10,22 @@ use regulus_core::{local, Config};
 const PROGRAM: &str = env!("CARGO_BIN_EXE_regulus");
 /// Templates every host ships (`src/bundled.rs`).
 const SHIPPED: &[&str] = &[
-    "regulus-code",
-    "research-evidence",
+    "best-of-n",
+    "chat-cli",
+    "delegation",
+    "evaluator-optimizer",
+    "greeting",
+    "native-harness",
+    "pxl",
+    "rag-chat",
+    "rag-eval",
     "rag-lab",
+    "ralph",
+    "regulus-code",
+    "research",
+    "research-evidence",
+    "sdd",
+    "team",
     "topic-watch",
 ];
 

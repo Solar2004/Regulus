@@ -8,9 +8,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regulus_core::Config;
 
-/// The templates this host ships, as (file name, text). Add a line here when a template
-/// is added to `templates/`.
+/// The templates this host ships, as (file name, text): every file in `templates/`, so an
+/// installed binary has what the repository has. A test fails when the two drift apart.
 const TEMPLATES: &[(&str, &str)] = &[
+    (
+        "best-of-n.toml",
+        include_str!("../../../templates/best-of-n.toml"),
+    ),
+    (
+        "chat-cli.toml",
+        include_str!("../../../templates/chat-cli.toml"),
+    ),
+    (
+        "delegation.toml",
+        include_str!("../../../templates/delegation.toml"),
+    ),
+    (
+        "evaluator-optimizer.toml",
+        include_str!("../../../templates/evaluator-optimizer.toml"),
+    ),
+    (
+        "greeting.toml",
+        include_str!("../../../templates/greeting.toml"),
+    ),
+    (
+        "native-harness.toml",
+        include_str!("../../../templates/native-harness.toml"),
+    ),
+    ("pxl.toml", include_str!("../../../templates/pxl.toml")),
+    (
+        "rag-chat.toml",
+        include_str!("../../../templates/rag-chat.toml"),
+    ),
+    (
+        "rag-eval.toml",
+        include_str!("../../../templates/rag-eval.toml"),
+    ),
+    (
+        "rag-lab.toml",
+        include_str!("../../../templates/rag-lab.toml"),
+    ),
+    ("ralph.toml", include_str!("../../../templates/ralph.toml")),
     (
         "regulus-code.toml",
         include_str!("../../../templates/regulus-code.toml"),
@@ -20,9 +58,11 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../../templates/research-evidence.toml"),
     ),
     (
-        "rag-lab.toml",
-        include_str!("../../../templates/rag-lab.toml"),
+        "research.toml",
+        include_str!("../../../templates/research.toml"),
     ),
+    ("sdd.toml", include_str!("../../../templates/sdd.toml")),
+    ("team.toml", include_str!("../../../templates/team.toml")),
     (
         "topic-watch.toml",
         include_str!("../../../templates/topic-watch.toml"),
@@ -131,6 +171,31 @@ mod tests {
             2
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Every file of `templates/` is shipped, byte for byte, and nothing else is: a new
+    /// template that is not added to `TEMPLATES` never reaches an installed binary.
+    #[test]
+    fn the_shipped_list_is_exactly_the_templates_folder() {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        let mut on_disk: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".toml"))
+            .collect();
+        on_disk.sort();
+        let shipped: Vec<String> = TEMPLATES.iter().map(|(name, _)| name.to_string()).collect();
+        let mut sorted = shipped.clone();
+        sorted.sort();
+        assert_eq!(sorted, shipped, "keep TEMPLATES sorted");
+        assert_eq!(on_disk, shipped, "TEMPLATES and templates/ differ");
+        for (name, text) in TEMPLATES {
+            assert_eq!(
+                &fs::read_to_string(folder.join(name)).unwrap(),
+                text,
+                "{name}"
+            );
+        }
     }
 
     #[test]
