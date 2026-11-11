@@ -7,11 +7,17 @@ needs the behavior before adding machinery to the core. Read the
 ## Choose the extension path
 
 Use a template when existing nodes already implement the behavior. For a new native
-capability, create a Rust crate under crates/modules. For a project-local extension
-in another language, use the ProcessModule protocol and the
-[Python echo example](../../examples/local-modules/echo/). Local processes run only
-in trusted projects. They do not expose all ModuleCtx operations; check the protocol
-before choosing this route.
+capability, create a Rust crate under crates/modules and register it by hand: there is no
+install command (`regulus module install` is an approved design that has not been built),
+and the crate is only in the `regulus` binary after its line in the CLI's module registry
+and a rebuild. For a project-local extension in another language, write a local module
+that speaks the ProcessModule protocol: `regulus node init` (Python, with the one-file SDK
+in [sdk/python](../../sdk/python/)) or `regulus node init --lang rust` (with the helper in
+[sdk/rust](../../sdk/rust/)) and `regulus node build`; see also the
+[Python echo example](../../examples/local-modules/echo/) and the
+[Rust stdio example](../../examples/local-modules/rust-stdio/). Local processes run only
+in trusted projects, reload without restarting the core (`regulus project reload`) and
+only get `emit` from ModuleCtx; check the protocol before choosing this route.
 
 ## Native module checklist
 

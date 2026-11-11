@@ -3,6 +3,8 @@
 > **v1.0** · 2026-10-05 · Lo vigente del cliente, rescatado de la versión anterior
 > ([`old/04-client.md`](old/04-client.md), modelo antiguo: 8 métodos, agente en el centro).
 > El contrato de métodos actual está en [`composition-preview.md`](composition-preview.md).
+> Revisado el 2026-11-11 (candidato 0.2.1, sin publicar): campos `code` con CodeMirror (§9),
+> módulos locales recargables (§10) y editar nodos propios en la app (§13).
 
 ---
 
@@ -210,6 +212,13 @@ Operar y en la CLI, con las mismas reglas y la lógica pura en un solo sitio
   la app), y cancelar llega a los agentes que emitieron actividad desde el último turno.
   Los comandos `/…` del REPL son fijos, no configurables. Un agente dentro de una caja no
   sale en la lista de *Nodes*; `regulus talk --node caja/agente` sí lo alcanza.
+- **Nodos propios (2026-11-11):** la TUI no edita la fuente de un módulo ni lo recarga (eso
+  es CLI: `regulus node source|save|check`, `project reload`, `profile sync`); no dibuja los
+  campos `code` (sale texto crudo de una línea) ni oculta los campos con `when`. Al
+  crear un nodo usa la misma `regulus_proto::shape::shape` que el core, con los defaults,
+  así que un tipo con puertos dinámicos nace con los suyos; no vuelve a resolverlos si
+  luego se edita un campo que alimenta la forma (para eso, `regulus profile check` y
+  `profile sync`; `18-custom-nodes.md` §2.2).
 
 ---
 
@@ -341,8 +350,10 @@ manifiesto y los defaults de sus campos como `config`); mover, seleccionar vario
 (Supr o botón); cables de salida a entrada solo si coinciden capacidad y tipo (`uses` con
 `uses`, `then` con `then`) y la entrada tiene sitio (`cardinality`), si no se dice por qué;
 el inspector edita nombre, cada campo según su tipo (texto, número, `select`, `map`,
-`workflow`, y desde el 2026-11-10 `code` y texto `multiline` como áreas de texto; lo
-desconocido como texto crudo) con su default y "reset", el workflow interno
+`workflow`, `list` y, desde el 2026-11-10, `code` y texto `multiline`: el `code` con un
+editor de código desde 0.2.1 y el `multiline` como área de texto; lo desconocido como texto
+crudo) con su default y "reset", los campos con `when` ocultos mientras no se cumplan,
+el workflow interno
 (una caja) y, con el workflow elegido, sus puertos propios (`self`). Workflows extra se
 crean y se borran (el principal no). Un nodo de un módulo ausente sale *no instalado* y se
 sigue editando. **Cómo guarda:** un documento único en el cliente (`composition/editor/`,
@@ -357,15 +368,20 @@ autoguardado (apagado, 30 000 ms tras el último cambio), teclas de borrar (`Del
 `Backspace`) y de guardar (`s`). La vista "Todos los workflows" es de solo lectura: pulsar
 un nodo abre su workflow.
 
-**Campos de código y de varias líneas** (2026-11-10, `composition/editor/fields.ts`,
-`textarea.ts`, `Inspector.tsx`). `type = "code"` es un `<textarea>` monoespaciado sin
-ajuste de línea; `type = "text"` con `multiline = true`, uno proporcional que ajusta. Las
-pistas `label`, `description`, `language` e `indent` del manifiesto (`03-modules.md` §1.3)
-dan nombre, ayuda, lenguaje junto al tipo y lo que mete Tab. En un `code`, Tab sangra,
-Shift+Tab quita sangría y **Esc y luego Tab sale del campo**; un aviso debajo dice que no
-hay resaltado ni comprobación. El valor se guarda tal cual se escribe. Probado en Chromium
-contra un core real y medido por tecla: los números (ningún caso entra en 16 ms) y los
-límites (Ctrl+Z no deshace un Tab) están en `18-custom-nodes.md` §4.
+**Campos de código y de varias líneas** (2026-11-10 el área de texto; 2026-11-11 el editor,
+`composition/editor/fields.ts`, `Inspector.tsx`, `components/code/`). `type = "code"` se edita
+con **CodeMirror 6**, cargado solo al abrir un campo `code` o una fuente de módulo (si el
+trozo no carga, vuelve el `<textarea>` de antes); `type = "text"` con `multiline = true` sigue
+siendo un área de texto proporcional que ajusta. Las pistas `label`, `description`, `language`
+e `indent` del manifiesto (`03-modules.md` §1.3) dan nombre, ayuda, lenguaje junto al tipo y
+lo que mete Tab. El editor resalta Python y marca los errores de sintaxis sin ejecutar nada.
+**El texto vive en el editor** (borrador local, sin rehacer el grafo en cada tecla) y se
+entrega al perfil tras una pausa, al perder el foco o al vaciar: Guardar, Comprobar,
+Ejecutar, cambiar de perfil y aplicar una plantilla vacían primero. La primera tecla ya marca
+el perfil como sin guardar. Deshacer/rehacer son los del editor; en un `code`, Tab sangra,
+Shift+Tab quita sangría y **Esc y luego Tab sale del campo**. Probado en Chromium contra un
+core real y medido por tecla: los números (el objetivo de 16 ms **no** se cumple en el p90)
+y los límites están en `18-custom-nodes.md` §4; no se repiten aquí.
 
 **Cajas en el canvas** (2026-11-09, `composition/editor/document.ts`, funciones puras con
 tests):
@@ -414,8 +430,10 @@ pura en `logic.ts` con tests, componentes aparte). Ningún método nuevo en el c
 - **Módulos.** `module.list` con el estado de primer nivel (§3) de cada uno, icono y tono
   de `08-design-system.md`, y la razón: *desactivado* dice qué entrada falta, *roto* la
   razón del core, *incompatible* el protocolo que pide, *sin usar* es `idle` con
-  `last_used` vacío. Primero lo que no funciona. Recargar no: el core no tiene
-  `module.reload`; un módulo roto pide reiniciar el core. **Bloqueado** (2026-11-08): un
+  `last_used` vacío. Primero lo que no funciona. **Recargar** (desde 0.2.1, protocolo 1.17):
+  los módulos **locales** de un proyecto tienen el botón *Reload module* (`project.reload`,
+  §13) y *Edit source*; un módulo enlazado roto sigue pidiendo reiniciar el core.
+  **Bloqueado** (2026-11-08): un
   módulo local de un proyecto sin confianza sale con su propio estado (`ShieldOff`, aviso),
   la razón del core y el botón **Trust <proyecto>**, que llama a `project.trust` con la
   carpeta que `project.list` da para el `project` de la entrada (protocolo 1.15); al
@@ -537,3 +555,43 @@ status_fields = ["root", "model", "branch", "state", "session"]
 side_panel = false
 setup = "needed"
 ```
+
+---
+
+## 13. Nodos propios en la app (2026-11-11)
+
+✅ **Hecho** en el árbol de trabajo (candidato 0.2.1, **sin publicar**; el binario 0.2.0 habla
+el protocolo 1.16 y no lo trae). Detalle del contrato, de la comprobación sin ejecutar y de
+lo medido en [`18-custom-nodes.md`](18-custom-nodes.md); aquí, lo que hace el cliente
+(`src/composition/authoring/`, `src/components/code/`, `src/settings/ModuleSettings.tsx`).
+Ningún método es exclusivo de la app: cada acción tiene su comando de CLI (principio 5).
+
+| Qué | Cómo |
+|---|---|
+| **Nodo nuevo** | Botón *New Python node* de la paleta → `node.init` en un proyecto abierto (`project.list`; el diálogo enseña la regla del id y los errores por código: `-32015` ya existe, `-32010` el proyecto no está abierto, `-32601` core antiguo). Sin proyectos (un hogar nuevo), o con *Open a project folder…*, abre una carpeta por su ruta (`project.open`, sin confiar; a una carpeta sin `regulus.toml` se le escribe uno) y la elige. Abre su fuente y refresca paleta y manifiestos |
+| **Panel de fuente** | Junto al canvas, para el `.py` de **un** módulo local (`source.get`): editar, *Check* (`source.check`, sola tras `sourceCheckMs`), *Save* (`source.save` con la revisión leída), *Save & reload*, la lista de nodos leída de forma estática y «recarga para aplicar» si no coincide con el módulo cargado. `Ctrl/Cmd+S` dentro del editor guarda el **fichero**, no el perfil. Un fichero cambiado fuera da un aviso con *cargar el suyo*, *sobrescribir* o *seguir editando*. Un proyecto sin confianza muestra el módulo `blocked` y la acción *Trust project*. El borrador sin guardar se conserva al cambiar de vista; pedir otra fuente, cerrar el panel, recargar la página o cerrar la ventana con él pendiente pregunta antes (`18-custom-nodes.md` §4.2) |
+| **Recargar** | *Reload* en el panel y en Ajustes → Módulos (para un módulo local; ahí también *Edit source*). Con ejecuciones vivas (`-32014`) un diálogo las lista: *mantener* (no cambia nada) o *parar N y recargar* (`stop_executions`). El resultado de cada módulo se dice con palabras (reemplazado, se queda el anterior, bloqueado…) y las ejecuciones paradas. Solo se releen módulos y manifiestos; los borradores no se tocan |
+| **Forma y variantes** | Solo `module.shape` resuelve puertos (el cliente no lleva otro resolutor). La paleta añade un tipo con puertos dinámicos con la forma del core; el inspector oculta los `hidden_fields`, enseña los problemas de forma y, si los puertos del nodo no son los de su forma, un aviso con *Review* |
+| **Sincronizar** | `profile.sync` sobre el borrador sin guardar, nunca escribe. Un diálogo lista puertos añadidos, quitados y cambiados y **cada cable que cae con su motivo**; el botón es destructivo si cae alguno. Aplicar es un solo cambio del documento con Deshacer; nada se guarda hasta Guardar. Una vista previa solo se aplica sobre el documento para el que se pidió: si ya es otro perfil se descarta, y si el documento cambió desde entonces se pide una nueva. Sincroniza sola solo cuando el usuario edita un campo del que depende la forma **y** no cae ningún cable; tras abrir un perfil o recargar espera a *Review* |
+| **Core antiguo** | `-32601` → mensajes claros; sin *Edit source* ni aviso de forma; *New Python node* dice que necesita 1.17. Sin errores de consola (comprobado contra un core 0.2.0) |
+
+**Ajustes del dispositivo** (botón de ajustes del canvas, con los de §9; nada va a
+`config.toml`):
+
+| Clave | Por defecto | Rango | Qué |
+|---|---|---|---|
+| `codeCommitMs` | `400` | 0-10000 | pausa tras la que un campo `code` entrega su texto al perfil (al instante al perder el foco o al guardar) |
+| `codeLintMs` | `300` | 0-10000 | pausa tras la que el editor marca la sintaxis |
+| `codeMinLines` · `codeMaxLines` | `4` · `18` | 1-50 · 4-200 | altura de un campo `code` antes de desplazarse |
+| `sourceCheckMs` | `1500` | 0-60000 | pausa tras la que se pide `source.check`; `0` = solo a petición o al guardar |
+| `shapeDelayMs` | `250` | 0-5000 | pausa tras cambiar un campo que alimenta la forma, antes de pedir `module.shape` |
+| `reloadTimeoutMs` | `60000` | 1000-600000 | cuánto puede tardar una recarga o un nodo nuevo |
+| `checkTimeoutMs` | `15000` | 1000-120000 | cuánto puede tardar comprobar o guardar una fuente |
+| `sourceIndent` | `4` | 1-8 | espacios que mete Tab en una fuente |
+
+**Lo que no hace, dicho sin adornos:** no abre un editor externo, no enseña el stderr de un
+módulo que corre (sí el motivo de un fallo de arranque o de recarga), no avisa de un
+`{{nombre}}` sin declarar, no es un IDE (un fichero por módulo, sin árbol ni git) y no edita
+Rust. La TUI no tiene nada de esto (§7). **Rendimiento:** el objetivo de 16 ms por tecla
+**no se cumple en el p90**; los números medidos están en
+[`18-custom-nodes.md` §4.3](18-custom-nodes.md#43-probado-y-medido).

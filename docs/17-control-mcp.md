@@ -87,7 +87,10 @@ arrancarlo con `workflow_start` y leer lo que emite con `event_list`. Y como el 
 Lo que sí es verdad:
 
 - No hay `call` genérico, ni `secret.*`, `hook.*`, `profile.delete`, `template.save`,
-  `project.open` ni `project.trust`: ninguna herramienta los alcanza directamente.
+  `project.open` ni `project.trust`: ninguna herramienta los alcanza directamente. Tampoco
+  los métodos de autoría del protocolo 1.17 (`source.get|save|check`, `node.init`,
+  `project.reload`, `module.shape`, `profile.sync`): la tabla de herramientas es fija, así
+  que ninguno esquiva `--read-only` ni `--deny-module`.
 - **Confiar en el código de un proyecto es decisión de la persona** (`03-modules.md` §6):
   un módulo local de un proyecto sin confianza sale `blocked` y no arranca.
 - `template_get`/`template_apply` aceptan **nombres**, no rutas.
@@ -190,7 +193,8 @@ texto); las anotaciones son solo pistas.
 
 ## 10. Plantillas que se siembran
 
-`regulus serve` copia `regulus-code`, `research-evidence`, `rag-lab` y `topic-watch` a
+`regulus serve` copia las 17 plantillas de `templates/` que lleva el binario (la lista de
+`crates/regulus-cli/src/bundled.rs`, que un test compara con la carpeta) a
 `<home>/templates` como ficheros normales, **solo con el catálogo por defecto**. Cada nombre
 se siembra **una vez**: queda anotado en `<home>/templates/.regulus-seeded`, así que una
 plantilla que borras no vuelve, y una que editas no se pisa. **Las actualizaciones de una

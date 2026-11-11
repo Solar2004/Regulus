@@ -272,7 +272,12 @@ file = { description = "...", default = "greeting.txt" }
   Un hueco sin declarar, una var sin valor ni default o un `--set` que no existe son error.
   Para dejar el `{{input}}` de un módulo: `input = { default = "{{input}}" }`.
 - **Dónde:** `[templates] paths` (por defecto `<home>/templates`), leídas solo al pedirlas;
-  las del repo, en `templates/`. `apply` acepta también una ruta.
+  las del repo, en `templates/`. `apply` acepta también una ruta. **El binario trae las 17
+  de `templates/`** (candidato 0.2.1, sin publicar) y las instala en `<home>/templates` al
+  primer arranque: cada nombre una sola vez, así que lo editado se conserva y lo borrado no
+  vuelve. Un test falla si `templates/` y la lista del binario difieren. El binario
+  publicado 0.2.0 no embebe ninguna plantilla (están en el repo); en el árbol de trabajo
+  anterior a este candidato se embebían cuatro.
 - **Aplicar** comprueba `requires` contra el registro (id y versión del manifiesto) y
   `profile.check` (un error no escribe; los avisos vuelven como `diagnostics`), y escribe
   `<id>.toml` en la primera ruta de `[profiles] paths`, cargado sin reiniciar. Nunca pisa
@@ -372,13 +377,14 @@ El marketplace es de **módulos hechos para Regulus**, plantillas y recursos. Co
 con la doctrina Predator: el código ajeno se reescribe como módulo de Regulus, y eso es lo
 que se instala.
 
-**Instalar** (los módulos son crates in-process, decisión #2):
+**Instalar.** Los módulos de serie son crates in-process (decisión #2); los de un
+proyecto, procesos (§13). Tres opciones y en qué estado está cada una (2026-11-11):
 
-| Opción | Qué es instalar | Coste |
+| Opción | Qué es instalar | Estado |
 |---|---|---|
-| **A. Recompilar automático** (recomendada v1) | `regulus module install X` añade el crate y recompila | Segundos-minutos. Cero diseño nuevo |
-| B. Librerías dinámicas | Cargar un `.so` en caliente | ABI de Rust inestable; complica la ablación |
-| C. `ProcessModule` | Proceso aparte por stdio | IPC; pero aísla módulos de terceros sin revisar |
+| **A. Recompilar automático** (recomendada v1; decisión #10) | `regulus module install X` añadiría el crate, escribiría su línea en `modules.rs` y recompilaría | ✅ **aprobado en el diseño**, ⏳ **no construido**: ni el comando ni un método `module.install` existen (el CLI solo tiene `module ls\|show\|shape`). Hoy se hace a mano: el crate en el workspace y en `regulus-cli`, su línea en `crates/regulus-cli/src/modules.rs` y recompilar (`03-modules.md` §5). No es un gestor de paquetes y no se sustituye por uno |
+| B. Librerías dinámicas | Cargar un `.so` en caliente | Descartado: ABI de Rust inestable; complica la ablación |
+| C. `ProcessModule` | Proceso aparte por stdio | ✅ **construido** (`[[modules.local]]`, §13): `regulus node init` (Python con el SDK, o `--lang rust` más `regulus node build`), `regulus project reload` para cargar el cambio sin reiniciar el core. IPC; aísla módulos de terceros sin revisar solo por la confianza del proyecto, no hay sandbox |
 
 **Barato, se hace ya:** ids `autor/módulo@versión`; plantillas con `requires` versionado;
 ficheros autocontenidos. **No se hace todavía:** índice remoto, descarga, firma.
@@ -505,7 +511,8 @@ un proyecto aplicada sin `project_id` cae en su proyecto, no en el global. (3) E
 `regulus.toml` se relee si cambió (se mira su fecha en cada llamada): el veto y los avisos
 siguen al fichero sin reabrir; una versión que falta, no se lee, no es TOML o trae una clave
 de tipo equivocado no sustituye a la última buena (el veto no cae por una errata) y se avisa;
-cambiar el id o las carpetas de perfiles pide cerrar y abrir. `profiles` y `templates` solo
+cambiar el id o las carpetas de perfiles pide cerrar y abrir (los módulos locales, no: se
+recargan con `project.reload`, abajo). `profiles` y `templates` solo
 aceptan rutas dentro de la carpeta: absolutas, con `..` o enlaces que salen se ignoran con aviso.
 (4) Una ejecución que se reanuda tras reiniciar el core no pasa el veto: corre la copia que
 tenía.
@@ -518,7 +525,14 @@ Protocolo, estados, límites y `[local_modules]` de `config.toml` en
 con el proyecto abierto, en paralelo. `module ls` y `module.manifest` lo dan como
 `<proyecto>/<id>@<versión>`. Lo vetan `disable`/`enable` y `--without <proyecto>/<id>`, y
 `project.close` lo para: `stop`, luego SIGTERM y SIGKILL pasado `stop_grace_ms`. Si no
-arranca o muere, queda `broken` con su stderr. No se añadió un estado `error`: es el
+arranca o muere, queda `broken` con su stderr.
+**Recarga y autoría** (2026-11-11, protocolo 1.17, candidato 0.2.1): `project.reload`
+(`regulus project reload [--module <id>] [--stop-executions]`) aplica los cambios de
+`[[modules.local]]` y del código de un módulo con el proyecto abierto: lo que cambia es el
+proceso, de forma transaccional (el nuevo arranca antes de parar el viejo; si falla, sigue
+el viejo) y nunca bajo una ejecución viva sin que se pida pararla. Qué es editable: solo el
+`.py` de cada entrada (`source.get|save|check`), sin ejecutarlo; los perfiles del proyecto
+y su id no se recargan. Detalle en [`18-custom-nodes.md`](18-custom-nodes.md) §2. No se añadió un estado `error`: es el
 `Broken` de §3. Ejemplo en `examples/local-modules/echo/` (Python, solo la biblioteca
 estándar) y tests en `crates/regulus-cli/tests/local_modules.rs`.
 **Confianza** (revisión del mismo día): solo arrancan los módulos locales de una carpeta que

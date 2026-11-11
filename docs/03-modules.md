@@ -2,6 +2,8 @@
 
 > **v0.4** · 2026-10-05 · aplica el modelo de composición
 > ([`11-composition.md`](11-composition.md)): un módulo trae nodos y su workflow interno.
+> Revisado el 2026-11-11 (candidato 0.2.1, sin publicar): cómo se añade de verdad un módulo
+> (§2.2, §5), recarga de módulos locales y su forma (§6).
 > El contrato que todo módulo cumple. Lee [`plan.md` §4.1](plan.md) (doctrina
 > Predator) y [`02-architecture.md` §1](02-architecture.md) (los dos límites) primero.
 
@@ -96,8 +98,23 @@ se enchufa sin que la UI lo conozca por nombre se decide cuando el primero lo pi
 [`18-custom-nodes.md`](18-custom-nodes.md) §4): un campo puede llevar más claves que `id`,
 `type`, `default`, `options` y `own_ports`. `Field.extra` las guarda y las devuelve tal
 cual, planas; el core no las lee. La app usa `label`, `description`, `language`, `indent`
-y `multiline`, y el tipo `code` (un área de texto monoespaciada, no un editor). Un cliente
-que no conoce una clave la ignora: es un cambio opcional y no sube el protocolo (§1).
+y `multiline`, y el tipo `code` (un editor de código, CodeMirror; `multiline` sigue siendo
+un área de texto). Un cliente que no conoce una clave la ignora: es un cambio opcional y no
+sube el protocolo (§1).
+
+**Puertos y campos que dependen de la config** (2026-11-11, protocolo 1.17, lo pidieron las
+variantes de los nodos propios, [`18-custom-nodes.md`](18-custom-nodes.md) §2.2). Todo es
+opcional y un manifiesto antiguo carga igual:
+
+| Dónde | Clave | Qué |
+|---|---|---|
+| `[[node]]` | `managed_ports = true` | todo nodo de este tipo tiene exactamente los puertos que da su forma; una diferencia está «vieja» (`node.ports_stale` en `profile.check`). Los módulos enlazados no lo ponen |
+| `[[node.dynamic_port]]` | las de `[[node.port]]` más `when` y/o `repeat` | un puerto que existe según la config. `[[node.port]]` no cambia |
+| `[[node.field]]` | `when = { field = …, equals = … }` (o `in = […]`) | el campo se oculta si no se cumple (su valor se conserva); la misma condición vale para un puerto |
+| `[[node.field]]` | `type = "list"` | lista de texto; `repeat = "<campo>"` en un puerto dinámico da uno por elemento |
+
+Los puertos de un nodo los decide **una sola función**, `regulus_proto::shape::shape`, que
+el core expone como `module.shape`; ningún cliente lleva otro resolutor.
 
 ---
 
@@ -231,9 +248,17 @@ Los cables "luego" no ordenan el arranque: lo que un nodo emite al arrancar se e
 cuando toda la ejecución corre (`02-architecture.md` §6).
 
 ✅ **DECIDIDO** (#10, 2026-10-17) — Registro **a mano**: una línea por módulo en
-`crates/regulus-cli/src/modules.rs`. Instalar es **recompilar automático** (`11` §10):
-`regulus module install X` añade el crate y escribe esa línea. `inventory` y `linkme`
-quedan descartados porque pelean con la ablación (§4).
+`crates/regulus-cli/src/modules.rs`. `inventory` y `linkme` quedan descartados porque
+pelean con la ablación (§4). **Construido:** la línea a mano (§5), más el crate en el
+workspace y en `regulus-cli`, y recompilar el binario `regulus`.
+
+⏳ **Aprobado en el diseño, no construido:** que instalar sea «recompilar automático»
+(`11-composition.md` §10): un comando `regulus module install X` que añada el crate y
+escriba esa línea. **Ese comando no existe** (el CLI solo tiene `module ls|show|shape`) ni
+hay método `module.install` en el core; nadie debe invocarlo ni darlo por hecho. Cuando se
+construya, será la automatización de esos tres pasos, no un gestor de paquetes. Lo que sí
+existe para añadir un módulo sin tocar el binario es el módulo local por stdio (§6):
+Python con el SDK o Rust, que se carga con el proyecto y se recarga sin reiniciar el core.
 
 ---
 
@@ -304,8 +329,15 @@ El camino completo, que es lo que la métrica norte mide (objetivo: menos de una
 1. `cargo new --lib crates/modules/<id>`
 2. Escribir `regulus-module.toml`: sus nodos, sus puertos y sus campos
 3. Implementar `Module` (cuatro métodos)
-4. Registrarlo: una línea en `crates/regulus-cli/src/modules.rs` (decisión #10)
-5. `regulus module ls` lo muestra · `regulus serve --without <id>` sigue arrancando
+4. Registrarlo **a mano**: una línea en `crates/regulus-cli/src/modules.rs`, el crate en
+   `members` del `Cargo.toml` raíz y su dependencia en el de `regulus-cli` (decisión #10).
+   No hay comando que lo haga (§2.2)
+5. Recompilar `regulus-cli`: `cargo build -p <crate>` compila el crate **solo**, pero no lo
+   mete en el binario hasta el paso 4
+6. `regulus module ls` lo muestra · `regulus serve --without <id>` sigue arrancando
+
+Un módulo que no necesita todo `ModuleCtx` no hace falta que sea un crate: se escribe como
+módulo local (§6), sin recompilar nada.
 
 **Si el paso 3 requiere tocar `regulus-core`, el contrato está mal.** Ese es el criterio
 de aceptación de v1.
@@ -354,11 +386,21 @@ Una línea por mensaje, como viajan (`→` del core al proceso, `←` del proces
 **SDK de Python** (2026-11-10): `sdk/python/regulus.py`, solo biblioteca estándar, habla
 este protocolo por el autor del nodo (un decorador por tipo de nodo y `ctx.emit`), y
 `regulus node init <proyecto> --id <id>` genera el módulo y su entrada en `regulus.toml`
-sin confiar en el proyecto. Detalle, límites y lo medido en
+sin confiar en el proyecto. **Rust** (2026-11-11, candidato 0.2.1): `regulus node init
+--lang rust` genera un crate con un ayudante de un fichero y `regulus node build` lo
+compila (el ayudante está en `sdk/rust/`, junto a `sdk/python/`); no es un crate enlazado
+en el binario. Los tres caminos para añadir un módulo
+(estático, local por stdio, SDK de Python) están en
+[`18-custom-nodes.md`](18-custom-nodes.md) §6. Detalle, límites y lo medido en
 [`18-custom-nodes.md`](18-custom-nodes.md).
 
 El manifiesto pasa por el mismo código que uno enlazado: el mismo `Manifest`, la misma
-comprobación de `requires_proto` y la misma de id repetido. **El id lo pone el core:**
+comprobación de `requires_proto` y la misma de id repetido. Desde el protocolo **1.17**
+también pasa `regulus_proto::shape::validate` (ids de puerto o campo repetidos, `repeat` o
+`when` que nombran un campo que no existe, etc.; `18-custom-nodes.md` §2.2): si falla, el
+módulo queda `broken` con esos mensajes. Un manifiesto con `[[node.dynamic_port]]` (puertos
+que dependen de la config) tiene que decir `requires_proto = "^1.17"`: un core 1.16 los
+descartaría en silencio, así que lo deja `incompatible`. **El id lo pone el core:**
 `<proyecto>/<id>@<versión>`, con la versión de `regulus.toml`, si no la que el manifiesto
 dice tras `@`, y si no `0.0.0`. Así el veto (`disable = ["<proyecto>/<id>"]`), `--without`
 y los perfiles (`module_id = "<proyecto>/<id>"`) lo nombran como a cualquiera.
@@ -407,7 +449,19 @@ trata SIGTERM como Ctrl-C: se para limpio y para a sus módulos locales.
   un proyecto se arrancan **en paralelo**: el core espera al más lento, no la suma. Con el
   ejemplo en Python el core pasó de 37 ms a 80 ms (build debug, 2026-11-08), dentro del
   presupuesto de 200 ms.
-- Cambiar `[[modules.local]]` con el proyecto abierto exige cerrarlo y volver a abrirlo.
+- **Recargar** (desde el protocolo 1.17): cambiar `[[modules.local]]` o el código de un
+  módulo con el proyecto abierto se aplica con `project.reload { id, module?,
+  stop_executions? }` (`regulus project reload`), sin cerrar el proyecto ni reiniciar el
+  core. Por módulo y de forma transaccional: el proceso nuevo arranca, dice su manifiesto
+  y responde `start` **antes** de que se cambie el registro y se pare el viejo; si falla, el
+  viejo sigue y el resultado dice por qué. Las entradas nuevas arrancan y las quitadas se
+  paran. Una ejecución viva que usa el módulo impide la recarga (`-32014`
+  `MODULE_IN_USE`, con las ejecuciones en `data`) salvo `stop_executions`; una ejecución
+  nunca pasa de un proceso viejo a uno nuevo. Un proyecto sin confianza queda `blocked`.
+  Cambiar el id del proyecto o las carpetas de perfiles sigue pidiendo cerrar y abrir.
+  Detalle en [`18-custom-nodes.md`](18-custom-nodes.md) §2.4.
+- **Editar la fuente** de un módulo local (`source.get|save|check`, `node.init`) no ejecuta
+  nada del proyecto: `18-custom-nodes.md` §2.3.
 - Mientras su proyecto está abierto, lo puede usar cualquier perfil, no solo los del
   proyecto. Restringirlo sería cerrar una puerta que nadie pidió cerrar.
 - Una ejecución que lo usa cuando el proyecto se cierra sigue con su copia del workflow.
@@ -423,6 +477,9 @@ trata SIGTERM como Ctrl-C: se para limpio y para a sus módulos locales.
 | `stderr_lines` | `20` | líneas de stderr que se guardan para decir por qué se rompió |
 | `max_line_bytes` | `16777216` | la línea más larga que puede escribir (16 MiB) |
 | `env_passthrough` | `["PATH", "HOME", "LANG", "TERM"]` | las variables del entorno del core que le llegan |
+| `python` | `"python3"` | *(1.17)* el intérprete **del anfitrión** con el que `source.check` comprueba una fuente sin ejecutarla, y el programa por defecto de las entradas que escribe `node.init`. Nunca se usa el `command` del proyecto |
+| `check_timeout_ms` | `5000` | *(1.17)* cuándo se mata la comprobación de una fuente |
+| `max_source_bytes` | `1048576` | *(1.17)* el tope de una fuente al leerla, guardarla y comprobarla (1 MiB) |
 
 Ablación: la matriz (§4) tiene una fila para el módulo local. Quitar cualquier módulo
 enlazado lo deja usable, y quitarlo a él (`--without <proyecto>/<id>`) deja el resto igual

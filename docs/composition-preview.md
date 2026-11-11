@@ -53,8 +53,28 @@ negociar un major compatible.
 | `config.client` *(1.13)* | `project_id?` | `client`: el `[client]` de `config.toml` tal como está escrito, con el del proyecto encima clave a clave (las tablas como `keys` y `tui`, también clave a clave; lo desconocido pasa tal cual); `sources`: de qué fichero sale cada valor (`config.toml` o `regulus.toml`, por `clave` o `tabla.clave`); `warnings`: las claves de `[client]` que el core no conoce. Proyecto que no está abierto: `-32010`. Detalle en [`04-client.md`](04-client.md) §11 |
 | `execution.tree` *(1.16)* | `execution_id` | `{ execution, children: [{ execution, children }] }`: la ejecución y sus hijas a cualquier profundidad, en orden de arranque, de lo que da `execution.list`. Cada `Execution` lleva `parent?`, `caller?` (el nodo del padre que la arrancó) y `tag?` *(1.16)*. Id desconocido: `-32602` |
 | `template.save` *(1.16)* | `name`, `description?`, `profile_id`, `workflow_id?`, `vars?` (`{nombre: {description, default?}}`), `path?`, `force?` | `path`: el fichero escrito. Entrada mala (nombre, perfil o workflow desconocido, hueco sin declarar): `-32005`; fichero existente sin `force`, o que no es plantilla: `-32007`. Detalle en [`11-composition.md`](11-composition.md) §7 |
+| `module.shape` *(1.17)* | `module_id` (con o sin versión), `type`, `config?` | `ports` (concretos: los fijos y luego los dinámicos en el orden del manifiesto; un puerto sin nombre toma su id), `hidden_fields` (campos con `when` que no se cumple) y `problems`. Módulo o tipo desconocido: `-32602`. Puro y rápido, sin E/S; **es el único resolutor de puertos** (la app y el CLI lo piden, ninguno lleva otro). Funciona con el módulo en cualquier estado |
+| `profile.sync` *(1.17)* | `profile_id?` o `profile?` (gana el segundo, para un documento sin guardar), `workflow_id?`, `node_ids?` | **Vista previa, no escribe**: `profile` (con los puertos sincronizados y sin los cables que caen), `drops_wires` y `nodes[]` con `workflow_id`, `node_id`, `module_id`, `node_type`, `added`, `removed`, `changed` (`before`/`after`), `wires_removed` (`wire` y `reason`) y `problems`. Sin `node_ids`, los nodos de tipos `managed_ports` con puertos viejos; con ellos, esos nodos |
+| `project.reload` *(1.17)* | `id`, `module?`, `stop_executions?` | `project`, `modules[]` (`local_id`, `id`, `previous`, `outcome`, `state`, `error`, `node_types` con `added`/`removed`/`changed`), `stopped_executions` y `stale` (nodos de perfiles cargados con `node.ports_stale`). `outcome`: `started` · `replaced` · `kept` · `failed` · `blocked` · `removed` · `skipped`. Con ejecuciones vivas que usan el módulo y sin `stop_executions`: `-32014`, con `data.executions` |
+| `source.get` *(1.17)* | `project_id`, `module` | `path` (relativo al proyecto), `file`, `language`, `text` y `revision` (opaca). Solo el `.py` de un `[[modules.local]]`; no ejecuta nada ni pide confianza. Sin fichero editable: `-32016` |
+| `source.save` *(1.17)* | `project_id`, `module`, `text`, `revision` (`null` = «espero que no haya fichero»), `force?` | `path`, `file`, `revision` y `check` (`SourceCheck`). Revisión distinta de la actual sin `force`: `-32015` con `data.revision` y nada escrito. Escribe de forma atómica; **no recarga** |
+| `source.check` *(1.17)* | `project_id`, `module`, `text?` | `SourceCheck`: `language`, `checked`, `interpreter`, `diagnostics` (`severity`, `code`, `message`, `line`, `column`, `end_line`, `end_column`; desde 1, en puntos de código), `nodes`, `complete`, `matches_loaded`. Comprueba el texto o el fichero **sin ejecutar nada del proyecto** (`18-custom-nodes.md` §2.3) |
+| `node.init` *(1.17)* | `project_id`, `id`, `python?` | `module_id`, `node_type`, `source`, `files`, `rewritten`, `notes` y `module` (un resultado de `project.reload`). El mismo escritor que `regulus node init`; nunca sobrescribe (`-32015`) |
 
-El core real (`regulus serve`) habla el protocolo `1.16`, compatible con el `1.0` del mock.
+El core real (`regulus serve`) del árbol de trabajo (candidato 0.2.1, sin publicar) habla el
+protocolo `1.17`; el publicado 0.2.0, el `1.16`. Ambos son compatibles con el `1.0` del
+mock, que **no** contesta los métodos de `1.17` (`-32601`): la app los detecta y esconde
+esas acciones, y se prueban contra un core real (`authoring/live.test.ts`).
+Desde `1.17` (nodos propios, [`18-custom-nodes.md`](18-custom-nodes.md) §2) hay forma de
+nodo (`module.shape`), recarga de módulos locales (`project.reload`), edición y comprobación
+de su fuente (`source.*`), `node.init` y vista previa de sincronización (`profile.sync`);
+`project.get` devuelve además `sources` (por cada `[[modules.local]]` con id, dónde está su
+fichero editable o por qué no tiene), `profile.check` añade tres avisos (`node.ports_stale`,
+`node.type_missing`, `node.shape_problem`), los errores pueden llevar `data` y el
+manifiesto gana `managed_ports`, `dynamic_port` (`when`, `repeat`), `when` en los campos y el
+tipo de campo `list`; un manifiesto antiguo carga igual. Un módulo con `dynamic_port` pide
+`requires_proto = "^1.17"`: un core `1.16` lo deja `incompatible` en vez de perder esos
+puertos. Los métodos nuevos contestan `-32601` a un core más viejo.
 Desde `1.16` un nodo puede mantener viva una hija (`ChildEvent` `output`, `tag`), las
 ejecuciones dicen quién las arrancó (`caller`, `tag`) y hay `execution.tree` y
 `template.save`; los puertos "usa" cruzan cajas sin cambiar ningún método
@@ -96,7 +116,14 @@ nombre de fichero o un `null` en un `config` (TOML no lo tiene) es `-32602`; de 
 proyecto no abre: su `regulus.toml` no se lee o no es TOML (el error de TOML va en el mensaje)
 o su id no vale como nombre de fichero, `-32012` otro proyecto abierto tiene ese id, `-32013`
 `execution.start` rechaza un nodo cuyo módulo está vetado en el proyecto; no poder escribir
-`config.toml` es `-32003`. Además pide el token de `<home>/token` en el upgrade
+`config.toml` es `-32003`; de nodos propios *(1.17)*: `-32014` `project.reload` se niega
+porque ejecuciones vivas usan el módulo (`data.executions`: `id`, `profile_id`,
+`workflow_id`, `nodes`), `-32015` la revisión de `source.save` está vieja o `node.init`
+encontró el destino (`data.revision`, `data.path`), `-32016` no hay fuente editable (no
+existe el módulo local, no es un `.py`, la ruta sale del proyecto o es un enlace, no es
+UTF-8 o es demasiado grande); `-32003` también si el proyecto o un módulo cambió mientras
+arrancaban los candidatos de una recarga (no cambia nada: «recarga otra vez»); si una recarga con `stop_executions` falla después de
+parar ejecuciones, el error lleva `data.stopped_executions`. Además pide el token de `<home>/token` en el upgrade
 (`?token=` desde la webview).
 
 El perfil contiene `project_id` nullable y `extends` reservado. Cada workflow contiene
@@ -120,7 +147,9 @@ servicios ni eventos.
 - No hay autenticación ni secretos reales en este mock. No sustituye el token del core.
 - Los permisos y el aislamiento de ejecución no están implementados.
 - Parámetros expuestos se muestran, pero no se editan en B'.
-- No se ha medido todavía el presupuesto de primera pantalla ni la latencia del canvas.
+- La primera pantalla y la latencia por tecla de un campo `code` están medidas
+  (`18-custom-nodes.md` §4.3; la latencia **no** cumple los 16 ms en el p90). La latencia del
+  canvas, no.
 
 Verificación: `pnpm build`, `pnpm test:mock` y navegación en el navegador. Las versiones
 de dependencias viven solo en [`06-stack.md`](06-stack.md).
