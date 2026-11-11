@@ -603,6 +603,9 @@ _MAX_DEPTH = 64
 #: How many values the static reader builds for one file before it stops: a name used
 #: twice stands for its value twice, so `x2 = [x1, x1]` doubles at every line.
 _MAX_VALUES = 100_000
+#: How many characters of text (and bytes of numbers) those values may hold in all: a
+#: long string used many times is that many copies once serialized into the manifest.
+_MAX_BYTES = 4 * 1024 * 1024
 #: How much of an expression a diagnostic quotes.
 _QUOTE = 80
 
@@ -739,24 +742,31 @@ def inspect(source, filename="run.py"):
             return names.get(func.id)
         return None
 
-    # Every value built counts once; a name is read once and then stands for its value's
-    # size each time it is used, so a file cannot make the reader work without bound.
-    spent = [0]
+    # Every value built counts once, and its text by length; a name is read once and then
+    # stands for its value's whole cost each time it is used. One budget for the whole
+    # file, so neither repeated names nor long strings make the reader work or allocate
+    # without bound (before anything is copied or serialized).
+    spent = [0, 0]
     read = {}
 
-    def charge(count, expr):
+    def charge(count, size, expr):
         spent[0] += count
+        spent[1] += size
         if spent[0] > _MAX_VALUES:
             raise _Unreadable(expr, f"builds more than {_MAX_VALUES} values")
+        if spent[1] > _MAX_BYTES:
+            raise _Unreadable(expr, f"builds more than {_MAX_BYTES} bytes of values")
 
     def ev(expr, depth=0):
         if depth > _MAX_DEPTH:
             raise _Unreadable(expr, f"nests more than {_MAX_DEPTH} levels")
-        charge(1, expr)
         if isinstance(expr, ast.Constant):
-            if expr.value is None or isinstance(expr.value, (str, int, float, bool)):
-                return expr.value
+            value = expr.value
+            if value is None or isinstance(value, (str, int, float, bool)):
+                charge(1, len(value) if isinstance(value, str) else 8, expr)
+                return value
             raise _Unreadable(expr)
+        charge(1, 0, expr)
         if isinstance(expr, (ast.List, ast.Tuple)):
             if any(isinstance(item, ast.Starred) for item in expr.elts):
                 raise _Unreadable(expr)
@@ -779,17 +789,17 @@ def inspect(source, filename="run.py"):
         if isinstance(expr, ast.Name) and expr.id in bound:
             known = read.get(expr.id)
             if known is None:
-                before = spent[0]
+                before = list(spent)
                 try:
                     value = ev(bound[expr.id], depth + 1)
                 except _Unreadable as unread:
                     read[expr.id] = unread
                     raise _Unreadable(expr, unread.why) from None  # said where it is used
-                known = read[expr.id] = (value, spent[0] - before)
+                known = read[expr.id] = (value, spent[0] - before[0], spent[1] - before[1])
             elif isinstance(known, _Unreadable):
                 raise _Unreadable(expr, known.why)
             else:
-                charge(known[1], expr)
+                charge(known[1], known[2], expr)
             return copy.deepcopy(known[0])
         if isinstance(expr, ast.Call):
             builder = _BUILDERS.get(sdk(expr.func))

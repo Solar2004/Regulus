@@ -219,11 +219,15 @@ menos unario, nombres de módulo ligados una vez a algo así, `import regulus [a
 `then_out` y `field` que evalúa **la propia copia del SDK del core**. Cualquier otra cosa
 (otras llamadas, lambdas, f-strings, `**kwargs`, cadenas de atributos) sale como aviso
 `python.unreadable` y no se evalúa nunca. El fichero tampoco puede hacer trabajar al lector
-sin límite: cada nombre se lee una vez y cuenta su tamaño cada vez que se usa, y pasado un
-presupuesto de 100 000 valores (`_MAX_VALUES`; un nombre que se dobla en cada línea llega en
-17) o 64 niveles de anidamiento se para con `python.unreadable` y lo dice
-(`test_names_that_double_at_every_line_are_read_within_a_budget`; el fichero de 30 niveles
-de la revisión tarda 0,2 s en vez de agotar los 5 s). Probado con un fichero centinela y un módulo
+sin límite: cada nombre se lee una vez y cuenta su coste entero cada vez que se usa, y un
+solo presupuesto por fichero, de 100 000 valores (`_MAX_VALUES`; un nombre que se dobla en
+cada línea llega en 17), 4 MiB de texto (`_MAX_BYTES`; una cadena larga usada muchas veces
+serían otras tantas copias en el manifiesto) y 64 niveles de anidamiento, para antes de
+copiar o serializar nada, con `python.unreadable` y el motivo
+(`test_names_that_double_at_every_line_are_read_within_a_budget`,
+`test_long_text_used_many_times_is_read_within_a_byte_budget_in_capped_memory`). Los
+ficheros de la revisión tardan 0,1-0,2 s y ~20-30 MB en vez de agotar los 5 s o la memoria
+(~600 MB y `MemoryError`). Probado con un fichero centinela y un módulo
 importable plantado (`test_malicious_sources_run_nothing_even_through_the_core_command`).
 
 `SourceCheck` = `{ language, checked, interpreter, diagnostics, nodes, complete,

@@ -785,6 +785,43 @@ class InspectTest(unittest.TestCase):
         self.assertFalse(found["complete"])
         self.assertIn(f"more than {regulus._MAX_DEPTH} levels", found["diagnostics"][0]["message"])
 
+    def test_long_text_used_many_times_is_read_within_a_byte_budget_in_capped_memory(self):
+        # A 900 KB string, a list of 1000 references and 40 of those lists: few values, but
+        # ~36 GB of text once copied into the manifest. Run as the core runs the checker,
+        # under a 512 MB address-space cap, so a regression fails here instead of
+        # exhausting the machine.
+        source = "\n".join([
+            "import regulus as rg",
+            f's = "{'a' * 900_000}"',
+            "row = [" + ", ".join(["s"] * 1000) + "]",
+            "grid = [" + ", ".join(["row"] * 40) + "]",
+            '@rg.node("t", fields=[rg.field("f", "list", default=grid)])',
+            "def t(ctx, port, value): pass",
+            "rg.run()",
+        ]) + "\n"
+        script = (SDK / "regulus.py").read_text() + "\n_inspect_main()\n"
+        cap = 512 * 1024 * 1024
+
+        def limit():
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+
+        started = time.monotonic()
+        done = subprocess.run([sys.executable, "-I", "-S", "-c", script], input=source.encode(),
+                              capture_output=True, timeout=TIMEOUT, env={}, preexec_fn=limit)
+        self.assertEqual(done.returncode, 0, done.stderr[-500:])
+        self.assertLess(time.monotonic() - started, 2.0)
+        answer = json.loads(done.stdout)
+        self.assertFalse(answer["complete"])
+        self.assertEqual(answer["nodes"], [])
+        self.assertEqual([d["code"] for d in answer["diagnostics"]], ["python.unreadable"])
+        self.assertIn(f"more than {regulus._MAX_BYTES} bytes", answer["diagnostics"][0]["message"])
+        # Text within the budget is still read as written.
+        small = 'import regulus as rg\nhi = "' + "b" * 1000 + '"\n@rg.node("t", fields=[rg.field("f", "list", default=[hi, hi])])\ndef t(ctx, port, value): pass\nrg.run()\n'
+        found = regulus.inspect(small)
+        self.assertTrue(found["complete"], found)
+        self.assertEqual(found["nodes"][0]["node"]["field"][0]["default"], ["b" * 1000] * 2)
+
     def test_an_empty_file_has_no_nodes(self):
         codes = [d["code"] for d in regulus.inspect(b"")["diagnostics"]]
         self.assertEqual(codes, ["python.no_nodes", "python.no_run"])
