@@ -10,6 +10,8 @@
 # `<url>/<channel>/manifest.json`, exactly how GitHub serves the assets of the release
 # tagged `<channel>`. No extra server.
 #
+# It publishes only after the checks of ci.yml pass on the tagged commit (job `ci`).
+#
 # Needs one repository secret, REGULUS_SIGNING_KEY: the text of the secret key file that
 # `regulus update keygen` wrote. Its public half is the default `[update] public_key`.
 name: release
@@ -37,8 +39,19 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
+  # The gate: the checks of ci.yml (Rust tests with the ablation matrix, clippy, fmt, the
+  # frontend, the Python SDK, commit messages, secrets) on the commit being released, as
+  # part of this run. Nothing below starts, so nothing is built, signed or published, unless
+  # all of them pass. Re-run the workflow from the tag after fixing what failed.
+  ci:
+    name: checks of the tagged commit
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   release:
     name: build, sign, publish
+    needs: ci
     # 22.04: the oldest glibc GitHub still runs, so the binary and the AppImage start on
     # more machines. Tauri's own guide builds Linux releases here too.
     runs-on: ubuntu-22.04

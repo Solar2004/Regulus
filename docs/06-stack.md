@@ -258,7 +258,13 @@ deb), y escribe `dist/<versión>/`:
   construyó. No instala nada del sistema.
 - **Publicar** es copiar `dist/<versión>/*` a `<url>/<canal>/` en cualquier servidor estático.
 - **Dónde se publica Regulus** (2026-11-08): en **GitHub Releases**, sin servidor propio.
-  `.github/workflows/release.yml` corre con cada tag `v<versión>` (o a mano, eligiendo canal):
+  `.github/workflows/release.yml` corre con cada tag `v<versión>` (o a mano, eligiendo canal).
+  Primero su job `ci` reutiliza `ci.yml` (`workflow_call`) **sobre el commit etiquetado**, y el
+  job que publica depende de él (`needs: ci`): nada se construye, firma ni sube si falla fmt,
+  `cargo test --workspace --exclude regulus-tauri` (con la matriz de ablación), clippy,
+  tsc + vitest, el unittest del SDK, el lint de commits (en un tag, solo el commit etiquetado)
+  o el escaneo de secretos; la release espera a la CI (hasta 45 min) antes de sus 90. Añadido
+  en 0.2.1 y **aún sin ejecutar en GitHub** (YAML comprobado en local). Después,
   comprueba que el tag es la versión de `Cargo.toml`, instala las librerías de la app en
   `ubuntu-22.04` (la glibc más vieja que ofrece GitHub, para que el binario arranque en más
   máquinas), ejecuta `release.sh` firmando con el secreto `REGULUS_SIGNING_KEY` (el texto de

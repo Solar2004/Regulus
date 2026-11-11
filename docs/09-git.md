@@ -146,7 +146,8 @@ Los tres ejes de versión y por qué solo el protocolo es crítico están en
 [`AGENTS.md`](../AGENTS.md): un solo sitio por dato). Lo que añade el harness:
 
 - **El tag es la verdad.** `git tag -a v0.2.0 -m "Release 0.2.0"`. La versión del artefacto
-  se deriva del tag; nunca se edita a mano en sitios distintos.
+  se deriva del tag; nunca se edita a mano en sitios distintos. Un tag solo publica si la CI
+  pasa sobre ese mismo commit (job `ci` de `release.yml`, [`06-stack.md` §5.4](06-stack.md)).
 - **La entrada de [`CHANGELOG.md`](../CHANGELOG.md) se escribe en el mismo commit que el
   cambio**, agrupada por impacto (`Añadido / Cambiado / Corregido / Obsoleto / Eliminado /
   Seguridad`). Reconstruirla del `git log` en el momento del release pierde la mitad.

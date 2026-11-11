@@ -66,6 +66,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - **Las 17 plantillas van en el binario:** `regulus` instala todas las de `templates/` en
   `<casa>/templates` al primer arranque (cada nombre una vez: lo editado se conserva y lo
   borrado no vuelve), y un test falla si la carpeta y la lista del binario difieren.
+- **La release de un tag pasa antes por la CI:** `release.yml` reutiliza `ci.yml` y no
+  construye, firma ni publica si fallan el formato, los tests del workspace con la
+  ablación, clippy, el frontend, los tests del SDK, el lint de commits (en un tag, solo el
+  del commit etiquetado) o el escaneo de secretos. Los ficheros se leen y validan; **el
+  flujo no se ha ejecutado en GitHub**.
 - **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
   ejecución terminada, o de antes de reiniciar el core, se consultan con
   `regulus call` sin arrancar nada; `data.*` acepta también `project`.
