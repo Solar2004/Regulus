@@ -1171,7 +1171,7 @@
     {
       "id": "11-7036fa",
       "kind": "semantic",
-      "text": "Instala cada módulo como crate in-process mediante `regulus module install X` con recompilación automática.",
+      "text": "No ordenes ni ejecutes `regulus module install X`: ese comando no existe; la instalación como recompilación automática de un crate in-process es diseño aprobado y aún pendiente de construir. Hoy un módulo enlazado se añade a mano (el crate en el workspace y en `regulus-cli`, su línea en `crates/regulus-cli/src/modules.rs` y recompilar) y uno local con `regulus node init`; no lo sustituyas por un gestor de paquetes ni por carga dinámica.",
       "source": "docs/11-composition.md §10. Instalar módulos y compartir",
       "paths": [
         "crates/**",
@@ -1457,7 +1457,7 @@
     "docs/11-composition.md#7. Perfiles": "9c062cc6f8c84302",
     "docs/11-composition.md#8. Ejecuciones: el plano y lo que corre": "9bdd1fea13a55260",
     "docs/11-composition.md#9. Aislamiento y secretos": "b90b2e03d2fb8cd3",
-    "docs/11-composition.md#10. Instalar módulos y compartir": "8fcf86a97a9e685c",
+    "docs/11-composition.md#10. Instalar módulos y compartir": "0091095d2143766e",
     "docs/11-composition.md#11. Qué cambió en otros documentos": "11e4f2b5ebee0a38",
     "docs/11-composition.md#12. Respuestas de Alexander (2026-10-05)": "325b8bc867ba06b9"
   }

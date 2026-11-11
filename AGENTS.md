@@ -2,7 +2,7 @@
 
 > **Este es el mapa. Léelo completo (~1.7k tokens) antes de abrir cualquier otro
 > documento.** Describe qué contiene cada fichero para que no tengas que leerlos todos.
-> Actualizado: 2026-11-10 · documentación vigente: ~53k tokens. Lo antiguo está en `docs/old/`.
+> Actualizado: 2026-11-11 · documentación vigente: ~62k tokens. Lo antiguo está en `docs/old/`.
 
 ---
 
@@ -64,12 +64,22 @@ herramienta (`flow.tool`), lote (`flow.batch`) o trabajador vivo (`delegation.de
 docs`, plantillas `rag-chat` · `rag-eval` · `delegation`, `13-blocks.md` §5); y el **motor
 nativo** corre el bucle del agente dentro de Regulus con herramientas y hooks cableados
 (`12-agents.md` §8, `templates/native-harness.toml`). Nada de lo nuevo se ha corrido aún con un
-agente o un modelo real: solo con motores y servidores falsos. **Nodos propios** (2026-11-10,
+agente o un modelo real: solo con motores y servidores falsos. **Nodos propios** (2026-11-10 y 2026-11-11,
 `docs/18-custom-nodes.md`): un nodo se escribe en Python con el SDK (`sdk/python/regulus.py`,
 solo biblioteca estándar) como módulo local, `regulus node init` lo genera sin confiar en el
-proyecto, y el inspector edita campos `code` y `multiline` (un área de texto, no un editor);
-probado contra un core real y en un navegador real, aún sin uso en un proyecto real; lo que
-sigue (recargar, variantes, CodeMirror, nodo Script) es 🔶. **Lo siguiente:** correr las
+proyecto. El segundo incremento, **candidato 0.2.1, sin publicar** (el binario 0.2.0 habla
+1.16 y no lo trae), está construido en el árbol de trabajo (protocolo 1.17): la app crea un
+nodo Python, edita su fuente con CodeMirror y la comprueba **sin ejecutarla**, la guarda con
+protección de escritura vieja, recarga el módulo sin reiniciar el core (el viejo sigue si el
+nuevo falla; una ejecución viva lo impide salvo que se pida pararla), los puertos pueden
+depender de la config (`dynamic_port`, `when`, `repeat`, `managed_ports`, una sola
+`shape()`) y los puertos viejos se sincronizan **a petición** y enseñando los cables que
+caen; Rust por stdio con `regulus node init --lang rust` y `node build`; el binario trae
+las **17** plantillas, y el flujo de tags reutiliza la CI como puerta (escrito, no
+ejecutado en GitHub). Probado contra un core real y en un navegador real, aún sin uso en un
+proyecto real; teclear **no** cumple 16 ms en el p90 (`18-custom-nodes.md` §4.3). **Sigue 🔶
+y sin construir:** `$T`, depurador (R1), R2-R4, nodo Script, más `ModuleCtx` por stdio, MCP
+para estos métodos y `regulus module install` (aprobado en el diseño, no existe). **Lo siguiente:** correr las
 plantillas nuevas con agentes y modelos reales. La pasarela de proveedores queda aplazada. Plan y orden en
 [`docs/plan.md`](docs/plan.md).
 
@@ -111,17 +121,17 @@ construir todas las habitaciones hoy.**
 | **`docs/plan.md`** | ~1.8k | **Si retomas en frío, empieza aquí.** Qué es base y qué es módulo, orden de trabajo, la pregunta abierta, lo rescatado de los docs antiguos (doctrina Predator, descartados, trampas) y cómo trabajar con Alexander. |
 | **`docs/concept.md`** | ~1k | Qué es Regulus en llano: piezas (módulo, nodo, cable, workflow, perfil, ejecución) y las dos vistas. |
 | **`docs/00-principles.md`** | ~2k | **Manda sobre todos los demás.** "Como el agua", **la caja líquida**, los 5 principios con su prueba, presupuestos de rendimiento, el guardarraíl. |
-| **`docs/11-composition.md`** | ~5.5k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos. Respuestas de Alexander (§12). **Proyectos** como carpetas con `regulus.toml` (§13). |
+| **`docs/11-composition.md`** | ~5.8k | ✅ **El modelo**: base sin funciones, nodos, cables "usa" y "luego", workflows, perfiles, ejecuciones, secretos, instalar módulos (§10: `module install` aprobado y **no construido**). Respuestas de Alexander (§12). **Proyectos** como carpetas con `regulus.toml` (§13). |
 | **`docs/12-agents.md`** | ~4.7k | ✅ **Agentes**: la caja Agente y sus motores (Claude Code, opencode…) como módulos, perfil seleccionable, canal ACP, el contrato `agent.engine@1`, **proveedores como caja líquida** (`llm.endpoint@1`, motores, plantillas, envolturas, pasarela, ranuras, suscripciones), perfil aislado y lo construido, **trabajadores vs subagentes** (§5.1), **el motor nativo** (§8). |
 | **`docs/13-blocks.md`** | ~8.5k | ✅ **Bloques**: la lógica de IA de serie. Qué pide el core (cable "luego" con dato, store, workflow como caja, sub-ejecución `Call`), la ranura `hooks`, los módulos `flow` · `files` · `process` · `judge` · `guards` · `triggers` · `workspace` · `tasks` · `memory` · `web` · `human` · `service`, `documents` · `inference` · `delegation`, las **plantillas** (pxl, Ralph, SDD, best-of-N, equipo, research, CLI custom, RAG chat, RAG eval, delegación), límites honestos y fuentes. |
 | **`docs/15-evidence.md`** | ~3.5k | ✅ **Evidencias**: módulo `evidence` (fuentes versionadas, citas con extracto exacto, apoyo textual frente a verdad), RPC `evidence.*` y la plantilla `research-evidence`. |
 | **`docs/16-experiments.md`** | ~2.5k | ✅ **Datos y experimentos**: módulo `data` (`collect` · `snapshot` · `rank`), plantillas `rag-lab` y `topic-watch`, límites honestos. |
 | **`docs/17-control-mcp.md`** | ~2.2k | ✅ **MCP de control**: `regulus mcp`, servidor MCP por stdio que gobierna el host como cliente del RPC autenticado; herramientas, límites, autoría de módulos desde MCP, siembra de plantillas. |
-| **`docs/18-custom-nodes.md`** | ~4.7k | ✅ **Nodos propios**: SDK de Python sobre el protocolo de módulos locales, `regulus node init`, campos `code`/`multiline` en el inspector (probado en navegador), Rust por stdio, límites medidos, las fases siguientes y las direcciones de las referencias (🔶, sin aprobar), y las fuentes oficiales con sus lecciones (§9). |
+| **`docs/18-custom-nodes.md`** | ~10k | ✅ **Nodos propios**: SDK de Python sobre el protocolo de módulos locales, `regulus node init`, el camino completo (crear, editar la fuente sin ejecutarla, recargar, puertos dinámicos, sincronizar; protocolo 1.17, §2), CodeMirror y lo medido (§4), los tres caminos para añadir un módulo y Rust por stdio (§6), qué de las fases F2-F6 se construyó y qué no (§7), las direcciones R1-R4 (🔶, sin aprobar) y las fuentes oficiales con sus lecciones (§9). |
 | **`docs/02-architecture.md`** | ~4k | Los dos límites (socket / trait Rust), por qué módulos in-process, forma del workspace, **las abstracciones del core** (`Node`, `Port`, `Wire`, `Workflow`, `Profile`, `Execution`), "usa" que cruza cajas, hijas vivas y `execution.tree`, bus y store. |
-| **`docs/03-modules.md`** | ~2.2k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos, workflow interno, estados, pánicos, **matriz de ablación**. |
-| **`docs/04-client.md`** | ~4k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11), **conversación** en app, TUI y `regulus talk` (§7-8). |
-| **`docs/composition-preview.md`** | ~0.8k | Contrato actual del mock (métodos JSON-RPC) y límites del canvas A'/B'. |
+| **`docs/03-modules.md`** | ~3.1k | El contrato: trait `Module`, `ModuleCtx`, manifest con nodos/puertos/campos (y puertos dinámicos), workflow interno, estados, pánicos, **matriz de ablación**, cómo se registra un módulo enlazado (a mano, §2.2/§5) y los módulos locales por stdio con su recarga (§6). |
+| **`docs/04-client.md`** | ~5.2k | El cliente: el mock es la spec, Canvas + Operar, estados de primer nivel, `hello`, multi-proyecto, idioma y tema, la TUI (§7), Operar y canvas construidos (§8-9), Ajustes (§10), `[client]` de `config.toml` (§11), **conversación** en app, TUI y `regulus talk` (§7-8), **nodos propios en la app** (§13). |
+| **`docs/composition-preview.md`** | ~1.5k | Contrato actual del mock (métodos JSON-RPC, hasta el protocolo 1.17) y límites del canvas A'/B'. |
 | **`docs/06-stack.md`** | ~2.2k | Dependencias con versiones verificadas (único sitio), terminal, transporte, versionado. |
 | **`docs/08-design-system.md`** | ~1.8k | Diseño de la app: Regulus Midnight, paleta y tokens (`assets/design/`), iconos de estado. Recetas en `centaury-recipes.md`. |
 | **`docs/09-git.md`** | ~1.8k | Cómo se commitea: formato, tipos y scopes, ramas, push, **las 7 reglas para agentes**. Config en `.gitconventions`. |
@@ -142,7 +152,7 @@ construir todas las habitaciones hoy.**
 | **Escribir un bloque de lógica o una plantilla** | `13-blocks.md` → `03-modules.md` | ~10.5k |
 | **Investigación con citas, datasets, RAG lab o seguimiento** | `15-evidence.md` → `16-experiments.md` → `13-blocks.md` §5 | ~6k |
 | **Controlar Regulus desde un cliente MCP** | `17-control-mcp.md` | ~2.2k |
-| **Escribir un nodo propio (Python o un proceso por stdio)** | `18-custom-nodes.md` → `03-modules.md` §6 | ~5.8k |
+| **Escribir un nodo propio (Python o un proceso por stdio)** | `18-custom-nodes.md` → `03-modules.md` §6 | ~11k |
 | **Diseñar o implementar UI** | `04-client.md` → `composition-preview.md` → `08-design-system.md` | ~3.5k |
 | **Elegir una dependencia** | `plan.md` §4.3 (lo descartado) → `06-stack.md` | ~2.5k |
 | **Commitear, ramificar o empujar** | `09-git.md` §1-5 | ~1.2k |
@@ -226,6 +236,7 @@ Refs: docs/plan.md §3
 |---|---|---|
 | 1 | **Pulir con uso real**: ~~mostrar el estado `blocked` con su acción "confiar" en Ajustes~~ (2026-11-08); publicar `v0.1.0` con `release.yml` (falta el secreto `REGULUS_SIGNING_KEY` y el tag) y, con una segunda versión, instalar la actualización con la app abierta | el secreto y el tag los pone Alexander |
 | 1c | **Harness líquido con uso real** (2026-11-09): correr `rag-chat`, `delegation`, `native-harness` y `research` (lote) con un agente y un modelo reales; `hook@1` no tiene respuesta "pregunta" ni "termina" (`12-agents.md` §8); `profile.check` no revisa los workflows del mapa `workers` del delegado (`13-blocks.md` §3.3) | nada |
+| 1d | **Publicar 0.2.1** (candidato: el código ya dice 0.2.1, sin tag ni release): poner el tag `v0.2.1` y fechar el changelog, firmar con la clave real y publicar; ejecutar el flujo de tags una vez en GitHub (la puerta de CI está escrita y **no se ha ejecutado**), y usar los nodos propios en un proyecto real | el tag y la clave de firma son de Alexander |
 | 1b | **Plantillas** de `13-blocks.md` §5: ~~mecanismo~~, ~~Ralph~~, ~~SDD~~, ~~evaluador~~, ~~best-of-N~~, ~~equipo~~, ~~research~~, ~~CLI chateable~~, ~~pxl~~. **Las ocho hechas** (2026-11-08) | — |
 | 2 | **App completa**: ~~solape de nodos por clic~~, ~~pie "No modules installed"~~, ~~`pnpm tauri:dev`~~, ~~Ajustes: secretos, servicio y módulos~~ (`04-client.md` §10), ~~proyectos con `regulus.toml`~~ (`11-composition.md` §13), ~~TUI que edita como la app~~ (`04-client.md` §7), ~~`[client]` de `config.toml` leído por app y TUI~~ (`04-client.md` §11), ~~`ProcessModule` para `[[modules.local]]`~~ (`03-modules.md` §6); ~~release + `regulus update` + Ajustes → Updates~~ (`06-stack.md` §5.4); lo que queda está en la fila 1 | nada |
 | 3 | **Comunicación como caja**, pasos 3-5 (`11-composition.md` §3.0) | nada |

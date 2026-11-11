@@ -135,6 +135,10 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ### Corregido
 
+- La documentación decía que `regulus module install` instala módulos: **no existe** (el CLI
+  solo tiene `module ls|show|shape`). Es un diseño aprobado y no construido; hoy un módulo
+  enlazado se añade a mano (el crate y una línea en `modules.rs`, y recompilar) y uno local
+  con `regulus node init`. La regla de docguard que lo ordenaba se reescribió.
 - Los clientes no ofrecen conversar con un nodo cuyo motor está reservado de forma
   perezosa para sus trabajadores; un harness con delegación conserva su único agente
   conversable en `regulus talk`, la TUI y Operar.

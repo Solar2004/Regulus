@@ -12,12 +12,14 @@ The product is not the feature list. It is being able to add and remove features
 without anything breaking. Every module can be taken out and the rest keeps working,
 and that is verified by a test on every push, not promised.
 
-**Development status (2026-11-09):** the core, CLI, desktop app and TUI work end to
+**Development status (2026-11-11):** the core, CLI, desktop app and TUI work end to
 end. Release 0.2.0 includes reusable boxes with capability inputs, workflow
 conversation, managed workers, document retrieval, evaluation and a native agent
-engine alongside Claude Code and opencode. Regulus Code, described below, is being
-developed in the current checkout and is not included in 0.2.0. Contributor guides are in
-English; the detailed design record is currently in Spanish.
+engine alongside Claude Code and opencode. The source tree contains more than that
+release: Regulus Code and the custom-node tools below are being prepared as the
+**0.2.1 candidate, which is not published**. Anything marked *(unreleased)* is in the
+source tree only; the downloads below are 0.2.0 and do not include it. Contributor
+guides are in English; the detailed design record is currently in Spanish.
 
 ---
 
@@ -30,6 +32,10 @@ Linux x86_64 builds are available from [GitHub Releases](https://github.com/Sola
 | Desktop AppImage | [Regulus 0.2.0 AppImage](https://github.com/Solar2004/Regulus/releases/download/v0.2.0/Regulus_0.2.0_amd64.AppImage) |
 | Debian / Ubuntu | [Regulus 0.2.0 .deb](https://github.com/Solar2004/Regulus/releases/download/v0.2.0/Regulus_0.2.0_amd64.deb) |
 | CLI and TUI | [Linux executable](https://github.com/Solar2004/Regulus/releases/download/v0.2.0/regulus-linux-x86_64) |
+
+These are the **0.2.0** builds, the latest published release. Features marked
+*(unreleased)* are not in them; they appear here only after a release that contains them
+is published and these links are updated.
 
 The release includes checksums and a signed update manifest. For AppImage or the CLI,
 make the downloaded file executable with `chmod +x <file>` before running it.
@@ -47,6 +53,50 @@ Recorded against a real local core using the deterministic Greeter example. This
 shows composition and workflow conversation; it does not use an AI model or show
 an autonomous coding run. These composition and conversation features are included
 in 0.2.0.
+
+## Your own nodes (unreleased, 0.2.1 candidate)
+
+A custom node is a *local module*: a separate process the core starts for a project, in
+Python with a one-file SDK or in Rust over stdio. It only runs in a project you have
+trusted, and it is not sandboxed: it has your permissions.
+
+```sh
+# `node init` needs no core; the other commands talk to a running one (`regulus serve`)
+regulus project open ./my-project                       # a folder; writes regulus.toml if missing
+regulus node init ./my-project --id caps                # tools/caps/run.py + the SDK beside it
+regulus project trust ./my-project                      # opening a folder never runs its code
+regulus node check my-project caps                      # syntax and node types, nothing is run
+regulus project reload my-project --module caps         # the new process replaces the old one
+regulus profile sync my-profile                         # plan only; --apply to save
+```
+
+In the desktop app the same path is a **New Python node** button (it can also open a
+project folder by its path, untrusted, so a new install needs no command line), a source
+panel with a
+code editor (CodeMirror, loaded only when needed) that checks your Python without
+executing it, **Save and reload** (the old process keeps running if the new one fails,
+and a run that uses the module blocks the reload unless you stop it), and a review of
+nodes whose ports no longer match their module, listing every wire that would be removed
+before anything is changed. Ports can depend on a node's fields (`when`, `repeat`), and the
+core is the only place that works them out. A Rust node is `regulus node init --lang
+rust` plus `regulus node build`.
+
+Limits: the app edits one Python file per local module (no file tree, no external editor
+button, no module log viewer); the syntax check uses the Python on the host; the TUI does
+not edit sources. Typing in the code editor was measured and does **not** meet the 16 ms
+per-key budget at the 90th percentile; the numbers are in
+[`docs/18-custom-nodes.md` §4.3](docs/18-custom-nodes.md#43-probado-y-medido) (Spanish).
+Not built, and still proposals: generic port types, a step debugger, more of the module
+context for local modules and MCP tools for these methods.
+
+**Three ways to extend Regulus.** A *static module* is a Rust crate under
+`crates/modules/` linked into the `regulus` binary: add the crate and one line to the
+registry, then rebuild `regulus`. There is no install command (`regulus module install`
+is an approved design that has not been built). A *local module* is a separate process in
+any language, declared in a project's `regulus.toml`; write one with `regulus node init`
+or `regulus node init --lang rust` and compile Rust with `regulus node build`. Local
+modules can `emit` values; they do not get the rest of the module context. `cargo build -p
+<crate>` compiles one workspace crate on its own; it does not add it to the binary.
 
 ## Regulus Code (development)
 
@@ -143,9 +193,11 @@ flowchart LR
 - **Projects** are folders with a `regulus.toml`: their own profiles, templates and
   local modules, which run as separate processes over JSON-RPC and only when the
   project is trusted.
-- **Custom nodes** are local modules written in Python with a one-file SDK:
-  `regulus node init <project> --id <id>` scaffolds one, and fields of type `code`
-  are edited in the app's inspector as plain text areas (no highlighting yet).
+- **Custom nodes** are local modules written in Python with a one-file SDK (or Rust over
+  stdio): `regulus node init <project> --id <id>` scaffolds one. In 0.2.0, fields of type
+  `code` are edited in the app's inspector as plain text areas. *(Unreleased)* they use a
+  code editor, a module's source can be edited and checked in the app, and modules reload
+  without restarting the core; see above.
 
 ### A workflow, end to end
 
@@ -192,9 +244,18 @@ as a template and it installs anywhere with holes for the parts that change.
 | `research-evidence` | An agent searches and reads the web, cites exact excerpts of versioned sources, and the report fails on any reference it cannot back |
 | `rag-lab` | Two retrieval candidates on the same corpus and dataset, scored with the RAG evaluator and ranked |
 | `topic-watch` | A timed or manual poll of a search or a page that reports only what is new, changed or gone since the last poll |
+| `rag-chat` | A chat that answers from your documents and cites numbered sources, with a gate that checks every citation |
+| `rag-eval` | How well retrieval finds what a dataset says it should, with a deterministic gate and an optional model judge |
+| `delegation` | A coordinator agent hands parts of a goal to workers it starts, follows and closes through tools |
+| `native-harness` | An agent whose loop Regulus runs itself, with the tools and hooks wired in as boxes |
+| `regulus-code` | A coding agent over one folder, built from boxes (see above) |
+| `greeting` | The smallest template: it needs no agent and exercises holes, a required variable and `requires` |
 
-Each template documents its holes, its risks and the run that was made with a real
-agent in its header.
+That is all 17 files in `templates/`. The published 0.2.0 binary embeds none of them (they
+live in the repository); the *(unreleased)* 0.2.1 candidate embeds all 17 and installs them
+into `<home>/templates` on first start (each name once: edits are kept, deleted ones do not
+come back), and a test fails if the folder and the embedded list differ. Each template
+documents its holes, its risks and the run that was made with a real agent in its header.
 
 ## Build and run from source
 
@@ -236,6 +297,7 @@ cargo test -p regulus-cli --test ablation   # start without each module in turn
 cargo clippy --workspace --all-targets      # zero warnings is the bar
 cd crates/regulus-tauri/frontend && pnpm test   # vitest, the frontend
 python3 -B -m unittest discover -s sdk/python/tests  # the Python SDK, real processes
+cargo test -p regulus-cli --test rust_node  # a Rust local module: init, build, run (needs cargo and crates available offline)
 ```
 
 | Layer | Where | What it proves |
@@ -245,7 +307,8 @@ python3 -B -m unittest discover -s sdk/python/tests  # the Python SDK, real proc
 | Ablation | `crates/regulus-cli/tests/ablation.rs` | The core starts with each module removed and everything else still answers |
 | Frontend | `frontend/src/**/*.test.ts` | Stores, settings, the update flow, the mock contract |
 | Templates | `tests/template_*.rs` | Holes, wiring, and the deterministic parts run without an agent |
-| Python SDK | `sdk/python/tests/` | The SDK speaks the local-module protocol to real processes: errors, concurrency, private stdout, limits |
+| Python SDK | `sdk/python/tests/` | The SDK speaks the local-module protocol to real processes: errors, concurrency, private stdout, limits, and that reading a source never executes it |
+| Node authoring | `crates/regulus-core/tests/authoring.rs`, `crates/regulus-cli/tests/node_init.rs`, `rust_node.rs` | Create, edit, check, reload and sync a local module against a real core, including stale writes, live runs and an untrusted project |
 
 Runs with a real agent are not in the suite: they cost quota and minutes. Each
 template records its last one in its header.
@@ -272,6 +335,13 @@ release named after the channel (`stable`), which is the folder `regulus update`
 app read. The defaults of `[update]` already point there, so a fresh install updates
 with `regulus update` or from Settings → Updates; `url = ""` turns it off.
 
+*(Unreleased workflow change.)* In the source tree the release workflow first runs the
+same checks as `ci.yml` (a reusable workflow) on the tagged commit, and nothing is built,
+signed or published unless they pass: formatting, `cargo test --workspace --exclude
+regulus-tauri` with the ablation matrix, clippy, the frontend type check and tests, the
+Python SDK tests, the commit lint (for a tag push, only the tagged commit) and the secrets
+scan. The workflow files parse, but **this has not been run on GitHub yet**.
+
 ## Git and hooks
 
 ```bash
@@ -297,8 +367,9 @@ tests; the commit messages and the secrets scan. Rules in [`docs/09-git.md`](doc
 | `crates/modules/*` | The modules, one crate each, with a `regulus-module.toml`. |
 | `crates/regulus-tauri` | The desktop app: Tauri 2 shell and the React frontend. |
 | `templates/` | The ready-made agent systems, as TOML. |
-| `sdk/python/` | The SDK for custom nodes in Python: one file, standard library only, with its tests. |
-| `examples/local-modules/` | Project-local modules in Python, run as processes: by hand (`echo`) and with the SDK (`python-sdk`). |
+| `sdk/python/` | The SDK for custom nodes in Python: one file, standard library only, with its tests and the starter node `node init` writes. |
+| `sdk/rust/` | *(Unreleased)* The one-file helper that `regulus node init --lang rust` copies into a node's crate. |
+| `examples/local-modules/` | Project-local modules run as processes: Python by hand (`echo`) and with the SDK (`python-sdk`), and Rust (`rust-stdio`, what `node init --lang rust` writes). |
 | `docs/` | The design documents, in Spanish. `AGENTS.md` is the map. |
 | `harness/docguard/` | Rules that check changes against the docs. |
 | `scripts/` | Hooks installer, commit lint, secrets scan, release. |
@@ -328,7 +399,7 @@ it wins over every other document.
 | Evidence and cited research | [`docs/15-evidence.md`](docs/15-evidence.md) |
 | Datasets, RAG lab and topic watch | [`docs/16-experiments.md`](docs/16-experiments.md) |
 | Drive Regulus from an MCP client (`regulus mcp`) | [`docs/17-control-mcp.md`](docs/17-control-mcp.md) |
-| Write your own nodes in Python (`regulus node init`) | [`docs/18-custom-nodes.md`](docs/18-custom-nodes.md) |
+| Write your own nodes in Python or Rust (`regulus node init`), and how modules are added | [`docs/18-custom-nodes.md`](docs/18-custom-nodes.md) |
 | Dependencies and versions, release and update | [`docs/06-stack.md`](docs/06-stack.md) |
 | Commit, branch, push | [`docs/09-git.md`](docs/09-git.md) |
 
