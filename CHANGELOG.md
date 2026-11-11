@@ -13,6 +13,19 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
+## [0.2.2] - 2026-11-11
+
+Versión **0.2.2** (`[workspace.package]`), protocolo `1.17` sin cambios. Solo corrige la
+app.
+
+### Corregido
+
+- **Los diálogos de la app son opacos y caben en ventanas pequeñas:** el panel tenía fondo
+  transparente y dejaba ver la app de detrás; ahora es sólido, sobre un velo (scrim) del
+  tema sin desenfoque. Un diálogo nunca crece más que la ventana: el cuerpo se desplaza
+  entre la cabecera y los botones, que quedan siempre visibles, y en una ventana de menos
+  de 20rem de alto se desplaza el diálogo entero.
+
 ## [0.2.1] - 2026-11-11
 
 Versión **0.2.1** (`[workspace.package]`), protocolo `1.17`. La publica el tag `v0.2.1`
