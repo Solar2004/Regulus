@@ -61,7 +61,7 @@ negociar un major compatible.
 | `source.check` *(1.17)* | `project_id`, `module`, `text?` | `SourceCheck`: `language`, `checked`, `interpreter`, `diagnostics` (`severity`, `code`, `message`, `line`, `column`, `end_line`, `end_column`; desde 1, en puntos de código), `nodes`, `complete`, `matches_loaded`. Comprueba el texto o el fichero **sin ejecutar nada del proyecto** (`18-custom-nodes.md` §2.3) |
 | `node.init` *(1.17)* | `project_id`, `id`, `python?` | `module_id`, `node_type`, `source`, `files`, `rewritten`, `notes` y `module` (un resultado de `project.reload`). El mismo escritor que `regulus node init`; nunca sobrescribe (`-32015`) |
 
-El core real (`regulus serve`) del árbol de trabajo (candidato 0.2.1, sin publicar) habla el
+El core real (`regulus serve`) del árbol de trabajo (0.2.1) habla el
 protocolo `1.17`; el publicado 0.2.0, el `1.16`. Ambos son compatibles con el `1.0` del
 mock, que **no** contesta los métodos de `1.17` (`-32601`): la app los detecta y esconde
 esas acciones, y se prueban contra un core real (`authoring/live.test.ts`).

@@ -3,7 +3,7 @@
 > **v1.0** · 2026-10-05 · Lo vigente del cliente, rescatado de la versión anterior
 > ([`old/04-client.md`](old/04-client.md), modelo antiguo: 8 métodos, agente en el centro).
 > El contrato de métodos actual está en [`composition-preview.md`](composition-preview.md).
-> Revisado el 2026-11-11 (candidato 0.2.1, sin publicar): campos `code` con CodeMirror (§9),
+> Revisado el 2026-11-11 (0.2.1): campos `code` con CodeMirror (§9),
 > módulos locales recargables (§10) y editar nodos propios en la app (§13).
 
 ---
@@ -560,7 +560,7 @@ setup = "needed"
 
 ## 13. Nodos propios en la app (2026-11-11)
 
-✅ **Hecho** en el árbol de trabajo (candidato 0.2.1, **sin publicar**; el binario 0.2.0 habla
+✅ **Hecho** en 0.2.1 (el binario 0.2.0 habla
 el protocolo 1.16 y no lo trae). Detalle del contrato, de la comprobación sin ejecutar y de
 lo medido en [`18-custom-nodes.md`](18-custom-nodes.md); aquí, lo que hace el cliente
 (`src/composition/authoring/`, `src/components/code/`, `src/settings/ModuleSettings.tsx`).

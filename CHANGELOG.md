@@ -13,11 +13,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [No publicado]
 
-## [0.2.1] - candidato, sin publicar
+## [0.2.1] - 2026-11-11
 
-El código ya dice **0.2.1** (`[workspace.package]`), pero **no hay tag, firma ni release**:
-los binarios descargables siguen siendo los de 0.2.0 (protocolo `1.16`) y no traen nada de
-esto. La fecha la pone el tag `v0.2.1` cuando Alexander lo publique; la firma es suya.
+Versión **0.2.1** (`[workspace.package]`), protocolo `1.17`. La publica el tag `v0.2.1`
+con `release.yml`: construye el CLI, el AppImage y el deb, los firma con la clave de
+release y actualiza el canal `stable`. Un core `1.16` (el binario 0.2.0) no trae lo de
+abajo.
 
 ### Añadido
 
@@ -94,8 +95,8 @@ esto. La fecha la pone el tag `v0.2.1` cuando Alexander lo publique; la firma es
 - **La release de un tag pasa antes por la CI:** `release.yml` reutiliza `ci.yml` y no
   construye, firma ni publica si fallan el formato, los tests del workspace con la
   ablación, clippy, el frontend, los tests del SDK, el lint de commits (en un tag, solo el
-  del commit etiquetado) o el escaneo de secretos. Los ficheros se leen y validan; **el
-  flujo no se ha ejecutado en GitHub**.
+  del commit etiquetado) o el escaneo de secretos. La primera ejecución real de este flujo
+  es la del tag `v0.2.1`.
 - **Lo guardado por un módulo se lee tras reiniciar:** las evidencias y los datos de una
   ejecución terminada, o de antes de reiniciar el core, se consultan con
   `regulus call` sin arrancar nada; `data.*` acepta también `project`.

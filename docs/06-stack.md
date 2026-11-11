@@ -265,7 +265,7 @@ deb), y escribe `dist/<versión>/`:
   `cargo test --workspace --exclude regulus-tauri` (con la matriz de ablación), clippy,
   tsc + vitest, el unittest del SDK, el lint de commits (en un tag, solo el commit etiquetado)
   o el escaneo de secretos; la release espera a la CI (hasta 45 min) antes de sus 90. Añadido
-  en 0.2.1 y **aún sin ejecutar en GitHub** (YAML comprobado en local). Después,
+  en 0.2.1 (su primera ejecución real es la del tag `v0.2.1`). Después,
   comprueba que el tag es la versión de `Cargo.toml`, instala las librerías de la app en
   `ubuntu-22.04` (la glibc más vieja que ofrece GitHub, para que el binario arranque en más
   máquinas), ejecuta `release.sh` firmando con el secreto `REGULUS_SIGNING_KEY` (el texto de

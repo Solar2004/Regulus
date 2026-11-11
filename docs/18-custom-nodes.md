@@ -3,7 +3,7 @@
 > **v0.2** · 2026-11-11 · Dos incrementos. **El primero** (2026-11-10, autorizado por
 > Alexander): SDK de Python, `regulus node init`, campos `code` y `multiline`. ✅ Probado con
 > procesos reales, contra un core real y, el inspector, en un navegador real; pasó una
-> revisión independiente. **El segundo** (2026-11-11, candidato a 0.2.1, **sin publicar**):
+> revisión independiente. **El segundo** (2026-11-11, 0.2.1):
 > Alexander autorizó cerrar el editor, el parser sin ejecutar, recargar y las variantes.
 > ✅ Construido y probado en el árbol de trabajo (protocolo **1.17**): editar la fuente de un
 > módulo en la app, comprobarla sin ejecutarla, recargarla sin reiniciar el core, puertos
@@ -635,7 +635,7 @@ construyó y cuál no**: no está construida la fase entera si falta algo de su 
 la investigación del 2026-11-10 (n8n, Node-RED, ComfyUI, Unreal, Blender, Temporal,
 LangGraph; fuentes y lecciones en §9).
 
-| Fase | Construido (candidato 0.2.1) | No construido |
+| Fase | Construido (0.2.1) | No construido |
 |---|---|---|
 | F2 · recargar y depurar | ✅ `project.reload` en RPC y CLI (§2.4); ✅ diagnóstico de puertos viejos con la acción «sincronizar» (§2.5); ✅ un proyecto sin confianza sigue `blocked`. **Desvío:** las ejecuciones vivas no «siguen con su copia»: la recarga se niega o las para si se pide | ❌ botón «abrir en editor externo» (`plugin-opener`); ❌ ver el stderr reciente del módulo en Ajustes → Módulos |
 | F3 · variantes | ✅ puertos generados desde un campo lista (`repeat`); ✅ puertos y campos condicionales (`when`, el `show_if` propuesto); ✅ una sola `shape(config)` en `regulus-proto` expuesta como `module.shape`: la app, el CLI y la TUI al crear un nodo dan la misma forma; los perfiles antiguos cargan igual (§2.2) | ❌ `capability = "$T"` resuelta por el primer cable; ❌ mínimo y máximo de puertos que crecen; ❌ la TUI usa `shape()` solo al crear un nodo: no la repite al editar un campo ni oculta campos con `when` |

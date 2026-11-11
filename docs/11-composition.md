@@ -273,7 +273,7 @@ file = { description = "...", default = "greeting.txt" }
   Para dejar el `{{input}}` de un módulo: `input = { default = "{{input}}" }`.
 - **Dónde:** `[templates] paths` (por defecto `<home>/templates`), leídas solo al pedirlas;
   las del repo, en `templates/`. `apply` acepta también una ruta. **El binario trae las 17
-  de `templates/`** (candidato 0.2.1, sin publicar) y las instala en `<home>/templates` al
+  de `templates/`** (0.2.1) y las instala en `<home>/templates` al
   primer arranque: cada nombre una sola vez, así que lo editado se conserva y lo borrado no
   vuelve. Un test falla si `templates/` y la lista del binario difieren. El binario
   publicado 0.2.0 no embebe ninguna plantilla (están en el repo); en el árbol de trabajo
@@ -526,7 +526,7 @@ con el proyecto abierto, en paralelo. `module ls` y `module.manifest` lo dan com
 `<proyecto>/<id>@<versión>`. Lo vetan `disable`/`enable` y `--without <proyecto>/<id>`, y
 `project.close` lo para: `stop`, luego SIGTERM y SIGKILL pasado `stop_grace_ms`. Si no
 arranca o muere, queda `broken` con su stderr.
-**Recarga y autoría** (2026-11-11, protocolo 1.17, candidato 0.2.1): `project.reload`
+**Recarga y autoría** (2026-11-11, protocolo 1.17, 0.2.1): `project.reload`
 (`regulus project reload [--module <id>] [--stop-executions]`) aplica los cambios de
 `[[modules.local]]` y del código de un módulo con el proyecto abierto: lo que cambia es el
 proceso, de forma transaccional (el nuevo arranca antes de parar el viejo; si falla, sigue

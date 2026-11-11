@@ -2,7 +2,7 @@
 
 > **v0.4** · 2026-10-05 · aplica el modelo de composición
 > ([`11-composition.md`](11-composition.md)): un módulo trae nodos y su workflow interno.
-> Revisado el 2026-11-11 (candidato 0.2.1, sin publicar): cómo se añade de verdad un módulo
+> Revisado el 2026-11-11 (0.2.1): cómo se añade de verdad un módulo
 > (§2.2, §5), recarga de módulos locales y su forma (§6).
 > El contrato que todo módulo cumple. Lee [`plan.md` §4.1](plan.md) (doctrina
 > Predator) y [`02-architecture.md` §1](02-architecture.md) (los dos límites) primero.
@@ -386,7 +386,7 @@ Una línea por mensaje, como viajan (`→` del core al proceso, `←` del proces
 **SDK de Python** (2026-11-10): `sdk/python/regulus.py`, solo biblioteca estándar, habla
 este protocolo por el autor del nodo (un decorador por tipo de nodo y `ctx.emit`), y
 `regulus node init <proyecto> --id <id>` genera el módulo y su entrada en `regulus.toml`
-sin confiar en el proyecto. **Rust** (2026-11-11, candidato 0.2.1): `regulus node init
+sin confiar en el proyecto. **Rust** (2026-11-11, 0.2.1): `regulus node init
 --lang rust` genera un crate con un ayudante de un fichero y `regulus node build` lo
 compila (el ayudante está en `sdk/rust/`, junto a `sdk/python/`); no es un crate enlazado
 en el binario. Los tres caminos para añadir un módulo
