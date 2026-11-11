@@ -33,10 +33,20 @@ What it does for you:
 - refuses, as a handler error, a value the core could not read: not JSON, text that is
   not UTF-8, or a line longer than the core takes (``max_line_bytes``).
 
+Ports that depend on the node's config (protocol 1.17): ``then_in``/``then_out`` with
+``when={"field": "mode", "equals": "split"}`` exist only when the field says so, and with
+``repeat="cases"`` (a ``"list"`` field) one port per item, ``{item}`` in the id replaced.
+The core computes each node's ports from its config (``module.shape``); a handler sees the
+ports of its node, so ``ctx.emit`` to a repeated port works.
+
+:func:`inspect` reads a node file without running it (``ast``, literal arguments only): what
+the core's ``source.check`` uses to report syntax errors and the declared node types.
+
 It is not a sandbox: the process runs with the user's permissions, only in a project the
 user trusts. Copy this file beside your ``run.py`` (``regulus node init`` does it).
 """
 
+import ast
 import copy
 import json
 import os
@@ -50,14 +60,22 @@ __all__ = [
     "InvalidInput",
     "NodeError",
     "field",
+    "inspect",
     "node",
     "run",
     "then_in",
     "then_out",
 ]
 
-#: The core protocol major this SDK speaks (docs/03-modules.md §6).
+#: This SDK's own version, kept here and nowhere else (the app has its own; they match
+#: in 0.2.1). The core warns when a project's copy is not the one it carries.
+__version__ = "0.2.1"
+
+#: The core protocol this SDK speaks (docs/03-modules.md §6).
 REQUIRES_PROTO = "^1"
+#: What a module with dynamic ports needs: an older core would drop them silently and the
+#: node would load without them, so such a core refuses it instead (`incompatible`).
+REQUIRES_DYNAMIC_PROTO = "^1.17"
 #: Events handled at once when neither ``run(max_workers=…)`` nor the environment says.
 DEFAULT_MAX_WORKERS = 4
 #: Environment variable that sets ``max_workers`` (from ``env`` in ``regulus.toml``).
@@ -89,6 +107,8 @@ THEN = "then"
 CARDINALITIES = ("one", "many")
 # Keys of a field the SDK writes itself; ``**extra`` may not repeat them.
 FIELD_KEYS = ("id", "type", "default", "options")
+# The keys a ``when`` condition takes.
+WHEN_KEYS = ("field", "equals", "in")
 
 
 class NodeError(Exception):
@@ -126,7 +146,23 @@ def _printable(text):
     return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
-def _port(direction, port_id, capability, name, required, cardinality, lazy):
+def _when(owner, when):
+    """``when`` checked and copied: a dict with a ``field`` and ``equals`` or ``in``."""
+    if not isinstance(when, dict) or not isinstance(when.get("field"), str) or not when["field"]:
+        raise ValueError(f"{owner}: when must be a dict naming a field, e.g. "
+                         "{'field': 'mode', 'equals': 'split'}")
+    unknown = sorted(set(when) - set(WHEN_KEYS))
+    if unknown:
+        raise ValueError(f"{owner}: when takes {', '.join(WHEN_KEYS)}, not {', '.join(unknown)}")
+    copied = dict(when)
+    if "in" in copied:
+        if not isinstance(copied["in"], (list, tuple)):
+            raise ValueError(f"{owner}: when's `in` must be a list")
+        copied["in"] = list(copied["in"])
+    return _json_value(f"{owner} when", copied)
+
+
+def _port(direction, port_id, capability, name, required, cardinality, lazy, when, repeat):
     if not isinstance(port_id, str) or not port_id:
         raise ValueError("a port needs a non-empty string id")
     if not isinstance(capability, str) or not capability:
@@ -146,28 +182,45 @@ def _port(direction, port_id, capability, name, required, cardinality, lazy):
         port["cardinality"] = cardinality
         if lazy:
             port["lazy"] = True
+    if when is not None:
+        port["when"] = _when(f"port `{port_id}`", when)
+    if repeat is not None:
+        if not isinstance(repeat, str) or not repeat:
+            raise ValueError(f"port `{port_id}`: repeat names a list field")
+        port["repeat"] = repeat
     return port
 
 
-def then_in(port_id, capability, *, name="", required=False, cardinality="many", lazy=False):
+def _dynamic(port):
+    """Whether a port depends on the config: it goes in the manifest's ``dynamic_port``."""
+    return "when" in port or "repeat" in port
+
+
+def then_in(port_id, capability, *, name="", required=False, cardinality="many", lazy=False,
+            when=None, repeat=None):
     """A "then" input: values arrive on it as ``handler(ctx, port_id, value)``.
 
-    ``cardinality`` is ``"many"`` by default, so several wires can feed it.
+    ``cardinality`` is ``"many"`` by default, so several wires can feed it. ``when`` and
+    ``repeat`` make it depend on the node's config (see the module docs).
     """
-    return _port(INPUT, port_id, capability, name, required, cardinality, lazy)
+    return _port(INPUT, port_id, capability, name, required, cardinality, lazy, when, repeat)
 
 
-def then_out(port_id, capability, *, name=""):
-    """A "then" output: ``ctx.emit(port_id, value)`` puts a value on it."""
-    return _port(OUTPUT, port_id, capability, name, False, None, False)
+def then_out(port_id, capability, *, name="", when=None, repeat=None):
+    """A "then" output: ``ctx.emit(port_id, value)`` puts a value on it.
+
+    ``when`` and ``repeat`` make it depend on the node's config (see the module docs).
+    """
+    return _port(OUTPUT, port_id, capability, name, False, None, False, when, repeat)
 
 
-def field(field_id, field_type="text", *, default=None, options=None, **extra):
+def field(field_id, field_type="text", *, default=None, options=None, when=None, **extra):
     """An option of the node, drawn by the inspector and read as ``ctx.config[field_id]``.
 
-    ``field_type`` is open (``text``, ``number``, ``select``, ``code``…): a client that
-    does not know it shows the raw value. ``extra`` keys travel with the field as they are
-    (``label``, ``description``, ``multiline``, ``language``…) for clients that use them.
+    ``field_type`` is open (``text``, ``number``, ``select``, ``code``, ``list``…): a client
+    that does not know it shows the raw value. ``when`` hides it unless another field says
+    so. ``extra`` keys travel with the field as they are (``label``, ``description``,
+    ``multiline``, ``language``…) for clients that use them.
     """
     if not isinstance(field_id, str) or not field_id:
         raise ValueError("a field needs a non-empty string id")
@@ -181,25 +234,37 @@ def field(field_id, field_type="text", *, default=None, options=None, **extra):
         spec["default"] = _json_value(f"field `{field_id}` default", default)
     if options is not None:
         spec["options"] = _json_value(f"field `{field_id}` options", list(options))
+    if when is not None:
+        spec["when"] = _when(f"field `{field_id}`", when)
     for key, value in extra.items():
         spec[key] = _json_value(f"field `{field_id}` `{key}`", value)
     return spec
 
 
 class _NodeType:
-    def __init__(self, node_type, name, ports, fields, handler):
-        self.node_type = node_type
-        self.name = name
-        self.ports = ports
-        self.fields = fields
+    def __init__(self, entry, handler):
+        self.entry = entry
+        self.node_type = entry["type"]
         self.handler = handler
-        self.inputs = {p["id"] for p in ports if p["direction"] == INPUT}
-        self.outputs = {p["id"] for p in ports if p["direction"] == OUTPUT}
-        self.defaults = {f["id"]: f["default"] for f in fields if "default" in f}
+        # The ports every node of the type has; a node's own (from the call) win.
+        self.inputs = {p["id"] for p in entry["port"] if p["direction"] == INPUT}
+        self.outputs = {p["id"] for p in entry["port"] if p["direction"] == OUTPUT}
+        self.defaults = {f["id"]: f["default"] for f in entry["field"] if "default" in f}
         self.warned_return = False
 
     def manifest(self):
-        return {"type": self.node_type, "name": self.name, "port": self.ports, "field": self.fields}
+        return self.entry
+
+
+def _ports_of(raw, direction, declared):
+    """The ids of a node's ports in ``direction``: those the core sent with the node (its
+    shape, dynamic ports included), else the ones the type always has."""
+    ports = raw.get("ports")
+    if not isinstance(ports, list) or not ports:
+        return declared
+    return {p.get("id") for p in ports
+            if isinstance(p, dict) and p.get("direction") == direction
+            and p.get("kind", THEN) == THEN}
 
 
 # The node types this process declares, in declaration order.
@@ -214,31 +279,48 @@ def _unique(kind, owner, ids):
         seen.add(item)
 
 
+def _declare(node_type, *, name=None, inputs=(), outputs=(), fields=()):
+    """A node type's manifest entry, checked as :func:`node` checks it (``ValueError``)."""
+    if not isinstance(node_type, str) or not node_type:
+        raise ValueError("a node type needs a non-empty string")
+    inputs, outputs, fields = list(inputs), list(outputs), list(fields)
+    owner = f"node `{node_type}`"
+    for port in inputs:
+        if not isinstance(port, dict) or port.get("direction") != INPUT:
+            raise ValueError(f"{owner}: an entry of inputs is not then_in(...)")
+    for port in outputs:
+        if not isinstance(port, dict) or port.get("direction") != OUTPUT:
+            raise ValueError(f"{owner}: an entry of outputs is not then_out(...)")
+    for spec in fields:
+        if not isinstance(spec, dict) or "id" not in spec:
+            raise ValueError(f"{owner}: an entry of fields is not field(...)")
+    fixed = [p for p in inputs + outputs if not _dynamic(p)]
+    dynamic = [p for p in inputs + outputs if _dynamic(p)]
+    # Dynamic ports may share an id (a variant that retypes a port); the core checks them.
+    _unique("port", owner, [p["id"] for p in fixed])
+    _unique("field", owner, [f["id"] for f in fields])
+    entry = {"type": node_type, "name": name or node_type, "port": fixed, "field": fields,
+             "managed_ports": True}
+    if dynamic:
+        entry["dynamic_port"] = dynamic
+    return entry
+
+
 def node(node_type, *, name=None, inputs=(), outputs=(), fields=()):
     """Declares a node type whose "then" inputs are handled by the decorated function.
 
     The handler is called as ``handler(ctx, port, value)`` for each value that arrives;
-    it puts values on its outputs with ``ctx.emit``. What it returns is ignored.
+    it puts values on its outputs with ``ctx.emit``. What it returns is ignored. Every node
+    of the type has the ports its config gives (``managed_ports``).
     """
-    if not isinstance(node_type, str) or not node_type:
-        raise ValueError("a node type needs a non-empty string")
-    if node_type in _NODES:
+    if isinstance(node_type, str) and node_type in _NODES:
         raise ValueError(f"node type `{node_type}` is declared twice")
-    inputs, outputs, fields = list(inputs), list(outputs), list(fields)
-    owner = f"node `{node_type}`"
-    for port in inputs:
-        if port.get("direction") != INPUT:
-            raise ValueError(f"{owner}: `{port.get('id')}` in inputs is not then_in(...)")
-    for port in outputs:
-        if port.get("direction") != OUTPUT:
-            raise ValueError(f"{owner}: `{port.get('id')}` in outputs is not then_out(...)")
-    _unique("port", owner, [p["id"] for p in inputs + outputs])
-    _unique("field", owner, [f["id"] for f in fields])
+    entry = _declare(node_type, name=name, inputs=inputs, outputs=outputs, fields=fields)
 
     def register(handler):
         if not callable(handler):
-            raise TypeError(f"{owner}: the handler must be callable")
-        _NODES[node_type] = _NodeType(node_type, name or node_type, inputs + outputs, fields, handler)
+            raise TypeError(f"node `{node_type}`: the handler must be callable")
+        _NODES[node_type] = _NodeType(entry, handler)
         return handler
 
     return register
@@ -250,7 +332,8 @@ def manifest(module_name=None, version=None):
     The core names the module ``<project>/<id>@<version>`` whatever is said here;
     ``version`` is used only when ``regulus.toml`` does not set one.
     """
-    module: dict = {"requires_proto": REQUIRES_PROTO}
+    dynamic = any("dynamic_port" in n.entry for n in _NODES.values())
+    module: dict = {"requires_proto": REQUIRES_DYNAMIC_PROTO if dynamic else REQUIRES_PROTO}
     if module_name:
         module["name"] = module_name
     if version:
@@ -304,6 +387,7 @@ class Context:
         self.config = config
         self.project_id = runtime.started.get("project_id")
         self.root = runtime.started.get("root")
+        self._outputs = _ports_of(raw, OUTPUT, node_type.outputs)
 
     def emit(self, port, value=None):
         """Puts ``value`` on the "then" output ``port`` of this node.
@@ -312,8 +396,8 @@ class Context:
         cannot travel as JSON (or as UTF-8), or the line would be longer than the core
         reads; nothing is sent then.
         """
-        if port not in self._type.outputs:
-            declared = ", ".join(sorted(self._type.outputs)) or "none"
+        if port not in self._outputs:
+            declared = ", ".join(sorted(self._outputs)) or "none"
             raise ValueError(f"`{self.node_type}` has no output `{port}` (outputs: {declared})")
         _json_value(f"the value emitted on `{port}`", value)
         self._runtime.wire.send({"method": EMIT, "params": {
@@ -395,7 +479,7 @@ class _Runtime:
             raise _Failure(INVALID_PARAMS, f"no node type `{raw.get('type')}` here")
         event = call.get("args") or {}
         port = event.get("port")
-        if port not in node_type.inputs:
+        if port not in _ports_of(raw, INPUT, node_type.inputs):
             raise _Failure(INVALID_PARAMS, f"`{node_type.node_type}` takes nothing on `{port}`")
         ctx = Context(self, call, node_type)
         returned = node_type.handler(ctx, port, event.get("value"))
@@ -508,3 +592,294 @@ def run(*, name=None, version=None, max_workers=None):
     # Stopped or stdin closed: events still running end with the process (daemon threads).
     proto_out.flush()
     sys.stderr.flush()
+
+
+# --- reading a node file without running it ------------------------------------------
+
+#: The SDK builders the static reader evaluates, with literal arguments only.
+_BUILDERS = {"then_in": then_in, "then_out": then_out, "field": field}
+#: How deep the static reader follows nested literals and names.
+_MAX_DEPTH = 64
+#: How many values the static reader builds for one file before it stops: a name used
+#: twice stands for its value twice, so `x2 = [x1, x1]` doubles at every line.
+_MAX_VALUES = 100_000
+#: How much of an expression a diagnostic quotes.
+_QUOTE = 80
+
+
+class _Unreadable(Exception):
+    """An expression that cannot be read without running the file, and why (``None``: it
+    is not a literal; else what limit of the reader it went past)."""
+
+    def __init__(self, expr, why=None):
+        super().__init__(expr)
+        self.expr = expr
+        self.why = why
+
+
+def _quote(expr):
+    text = " ".join(ast.unparse(expr).split())
+    return text if len(text) <= _QUOTE else text[:_QUOTE - 1] + "…"
+
+
+def inspect(source, filename="run.py"):
+    """Reads a node file without running it: its syntax errors and the node types its
+    ``@node(...)`` decorators declare, as far as their arguments are literals.
+
+    ``source`` is text or bytes. Nothing of it is imported or executed: it is parsed with
+    ``ast``, and only literals, module-level names bound once to a literal, and this SDK's
+    own ``then_in``, ``then_out`` and ``field`` are evaluated. Returns a dict with
+    ``interpreter``, ``diagnostics`` (``severity``, ``code``, ``message``, and 1-based
+    ``line``, ``column``, ``end_line``, ``end_column`` in code points), ``nodes`` (each a
+    ``line`` and the manifest entry ``node``) and ``complete`` (every declaration was read).
+    """
+    data = source.encode("utf-8", "surrogatepass") if isinstance(source, str) else bytes(source)
+    result = {"interpreter": "Python " + sys.version.split()[0], "diagnostics": [],
+              "nodes": [], "complete": True}
+    lines = data.splitlines()
+
+    def column(line, byte_offset):
+        # ``ast`` counts UTF-8 bytes; clients count characters.
+        if line is None or byte_offset is None or byte_offset < 0:
+            return None
+        if 1 <= line <= len(lines):
+            return len(lines[line - 1][:byte_offset].decode("utf-8", "replace")) + 1
+        return byte_offset + 1
+
+    def say(severity, code, message, where=None, whole=True):
+        item = {"severity": severity, "code": code, "message": message}
+        if where is not None:
+            item["line"] = where.lineno
+            item["column"] = column(where.lineno, where.col_offset)
+            if whole and getattr(where, "end_lineno", None) is not None:
+                item["end_line"] = where.end_lineno
+                item["end_column"] = column(where.end_lineno, where.end_col_offset)
+        result["diagnostics"].append({k: v for k, v in item.items() if v is not None})
+
+    try:
+        tree = ast.parse(data, filename=filename)
+    except SyntaxError as error:
+        item = {"severity": "error", "code": "python.syntax", "message": error.msg or str(error)}
+        if error.lineno:
+            item["line"] = error.lineno
+            if error.offset and error.offset > 0:
+                item["column"] = error.offset
+            end_line = getattr(error, "end_lineno", None)
+            end_offset = getattr(error, "end_offset", None)
+            if end_line and end_offset and end_offset > 0 and (end_line, end_offset) > (
+                    error.lineno, item.get("column", 0)):
+                item["end_line"], item["end_column"] = end_line, end_offset
+        result["diagnostics"].append(item)
+        result["complete"] = False
+        return result
+    except (ValueError, RecursionError, MemoryError) as error:
+        say("error", "python.syntax", f"the file cannot be parsed: {error}")
+        result["complete"] = False
+        return result
+    # What the parser lets through and loading would refuse (`return` outside a function,
+    # a repeated argument, `break` outside a loop…): compiled, never run.
+    try:
+        compile(tree, filename, "exec", dont_inherit=True)
+    except SyntaxError as error:
+        # The compiler counts UTF-8 bytes, 1-based.
+        item = {"severity": "error", "code": "python.syntax", "message": error.msg or str(error)}
+        if error.lineno:
+            item["line"] = error.lineno
+            item["column"] = column(error.lineno, (error.offset or 1) - 1)
+            end_line = getattr(error, "end_lineno", None)
+            end_offset = getattr(error, "end_offset", None)
+            if end_line and end_offset and end_offset > 0:
+                item["end_line"] = end_line
+                item["end_column"] = column(end_line, end_offset - 1)
+        result["diagnostics"].append({k: v for k, v in item.items() if v is not None})
+        result["complete"] = False
+        return result
+    except (ValueError, RecursionError, MemoryError) as error:
+        say("error", "python.syntax", f"the file cannot be compiled: {error}")
+        result["complete"] = False
+        return result
+
+    # How the file names this SDK, and the module-level names bound once to something.
+    modules, names, bound, count = set(), {}, {}, {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                if alias.name == "regulus":
+                    modules.add(alias.asname or "regulus")
+        elif isinstance(stmt, ast.ImportFrom) and stmt.module == "regulus" and not stmt.level:
+            for alias in stmt.names:
+                if alias.name != "*":
+                    names[alias.asname or alias.name] = alias.name
+        # `node = rg.node`: another name for an SDK function, resolved by name, never run.
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name):
+            value = stmt.value
+            if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name) \
+                    and value.value.id in modules:
+                names[stmt.targets[0].id] = value.attr
+            elif isinstance(value, ast.Name) and value.id in names:
+                names[stmt.targets[0].id] = names[value.id]
+        targets = []
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
+            targets = [stmt.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                count[target.id] = count.get(target.id, 0) + 1
+                if isinstance(stmt, ast.Assign) or (isinstance(stmt, ast.AnnAssign) and stmt.value):
+                    bound[target.id] = stmt.value
+    bound = {name: value for name, value in bound.items() if count[name] == 1}
+
+    def sdk(func):
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                and func.value.id in modules:
+            return func.attr
+        if isinstance(func, ast.Name):
+            return names.get(func.id)
+        return None
+
+    # Every value built counts once; a name is read once and then stands for its value's
+    # size each time it is used, so a file cannot make the reader work without bound.
+    spent = [0]
+    read = {}
+
+    def charge(count, expr):
+        spent[0] += count
+        if spent[0] > _MAX_VALUES:
+            raise _Unreadable(expr, f"builds more than {_MAX_VALUES} values")
+
+    def ev(expr, depth=0):
+        if depth > _MAX_DEPTH:
+            raise _Unreadable(expr, f"nests more than {_MAX_DEPTH} levels")
+        charge(1, expr)
+        if isinstance(expr, ast.Constant):
+            if expr.value is None or isinstance(expr.value, (str, int, float, bool)):
+                return expr.value
+            raise _Unreadable(expr)
+        if isinstance(expr, (ast.List, ast.Tuple)):
+            if any(isinstance(item, ast.Starred) for item in expr.elts):
+                raise _Unreadable(expr)
+            return [ev(item, depth + 1) for item in expr.elts]
+        if isinstance(expr, ast.Dict):
+            out = {}
+            for key, value in zip(expr.keys, expr.values):
+                if key is None:
+                    raise _Unreadable(expr)
+                name = ev(key, depth + 1)
+                if not isinstance(name, str):
+                    raise _Unreadable(key)
+                out[name] = ev(value, depth + 1)
+            return out
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, (ast.USub, ast.UAdd)):
+            value = ev(expr.operand, depth + 1)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return -value if isinstance(expr.op, ast.USub) else value
+            raise _Unreadable(expr)
+        if isinstance(expr, ast.Name) and expr.id in bound:
+            known = read.get(expr.id)
+            if known is None:
+                before = spent[0]
+                try:
+                    value = ev(bound[expr.id], depth + 1)
+                except _Unreadable as unread:
+                    read[expr.id] = unread
+                    raise _Unreadable(expr, unread.why) from None  # said where it is used
+                known = read[expr.id] = (value, spent[0] - before)
+            elif isinstance(known, _Unreadable):
+                raise _Unreadable(expr, known.why)
+            else:
+                charge(known[1], expr)
+            return copy.deepcopy(known[0])
+        if isinstance(expr, ast.Call):
+            builder = _BUILDERS.get(sdk(expr.func))
+            if builder is None or any(isinstance(a, ast.Starred) for a in expr.args):
+                raise _Unreadable(expr)
+            args = [ev(a, depth + 1) for a in expr.args]
+            kwargs = {}
+            for keyword in expr.keywords:
+                if keyword.arg is None:
+                    raise _Unreadable(keyword.value)
+                kwargs[keyword.arg] = ev(keyword.value, depth + 1)
+            return builder(*args, **kwargs)
+        raise _Unreadable(expr)
+
+    declared = set()
+    for stmt in tree.body:
+        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in stmt.decorator_list:
+            call = decorator if isinstance(decorator, ast.Call) else None
+            if sdk(call.func if call else decorator) != "node":
+                continue
+            if call is None:
+                say("error", "node.declaration",
+                    f"`@{_quote(decorator)}` needs a node type: `@{_quote(decorator)}(\"my-type\", "
+                    "inputs=[...], outputs=[...])`", decorator)
+                result["complete"] = False
+                continue
+            try:
+                if any(isinstance(a, ast.Starred) for a in call.args):
+                    raise _Unreadable(call)
+                args = [ev(a) for a in call.args]
+                kwargs = {}
+                for keyword in call.keywords:
+                    if keyword.arg is None:
+                        raise _Unreadable(keyword.value)
+                    kwargs[keyword.arg] = ev(keyword.value)
+                entry = _declare(*args, **kwargs)
+            except _Unreadable as unread:
+                why = f"{unread.why} to read without running it" if unread.why else "is not a literal"
+                say("warning", "python.unreadable",
+                    f"`{_quote(unread.expr)}` in the @node(...) of `{stmt.name}` {why}, so it "
+                    "is only known once the module runs (reload it)", unread.expr)
+                result["complete"] = False
+                continue
+            except (ValueError, TypeError) as error:
+                say("error", "node.declaration",
+                    f"@node(...) of `{stmt.name}`: {error}; the module would fail to start",
+                    decorator)
+                result["complete"] = False
+                continue
+            if entry["type"] in declared:
+                say("error", "node.declaration",
+                    f"node type `{entry['type']}` is declared twice; the module would fail "
+                    "to start", decorator)
+                result["complete"] = False
+                continue
+            declared.add(entry["type"])
+            result["nodes"].append({"line": decorator.lineno, "node": entry})
+            arguments = stmt.args
+            positional = len(arguments.posonlyargs) + len(arguments.args)
+            if positional < 3 and arguments.vararg is None:
+                say("warning", "python.handler",
+                    f"`{stmt.name}` is called as {stmt.name}(ctx, port, value) but takes "
+                    f"{positional} argument(s)", stmt, whole=False)
+            if isinstance(stmt, ast.AsyncFunctionDef):
+                say("warning", "python.handler",
+                    f"`{stmt.name}` is async: the SDK calls handlers without awaiting them, "
+                    "so its body would never run", stmt, whole=False)
+    if not declared and result["complete"]:
+        say("warning", "python.no_nodes",
+            "the file declares no node: decorate a handler with @rg.node(\"type\", ...)")
+    runs = any(isinstance(item, ast.Call) and sdk(item.func) == "run" for item in ast.walk(tree))
+    if not runs:
+        say("warning", "python.no_run",
+            "the file never calls run(): the module would end as soon as it starts")
+    return result
+
+
+def _inspect_main():
+    """What the core runs (``python -I -S -c <this file> + "_inspect_main()"``): reads a
+    node file on stdin and writes what :func:`inspect` found as one JSON object."""
+    data = sys.stdin.buffer.read()
+    try:
+        result = inspect(data)
+    except Exception as error:  # noqa: BLE001 — the core always gets an answer
+        result = {"interpreter": "Python " + sys.version.split()[0], "nodes": [],
+                  "complete": False, "diagnostics": [{
+                      "severity": "warning", "code": "check.unavailable",
+                      "message": f"the checker failed: {type(error).__name__}: {error}"}]}
+    text = json.dumps(result, ensure_ascii=False, allow_nan=False, default=str)
+    sys.stdout.buffer.write(text.encode("utf-8", "backslashreplace"))
+    sys.stdout.buffer.flush()

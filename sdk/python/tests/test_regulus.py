@@ -508,6 +508,288 @@ class DeclarationTest(unittest.TestCase):
             "id": "o", "name": "", "capability": "text@1", "direction": "output", "kind": "then"})
 
 
+class DynamicPortTest(unittest.TestCase):
+    """Ports that depend on the config: declared apart, taken from the node at run time."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.folder = pathlib.Path(self.dir.name)
+        (self.folder / "regulus.py").write_text((SDK / "regulus.py").read_text())
+
+    SWITCH = textwrap.dedent(
+        """
+        import regulus as rg
+
+        @rg.node("switch", name="Switch",
+                 inputs=[rg.then_in("in", "text@1"),
+                         rg.then_in("extra_{item}", "text@1", repeat="extras")],
+                 outputs=[rg.then_out("case_{item}", "text@1", name="{item}", repeat="cases"),
+                          rg.then_out("other", "text@1", when={"field": "fallback"})],
+                 fields=[rg.field("cases", "list", default=["a", "b"]),
+                         rg.field("extras", "list", default=[]),
+                         rg.field("fallback", "boolean", default=False),
+                         rg.field("hint", "text", when={"field": "fallback", "equals": True})])
+        def switch(ctx, port, value):
+            target = "case_" + value if "case_" + value in ctx.config["cases_ports"] else "other"
+            ctx.emit(target, port + ":" + value)
+
+        rg.run()
+        """
+    )
+
+    def switch(self):
+        script = self.folder / "switch.py"
+        script.write_text(self.SWITCH)
+        module = Module(script, env={"PATH": os.environ.get("PATH", "")})
+        self.addCleanup(lambda: module.process.poll() is None and module.process.kill())
+        return module
+
+    def test_dynamic_ports_go_apart_and_types_are_managed(self):
+        module = self.switch()
+        _, answer = module.until_answer(module.request("manifest"))
+        (node,) = answer["result"]["node"]
+        self.assertTrue(node["managed_ports"])
+        self.assertEqual([p["id"] for p in node["port"]], ["in"])
+        dynamic = {p["id"]: p for p in node["dynamic_port"]}
+        self.assertEqual(dynamic["case_{item}"]["repeat"], "cases")
+        self.assertEqual(dynamic["other"]["when"], {"field": "fallback"})
+        self.assertEqual(node["field"][3]["when"], {"field": "fallback", "equals": True})
+        self.assertEqual(module.finish()[0], 0)
+
+    def test_a_node_takes_and_emits_on_its_own_ports(self):
+        module = self.switch()
+        module.until_answer(module.request("start", {"project_id": "demo", "root": "/"}))
+        port = lambda pid, d: {"id": pid, "capability": "text@1", "direction": d, "kind": "then"}
+        ports = [port("in", "input"), port("extra_x", "input"), port("case_z", "output"),
+                 port("other", "output")]
+
+        def event(value, on="in", config=None):
+            return module.request("call", {"method": "node/event", "params": {
+                "execution_id": "e", "node": {"id": "s", "type": "switch", "ports": ports,
+                                              "config": config or {}},
+                "args": {"port": on, "capability": "text@1", "value": value}}})
+
+        config = {"cases": ["z"], "cases_ports": ["case_z"]}
+        emits, answer = module.until_answer(event("z", "extra_x", config))
+        self.assertEqual(answer.get("result", answer), None)
+        self.assertEqual(emits[0]["params"]["port"], "case_z")
+        self.assertEqual(emits[0]["params"]["value"], "extra_x:z")
+        # `case_a` is a default item, but this node's ports do not have it.
+        _, answer = module.until_answer(event("a", "in", {"cases_ports": ["case_a"]}))
+        self.assertIn("has no output `case_a`", answer["error"]["message"])
+        _, answer = module.until_answer(event("a", "extra_y"))
+        self.assertEqual(answer["error"]["code"], -32602)
+        self.assertEqual(module.finish()[0], 0)
+
+    def test_when_is_checked_at_declaration(self):
+        for bad in [{"equals": 1}, {"field": ""}, {"field": "f", "else": 1}, {"field": "f", "in": 3}]:
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    regulus.then_out("o", "text@1", when=bad)
+        with self.assertRaises(ValueError):
+            regulus.then_in("i", "text@1", repeat="")
+        with self.assertRaises(ValueError):
+            regulus.field("f", when="mode")
+
+
+class InspectTest(unittest.TestCase):
+    """The static reader the core runs: it never imports or executes the file."""
+
+    def test_reads_declarations_without_running_anything(self):
+        marker = pathlib.Path(tempfile.mkdtemp()) / "ran"
+        self.addCleanup(lambda: marker.exists() and marker.unlink())
+        source = textwrap.dedent(
+            f"""
+            import pathlib
+            import regulus as rg
+            from regulus import then_out as out
+            pathlib.Path({str(marker)!r}).write_text("ran")
+            CAP = "text@1"
+            CASES = ["a", "b"]
+
+            @rg.node("caps", name="Caps", inputs=[rg.then_in("in", CAP)],
+                     outputs=[out("case_{{item}}", CAP, repeat="cases")],
+                     fields=[rg.field("cases", "list", default=CASES)])
+            def caps(ctx, port, value):
+                ctx.emit("out", value.upper())
+
+            if __name__ == "__main__":
+                rg.run()
+            """
+        )
+        result = regulus.inspect(source)
+        self.assertFalse(marker.exists(), "inspect must not run the file")
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["diagnostics"], [])
+        (found,) = result["nodes"]
+        self.assertEqual(found["line"], 9)
+        node = found["node"]
+        self.assertEqual((node["type"], node["managed_ports"]), ("caps", True))
+        self.assertEqual(node["dynamic_port"][0]["id"], "case_{item}")
+        self.assertEqual(node["field"][0]["default"], ["a", "b"])
+        self.assertTrue(result["interpreter"].startswith("Python 3."))
+
+    def test_syntax_errors_say_where_in_characters(self):
+        result = regulus.inspect("x = 'ñññ' +\n")
+        (error,) = result["diagnostics"]
+        self.assertEqual((error["code"], error["severity"]), ("python.syntax", "error"))
+        self.assertEqual((error["line"], error["column"]), (1, 12))
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["nodes"], [])
+
+    def test_what_only_loading_would_refuse_is_an_error_too(self):
+        cases = [
+            ("x = 1\nreturn x\n", 2, 1, "'return' outside function"),
+            ("for i in []: pass\nbreak\n", 2, 1, "'break' outside loop"),
+            ("def f(a, a): pass\n", 1, 10, "duplicate argument"),
+            ("ñññ = 1; return ñññ\n", 1, 10, "'return' outside function"),
+            ("nonlocal x\n", 1, 1, "nonlocal declaration"),
+            ("await f()\n", 1, 1, "'await' outside function"),
+        ]
+        for source, line, column, message in cases:
+            with self.subTest(source=source):
+                result = regulus.inspect(source)
+                (error,) = result["diagnostics"]
+                self.assertEqual((error["code"], error["line"], error["column"]),
+                                 ("python.syntax", line, column), error)
+                self.assertIn(message, error["message"])
+                self.assertFalse(result["complete"])
+        error = regulus.inspect("ñññ = 1; return ñññ\n")["diagnostics"][0]
+        self.assertEqual(error["end_column"], 20)
+
+    def test_what_is_not_a_literal_or_would_fail_is_said(self):
+        source = textwrap.dedent(
+            """
+            import regulus as rg
+            import os
+            PORT = os.environ.get("PORT", "in")
+
+            @rg.node("a", inputs=[rg.then_in(PORT, "text@1")])
+            def a(ctx, port, value): pass
+
+            @rg.node("b", inputs=[rg.then_in("p", "text@1")], outputs=[rg.then_out("p", "text@1")])
+            def b(ctx, port, value): pass
+
+            @rg.node
+            def c(ctx, port, value): pass
+
+            @rg.node("d")
+            def d(ctx): pass
+
+            @rg.node("d")
+            def d2(ctx, port, value): pass
+            """
+        )
+        result = regulus.inspect(source)
+        codes = [(d["code"], d.get("line")) for d in result["diagnostics"]]
+        self.assertIn(("python.unreadable", 6), codes)
+        self.assertIn(("node.declaration", 9), codes)
+        self.assertIn(("node.declaration", 12), codes)
+        self.assertIn(("python.handler", 16), codes)
+        self.assertIn(("node.declaration", 18), codes)
+        self.assertIn("python.no_run", [d["code"] for d in result["diagnostics"]])
+        self.assertFalse(result["complete"])
+        self.assertEqual([n["node"]["type"] for n in result["nodes"]], ["d"])
+        unreadable = next(d for d in result["diagnostics"] if d["code"] == "python.unreadable")
+        self.assertEqual((unreadable["column"], unreadable["end_column"]), (34, 38))
+
+    def test_the_core_command_answers_json_on_stdout(self):
+        script = (SDK / "regulus.py").read_text() + "\n_inspect_main()\n"
+        done = subprocess.run([sys.executable, "-I", "-S", "-c", script], input=b"x = (\n",
+                              capture_output=True, timeout=TIMEOUT, env={})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        answer = json.loads(done.stdout)
+        self.assertEqual(answer["diagnostics"][0]["code"], "python.syntax")
+
+    def test_malicious_sources_run_nothing_even_through_the_core_command(self):
+        folder = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: [f.unlink() for f in folder.iterdir()] and None)
+        sentinel = folder / "ran"
+        planted = folder / "evil_module.py"
+        planted.write_text(f"open({str(sentinel)!r}, 'w').write('imported')\n")
+        s = repr(str(sentinel))
+        source = textwrap.dedent(
+            f"""
+            import regulus as rg
+            import evil_module
+            node = rg.node
+            grab = __import__
+            PORT = grab("os").system("touch " + {s})
+
+            @node("a", inputs=[rg.then_in(PORT, "text@1")])
+            def a(ctx, port, value): pass
+
+            @rg.node("b", fields=[rg.field("f", default=open({s}, "w").write("x"))])
+            def b(ctx, port, value): pass
+
+            @rg.node("c", inputs=[rg.then_in("in", "text@1", **{{"name": exec("open({s}, 'w')")}})])
+            def c(ctx, port, value): pass
+
+            @rg.node("d", inputs=[rg.then_in((lambda: open({s}, "w"))(), "text@1")])
+            def d(ctx, port, value): pass
+
+            @rg.node("e", inputs=[rg.then_in(f"{{open({s}, 'w')}}", "text@1")])
+            def e(ctx, port, value): pass
+
+            @rg.node("f", inputs=[rg.then_in(getattr(rg, "then_in").__globals__["os"].name, "x@1")])
+            def f(ctx, port, value): pass
+
+            @node("ok", inputs=[rg.then_in("in", "text@1")])
+            def ok(ctx, port, value): pass
+            """
+        )
+        result = regulus.inspect(source)
+        script = (SDK / "regulus.py").read_text() + "\n_inspect_main()\n"
+        done = subprocess.run([sys.executable, "-I", "-S", "-c", script], input=source.encode(),
+                              capture_output=True, timeout=TIMEOUT, env={}, cwd=folder)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), result)
+        self.assertFalse(sentinel.exists(), "inspection ran project code")
+        unreadable = [d["line"] for d in result["diagnostics"] if d["code"] == "python.unreadable"]
+        self.assertEqual(unreadable, [8, 11, 14, 17, 20, 23])
+        # `node = rg.node` is followed by name: the alias declares a node.
+        self.assertEqual([n["node"]["type"] for n in result["nodes"]], ["ok"])
+        self.assertFalse(result["complete"])
+
+    def test_dynamic_ports_require_a_core_that_knows_them(self):
+        regulus._NODES.clear()
+        self.addCleanup(regulus._NODES.clear)
+        regulus.node("plain", inputs=[regulus.then_in("in", "text@1")])(lambda *a: None)
+        self.assertEqual(regulus.manifest()["module"]["requires_proto"], "^1")
+        regulus.node("grows", outputs=[regulus.then_out("o_{item}", "text@1", repeat="xs")],
+                     fields=[regulus.field("xs", "list")])(lambda *a: None)
+        self.assertEqual(regulus.manifest()["module"]["requires_proto"], "^1.17")
+
+    def test_names_that_double_at_every_line_are_read_within_a_budget(self):
+        def doubling(levels):
+            lines = ["import regulus as rg", 'x0 = "a"']
+            lines += [f"x{i} = [x{i - 1}, x{i - 1}]" for i in range(1, levels + 1)]
+            lines += [f'@rg.node("t", fields=[rg.field("f", "list", default=x{levels})])',
+                      "def t(ctx, port, value): pass", "rg.run()"]
+            return "\n".join(lines) + "\n"
+        # Small enough: read, the value as written.
+        found = regulus.inspect(doubling(4))
+        self.assertTrue(found["complete"], found)
+        self.assertEqual(json.dumps(found["nodes"][0]["node"]["field"][0]["default"]).count('"a"'), 16)
+        # 2^30 values if expanded: stopped at the budget, said, never claimed complete.
+        started = time.monotonic()
+        found = regulus.inspect(doubling(30))
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertFalse(found["complete"])
+        self.assertEqual([d["code"] for d in found["diagnostics"]], ["python.unreadable"])
+        self.assertIn(f"more than {regulus._MAX_VALUES} values", found["diagnostics"][0]["message"])
+        self.assertEqual(found["nodes"], [])
+        # Deeper than the reader follows: said as such, not as "not a literal".
+        found = regulus.inspect(doubling(40))
+        self.assertFalse(found["complete"])
+        self.assertIn(f"more than {regulus._MAX_DEPTH} levels", found["diagnostics"][0]["message"])
+
+    def test_an_empty_file_has_no_nodes(self):
+        codes = [d["code"] for d in regulus.inspect(b"")["diagnostics"]]
+        self.assertEqual(codes, ["python.no_nodes", "python.no_run"])
+
+
 class ExampleTest(unittest.TestCase):
     def test_the_example_runs_in_place(self):
         module = Module(EXAMPLE, env={"PATH": os.environ.get("PATH", "")})
