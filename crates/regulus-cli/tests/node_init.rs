@@ -330,3 +330,226 @@ fn node_init_refuses_what_it_cannot_do_cleanly() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The value after `key` on the line of `text` that starts with it (`revision  <rev>`).
+fn field(text: &str, key: &str) -> String {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no `{key}` line in:\n{text}"))
+        .to_string()
+}
+
+/// The authoring commands against a real core (docs/18-custom-nodes.md, RUN/API.md): read
+/// the source, check it without running it, save it with a revision (a stale one is
+/// refused), reload without restarting the core, read the shape, find the ports a profile
+/// kept stale and sync them; live executions and wires that would be dropped need an
+/// explicit word.
+#[test]
+fn the_authoring_commands_drive_a_real_core() {
+    if !python() {
+        return;
+    }
+    with_core("node-authoring", PROJECT, |home, folder| {
+        let path = folder.to_str().unwrap();
+        let init = regulus(home, &["node", "init", path, "--id", "caps"]);
+        assert!(init.status.success(), "{}", text(&init));
+        let opened = regulus(home, &["project", "open", path, "--trust"]);
+        assert!(opened.status.success(), "{}", text(&opened));
+        let line = listed(home, "demo/caps@0.1.0").expect("demo/caps@0.1.0 listed");
+        assert!(line.contains("idle"), "{line}");
+
+        // Read: the text on stdout, where it lives and its revision on stderr.
+        let source = regulus(home, &["node", "source", "demo", "caps"]);
+        assert!(source.status.success(), "{}", text(&source));
+        let original = String::from_utf8_lossy(&source.stdout).into_owned();
+        assert!(original.contains("@rg.node("), "{original}");
+        let first = field(&String::from_utf8_lossy(&source.stderr), "revision");
+
+        // Check without running: the file on disk is fine; a broken text is an error at a
+        // line and column, and the command exits non-zero.
+        let clean = regulus(home, &["node", "check", "demo", "caps"]);
+        assert!(clean.status.success(), "{}", text(&clean));
+        assert!(text(&clean).contains("no errors"), "{}", text(&clean));
+        let broken = folder.join("broken.py");
+        std::fs::write(&broken, "def handle(:\n").unwrap();
+        let bad = regulus(
+            home,
+            &[
+                "node",
+                "check",
+                "demo",
+                "caps",
+                "--file",
+                broken.to_str().unwrap(),
+            ],
+        );
+        assert!(!bad.status.success(), "{}", text(&bad));
+        assert!(
+            text(&bad).contains("error[python.syntax]"),
+            "{}",
+            text(&bad)
+        );
+
+        // Save an edit that adds an output port. Saving applies nothing.
+        let one = "outputs=[rg.then_out(\"out\", \"text@1\")],";
+        let two = "outputs=[rg.then_out(\"out\", \"text@1\"), rg.then_out(\"extra\", \"text@1\")],";
+        assert!(original.contains(one), "{original}");
+        let edited = folder.join("edited.py");
+        std::fs::write(&edited, original.replace(one, two)).unwrap();
+        let edited_path = edited.to_str().unwrap();
+        let saved = regulus(
+            home,
+            &[
+                "node",
+                "save",
+                "demo",
+                "caps",
+                edited_path,
+                "--revision",
+                &first,
+            ],
+        );
+        assert!(saved.status.success(), "{}", text(&saved));
+        assert!(
+            text(&saved).contains("saved tools/caps/run.py"),
+            "{}",
+            text(&saved)
+        );
+        assert!(text(&saved).contains("project reload"), "{}", text(&saved));
+        // Without a base it does not guess; with the old revision it is refused and says so.
+        let guess = regulus(home, &["node", "save", "demo", "caps", edited_path]);
+        assert!(!guess.status.success());
+        assert!(text(&guess).contains("--revision"), "{}", text(&guess));
+        let stale = regulus(
+            home,
+            &[
+                "node",
+                "save",
+                "demo",
+                "caps",
+                edited_path,
+                "--revision",
+                &first,
+            ],
+        );
+        assert!(!stale.status.success(), "{}", text(&stale));
+        assert!(
+            text(&stale).contains("changed since you read it"),
+            "{}",
+            text(&stale)
+        );
+        let on_disk = std::fs::read_to_string(folder.join("tools/caps/run.py")).unwrap();
+        assert!(on_disk.contains("\"extra\""), "the first save is on disk");
+        let differs = regulus(home, &["node", "check", "demo", "caps"]);
+        assert!(
+            text(&differs).contains("differs from what is loaded"),
+            "{}",
+            text(&differs)
+        );
+
+        // Reload one module: the new process replaces the old one; the core stays.
+        let reload = regulus(home, &["project", "reload", "demo", "--module", "caps"]);
+        assert!(reload.status.success(), "{}", text(&reload));
+        assert!(text(&reload).contains("replaced"), "{}", text(&reload));
+        let shape = regulus(home, &["module", "shape", "demo/caps", "caps"]);
+        assert!(shape.status.success(), "{}", text(&shape));
+        assert!(text(&shape).contains("extra"), "{}", text(&shape));
+
+        // The profile kept the old ports: stale. The preview writes nothing; applying
+        // saves, and the finding is gone.
+        let profile_file = folder.join(".regulus/profiles/caps-pipe.toml");
+        let before = std::fs::read_to_string(&profile_file).unwrap();
+        let check = regulus(home, &["profile", "check", "caps-pipe"]);
+        assert!(
+            text(&check).contains("node.ports_stale"),
+            "{}",
+            text(&check)
+        );
+        let plan = regulus(home, &["profile", "sync", "caps-pipe"]);
+        assert!(plan.status.success(), "{}", text(&plan));
+        assert!(text(&plan).contains("+ out extra"), "{}", text(&plan));
+        assert!(text(&plan).contains("nothing saved"), "{}", text(&plan));
+        assert_eq!(std::fs::read_to_string(&profile_file).unwrap(), before);
+        let applied = regulus(home, &["profile", "sync", "caps-pipe", "--apply"]);
+        assert!(applied.status.success(), "{}", text(&applied));
+        let check = regulus(home, &["profile", "check", "caps-pipe"]);
+        assert!(
+            !text(&check).contains("node.ports_stale"),
+            "{}",
+            text(&check)
+        );
+        let events = run_and_send(home, "caps-pipe", "hi");
+        assert!(
+            events.contains("\"> HI\""),
+            "the synced profile still runs: {events}"
+        );
+
+        // A live execution keeps the module from being replaced, unless told to stop it.
+        let current = regulus(home, &["node", "source", "demo", "caps"]);
+        let second = field(&String::from_utf8_lossy(&current.stderr), "revision");
+        let renamed = String::from_utf8_lossy(&current.stdout).replace(
+            "rg.then_out(\"out\", \"text@1\"), ",
+            "rg.then_out(\"result\", \"text@1\"), ",
+        );
+        std::fs::write(&edited, renamed).unwrap();
+        let saved = regulus(
+            home,
+            &[
+                "node",
+                "save",
+                "demo",
+                "caps",
+                edited_path,
+                "--revision",
+                &second,
+            ],
+        );
+        assert!(saved.status.success(), "{}", text(&saved));
+        let refused = regulus(home, &["project", "reload", "demo", "--module", "caps"]);
+        assert!(!refused.status.success(), "{}", text(&refused));
+        assert!(
+            text(&refused).contains("live executions"),
+            "{}",
+            text(&refused)
+        );
+        assert!(
+            text(&refused).contains("--stop-executions"),
+            "{}",
+            text(&refused)
+        );
+        let forced = regulus(
+            home,
+            &[
+                "project",
+                "reload",
+                "demo",
+                "--module",
+                "caps",
+                "--stop-executions",
+            ],
+        );
+        assert!(forced.status.success(), "{}", text(&forced));
+        assert!(text(&forced).contains("stopped"), "{}", text(&forced));
+
+        // Removing the port a wire ends on: the plan lists the wire, and applying it
+        // needs --drop-wires.
+        let plan = regulus(home, &["profile", "sync", "caps-pipe"]);
+        assert!(text(&plan).contains("would be removed"), "{}", text(&plan));
+        let before = std::fs::read_to_string(&profile_file).unwrap();
+        let refused = regulus(home, &["profile", "sync", "caps-pipe", "--apply"]);
+        assert!(!refused.status.success(), "{}", text(&refused));
+        assert!(
+            text(&refused).contains("--drop-wires"),
+            "{}",
+            text(&refused)
+        );
+        assert_eq!(std::fs::read_to_string(&profile_file).unwrap(), before);
+        let accepted = regulus(
+            home,
+            &["profile", "sync", "caps-pipe", "--apply", "--drop-wires"],
+        );
+        assert!(accepted.status.success(), "{}", text(&accepted));
+        assert_ne!(std::fs::read_to_string(&profile_file).unwrap(), before);
+    });
+}
