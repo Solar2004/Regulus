@@ -104,6 +104,13 @@ or `regulus node init --lang rust` and compile Rust with `regulus node build`. L
 modules can `emit` values; they do not get the rest of the module context. `cargo build -p
 <crate>` compiles one workspace crate on its own; it does not add it to the binary.
 
+**Share and reuse local modules.** [regulus-modules](https://github.com/Solar2004/regulus-modules)
+is a separate, public catalogue of installable Python local modules (the first is
+`text-extract`, which pulls JSON or fenced code blocks out of an agent's reply), with a
+contribution guide and a starter template for adding your own. Its standalone `catalog.py`
+needs a clone of that repository and an existing project; it is not a `regulus` command,
+and `regulus module install` still does not exist.
+
 ## Regulus Code (development)
 
 A coding harness made from Regulus nodes, with a focused terminal interface and a
