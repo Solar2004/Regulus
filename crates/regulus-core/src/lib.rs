@@ -2,6 +2,7 @@
 //! model or a skill is. It loads modules, keeps the pieces and their wires, and answers
 //! clients over JSON-RPC (docs/plan.md §1).
 
+pub mod authoring;
 mod bus;
 pub mod config;
 pub mod graph;

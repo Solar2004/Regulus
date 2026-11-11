@@ -562,6 +562,10 @@ pub struct ProjectDetails {
     pub content: serde_json::Value,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// One per `[[modules.local]]` with an id: where its editable Python file is, or why it
+    /// has none (1.17).
+    #[serde(default)]
+    pub sources: Vec<LocalSource>,
 }
 
 /// Where the editable file of a local module is (`source.*`), or why it has none.

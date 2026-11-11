@@ -581,6 +581,7 @@ impl Project {
             },
             content: json(&self.raw),
             warnings,
+            sources: crate::authoring::sources(self),
         }
     }
 }

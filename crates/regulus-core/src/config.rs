@@ -271,6 +271,13 @@ pub struct LocalModulesConfig {
     /// The variables of the core's environment it gets; the rest (the core's token,
     /// secrets) never reach it. Its `env` in `regulus.toml` is added on top.
     pub env_passthrough: Vec<String>,
+    /// The host's Python: what checks a node's source without running it (`source.check`,
+    /// never a project's own interpreter) and what `node.init` registers new nodes with.
+    pub python: String,
+    /// Milliseconds a source check may take before its process is killed.
+    pub check_timeout_ms: u64,
+    /// The largest source the core reads, writes or checks (`source.*`).
+    pub max_source_bytes: usize,
     /// Keys this version does not know: kept, reported as warnings, never fatal.
     #[serde(flatten)]
     pub unknown: toml::Table,
@@ -285,6 +292,9 @@ impl Default for LocalModulesConfig {
             stderr_lines: 20,
             max_line_bytes: 16 * 1024 * 1024,
             env_passthrough: ["PATH", "HOME", "LANG", "TERM"].map(String::from).to_vec(),
+            python: "python3".into(),
+            check_timeout_ms: 5_000,
+            max_source_bytes: 1024 * 1024,
             unknown: toml::Table::new(),
         }
     }
