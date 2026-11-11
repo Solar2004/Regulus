@@ -179,7 +179,12 @@ pub fn defaults_of(fields: &[Field]) -> Map<String, Value> {
         .collect()
 }
 
-/// A node of a palette entry: its ports, its fields' defaults as config, a free id.
+/// A node of a palette entry: its fields' defaults as config, the ports its type has for
+/// that config, a free id. The ports come from `regulus_proto::shape::shape`, the one
+/// resolver the core uses for `module.shape` and `profile.check`, so a type with
+/// `dynamic_port`s (a `when` true by default, a `repeat` over a default list) starts with
+/// them and is not stale. Editing a field later does not resync the ports here: that is
+/// `regulus profile sync` (the TUI has no sync action).
 pub fn node_for(
     manifests: &[Manifest],
     profile: &Profile,
@@ -195,6 +200,8 @@ pub fn node_for(
         } => {
             let manifest = manifest_of(manifests, module_id)?;
             let kind = manifest.node_type(node_type)?;
+            let config = defaults_of(&kind.fields);
+            let ports = regulus_proto::shape::shape(kind, &config).ports;
             Some(Node {
                 id: unique_id(&kind.node_type, taken, "node"),
                 node_type: kind.node_type.clone(),
@@ -205,8 +212,8 @@ pub fn node_for(
                 },
                 module_id: Some(manifest.module.id.clone()),
                 resource: None,
-                ports: kind.ports.clone(),
-                config: defaults_of(&kind.fields),
+                ports,
+                config,
                 position,
                 internal_workflow_id: None,
                 exposed_parameters: Vec::new(),
@@ -454,6 +461,55 @@ mod tests {
         assert_eq!(node.config["who"], "world");
         assert_eq!(node.config["loud"], false);
         assert!(!node.config.contains_key("mood"));
+    }
+
+    #[test]
+    fn a_dynamic_node_from_the_palette_has_the_canonical_shape_of_its_defaults() {
+        // `when` true by default, `when` false by default, and a `repeat` over a default list.
+        let manifest: Manifest = serde_json::from_value(json!({
+            "module": { "id": "demo/shout@0.1.0", "name": "Shout" },
+            "node": [{
+                "type": "shout", "name": "Shout", "managed_ports": true,
+                "port": [
+                    { "id": "in", "capability": "text@1", "direction": "input", "kind": "then" },
+                    { "id": "out", "capability": "text@1", "direction": "output", "kind": "then" }
+                ],
+                "dynamic_port": [
+                    { "id": "extra", "capability": "text@1", "direction": "output", "kind": "then",
+                      "when": { "field": "mode", "equals": "loud" } },
+                    { "id": "calm", "capability": "text@1", "direction": "output", "kind": "then",
+                      "when": { "field": "mode", "equals": "quiet" } },
+                    { "id": "lane_{item}", "capability": "text@1", "direction": "output", "kind": "then",
+                      "repeat": "lanes" }
+                ],
+                "field": [
+                    { "id": "mode", "type": "select", "default": "loud", "options": ["quiet", "loud"] },
+                    { "id": "lanes", "type": "list", "default": ["a", "b"] }
+                ]
+            }]
+        }))
+        .unwrap();
+        let profile = super::super::document::new_profile("p", "P", "Main");
+        let piece = Piece::Type {
+            module_id: "demo/shout@0.1.0".into(),
+            node_type: "shout".into(),
+        };
+        let node = node_for(
+            std::slice::from_ref(&manifest),
+            &profile,
+            &piece,
+            Position::default(),
+            &[],
+        )
+        .unwrap();
+        let ids: Vec<&str> = node.ports.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["in", "out", "extra", "lane_a", "lane_b"]);
+        // Exactly what the core's resolver gives for this config: nothing for `profile.check`
+        // to call stale, nothing for `profile.sync` to change.
+        let kind = manifest.node_type("shout").unwrap();
+        let wanted = regulus_proto::shape::shape(kind, &node.config).ports;
+        assert_eq!(node.ports, wanted);
+        assert!(regulus_proto::shape::diff_ports(&node.ports, &wanted).is_empty());
     }
 
     #[test]
