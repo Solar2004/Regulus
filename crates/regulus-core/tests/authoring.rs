@@ -417,6 +417,26 @@ fn an_untrusted_project_is_read_and_checked_but_never_run() {
     );
     assert_eq!(saved["check"]["complete"], true, "{saved:#}");
     assert_eq!(saved["check"]["nodes"][0]["type"], "probe");
+    assert!(!codes(&saved["check"]).contains(&"sdk.outdated".to_string()));
+    // An edited SDK copy that still says this core's version: said as such.
+    let copy = root.join("tools/probe/regulus.py");
+    let edited = fs::read_to_string(&copy).unwrap() + "# edited by hand\n";
+    fs::write(&copy, edited).unwrap();
+    let checked = setup.ok(
+        method::SOURCE_CHECK,
+        json!({ "project_id": "open", "module": "probe" }),
+    );
+    let note = checked["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "sdk.outdated")
+        .unwrap_or_else(|| panic!("no sdk.outdated: {checked:#}"));
+    let message = note["message"].as_str().unwrap();
+    assert!(
+        message.contains("differs from this core's SDK, though both say"),
+        "{message}"
+    );
     let reloaded = setup.ok(method::PROJECT_RELOAD, json!({ "id": "open" }));
     assert_eq!(reloaded["modules"][0]["outcome"], "blocked", "{reloaded:#}");
     assert!(

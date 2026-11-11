@@ -818,13 +818,18 @@ fn sdk_note(file: &SourceFile, max: usize) -> Option<SourceDiagnostic> {
     }
     let theirs = authoring::sdk_version(&text).unwrap_or("an older version");
     let ours = authoring::sdk_version(authoring::SDK).unwrap_or("?");
+    // Same version, other text: an edited copy, or another build of that version.
+    let what = if theirs == ours {
+        format!("differs from this core's SDK, though both say {ours}")
+    } else {
+        format!("is SDK {theirs}, not this core's {ours}")
+    };
     Some(diagnostic(
         Severity::Warning,
         "sdk.outdated",
         format!(
-            "{} beside this file is SDK {theirs}, not this core's {ours}: what it does not \
-             know fails when the module starts; copy the new one from a fresh `regulus node \
-             init`",
+            "{} beside this file {what}: what it does not know fails when the module starts; \
+             copy the new one from a fresh `regulus node init`",
             authoring::SDK_FILE
         ),
     ))
