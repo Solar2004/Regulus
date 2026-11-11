@@ -1,0 +1,31 @@
+# The manifest of the `rust-stdio` local module: the same shape as any `regulus-module.toml`
+# (docs/03-modules.md). `src/main.rs` sends it when the core asks. The core names the module
+# `<project>/rust-stdio@<version>` whatever the part before `@` says; the version is the one
+# after `@` (`version` in `regulus.toml` wins; with neither it is 0.0.0).
+[module]
+id             = "local/rust-stdio@0.1.0"
+name           = "Rust stdio"
+requires_proto = "^1"
+
+[[node]]
+type = "rust-stdio"
+name = "Rust stdio"
+
+  [[node.port]]
+  id          = "in"
+  capability  = "text@1"
+  direction   = "input"
+  kind        = "then"
+  cardinality = "many"
+
+  [[node.port]]
+  id         = "out"
+  capability = "text@1"
+  direction  = "output"
+  kind       = "then"
+
+  [[node.field]]
+  id      = "prefix"
+  type    = "text"
+  label   = "Prefix"
+  default = ""

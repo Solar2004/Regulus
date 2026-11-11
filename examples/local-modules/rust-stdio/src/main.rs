@@ -1,0 +1,98 @@
+//! Rust stdio: a Regulus custom node in Rust, written by `regulus node init --lang rust`.
+//!
+//! The core runs this program as a local module of the project (`[[modules.local]]` in
+//! `regulus.toml`) once the project is trusted, and talks to it over stdin and stdout
+//! through `regulus.rs`, the helper beside this file. It is a separate process, never
+//! linked into Regulus, and it is not a sandbox: it runs with your permissions.
+//!
+//! Stdout belongs to the protocol: log with `eprintln!`, which the core keeps. Change the
+//! handler below (or add node types with `.node(...)` and declare them in
+//! `regulus-module.toml`), then `regulus node build <project> --id rust-stdio` and reload the
+//! module: `regulus project reload <project-id> --module rust-stdio`. What the helper does and
+//! does not do is at the top of `regulus.rs`.
+
+mod regulus;
+
+use regulus::{Context, Error, Module};
+use serde_json::Value;
+
+/// The node types this program serves; `regulus-module.toml` declares their ports and
+/// fields.
+fn module() -> Module {
+    Module::new(include_str!("../regulus-module.toml")).node("rust-stdio", upper)
+}
+
+/// A value arrived on `in`: put it on `out`, upper-cased, after the `prefix` field.
+fn upper(ctx: &Context, _port: &str, value: Value) -> Result<(), Error> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| Error::invalid("text@1 must be a string"))?;
+    // The core does not apply field defaults: say them here.
+    let prefix = ctx.config("prefix").as_str().unwrap_or("");
+    ctx.emit("out", format!("{prefix}{}", text.to_uppercase()))
+}
+
+fn main() {
+    module().run();
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    /// What the module writes for `requests`, one event at a time.
+    fn exchange(requests: &[Value]) -> Vec<Value> {
+        let input: String = requests.iter().map(|r| format!("{r}\n")).collect();
+        let mut output = Vec::new();
+        super::module()
+            .workers(1)
+            .serve(input.as_bytes(), &mut output);
+        output
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect()
+    }
+
+    fn event(id: u64, value: Value, config: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0", "id": id, "method": "call",
+            "params": { "method": "node/event", "params": {
+                "execution_id": "exec-1",
+                "node": { "id": "n1", "type": "rust-stdio", "config": config },
+                "args": { "port": "in", "capability": "text@1", "value": value },
+            }},
+        })
+    }
+
+    #[test]
+    fn the_manifest_declares_this_node() {
+        let out = exchange(&[json!({ "jsonrpc": "2.0", "id": 1, "method": "manifest" })]);
+        let text = out[0]["result"].as_str().unwrap();
+        assert!(text.contains("type = \"rust-stdio\""), "{text}");
+    }
+
+    #[test]
+    fn a_value_is_emitted_before_the_answer() {
+        let out = exchange(&[event(7, json!("hi"), json!({ "prefix": "> " }))]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0]["method"], "emit");
+        assert_eq!(out[0]["params"]["port"], "out");
+        assert_eq!(out[0]["params"]["value"], "> HI");
+        assert_eq!(out[0]["params"]["execution_id"], "exec-1");
+        assert_eq!(out[1]["id"], 7);
+        assert_eq!(out[1]["result"], Value::Null);
+    }
+
+    #[test]
+    fn a_value_that_is_not_text_fails_only_its_call() {
+        let out = exchange(&[
+            event(1, json!(3), json!({})),
+            event(2, json!("ok"), json!({})),
+        ]);
+        assert_eq!(out[0]["id"], 1);
+        assert_eq!(out[0]["error"]["code"], -32602);
+        assert_eq!(out[1]["params"]["value"], "OK");
+        assert_eq!(out[2]["id"], 2);
+    }
+}
