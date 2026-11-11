@@ -18,8 +18,11 @@ use serde::{Deserialize, Serialize};
 /// templates and `template.apply`; 1.13 adds `config.client`; 1.14 adds `project.trust`
 /// and the `blocked` module state; 1.15 adds `project` to the entries of `module.list`;
 /// 1.16 adds children a node keeps (`ChildEventKind::Output`, `ChildEvent.tag`,
-/// `Execution.caller` and `Execution.tag`), `execution.tree` and `template.save`.
-pub const PROTOCOL: &str = "1.16";
+/// `Execution.caller` and `Execution.tag`), `execution.tree` and `template.save`; 1.17 adds
+/// node shapes (`dynamic_port`, `when`, `managed_ports`, `module.shape`, `profile.sync`),
+/// `project.reload`, the source of local modules (`source.get`, `source.save`,
+/// `source.check`, `node.init`, `ProjectDetails.sources`) and `data` on errors.
+pub const PROTOCOL: &str = "1.17";
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -74,6 +77,26 @@ pub mod method {
     /// An execution and its children, as deep as they go (`ExecutionTreeParams` →
     /// `ExecutionTree`). Read-only (1.16).
     pub const EXECUTION_TREE: &str = "execution.tree";
+    /// The ports a node of a module's type has for a config (`ModuleShapeParams` →
+    /// `shape::NodeShape`). Read-only (1.17).
+    pub const MODULE_SHAPE: &str = "module.shape";
+    /// A profile with its nodes' ports synced with their shape, and what that drops
+    /// (`ProfileSyncParams` → `shape::ProfileSynced`). Never writes (1.17).
+    pub const PROFILE_SYNC: &str = "profile.sync";
+    /// Starts again the local modules of an open project, or one of them, without the rest
+    /// of the core (`ProjectReloadParams` → `ProjectReloaded`, 1.17).
+    pub const PROJECT_RELOAD: &str = "project.reload";
+    /// The Python file of a local module (`SourceParams` → `SourceText`, 1.17).
+    pub const SOURCE_GET: &str = "source.get";
+    /// Writes it, unless it changed since the revision read (`SourceSaveParams` →
+    /// `SourceSaved`, 1.17). Never runs it.
+    pub const SOURCE_SAVE: &str = "source.save";
+    /// Reads it, or a text for it, without running it (`SourceCheckParams` →
+    /// `SourceCheck`, 1.17).
+    pub const SOURCE_CHECK: &str = "source.check";
+    /// Writes a new Python node into a project and loads it (`NodeInitParams` →
+    /// `NodeInitialized`, 1.17).
+    pub const NODE_INIT: &str = "node.init";
 
     /// Methods served by the core itself. A module may not claim any of them.
     pub const CORE: &[&str] = &[
@@ -105,6 +128,13 @@ pub mod method {
         PROJECT_TRUST,
         CONFIG_CLIENT,
         EXECUTION_TREE,
+        MODULE_SHAPE,
+        PROFILE_SYNC,
+        PROJECT_RELOAD,
+        SOURCE_GET,
+        SOURCE_SAVE,
+        SOURCE_CHECK,
+        NODE_INIT,
     ];
 
     /// Sent by the core to the module that owns a node, never by a client. A module may
@@ -156,6 +186,17 @@ pub mod code {
     /// `execution.start`: a node's module is disabled in the profile's project
     /// (`[modules] disable` or `enable` in its `regulus.toml`).
     pub const MODULE_DISABLED: i32 = -32013;
+    /// `project.reload`: live or resuming executions run nodes of the module; nothing was
+    /// changed. `data.executions` lists them (`InUseExecution`); stop them, or ask again
+    /// with `stop_executions` (1.17).
+    pub const MODULE_IN_USE: i32 = -32014;
+    /// `source.save`: the file changed since the revision the client read (`data.revision`
+    /// is the current one, `null` if there is no file); `node.init`: its folder or entry
+    /// exists. Nothing was written (1.17).
+    pub const SOURCE_CONFLICT: i32 = -32015;
+    /// `source.*`: no local module of that id in the project, or it has no Python file the
+    /// core may edit (outside the project, a link, missing, not UTF-8, too large) (1.17).
+    pub const SOURCE_UNAVAILABLE: i32 = -32016;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,6 +564,256 @@ pub struct ProjectDetails {
     pub warnings: Vec<String>,
 }
 
+/// Where the editable file of a local module is (`source.*`), or why it has none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalSource {
+    /// Its id in `[[modules.local]]`.
+    pub module: String,
+    /// Relative to the project.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// `module.shape`: a node type of a loaded module (any version if the exact one is not
+/// loaded) and a node's config; the field defaults fill what it does not set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModuleShapeParams {
+    pub module_id: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    #[serde(default)]
+    pub config: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `profile.sync`: a profile (`profile`, e.g. a client's unsaved one) or a loaded one
+/// (`profile_id`). With `node_ids`, those nodes; without, every stale node of a
+/// `managed_ports` type. Nothing is written.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfileSyncParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::Profile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_ids: Option<Vec<String>>,
+}
+
+/// `project.reload`: an open project, and one of its local modules (its id in
+/// `[[modules.local]]`, or `<project>/<id>[@version]`) or all of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectReloadParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// Stop the live executions that run nodes of a module being replaced, instead of
+    /// refusing (`MODULE_IN_USE`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_executions: bool,
+}
+
+/// What a reload did to one local module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReloadOutcome {
+    /// Nothing usable ran before; `state` says whether it runs now.
+    Started,
+    /// A new process took the place of the old one.
+    Replaced,
+    /// The new one failed (`error`); the old one still runs.
+    Kept,
+    /// The new one failed and nothing usable ran before either.
+    Failed,
+    /// The project is not trusted: no process.
+    Blocked,
+    /// Its entry left `regulus.toml`: the old one is stopped.
+    Removed,
+    /// Its entry cannot run or `--without` leaves it out (`error`).
+    Skipped,
+}
+
+/// Node types a reload added, removed or changed, by type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeTypeChanges {
+    #[serde(default)]
+    pub added: Vec<String>,
+    #[serde(default)]
+    pub removed: Vec<String>,
+    #[serde(default)]
+    pub changed: Vec<String>,
+}
+
+/// One local module after `project.reload` (or `node.init`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReloadedModule {
+    pub local_id: String,
+    /// The module id listed now (`<project>/<id>@<version>`).
+    pub id: String,
+    /// The one listed before, if there was one.
+    #[serde(default)]
+    pub previous: Option<String>,
+    pub outcome: ReloadOutcome,
+    pub state: crate::ModuleState,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub node_types: NodeTypeChanges,
+}
+
+/// A node of a loaded profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeLocation {
+    pub profile_id: String,
+    pub workflow_id: String,
+    pub node_id: String,
+}
+
+/// The answer of `project.reload`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectReloaded {
+    pub project: ProjectSummary,
+    pub modules: Vec<ReloadedModule>,
+    /// Executions stopped because `stop_executions` was given.
+    #[serde(default)]
+    pub stopped_executions: Vec<String>,
+    /// Nodes of loaded profiles whose ports now differ from their shape (`profile.sync`).
+    #[serde(default)]
+    pub stale: Vec<NodeLocation>,
+}
+
+/// An execution that keeps a reload from happening (`MODULE_IN_USE` data).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InUseExecution {
+    pub id: String,
+    pub profile_id: String,
+    pub workflow_id: String,
+    /// Its nodes of the module.
+    pub nodes: Vec<String>,
+}
+
+/// `source.get`: a local module of an open project, by its id in `[[modules.local]]` (or
+/// `<project>/<id>[@version]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceParams {
+    pub project_id: String,
+    pub module: String,
+}
+
+/// The answer of `source.get`. `revision` is opaque: compare it, never parse it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceText {
+    pub project_id: String,
+    pub module: String,
+    /// Relative to the project.
+    pub path: String,
+    /// Absolute.
+    pub file: String,
+    pub language: String,
+    pub text: String,
+    pub revision: String,
+}
+
+/// `source.save`: `revision` is what the client read (`None`: it expects no file). A file
+/// that changed since is only replaced with `force`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSaveParams {
+    pub project_id: String,
+    pub module: String,
+    pub text: String,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
+/// The answer of `source.save`: the new revision and what a check of the saved text found.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceSaved {
+    pub path: String,
+    pub file: String,
+    pub revision: String,
+    pub check: SourceCheck,
+}
+
+/// `source.check`: `text`, or the file on disk without it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCheckParams {
+    pub project_id: String,
+    pub module: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// A problem in a source, at a place in it: 1-based lines, and columns in Unicode code
+/// points, 1-based too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDiagnostic {
+    pub severity: Severity,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
+}
+
+/// What reading a source without running it found: its problems and the node types it
+/// declares, as far as they can be read (`complete`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceCheck {
+    pub language: String,
+    /// `false` if the checker could not run (a `check.unavailable` diagnostic says why).
+    pub checked: bool,
+    #[serde(default)]
+    pub interpreter: Option<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<SourceDiagnostic>,
+    #[serde(default)]
+    pub nodes: Vec<crate::NodeType>,
+    /// Every node declaration was read without running the file.
+    #[serde(default)]
+    pub complete: bool,
+    /// Whether `nodes` are the loaded module's; `None` if it is not loaded or `complete` is
+    /// false.
+    #[serde(default)]
+    pub matches_loaded: Option<bool>,
+}
+
+/// `node.init`: a new Python node in an open project. `python` is the program its entry
+/// runs it with (`[local_modules] python` by default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeInitParams {
+    pub project_id: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+}
+
+/// The answer of `node.init`: what was written and how the module loaded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeInitialized {
+    pub project_id: String,
+    /// `<project>/<id>`, what a node's `module_id` names.
+    pub module_id: String,
+    pub node_type: String,
+    /// The Python file to edit, relative to the project.
+    pub source: String,
+    /// Every file written, relative to the project.
+    pub files: Vec<String>,
+    /// `regulus.toml` was written again as a whole (its comments are lost).
+    pub rewritten: bool,
+    #[serde(default)]
+    pub notes: Vec<String>,
+    pub module: ReloadedModule,
+}
+
 /// `config.client`: the settings the clients read, only as far as they are written down;
 /// what is not there, each client takes from its own defaults.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -612,5 +903,15 @@ mod tests {
         assert!(!satisfies("^1.2", "1.1"));
         assert!(!satisfies("^2", "1.1"));
         assert!(!satisfies("latest", "1.1"));
+    }
+
+    #[test]
+    fn a_module_with_dynamic_ports_is_refused_by_a_core_that_would_drop_them() {
+        // What the Python SDK declares when a node has dynamic ports (1.17).
+        assert!(!satisfies("^1.17", "1.16"));
+        assert!(satisfies("^1.17", "1.17"));
+        assert!(satisfies("^1.17", PROTOCOL));
+        // And without: every 1.x core takes it, this one too.
+        assert!(satisfies("^1", "1.16") && satisfies("^1", PROTOCOL));
     }
 }
