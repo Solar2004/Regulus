@@ -52,7 +52,49 @@ pub struct NodeType {
     pub ports: Vec<Port>,
     #[serde(default, rename = "field")]
     pub fields: Vec<Field>,
+    /// Ports that depend on the node's config: shown only `when` a field says so, or one
+    /// per item of a `list` field (`repeat`). `ports` stay unconditional. What a node of
+    /// this type has is [`crate::shape::shape`] of its config (1.17).
+    #[serde(
+        default,
+        rename = "dynamic_port",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub dynamic_ports: Vec<DynamicPort>,
+    /// Every node of this type has exactly the ports its shape gives: a node whose ports
+    /// differ is stale (`node.ports_stale`) until synced (`profile.sync`). Without it the
+    /// manifest's ports are a starting point a profile may trim or retype (1.17).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub managed_ports: bool,
 }
+
+/// A port that exists only `when` a field of the node says so, or once per item of a
+/// `list` field (`repeat`): its `id` and `name` then hold `{item}` (1.17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DynamicPort {
+    #[serde(flatten)]
+    pub port: Port,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<When>,
+    /// The id of a `list` field of the node: one port per item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<String>,
+}
+
+/// A condition on one field of a node, read from its config or else the field's default:
+/// `equals` a value, is `in` a list, or, with neither, is truthy (1.17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct When {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equals: Option<Value>,
+    #[serde(default, rename = "in", skip_serializing_if = "Option::is_none")]
+    pub one_of: Option<Vec<Value>>,
+}
+
+/// A field type the shape reads: an array of text, one port per item for a dynamic port
+/// that `repeat`s it (1.17).
+pub const FIELD_LIST: &str = "list";
 
 /// A field type the core checks: the id of a workflow of the same profile with at least one
 /// "then" output, which the node runs as a child (`ModuleCtx::call_workflow`).
@@ -75,6 +117,9 @@ pub struct Field {
     /// tool), not a mirror of the workflow's, so the core does not line them up.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_ports: bool,
+    /// Shown only when this holds; hidden, its value stays in the config (1.17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<When>,
     /// Every other key of the field, kept as written and handed to clients unchanged:
     /// presentation hints such as `multiline`, `language`, `label` or `description`. The
     /// core never reads them; a client that does not know a key ignores it. Adding one is

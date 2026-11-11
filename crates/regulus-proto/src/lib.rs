@@ -10,6 +10,7 @@ pub mod graph;
 pub mod hook;
 pub mod manifest;
 pub mod rpc;
+pub mod shape;
 
 pub use bus::*;
 pub use graph::*;
